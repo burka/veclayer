@@ -22,16 +22,8 @@ pub trait Embedder: Send + Sync {
 pub type BoxedEmbedder = Box<dyn Embedder>;
 
 // Implement Embedder for Arc<T> where T: Embedder
-impl<T: Embedder> Embedder for std::sync::Arc<T> {
-    fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        (**self).embed(texts)
-    }
-
-    fn dimension(&self) -> usize {
-        (**self).dimension()
-    }
-
-    fn name(&self) -> &str {
-        (**self).name()
-    }
-}
+crate::arc_impl!(Embedder {
+    fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>>;
+    fn dimension(&self) -> usize;
+    fn name(&self) -> &str;
+});

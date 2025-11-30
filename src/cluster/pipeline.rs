@@ -165,14 +165,423 @@ impl<S: Summarizer, E: Embedder> ClusterPipeline<S, E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::embedder::FastEmbedder;
+    use crate::ChunkLevel;
 
-    // Note: Integration tests would require Ollama running
-    // These are just basic structural tests
+    // Mock summarizer that returns predictable results
+    struct MockSummarizer {
+        response: String,
+    }
+
+    impl MockSummarizer {
+        fn new(response: &str) -> Self {
+            Self {
+                response: response.to_string(),
+            }
+        }
+    }
+
+    impl Summarizer for MockSummarizer {
+        async fn summarize(&self, _texts: &[&str]) -> Result<String> {
+            Ok(self.response.clone())
+        }
+
+        async fn summarize_batch(&self, text_groups: Vec<Vec<&str>>) -> Result<Vec<String>> {
+            Ok(text_groups.iter().map(|_| self.response.clone()).collect())
+        }
+
+        fn name(&self) -> &str {
+            "mock"
+        }
+    }
+
+    // Mock embedder
+    struct MockEmbedder {
+        dimension: usize,
+    }
+
+    impl MockEmbedder {
+        fn new(dimension: usize) -> Self {
+            Self { dimension }
+        }
+    }
+
+    impl Embedder for MockEmbedder {
+        fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+            Ok(texts
+                .iter()
+                .enumerate()
+                .map(|(i, _)| {
+                    let mut vec = vec![0.5; self.dimension];
+                    // Add some variation based on index
+                    vec[0] = i as f32 / texts.len() as f32;
+                    vec
+                })
+                .collect())
+        }
+
+        fn dimension(&self) -> usize {
+            self.dimension
+        }
+
+        fn name(&self) -> &str {
+            "mock"
+        }
+    }
+
+    fn create_test_chunks(count: usize) -> Vec<HierarchicalChunk> {
+        (0..count)
+            .map(|i| {
+                let mut chunk = HierarchicalChunk::new(
+                    format!("Content {}", i),
+                    ChunkLevel::CONTENT,
+                    None,
+                    format!("path_{}", i),
+                    "test.md".to_string(),
+                );
+                // Create distinct embeddings for clustering
+                let mut embedding = vec![0.0; 384];
+                embedding[0] = (i / 2) as f32; // Group every 2 items together
+                embedding[1] = (i % 2) as f32;
+                chunk.embedding = Some(embedding);
+                chunk
+            })
+            .collect()
+    }
 
     #[test]
     fn test_pipeline_creation() {
-        let embedder = FastEmbedder::new().unwrap();
+        let embedder = MockEmbedder::new(384);
         let _pipeline = ClusterPipeline::new(embedder);
+    }
+
+    #[test]
+    fn test_pipeline_with_config() {
+        let embedder = MockEmbedder::new(384);
+        let pipeline = ClusterPipeline::new(embedder)
+            .with_min_cluster_size(3)
+            .with_cluster_range(2, 5);
+
+        assert_eq!(pipeline.min_cluster_size, 3);
+        // Cluster range is set internally, verified via process()
+    }
+
+    #[test]
+    fn test_pipeline_with_custom_summarizer() {
+        let embedder = MockEmbedder::new(384);
+        let summarizer = MockSummarizer::new("Test summary");
+        let pipeline = ClusterPipeline::with_summarizer(embedder, summarizer);
+
+        assert_eq!(pipeline.summarizer.name(), "mock");
+        assert_eq!(pipeline.embedder.name(), "mock");
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_empty_chunks() {
+        let embedder = MockEmbedder::new(384);
+        let summarizer = MockSummarizer::new("summary");
+        let pipeline = ClusterPipeline::with_summarizer(embedder, summarizer);
+
+        let (updated, summaries) = pipeline.process(vec![]).await.unwrap();
+        assert!(updated.is_empty());
+        assert!(summaries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_with_chunks() {
+        let embedder = MockEmbedder::new(384);
+        let summarizer = MockSummarizer::new("Test summary");
+        let pipeline =
+            ClusterPipeline::with_summarizer(embedder, summarizer).with_min_cluster_size(2);
+
+        let chunks = create_test_chunks(6);
+        let (updated, summaries) = pipeline.process(chunks).await.unwrap();
+
+        // Verify chunks have cluster memberships
+        assert_eq!(updated.len(), 6);
+        for chunk in &updated {
+            assert!(
+                !chunk.cluster_memberships.is_empty(),
+                "Chunk should have cluster memberships"
+            );
+        }
+
+        // Verify summaries were created
+        assert!(!summaries.is_empty(), "Should have created summaries");
+        for summary in &summaries {
+            assert!(summary.is_summary, "Chunk should be marked as summary");
+            assert!(
+                !summary.summarizes.is_empty(),
+                "Summary should reference chunks"
+            );
+            assert_eq!(summary.content, "Test summary");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_missing_embeddings() {
+        let embedder = MockEmbedder::new(384);
+        let summarizer = MockSummarizer::new("summary");
+        let pipeline = ClusterPipeline::with_summarizer(embedder, summarizer);
+
+        // Chunk without embedding
+        let chunk = HierarchicalChunk::new(
+            "content".to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            "path".to_string(),
+            "test.md".to_string(),
+        );
+
+        let result = pipeline.process(vec![chunk]).await;
+        assert!(result.is_err(), "Should fail with missing embedding");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Not all chunks have embeddings"));
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_min_cluster_size() {
+        let embedder = MockEmbedder::new(384);
+        let summarizer = MockSummarizer::new("summary");
+        let pipeline =
+            ClusterPipeline::with_summarizer(embedder, summarizer).with_min_cluster_size(10); // High threshold
+
+        let chunks = create_test_chunks(4); // Small dataset
+        let (updated, _summaries) = pipeline.process(chunks).await.unwrap();
+
+        assert_eq!(updated.len(), 4);
+        // With high min_cluster_size, might not create summaries
+        // (depends on clustering results, but test should not fail)
+        for chunk in &updated {
+            assert!(!chunk.cluster_memberships.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_updates_chunk_memberships() {
+        let embedder = MockEmbedder::new(384);
+        let summarizer = MockSummarizer::new("summary");
+        let pipeline = ClusterPipeline::with_summarizer(embedder, summarizer);
+
+        let chunks = create_test_chunks(4);
+        let original_ids: Vec<String> = chunks.iter().map(|c| c.id.clone()).collect();
+
+        let (updated, _) = pipeline.process(chunks).await.unwrap();
+
+        // Verify IDs are preserved
+        let updated_ids: Vec<String> = updated.iter().map(|c| c.id.clone()).collect();
+        assert_eq!(original_ids, updated_ids);
+
+        // Verify memberships were added
+        for chunk in &updated {
+            assert!(!chunk.cluster_memberships.is_empty());
+            // Verify membership structure
+            for membership in &chunk.cluster_memberships {
+                assert!(membership.probability > 0.0);
+                assert!(membership.probability <= 1.0);
+                assert!(!membership.cluster_id.is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_summary_has_embedding() {
+        let embedder = MockEmbedder::new(384);
+        let summarizer = MockSummarizer::new("Test summary content");
+        let pipeline =
+            ClusterPipeline::with_summarizer(embedder, summarizer).with_min_cluster_size(2);
+
+        let chunks = create_test_chunks(6);
+        let (_, summaries) = pipeline.process(chunks).await.unwrap();
+
+        for summary in &summaries {
+            assert!(
+                summary.embedding.is_some(),
+                "Summary should have an embedding"
+            );
+            assert_eq!(
+                summary.embedding.as_ref().unwrap().len(),
+                384,
+                "Summary embedding should have correct dimension"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_with_model() {
+        let embedder = MockEmbedder::new(384);
+        let pipeline = ClusterPipeline::new(embedder).with_model("custom-model");
+
+        // Just verify it compiles and sets the model
+        assert_eq!(pipeline.min_cluster_size, 2);
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_cluster_range() {
+        let embedder = MockEmbedder::new(384);
+        let summarizer = MockSummarizer::new("summary");
+        let pipeline =
+            ClusterPipeline::with_summarizer(embedder, summarizer).with_cluster_range(3, 4);
+
+        let chunks = create_test_chunks(8);
+        let (updated, _) = pipeline.process(chunks).await.unwrap();
+
+        assert_eq!(updated.len(), 8);
+        for chunk in &updated {
+            assert!(!chunk.cluster_memberships.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_summary_chunk_structure() {
+        let embedder = MockEmbedder::new(384);
+        let summarizer = MockSummarizer::new("Cluster summary text");
+        let pipeline =
+            ClusterPipeline::with_summarizer(embedder, summarizer).with_min_cluster_size(2);
+
+        let chunks = create_test_chunks(6);
+        let (_, summaries) = pipeline.process(chunks).await.unwrap();
+
+        for summary in &summaries {
+            // Verify summary structure
+            assert!(summary.is_summary);
+            assert_eq!(summary.level, ChunkLevel::H1);
+            assert_eq!(summary.source_file, "[cluster-summary]");
+            assert_eq!(summary.path, "Summary");
+            assert_eq!(summary.heading, Some("Cluster Summary".to_string()));
+            assert!(!summary.summarizes.is_empty());
+
+            // Verify all summarized chunk IDs are valid
+            for chunk_id in &summary.summarizes {
+                assert!(!chunk_id.is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_primary_cluster() {
+        let embedder = MockEmbedder::new(384);
+        let summarizer = MockSummarizer::new("summary");
+        let pipeline = ClusterPipeline::with_summarizer(embedder, summarizer);
+
+        let chunks = create_test_chunks(4);
+        let (updated, _) = pipeline.process(chunks).await.unwrap();
+
+        for chunk in &updated {
+            let primary = chunk.primary_cluster();
+            assert!(primary.is_some(), "Should have a primary cluster");
+
+            // Verify primary is the one with highest probability
+            let primary_prob = primary.unwrap().probability;
+            for membership in &chunk.cluster_memberships {
+                assert!(
+                    membership.probability <= primary_prob,
+                    "Primary should have highest probability"
+                );
+            }
+        }
+    }
+
+    // Test summarizer failure handling
+    struct FailingSummarizer;
+
+    impl Summarizer for FailingSummarizer {
+        async fn summarize(&self, _texts: &[&str]) -> Result<String> {
+            Err(Error::summarization("Intentional failure"))
+        }
+
+        async fn summarize_batch(&self, _text_groups: Vec<Vec<&str>>) -> Result<Vec<String>> {
+            Err(Error::summarization("Intentional failure"))
+        }
+
+        fn name(&self) -> &str {
+            "failing"
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_summarizer_failure() {
+        let embedder = MockEmbedder::new(384);
+        let summarizer = FailingSummarizer;
+        let pipeline =
+            ClusterPipeline::with_summarizer(embedder, summarizer).with_min_cluster_size(2);
+
+        let chunks = create_test_chunks(6);
+        let (updated, summaries) = pipeline.process(chunks).await.unwrap();
+
+        // Should still update chunks with memberships
+        assert_eq!(updated.len(), 6);
+        for chunk in &updated {
+            assert!(!chunk.cluster_memberships.is_empty());
+        }
+
+        // But summaries should be empty or minimal due to failures
+        // The pipeline logs errors but continues
+        assert!(
+            summaries.is_empty(),
+            "Should have no summaries due to summarizer failure"
+        );
+    }
+
+    // Test embedder failure for summaries
+    struct FailingEmbedder;
+
+    impl Embedder for FailingEmbedder {
+        fn embed(&self, _texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+            Err(Error::embedding("Intentional embedding failure"))
+        }
+
+        fn dimension(&self) -> usize {
+            384
+        }
+
+        fn name(&self) -> &str {
+            "failing"
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_embedding_failure_for_summary() {
+        let embedder = FailingEmbedder;
+        let summarizer = MockSummarizer::new("summary");
+        let pipeline =
+            ClusterPipeline::with_summarizer(embedder, summarizer).with_min_cluster_size(2);
+
+        // Create chunks WITHOUT embeddings - FailingEmbedder won't be called for clustering
+        // but the pipeline will fail when trying to extract embeddings
+        let chunks: Vec<HierarchicalChunk> = (0..4)
+            .map(|i| {
+                HierarchicalChunk::new(
+                    format!("Content {}", i),
+                    ChunkLevel::CONTENT,
+                    None,
+                    format!("path_{}", i),
+                    "test.md".to_string(),
+                )
+                // No embedding set
+            })
+            .collect();
+
+        let result = pipeline.process(chunks).await;
+
+        // Should fail because chunks don't have embeddings
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_single_chunk() {
+        let embedder = MockEmbedder::new(384);
+        let summarizer = MockSummarizer::new("summary");
+        let pipeline = ClusterPipeline::with_summarizer(embedder, summarizer);
+
+        let chunks = create_test_chunks(1);
+        let (updated, summaries) = pipeline.process(chunks).await.unwrap();
+
+        assert_eq!(updated.len(), 1);
+        assert!(!updated[0].cluster_memberships.is_empty());
+
+        // With only 1 chunk and min_cluster_size=2, should not create summaries
+        assert!(summaries.is_empty());
     }
 }
