@@ -3,6 +3,7 @@ pub mod cluster;
 pub mod config;
 pub mod embedder;
 pub mod error;
+pub mod macros;
 pub mod mcp;
 pub mod parser;
 pub mod search;

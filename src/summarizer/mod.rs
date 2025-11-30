@@ -32,20 +32,9 @@ pub trait Summarizer: Send + Sync {
     fn name(&self) -> &str;
 }
 
-/// Arc implementation for trait objects
-impl<T: Summarizer> Summarizer for std::sync::Arc<T> {
-    fn summarize(&self, texts: &[&str]) -> impl Future<Output = Result<String>> + Send {
-        (**self).summarize(texts)
-    }
-
-    fn summarize_batch(
-        &self,
-        text_groups: Vec<Vec<&str>>,
-    ) -> impl Future<Output = Result<Vec<String>>> + Send {
-        (**self).summarize_batch(text_groups)
-    }
-
-    fn name(&self) -> &str {
-        (**self).name()
-    }
-}
+// Arc implementation for trait objects
+crate::arc_impl!(Summarizer {
+    fn summarize(&self, texts: &[&str]) -> impl Future<Output = Result<String>> + Send;
+    fn summarize_batch(&self, text_groups: Vec<Vec<&str>>) -> impl Future<Output = Result<Vec<String>>> + Send;
+    fn name(&self) -> &str;
+});

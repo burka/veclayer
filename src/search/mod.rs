@@ -162,11 +162,7 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
         }
 
         // Sort by score descending
-        scored_children.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        sort_by_score_desc(&mut scored_children);
 
         // Take top results
         let top_children: Vec<_> = scored_children
@@ -241,11 +237,7 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
             .collect();
 
         // Sort by score descending
-        scored.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        sort_by_score_desc(&mut scored);
 
         // Take top children_k
         Ok(scored.into_iter().take(self.config.children_k).collect())
@@ -260,6 +252,15 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
     pub fn embedder(&self) -> &E {
         &self.embedder
     }
+}
+
+/// Sort search results by score in descending order
+fn sort_by_score_desc(results: &mut [SearchResult]) {
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 }
 
 /// Compute cosine similarity between two vectors
@@ -282,14 +283,639 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    /// Mock vector store for testing
+    struct MockStore {
+        chunks: Mutex<HashMap<String, HierarchicalChunk>>,
+        search_results: Mutex<Vec<SearchResult>>,
+    }
+
+    impl MockStore {
+        fn new() -> Self {
+            Self {
+                chunks: Mutex::new(HashMap::new()),
+                search_results: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn add_chunk(&self, chunk: HierarchicalChunk) {
+            self.chunks.lock().unwrap().insert(chunk.id.clone(), chunk);
+        }
+
+        fn set_search_results(&self, results: Vec<SearchResult>) {
+            *self.search_results.lock().unwrap() = results;
+        }
+    }
+
+    impl VectorStore for MockStore {
+        async fn insert_chunks(&self, _chunks: Vec<HierarchicalChunk>) -> Result<()> {
+            Ok(())
+        }
+
+        async fn search(
+            &self,
+            _query_embedding: &[f32],
+            limit: usize,
+            level_filter: Option<ChunkLevel>,
+        ) -> Result<Vec<SearchResult>> {
+            let results = self.search_results.lock().unwrap();
+            let filtered: Vec<_> = if let Some(level) = level_filter {
+                results
+                    .iter()
+                    .filter(|r| r.chunk.level == level)
+                    .take(limit)
+                    .cloned()
+                    .collect()
+            } else {
+                results.iter().take(limit).cloned().collect()
+            };
+            Ok(filtered)
+        }
+
+        async fn get_children(&self, parent_id: &str) -> Result<Vec<HierarchicalChunk>> {
+            let chunks = self.chunks.lock().unwrap();
+            let children: Vec<_> = chunks
+                .values()
+                .filter(|c| c.parent_id.as_deref() == Some(parent_id))
+                .cloned()
+                .collect();
+            Ok(children)
+        }
+
+        async fn get_by_id(&self, id: &str) -> Result<Option<HierarchicalChunk>> {
+            let chunks = self.chunks.lock().unwrap();
+            Ok(chunks.get(id).cloned())
+        }
+
+        async fn get_by_source(&self, _source_file: &str) -> Result<Vec<HierarchicalChunk>> {
+            Ok(vec![])
+        }
+
+        async fn delete_by_source(&self, _source_file: &str) -> Result<usize> {
+            Ok(0)
+        }
+
+        async fn stats(&self) -> Result<crate::store::StoreStats> {
+            Ok(crate::store::StoreStats::default())
+        }
+    }
+
+    /// Mock embedder for testing
+    struct MockEmbedder {
+        dimension: usize,
+    }
+
+    impl MockEmbedder {
+        fn new(dimension: usize) -> Self {
+            Self { dimension }
+        }
+    }
+
+    impl Embedder for MockEmbedder {
+        fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![1.0; self.dimension]).collect())
+        }
+
+        fn dimension(&self) -> usize {
+            self.dimension
+        }
+
+        fn name(&self) -> &str {
+            "mock"
+        }
+    }
 
     #[test]
-    fn test_cosine_similarity() {
+    fn test_cosine_similarity_identical_vectors() {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![1.0, 0.0, 0.0];
         assert!((cosine_similarity(&a, &b) - 1.0).abs() < 0.0001);
+    }
 
+    #[test]
+    fn test_cosine_similarity_orthogonal_vectors() {
+        let a = vec![1.0, 0.0, 0.0];
         let c = vec![0.0, 1.0, 0.0];
         assert!(cosine_similarity(&a, &c).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_cosine_similarity_zero_vectors() {
+        let a = vec![0.0, 0.0, 0.0];
+        let b = vec![1.0, 2.0, 3.0];
+        assert_eq!(cosine_similarity(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn test_cosine_similarity_different_lengths() {
+        let a = vec![1.0, 2.0, 3.0];
+        let b = vec![1.0, 2.0];
+        assert_eq!(cosine_similarity(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn test_cosine_similarity_negative_values() {
+        let a = vec![1.0, 0.0, 0.0];
+        let b = vec![-1.0, 0.0, 0.0];
+        assert!((cosine_similarity(&a, &b) + 1.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_sort_by_score_desc() {
+        let chunk1 = HierarchicalChunk::new(
+            "test1".to_string(),
+            ChunkLevel::H1,
+            None,
+            "path1".to_string(),
+            "test.md".to_string(),
+        );
+        let chunk2 = HierarchicalChunk::new(
+            "test2".to_string(),
+            ChunkLevel::H1,
+            None,
+            "path2".to_string(),
+            "test.md".to_string(),
+        );
+        let chunk3 = HierarchicalChunk::new(
+            "test3".to_string(),
+            ChunkLevel::H1,
+            None,
+            "path3".to_string(),
+            "test.md".to_string(),
+        );
+
+        let mut results = vec![
+            SearchResult {
+                chunk: chunk1,
+                score: 0.5,
+            },
+            SearchResult {
+                chunk: chunk2,
+                score: 0.9,
+            },
+            SearchResult {
+                chunk: chunk3,
+                score: 0.3,
+            },
+        ];
+
+        sort_by_score_desc(&mut results);
+
+        assert_eq!(results[0].score, 0.9);
+        assert_eq!(results[1].score, 0.5);
+        assert_eq!(results[2].score, 0.3);
+    }
+
+    #[test]
+    fn test_sort_by_score_desc_with_nan() {
+        let chunk1 = HierarchicalChunk::new(
+            "test1".to_string(),
+            ChunkLevel::H1,
+            None,
+            "path1".to_string(),
+            "test.md".to_string(),
+        );
+        let chunk2 = HierarchicalChunk::new(
+            "test2".to_string(),
+            ChunkLevel::H1,
+            None,
+            "path2".to_string(),
+            "test.md".to_string(),
+        );
+
+        let mut results = vec![
+            SearchResult {
+                chunk: chunk1,
+                score: f32::NAN,
+            },
+            SearchResult {
+                chunk: chunk2,
+                score: 0.5,
+            },
+        ];
+
+        sort_by_score_desc(&mut results);
+        // NaN should be handled without panic
+        assert!(results.len() == 2);
+    }
+
+    #[test]
+    fn test_search_config_default() {
+        let config = SearchConfig::default();
+        assert_eq!(config.top_k, 5);
+        assert_eq!(config.children_k, 3);
+        assert_eq!(config.max_depth, 3);
+        assert_eq!(config.min_score, 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_hierarchical_search_new() {
+        let store = MockStore::new();
+        let embedder = MockEmbedder::new(3);
+        let search = HierarchicalSearch::new(store, embedder);
+
+        assert_eq!(search.config.top_k, 5);
+        assert_eq!(search.embedder().dimension(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_hierarchical_search_with_config() {
+        let store = MockStore::new();
+        let embedder = MockEmbedder::new(3);
+        let config = SearchConfig {
+            top_k: 10,
+            children_k: 5,
+            max_depth: 2,
+            min_score: 0.5,
+        };
+
+        let search = HierarchicalSearch::new(store, embedder).with_config(config);
+
+        assert_eq!(search.config.top_k, 10);
+        assert_eq!(search.config.children_k, 5);
+        assert_eq!(search.config.max_depth, 2);
+        assert_eq!(search.config.min_score, 0.5);
+    }
+
+    #[tokio::test]
+    async fn test_embed_query() {
+        let store = MockStore::new();
+        let embedder = MockEmbedder::new(3);
+        let search = HierarchicalSearch::new(store, embedder);
+
+        let embedding = search.embed_query("test query").unwrap();
+        assert_eq!(embedding.len(), 3);
+        assert_eq!(embedding, vec![1.0, 1.0, 1.0]);
+    }
+
+    #[tokio::test]
+    async fn test_build_hierarchy_path_no_parent() {
+        let store = MockStore::new();
+        let embedder = MockEmbedder::new(3);
+        let search = HierarchicalSearch::new(store, embedder);
+
+        let chunk = HierarchicalChunk::new(
+            "test".to_string(),
+            ChunkLevel::H1,
+            None,
+            "path".to_string(),
+            "test.md".to_string(),
+        );
+
+        let path = search.build_hierarchy_path(&chunk).await.unwrap();
+        assert_eq!(path.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_build_hierarchy_path_with_parents() {
+        let store = MockStore::new();
+
+        let parent1 = HierarchicalChunk::new(
+            "parent1".to_string(),
+            ChunkLevel::H1,
+            None,
+            "parent1".to_string(),
+            "test.md".to_string(),
+        );
+        let parent1_id = parent1.id.clone();
+
+        let parent2 = HierarchicalChunk::new(
+            "parent2".to_string(),
+            ChunkLevel::H2,
+            Some(parent1_id.clone()),
+            "parent1 > parent2".to_string(),
+            "test.md".to_string(),
+        );
+        let parent2_id = parent2.id.clone();
+
+        let child = HierarchicalChunk::new(
+            "child".to_string(),
+            ChunkLevel::H3,
+            Some(parent2_id.clone()),
+            "parent1 > parent2 > child".to_string(),
+            "test.md".to_string(),
+        );
+
+        store.add_chunk(parent1.clone());
+        store.add_chunk(parent2.clone());
+
+        let embedder = MockEmbedder::new(3);
+        let search = HierarchicalSearch::new(store, embedder);
+
+        let path = search.build_hierarchy_path(&child).await.unwrap();
+        assert_eq!(path.len(), 2);
+        assert_eq!(path[0].id, parent1_id);
+        assert_eq!(path[1].id, parent2_id);
+    }
+
+    #[tokio::test]
+    async fn test_search_children_no_children() {
+        let store = MockStore::new();
+        let embedder = MockEmbedder::new(3);
+        let search = HierarchicalSearch::new(store, embedder);
+
+        let parent = HierarchicalChunk::new(
+            "parent".to_string(),
+            ChunkLevel::H1,
+            None,
+            "parent".to_string(),
+            "test.md".to_string(),
+        );
+
+        let query_embedding = vec![1.0, 0.0, 0.0];
+        let children = search
+            .search_children(&query_embedding, &parent)
+            .await
+            .unwrap();
+
+        assert_eq!(children.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_search_children_with_embeddings() {
+        let store = MockStore::new();
+
+        let parent = HierarchicalChunk::new(
+            "parent".to_string(),
+            ChunkLevel::H1,
+            None,
+            "parent".to_string(),
+            "test.md".to_string(),
+        );
+        let parent_id = parent.id.clone();
+
+        let child1 = HierarchicalChunk::new(
+            "child1".to_string(),
+            ChunkLevel::H2,
+            Some(parent_id.clone()),
+            "parent > child1".to_string(),
+            "test.md".to_string(),
+        )
+        .with_embedding(vec![1.0, 0.0, 0.0]);
+
+        let child2 = HierarchicalChunk::new(
+            "child2".to_string(),
+            ChunkLevel::H2,
+            Some(parent_id.clone()),
+            "parent > child2".to_string(),
+            "test.md".to_string(),
+        )
+        .with_embedding(vec![0.5, 0.5, 0.0]);
+
+        let child3 = HierarchicalChunk::new(
+            "child3".to_string(),
+            ChunkLevel::H2,
+            Some(parent_id.clone()),
+            "parent > child3".to_string(),
+            "test.md".to_string(),
+        )
+        .with_embedding(vec![0.0, 1.0, 0.0]);
+
+        store.add_chunk(parent.clone());
+        store.add_chunk(child1);
+        store.add_chunk(child2);
+        store.add_chunk(child3);
+
+        let embedder = MockEmbedder::new(3);
+        let config = SearchConfig {
+            children_k: 2,
+            ..Default::default()
+        };
+        let search = HierarchicalSearch::new(store, embedder).with_config(config);
+
+        let query_embedding = vec![1.0, 0.0, 0.0];
+        let children = search
+            .search_children(&query_embedding, &parent)
+            .await
+            .unwrap();
+
+        // Should return top 2 children sorted by score
+        assert_eq!(children.len(), 2);
+        assert!(children[0].score >= children[1].score);
+    }
+
+    #[tokio::test]
+    async fn test_search_children_without_embeddings() {
+        let store = MockStore::new();
+
+        let parent = HierarchicalChunk::new(
+            "parent".to_string(),
+            ChunkLevel::H1,
+            None,
+            "parent".to_string(),
+            "test.md".to_string(),
+        );
+        let parent_id = parent.id.clone();
+
+        // Child without embedding
+        let child = HierarchicalChunk::new(
+            "child".to_string(),
+            ChunkLevel::H2,
+            Some(parent_id.clone()),
+            "parent > child".to_string(),
+            "test.md".to_string(),
+        );
+
+        store.add_chunk(parent.clone());
+        store.add_chunk(child);
+
+        let embedder = MockEmbedder::new(3);
+        let search = HierarchicalSearch::new(store, embedder);
+
+        let query_embedding = vec![1.0, 0.0, 0.0];
+        let children = search
+            .search_children(&query_embedding, &parent)
+            .await
+            .unwrap();
+
+        // Should not include children without embeddings
+        assert_eq!(children.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_search_top_level_h1_only() {
+        let store = MockStore::new();
+
+        let h1_chunk = HierarchicalChunk::new(
+            "h1 content".to_string(),
+            ChunkLevel::H1,
+            None,
+            "h1".to_string(),
+            "test.md".to_string(),
+        )
+        .with_embedding(vec![1.0, 0.0, 0.0]);
+
+        let results = vec![SearchResult {
+            chunk: h1_chunk,
+            score: 0.95,
+        }];
+
+        store.set_search_results(results.clone());
+
+        let embedder = MockEmbedder::new(3);
+        let search = HierarchicalSearch::new(store, embedder);
+
+        let top_results = search.search_top_level("test query").await.unwrap();
+
+        assert_eq!(top_results.len(), 1);
+        assert_eq!(top_results[0].chunk.level, ChunkLevel::H1);
+    }
+
+    #[tokio::test]
+    async fn test_search_filters_by_min_score() {
+        let store = MockStore::new();
+
+        let chunk1 = HierarchicalChunk::new(
+            "high score".to_string(),
+            ChunkLevel::H1,
+            None,
+            "path1".to_string(),
+            "test.md".to_string(),
+        )
+        .with_embedding(vec![1.0, 0.0, 0.0]);
+
+        let chunk2 = HierarchicalChunk::new(
+            "low score".to_string(),
+            ChunkLevel::H1,
+            None,
+            "path2".to_string(),
+            "test.md".to_string(),
+        )
+        .with_embedding(vec![0.0, 1.0, 0.0]);
+
+        let results = vec![
+            SearchResult {
+                chunk: chunk1,
+                score: 0.8,
+            },
+            SearchResult {
+                chunk: chunk2,
+                score: 0.3,
+            },
+        ];
+
+        store.set_search_results(results);
+
+        let embedder = MockEmbedder::new(3);
+        let config = SearchConfig {
+            min_score: 0.5,
+            ..Default::default()
+        };
+        let search = HierarchicalSearch::new(store, embedder).with_config(config);
+
+        let search_results = search.search("test query").await.unwrap();
+
+        // Only chunk1 should pass the min_score filter
+        assert_eq!(search_results.len(), 1);
+        assert_eq!(search_results[0].score, 0.8);
+    }
+
+    #[tokio::test]
+    async fn test_search_subtree_empty() {
+        let store = MockStore::new();
+        let embedder = MockEmbedder::new(3);
+        let search = HierarchicalSearch::new(store, embedder);
+
+        let results = search
+            .search_subtree("test query", "nonexistent")
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_search_subtree_with_children() {
+        let store = MockStore::new();
+
+        let parent = HierarchicalChunk::new(
+            "parent".to_string(),
+            ChunkLevel::H1,
+            None,
+            "parent".to_string(),
+            "test.md".to_string(),
+        );
+        let parent_id = parent.id.clone();
+
+        let child1 = HierarchicalChunk::new(
+            "child1".to_string(),
+            ChunkLevel::H2,
+            Some(parent_id.clone()),
+            "parent > child1".to_string(),
+            "test.md".to_string(),
+        )
+        .with_embedding(vec![1.0, 0.0, 0.0]);
+
+        let child2 = HierarchicalChunk::new(
+            "child2".to_string(),
+            ChunkLevel::H2,
+            Some(parent_id.clone()),
+            "parent > child2".to_string(),
+            "test.md".to_string(),
+        )
+        .with_embedding(vec![0.0, 1.0, 0.0]);
+
+        store.add_chunk(parent.clone());
+        store.add_chunk(child1);
+        store.add_chunk(child2);
+
+        let embedder = MockEmbedder::new(3);
+        let config = SearchConfig {
+            top_k: 10,
+            min_score: 0.0,
+            ..Default::default()
+        };
+        let search = HierarchicalSearch::new(store, embedder).with_config(config);
+
+        let results = search
+            .search_subtree("test query", &parent_id)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(results[0].score >= results[1].score);
+    }
+
+    #[tokio::test]
+    async fn test_search_subtree_respects_min_score() {
+        let store = MockStore::new();
+
+        let parent = HierarchicalChunk::new(
+            "parent".to_string(),
+            ChunkLevel::H1,
+            None,
+            "parent".to_string(),
+            "test.md".to_string(),
+        );
+        let parent_id = parent.id.clone();
+
+        let child = HierarchicalChunk::new(
+            "child".to_string(),
+            ChunkLevel::H2,
+            Some(parent_id.clone()),
+            "parent > child".to_string(),
+            "test.md".to_string(),
+        )
+        .with_embedding(vec![0.0, 1.0, 0.0]);
+
+        store.add_chunk(parent.clone());
+        store.add_chunk(child);
+
+        let embedder = MockEmbedder::new(3);
+        let config = SearchConfig {
+            min_score: 0.9, // Very high threshold
+            ..Default::default()
+        };
+        let search = HierarchicalSearch::new(store, embedder).with_config(config);
+
+        let results = search
+            .search_subtree("test query", &parent_id)
+            .await
+            .unwrap();
+
+        // Child should be filtered out by high min_score
+        assert_eq!(results.len(), 0);
     }
 }

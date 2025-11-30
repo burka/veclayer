@@ -37,3 +37,11 @@ pub trait DocumentParser: Send + Sync {
 
 /// Box type for dynamic dispatch of parsers
 pub type BoxedParser = Box<dyn DocumentParser>;
+
+// Implement DocumentParser for Arc<T> where T: DocumentParser
+crate::arc_impl!(DocumentParser {
+    fn parse(&self, content: &str, source_file: &str) -> Result<Vec<HierarchicalChunk>>;
+    fn parse_file(&self, path: &Path) -> Result<Vec<HierarchicalChunk>>;
+    fn supported_extensions(&self) -> &[&str];
+    fn can_parse(&self, path: &Path) -> bool;
+});

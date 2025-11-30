@@ -64,49 +64,12 @@ pub struct StoreStats {
 pub type BoxedStore = Box<dyn VectorStore>;
 
 // Implement VectorStore for Arc<T> where T: VectorStore
-impl<T: VectorStore> VectorStore for std::sync::Arc<T> {
-    fn insert_chunks(
-        &self,
-        chunks: Vec<HierarchicalChunk>,
-    ) -> impl Future<Output = Result<()>> + Send {
-        (**self).insert_chunks(chunks)
-    }
-
-    fn search(
-        &self,
-        query_embedding: &[f32],
-        limit: usize,
-        level_filter: Option<ChunkLevel>,
-    ) -> impl Future<Output = Result<Vec<SearchResult>>> + Send {
-        (**self).search(query_embedding, limit, level_filter)
-    }
-
-    fn get_children(
-        &self,
-        parent_id: &str,
-    ) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send {
-        (**self).get_children(parent_id)
-    }
-
-    fn get_by_id(
-        &self,
-        id: &str,
-    ) -> impl Future<Output = Result<Option<HierarchicalChunk>>> + Send {
-        (**self).get_by_id(id)
-    }
-
-    fn get_by_source(
-        &self,
-        source_file: &str,
-    ) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send {
-        (**self).get_by_source(source_file)
-    }
-
-    fn delete_by_source(&self, source_file: &str) -> impl Future<Output = Result<usize>> + Send {
-        (**self).delete_by_source(source_file)
-    }
-
-    fn stats(&self) -> impl Future<Output = Result<StoreStats>> + Send {
-        (**self).stats()
-    }
-}
+crate::arc_impl!(VectorStore {
+    fn insert_chunks(&self, chunks: Vec<HierarchicalChunk>) -> impl Future<Output = Result<()>> + Send;
+    fn search(&self, query_embedding: &[f32], limit: usize, level_filter: Option<ChunkLevel>) -> impl Future<Output = Result<Vec<SearchResult>>> + Send;
+    fn get_children(&self, parent_id: &str) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
+    fn get_by_id(&self, id: &str) -> impl Future<Output = Result<Option<HierarchicalChunk>>> + Send;
+    fn get_by_source(&self, source_file: &str) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
+    fn delete_by_source(&self, source_file: &str) -> impl Future<Output = Result<usize>> + Send;
+    fn stats(&self) -> impl Future<Output = Result<StoreStats>> + Send;
+});

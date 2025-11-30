@@ -269,4 +269,164 @@ mod tests {
         assert!(probs[0] > probs[1]);
         assert!(probs[1] > probs[2]);
     }
+
+    #[test]
+    fn test_cluster_empty_input() {
+        let clusterer = SoftClusterer::new();
+        let result = clusterer.cluster(&[]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_cluster_with_min_membership_filter() {
+        let clusterer = SoftClusterer::new()
+            .with_min_membership(0.3)
+            .with_cluster_range(3, 3);
+
+        // Create three distinct clusters
+        let embeddings = vec![
+            vec![0.0, 0.0, 0.0],
+            vec![0.1, 0.0, 0.0],
+            vec![5.0, 5.0, 5.0],
+            vec![5.1, 5.0, 5.0],
+            vec![10.0, 10.0, 10.0],
+            vec![10.1, 10.0, 10.0],
+        ];
+
+        let assignments = clusterer.cluster(&embeddings).unwrap();
+        assert_eq!(assignments.len(), 6);
+
+        // With high min_membership threshold, some low-probability memberships should be filtered
+        for assignment in &assignments {
+            // Should have at least one membership
+            assert!(!assignment.memberships.is_empty());
+            // All remaining memberships should meet the threshold
+            for membership in &assignment.memberships {
+                assert!(
+                    membership.probability >= 0.3,
+                    "Membership probability {} should be >= 0.3",
+                    membership.probability
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_optimal_k_small_dataset() {
+        let clusterer = SoftClusterer::new().with_cluster_range(2, 5);
+
+        // Small dataset with 4 items - should not try to create more clusters than makes sense
+        let embeddings = vec![
+            vec![0.0, 0.0],
+            vec![0.1, 0.1],
+            vec![5.0, 5.0],
+            vec![5.1, 5.1],
+        ];
+
+        let assignments = clusterer.cluster(&embeddings).unwrap();
+        assert_eq!(assignments.len(), 4);
+
+        // Should successfully cluster without errors
+        for assignment in &assignments {
+            assert!(!assignment.memberships.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_cluster_range_bounds() {
+        let clusterer = SoftClusterer::new().with_cluster_range(3, 5);
+        assert_eq!(clusterer.min_clusters, 3);
+        assert_eq!(clusterer.max_clusters, 5);
+
+        // Create dataset with clear clusters
+        let embeddings = vec![
+            vec![0.0, 0.0],
+            vec![0.1, 0.1],
+            vec![5.0, 5.0],
+            vec![5.1, 5.1],
+            vec![10.0, 10.0],
+            vec![10.1, 10.1],
+        ];
+
+        let assignments = clusterer.cluster(&embeddings).unwrap();
+        assert_eq!(assignments.len(), 6);
+
+        // Verify clustering respects the range
+        for assignment in &assignments {
+            assert!(!assignment.memberships.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_distances_to_memberships_zero_sum() {
+        let clusterer = SoftClusterer::new();
+
+        // Very large equal distances should give equal memberships
+        let probs = clusterer.distances_to_memberships(&[1000.0, 1000.0]);
+        assert!((probs[0] - 0.5).abs() < 0.01);
+        assert!((probs[1] - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_compute_inertia() {
+        let clusterer = SoftClusterer::new();
+
+        // Simple case: 2 points and 2 centroids
+        let data = Array2::from_shape_vec((2, 2), vec![0.0, 0.0, 1.0, 1.0]).unwrap();
+        let centroids = Array2::from_shape_vec((2, 2), vec![0.0, 0.0, 1.0, 1.0]).unwrap();
+
+        let inertia = clusterer.compute_inertia(&data, &centroids);
+        // Each point is at its centroid, so inertia should be 0
+        assert!(inertia < 0.01, "Inertia should be near 0, got {}", inertia);
+    }
+
+    #[test]
+    fn test_default_trait() {
+        let clusterer = SoftClusterer::default();
+        assert_eq!(clusterer.min_clusters, 2);
+        assert_eq!(clusterer.max_clusters, 10);
+        assert!((clusterer.min_membership - 0.1).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_cluster_two_items() {
+        let clusterer = SoftClusterer::new();
+        let embeddings = vec![vec![0.0, 0.0, 0.0], vec![10.0, 10.0, 10.0]];
+
+        let assignments = clusterer.cluster(&embeddings).unwrap();
+        assert_eq!(assignments.len(), 2);
+
+        // Each should have memberships
+        for assignment in &assignments {
+            assert!(!assignment.memberships.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_cluster_high_dimensional() {
+        let clusterer = SoftClusterer::new().with_cluster_range(2, 3);
+
+        // Test with high-dimensional embeddings (e.g., 384 dimensions like real embeddings)
+        let dim = 384;
+        let mut embeddings = Vec::new();
+
+        // Create two distinct clusters in high-dimensional space
+        for i in 0..3 {
+            let mut vec = vec![0.0; dim];
+            vec[0] = i as f32 * 0.1;
+            embeddings.push(vec);
+        }
+        for i in 0..3 {
+            let mut vec = vec![0.0; dim];
+            vec[0] = 10.0 + i as f32 * 0.1;
+            embeddings.push(vec);
+        }
+
+        let assignments = clusterer.cluster(&embeddings).unwrap();
+        assert_eq!(assignments.len(), 6);
+
+        for assignment in &assignments {
+            assert!(!assignment.memberships.is_empty());
+        }
+    }
 }
