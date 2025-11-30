@@ -1,5 +1,6 @@
 pub mod chunk;
 pub mod cluster;
+pub mod commands;
 pub mod config;
 pub mod embedder;
 pub mod error;
