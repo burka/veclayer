@@ -163,47 +163,27 @@ impl LanceStore {
         .map_err(|e| Error::store(format!("Failed to create record batch: {}", e)))
     }
 
+    fn extract_column<'a, T: 'static>(
+        batch: &'a RecordBatch,
+        index: usize,
+        name: &str,
+    ) -> Result<&'a T> {
+        batch
+            .column(index)
+            .as_any()
+            .downcast_ref::<T>()
+            .ok_or_else(|| Error::store(format!("Invalid {} column", name)))
+    }
+
     fn batch_to_chunks(&self, batch: &RecordBatch) -> Result<Vec<HierarchicalChunk>> {
-        let ids = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| Error::store("Invalid id column"))?;
-        let contents = batch
-            .column(1)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| Error::store("Invalid content column"))?;
-        let embeddings = batch
-            .column(2)
-            .as_any()
-            .downcast_ref::<FixedSizeListArray>()
-            .ok_or_else(|| Error::store("Invalid embedding column"))?;
-        let levels = batch
-            .column(3)
-            .as_any()
-            .downcast_ref::<UInt8Array>()
-            .ok_or_else(|| Error::store("Invalid level column"))?;
-        let parent_ids = batch
-            .column(4)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| Error::store("Invalid parent_id column"))?;
-        let paths = batch
-            .column(5)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| Error::store("Invalid path column"))?;
-        let source_files = batch
-            .column(6)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| Error::store("Invalid source_file column"))?;
-        let headings = batch
-            .column(7)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| Error::store("Invalid heading column"))?;
+        let ids = Self::extract_column::<StringArray>(batch, 0, "id")?;
+        let contents = Self::extract_column::<StringArray>(batch, 1, "content")?;
+        let embeddings = Self::extract_column::<FixedSizeListArray>(batch, 2, "embedding")?;
+        let levels = Self::extract_column::<UInt8Array>(batch, 3, "level")?;
+        let parent_ids = Self::extract_column::<StringArray>(batch, 4, "parent_id")?;
+        let paths = Self::extract_column::<StringArray>(batch, 5, "path")?;
+        let source_files = Self::extract_column::<StringArray>(batch, 6, "source_file")?;
+        let headings = Self::extract_column::<StringArray>(batch, 7, "heading")?;
 
         // New RAPTOR fields (optional for backwards compatibility)
         let cluster_memberships_col = batch
@@ -454,17 +434,8 @@ impl VectorStore for LanceStore {
         for batch in results {
             total_chunks += batch.num_rows();
 
-            let levels = batch
-                .column(3)
-                .as_any()
-                .downcast_ref::<UInt8Array>()
-                .ok_or_else(|| Error::store("Invalid level column"))?;
-
-            let sources = batch
-                .column(6)
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or_else(|| Error::store("Invalid source_file column"))?;
+            let levels = Self::extract_column::<UInt8Array>(&batch, 3, "level")?;
+            let sources = Self::extract_column::<StringArray>(&batch, 6, "source_file")?;
 
             for i in 0..batch.num_rows() {
                 let level = levels.value(i);
@@ -482,5 +453,332 @@ impl VectorStore for LanceStore {
             chunks_by_level,
             source_files,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    async fn create_test_store() -> (LanceStore, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let store = LanceStore::open(temp_dir.path(), 384).await.unwrap();
+        (store, temp_dir)
+    }
+
+    fn create_test_chunk(id: &str, content: &str, level: ChunkLevel) -> HierarchicalChunk {
+        let mut chunk = HierarchicalChunk::new(
+            content.to_string(),
+            level,
+            None,
+            "test".to_string(),
+            "test.md".to_string(),
+        );
+        chunk.id = id.to_string();
+        chunk.embedding = Some(vec![0.1; 384]);
+        chunk
+    }
+
+    fn create_test_chunk_with_parent(
+        id: &str,
+        content: &str,
+        level: ChunkLevel,
+        parent_id: &str,
+    ) -> HierarchicalChunk {
+        let mut chunk = HierarchicalChunk::new(
+            content.to_string(),
+            level,
+            Some(parent_id.to_string()),
+            format!("parent > {}", id),
+            "test.md".to_string(),
+        );
+        chunk.id = id.to_string();
+        chunk.embedding = Some(vec![0.2; 384]);
+        chunk
+    }
+
+    #[tokio::test]
+    async fn test_insert_and_get_by_id() {
+        let (store, _temp) = create_test_store().await;
+
+        let chunk = create_test_chunk("test-1", "Test content", ChunkLevel::H1);
+        store.insert_chunks(vec![chunk.clone()]).await.unwrap();
+
+        let retrieved = store.get_by_id("test-1").await.unwrap();
+        assert!(retrieved.is_some());
+
+        let retrieved_chunk = retrieved.unwrap();
+        assert_eq!(retrieved_chunk.id, "test-1");
+        assert_eq!(retrieved_chunk.content, "Test content");
+        assert_eq!(retrieved_chunk.level, ChunkLevel::H1);
+        assert!(retrieved_chunk.embedding.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_get_by_id_not_found() {
+        let (store, _temp) = create_test_store().await;
+
+        let result = store.get_by_id("nonexistent").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_insert_empty_chunks() {
+        let (store, _temp) = create_test_store().await;
+
+        let result = store.insert_chunks(vec![]).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_search() {
+        let (store, _temp) = create_test_store().await;
+
+        let chunk1 = create_test_chunk("search-1", "First chunk", ChunkLevel::H1);
+        let chunk2 = create_test_chunk("search-2", "Second chunk", ChunkLevel::H2);
+        let chunk3 = create_test_chunk("search-3", "Third chunk", ChunkLevel::H1);
+
+        store
+            .insert_chunks(vec![chunk1, chunk2, chunk3])
+            .await
+            .unwrap();
+
+        let query_embedding = vec![0.1; 384];
+        let results = store.search(&query_embedding, 2, None).await.unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(results[0].score >= 0.0 && results[0].score <= 1.0);
+    }
+
+    #[tokio::test]
+    async fn test_search_with_level_filter() {
+        let (store, _temp) = create_test_store().await;
+
+        let chunk1 = create_test_chunk("filter-1", "H1 chunk", ChunkLevel::H1);
+        let chunk2 = create_test_chunk("filter-2", "H2 chunk", ChunkLevel::H2);
+        let chunk3 = create_test_chunk("filter-3", "Another H1", ChunkLevel::H1);
+
+        store
+            .insert_chunks(vec![chunk1, chunk2, chunk3])
+            .await
+            .unwrap();
+
+        let query_embedding = vec![0.1; 384];
+        let results = store
+            .search(&query_embedding, 10, Some(ChunkLevel::H1))
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.chunk.level == ChunkLevel::H1));
+    }
+
+    #[tokio::test]
+    async fn test_get_children() {
+        let (store, _temp) = create_test_store().await;
+
+        let parent = create_test_chunk("parent-1", "Parent chunk", ChunkLevel::H1);
+        let child1 =
+            create_test_chunk_with_parent("child-1", "Child 1", ChunkLevel::H2, "parent-1");
+        let child2 =
+            create_test_chunk_with_parent("child-2", "Child 2", ChunkLevel::H2, "parent-1");
+        let unrelated = create_test_chunk("unrelated", "Unrelated", ChunkLevel::H1);
+
+        store
+            .insert_chunks(vec![parent, child1, child2, unrelated])
+            .await
+            .unwrap();
+
+        let children = store.get_children("parent-1").await.unwrap();
+
+        assert_eq!(children.len(), 2);
+        assert!(children
+            .iter()
+            .all(|c| c.parent_id.as_deref() == Some("parent-1")));
+        assert!(children.iter().any(|c| c.id == "child-1"));
+        assert!(children.iter().any(|c| c.id == "child-2"));
+    }
+
+    #[tokio::test]
+    async fn test_get_children_no_children() {
+        let (store, _temp) = create_test_store().await;
+
+        let parent = create_test_chunk("lonely-parent", "Lonely", ChunkLevel::H1);
+        store.insert_chunks(vec![parent]).await.unwrap();
+
+        let children = store.get_children("lonely-parent").await.unwrap();
+        assert_eq!(children.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_by_source() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk1 = create_test_chunk("src-1", "From file1", ChunkLevel::H1);
+        chunk1.source_file = "file1.md".to_string();
+
+        let mut chunk2 = create_test_chunk("src-2", "Also file1", ChunkLevel::H2);
+        chunk2.source_file = "file1.md".to_string();
+
+        let mut chunk3 = create_test_chunk("src-3", "From file2", ChunkLevel::H1);
+        chunk3.source_file = "file2.md".to_string();
+
+        store
+            .insert_chunks(vec![chunk1, chunk2, chunk3])
+            .await
+            .unwrap();
+
+        let from_file1 = store.get_by_source("file1.md").await.unwrap();
+        assert_eq!(from_file1.len(), 2);
+        assert!(from_file1.iter().all(|c| c.source_file == "file1.md"));
+
+        let from_file2 = store.get_by_source("file2.md").await.unwrap();
+        assert_eq!(from_file2.len(), 1);
+        assert_eq!(from_file2[0].id, "src-3");
+    }
+
+    #[tokio::test]
+    async fn test_delete_by_source() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk1 = create_test_chunk("del-1", "Delete me", ChunkLevel::H1);
+        chunk1.source_file = "delete.md".to_string();
+
+        let mut chunk2 = create_test_chunk("del-2", "Keep me", ChunkLevel::H1);
+        chunk2.source_file = "keep.md".to_string();
+
+        store.insert_chunks(vec![chunk1, chunk2]).await.unwrap();
+
+        let deleted_count = store.delete_by_source("delete.md").await.unwrap();
+        assert_eq!(deleted_count, 1);
+
+        let remaining = store.get_by_source("delete.md").await.unwrap();
+        assert_eq!(remaining.len(), 0);
+
+        let kept = store.get_by_source("keep.md").await.unwrap();
+        assert_eq!(kept.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_delete_nonexistent_source() {
+        let (store, _temp) = create_test_store().await;
+
+        let deleted_count = store.delete_by_source("nonexistent.md").await.unwrap();
+        assert_eq!(deleted_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_stats() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk1 = create_test_chunk("stats-1", "H1 chunk", ChunkLevel::H1);
+        chunk1.source_file = "file1.md".to_string();
+
+        let mut chunk2 = create_test_chunk("stats-2", "H2 chunk", ChunkLevel::H2);
+        chunk2.source_file = "file1.md".to_string();
+
+        let mut chunk3 = create_test_chunk("stats-3", "Another H1", ChunkLevel::H1);
+        chunk3.source_file = "file2.md".to_string();
+
+        store
+            .insert_chunks(vec![chunk1, chunk2, chunk3])
+            .await
+            .unwrap();
+
+        let stats = store.stats().await.unwrap();
+
+        assert_eq!(stats.total_chunks, 3);
+        assert_eq!(*stats.chunks_by_level.get(&1).unwrap(), 2);
+        assert_eq!(*stats.chunks_by_level.get(&2).unwrap(), 1);
+        assert_eq!(stats.source_files.len(), 2);
+        assert!(stats.source_files.contains(&"file1.md".to_string()));
+        assert!(stats.source_files.contains(&"file2.md".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_stats_empty_store() {
+        let (store, _temp) = create_test_store().await;
+
+        let stats = store.stats().await.unwrap();
+        assert_eq!(stats.total_chunks, 0);
+        assert_eq!(stats.chunks_by_level.len(), 0);
+        assert_eq!(stats.source_files.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_cluster_fields_roundtrip() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk = create_test_chunk("cluster-1", "Cluster test", ChunkLevel::H1);
+        chunk.cluster_memberships = vec![
+            ClusterMembership::new("cluster-a", 0.8),
+            ClusterMembership::new("cluster-b", 0.6),
+        ];
+        chunk.is_summary = true;
+        chunk.summarizes = vec!["chunk-1".to_string(), "chunk-2".to_string()];
+
+        store.insert_chunks(vec![chunk.clone()]).await.unwrap();
+
+        let retrieved = store.get_by_id("cluster-1").await.unwrap().unwrap();
+
+        assert_eq!(retrieved.cluster_memberships.len(), 2);
+        assert_eq!(retrieved.cluster_memberships[0].cluster_id, "cluster-a");
+        assert!((retrieved.cluster_memberships[0].probability - 0.8).abs() < 0.01);
+        assert_eq!(retrieved.cluster_memberships[1].cluster_id, "cluster-b");
+        assert!((retrieved.cluster_memberships[1].probability - 0.6).abs() < 0.01);
+        assert!(retrieved.is_summary);
+        assert_eq!(retrieved.summarizes.len(), 2);
+        assert!(retrieved.summarizes.contains(&"chunk-1".to_string()));
+        assert!(retrieved.summarizes.contains(&"chunk-2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_cluster_fields_empty() {
+        let (store, _temp) = create_test_store().await;
+
+        let chunk = create_test_chunk("cluster-2", "No clusters", ChunkLevel::H1);
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let retrieved = store.get_by_id("cluster-2").await.unwrap().unwrap();
+
+        assert_eq!(retrieved.cluster_memberships.len(), 0);
+        assert!(!retrieved.is_summary);
+        assert_eq!(retrieved.summarizes.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_sql_injection_protection() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk = create_test_chunk("injection-test", "Test", ChunkLevel::H1);
+        chunk.source_file = "'; DROP TABLE chunks; --".to_string();
+
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let result = store.get_by_source("'; DROP TABLE chunks; --").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_embedding_dimension_validation() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk = create_test_chunk("dim-test", "Wrong dimension", ChunkLevel::H1);
+        chunk.embedding = Some(vec![0.1; 256]); // Wrong dimension
+
+        let result = store.insert_chunks(vec![chunk]).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_missing_embedding() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk = create_test_chunk("no-emb", "No embedding", ChunkLevel::H1);
+        chunk.embedding = None;
+
+        let result = store.insert_chunks(vec![chunk]).await;
+        assert!(result.is_err());
     }
 }
