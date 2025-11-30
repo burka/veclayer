@@ -48,5 +48,13 @@ uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
 schemars = "0.8"
 
+# HTTP client (for Ollama)
+reqwest = { version = "0.12", features = ["json"] }
+
+# Clustering
+linfa = "0.7"
+linfa-clustering = "0.7"
+ndarray = "0.15"  # Must match linfa's ndarray version
+
 [dev-dependencies]
 tempfile = "3"

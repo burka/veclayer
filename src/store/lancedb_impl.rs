@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{
-    Array, FixedSizeListArray, Float32Array, RecordBatch, RecordBatchIterator,
+    Array, BooleanArray, FixedSizeListArray, Float32Array, RecordBatch, RecordBatchIterator,
     StringArray, UInt8Array,
 };
 use arrow_schema::{DataType, Field, Schema};
@@ -12,7 +12,7 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::{connect, Connection, Table};
 
 use super::{SearchResult, StoreStats, VectorStore};
-use crate::{ChunkLevel, Error, HierarchicalChunk, Result};
+use crate::{ChunkLevel, ClusterMembership, Error, HierarchicalChunk, Result};
 
 const TABLE_NAME: &str = "chunks";
 
@@ -63,6 +63,10 @@ impl LanceStore {
             Field::new("path", DataType::Utf8, false),
             Field::new("source_file", DataType::Utf8, false),
             Field::new("heading", DataType::Utf8, true),
+            // RAPTOR-style clustering fields
+            Field::new("cluster_memberships", DataType::Utf8, false), // JSON array
+            Field::new("is_summary", DataType::Boolean, false),
+            Field::new("summarizes", DataType::Utf8, false), // JSON array of chunk IDs
         ]))
     }
 
@@ -100,11 +104,23 @@ impl LanceStore {
         let ids: Vec<&str> = chunks.iter().map(|c| c.id.as_str()).collect();
         let contents: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
         let levels: Vec<u8> = chunks.iter().map(|c| c.level.depth()).collect();
-        let parent_ids: Vec<Option<&str>> =
-            chunks.iter().map(|c| c.parent_id.as_deref()).collect();
+        let parent_ids: Vec<Option<&str>> = chunks.iter().map(|c| c.parent_id.as_deref()).collect();
         let paths: Vec<&str> = chunks.iter().map(|c| c.path.as_str()).collect();
         let source_files: Vec<&str> = chunks.iter().map(|c| c.source_file.as_str()).collect();
         let headings: Vec<Option<&str>> = chunks.iter().map(|c| c.heading.as_deref()).collect();
+
+        // Serialize cluster memberships and summarizes as JSON
+        let cluster_memberships: Vec<String> = chunks
+            .iter()
+            .map(|c| {
+                serde_json::to_string(&c.cluster_memberships).unwrap_or_else(|_| "[]".to_string())
+            })
+            .collect();
+        let is_summary: Vec<bool> = chunks.iter().map(|c| c.is_summary).collect();
+        let summarizes: Vec<String> = chunks
+            .iter()
+            .map(|c| serde_json::to_string(&c.summarizes).unwrap_or_else(|_| "[]".to_string()))
+            .collect();
 
         // Build embeddings as FixedSizeList
         let mut embedding_values: Vec<f32> = Vec::with_capacity(chunks.len() * self.dimension);
@@ -125,12 +141,8 @@ impl LanceStore {
 
         let values = Float32Array::from(embedding_values);
         let field = Arc::new(Field::new("item", DataType::Float32, true));
-        let embedding_array = FixedSizeListArray::new(
-            field,
-            self.dimension as i32,
-            Arc::new(values),
-            None,
-        );
+        let embedding_array =
+            FixedSizeListArray::new(field, self.dimension as i32, Arc::new(values), None);
 
         RecordBatch::try_new(
             self.schema(),
@@ -143,6 +155,9 @@ impl LanceStore {
                 Arc::new(StringArray::from(paths)),
                 Arc::new(StringArray::from(source_files)),
                 Arc::new(StringArray::from(headings)),
+                Arc::new(StringArray::from(cluster_memberships)),
+                Arc::new(BooleanArray::from(is_summary)),
+                Arc::new(StringArray::from(summarizes)),
             ],
         )
         .map_err(|e| Error::store(format!("Failed to create record batch: {}", e)))
@@ -190,6 +205,17 @@ impl LanceStore {
             .downcast_ref::<StringArray>()
             .ok_or_else(|| Error::store("Invalid heading column"))?;
 
+        // New RAPTOR fields (optional for backwards compatibility)
+        let cluster_memberships_col = batch
+            .column_by_name("cluster_memberships")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let is_summary_col = batch
+            .column_by_name("is_summary")
+            .and_then(|c| c.as_any().downcast_ref::<BooleanArray>());
+        let summarizes_col = batch
+            .column_by_name("summarizes")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+
         let mut chunks = Vec::with_capacity(batch.num_rows());
 
         for i in 0..batch.num_rows() {
@@ -201,6 +227,33 @@ impl LanceStore {
             let embedding: Vec<f32> = (0..embedding_values.len())
                 .map(|j| embedding_values.value(j))
                 .collect();
+
+            // Parse cluster memberships from JSON
+            let cluster_memberships: Vec<ClusterMembership> = cluster_memberships_col
+                .and_then(|col| {
+                    if col.is_null(i) {
+                        None
+                    } else {
+                        serde_json::from_str(col.value(i)).ok()
+                    }
+                })
+                .unwrap_or_default();
+
+            // Parse is_summary
+            let is_summary = is_summary_col
+                .map(|col| !col.is_null(i) && col.value(i))
+                .unwrap_or(false);
+
+            // Parse summarizes from JSON
+            let summarizes: Vec<String> = summarizes_col
+                .and_then(|col| {
+                    if col.is_null(i) {
+                        None
+                    } else {
+                        serde_json::from_str(col.value(i)).ok()
+                    }
+                })
+                .unwrap_or_default();
 
             chunks.push(HierarchicalChunk {
                 id: ids.value(i).to_string(),
@@ -221,6 +274,9 @@ impl LanceStore {
                 },
                 start_offset: 0,
                 end_offset: 0,
+                cluster_memberships,
+                is_summary,
+                summarizes,
             });
         }
 

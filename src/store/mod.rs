@@ -36,7 +36,8 @@ pub trait VectorStore: Send + Sync {
     ) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
 
     /// Get a chunk by its ID.
-    fn get_by_id(&self, id: &str) -> impl Future<Output = Result<Option<HierarchicalChunk>>> + Send;
+    fn get_by_id(&self, id: &str)
+        -> impl Future<Output = Result<Option<HierarchicalChunk>>> + Send;
 
     /// Get all chunks from a source file.
     fn get_by_source(
@@ -87,7 +88,10 @@ impl<T: VectorStore> VectorStore for std::sync::Arc<T> {
         (**self).get_children(parent_id)
     }
 
-    fn get_by_id(&self, id: &str) -> impl Future<Output = Result<Option<HierarchicalChunk>>> + Send {
+    fn get_by_id(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = Result<Option<HierarchicalChunk>>> + Send {
         (**self).get_by_id(id)
     }
 

@@ -27,20 +27,16 @@ pub struct Config {
 
 #[derive(Debug, Clone)]
 pub enum EmbedderConfig {
-    FastEmbed {
-        model: String,
-    },
-    Ollama {
-        model: String,
-        base_url: String,
-    },
+    FastEmbed { model: String },
+    Ollama { model: String, base_url: String },
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             data_dir: PathBuf::from(
-                std::env::var("VECLAYER_DATA_DIR").unwrap_or_else(|_| "./veclayer-data".to_string()),
+                std::env::var("VECLAYER_DATA_DIR")
+                    .unwrap_or_else(|_| "./veclayer-data".to_string()),
             ),
             embedder: EmbedderConfig::default(),
             read_only: std::env::var("VECLAYER_READ_ONLY")
@@ -65,7 +61,8 @@ impl Default for Config {
 
 impl Default for EmbedderConfig {
     fn default() -> Self {
-        let embedder = std::env::var("VECLAYER_EMBEDDER").unwrap_or_else(|_| "fastembed".to_string());
+        let embedder =
+            std::env::var("VECLAYER_EMBEDDER").unwrap_or_else(|_| "fastembed".to_string());
 
         match embedder.as_str() {
             "ollama" => EmbedderConfig::Ollama {

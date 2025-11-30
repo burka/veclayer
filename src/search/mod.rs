@@ -119,7 +119,9 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
             let hierarchy_path = self.build_hierarchy_path(&result.chunk).await?;
 
             // Get relevant children
-            let relevant_children = self.search_children(&query_embedding, &result.chunk).await?;
+            let relevant_children = self
+                .search_children(&query_embedding, &result.chunk)
+                .await?;
 
             hierarchical_results.push(HierarchicalSearchResult {
                 chunk: result.chunk,
@@ -152,12 +154,19 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
         for child in children {
             if let Some(ref embedding) = child.embedding {
                 let score = cosine_similarity(&query_embedding, embedding);
-                scored_children.push(SearchResult { chunk: child, score });
+                scored_children.push(SearchResult {
+                    chunk: child,
+                    score,
+                });
             }
         }
 
         // Sort by score descending
-        scored_children.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored_children.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Take top results
         let top_children: Vec<_> = scored_children
@@ -169,7 +178,9 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
         let mut results = Vec::new();
         for result in top_children {
             let hierarchy_path = self.build_hierarchy_path(&result.chunk).await?;
-            let relevant_children = self.search_children(&query_embedding, &result.chunk).await?;
+            let relevant_children = self
+                .search_children(&query_embedding, &result.chunk)
+                .await?;
 
             results.push(HierarchicalSearchResult {
                 chunk: result.chunk,
@@ -183,7 +194,10 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
     }
 
     /// Build the path from root to the given chunk
-    async fn build_hierarchy_path(&self, chunk: &HierarchicalChunk) -> Result<Vec<HierarchicalChunk>> {
+    async fn build_hierarchy_path(
+        &self,
+        chunk: &HierarchicalChunk,
+    ) -> Result<Vec<HierarchicalChunk>> {
         let mut path = Vec::new();
         let mut current_id = chunk.parent_id.clone();
 
@@ -218,13 +232,20 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
             .filter_map(|child| {
                 child.embedding.as_ref().map(|emb| {
                     let score = cosine_similarity(query_embedding, emb);
-                    SearchResult { chunk: child.clone(), score }
+                    SearchResult {
+                        chunk: child.clone(),
+                        score,
+                    }
                 })
             })
             .collect();
 
         // Sort by score descending
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Take top children_k
         Ok(scored.into_iter().take(self.config.children_k).collect())

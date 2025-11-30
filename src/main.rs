@@ -4,10 +4,12 @@ use clap::{Parser, Subcommand};
 use tracing::{info, Level};
 use tracing_subscriber::EnvFilter;
 
+use veclayer::cluster::ClusterPipeline;
 use veclayer::embedder::FastEmbedder;
 use veclayer::parser::MarkdownParser;
 use veclayer::search::{HierarchicalSearch, SearchConfig};
 use veclayer::store::LanceStore;
+use veclayer::summarizer::OllamaSummarizer;
 use veclayer::{Config, DocumentParser, Embedder, Result, VectorStore};
 
 #[derive(Parser)]
@@ -16,7 +18,12 @@ use veclayer::{Config, DocumentParser, Embedder, Result, VectorStore};
 #[command(version)]
 struct Cli {
     /// Data directory for VecLayer storage
-    #[arg(short, long, env = "VECLAYER_DATA_DIR", default_value = "./veclayer-data")]
+    #[arg(
+        short,
+        long,
+        env = "VECLAYER_DATA_DIR",
+        default_value = "./veclayer-data"
+    )]
     data_dir: PathBuf,
 
     /// Enable verbose output
@@ -29,14 +36,22 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Ingest documents into the vector store
+    /// Ingest documents into the vector store (recursive + summarize by default)
     Ingest {
         /// Path to a file or directory to ingest
         path: PathBuf,
 
-        /// Recursively process directories
-        #[arg(short, long)]
-        recursive: bool,
+        /// Disable recursive directory processing
+        #[arg(long)]
+        no_recursive: bool,
+
+        /// Disable cluster summarization (faster, but no cross-doc links)
+        #[arg(long)]
+        no_summarize: bool,
+
+        /// Ollama model for summarization
+        #[arg(long, env = "VECLAYER_OLLAMA_MODEL", default_value = "llama3.2")]
+        model: String,
     },
 
     /// Query the vector store with hierarchical search
@@ -100,8 +115,13 @@ async fn main() -> Result<()> {
         .init();
 
     match cli.command {
-        Commands::Ingest { path, recursive } => {
-            cmd_ingest(&cli.data_dir, &path, recursive).await?;
+        Commands::Ingest {
+            path,
+            no_recursive,
+            no_summarize,
+            model,
+        } => {
+            cmd_ingest(&cli.data_dir, &path, !no_recursive, !no_summarize, &model).await?;
         }
         Commands::Query {
             query,
@@ -130,7 +150,13 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn cmd_ingest(data_dir: &PathBuf, path: &PathBuf, recursive: bool) -> Result<()> {
+async fn cmd_ingest(
+    data_dir: &PathBuf,
+    path: &PathBuf,
+    recursive: bool,
+    summarize: bool,
+    model: &str,
+) -> Result<()> {
     info!("Initializing embedder...");
     let embedder = FastEmbedder::new()?;
     let dimension = embedder.dimension();
@@ -142,6 +168,8 @@ async fn cmd_ingest(data_dir: &PathBuf, path: &PathBuf, recursive: bool) -> Resu
 
     let files = collect_files(path, recursive, &parser)?;
     info!("Found {} files to process", files.len());
+
+    let mut all_chunks = Vec::new();
 
     for file in files {
         info!("Processing {:?}...", file);
@@ -170,8 +198,48 @@ async fn cmd_ingest(data_dir: &PathBuf, path: &PathBuf, recursive: bool) -> Resu
         }
 
         // Insert into store
-        store.insert_chunks(chunks).await?;
+        store.insert_chunks(chunks.clone()).await?;
         info!("  Indexed successfully");
+
+        all_chunks.extend(chunks);
+    }
+
+    // Phase 2: Cluster and summarize if enabled
+    if summarize && !all_chunks.is_empty() {
+        info!("Starting cluster summarization with model '{}'...", model);
+
+        // Create a new embedder for the pipeline (to embed summaries)
+        let summary_embedder = FastEmbedder::new()?;
+        let summarizer = OllamaSummarizer::new().with_model(model);
+
+        let pipeline = ClusterPipeline::with_summarizer(summary_embedder, summarizer)
+            .with_min_cluster_size(2)
+            .with_cluster_range(2, 10);
+
+        match pipeline.process(all_chunks).await {
+            Ok((updated_chunks, summary_chunks)) => {
+                // Update existing chunks with cluster memberships
+                for chunk in updated_chunks {
+                    if !chunk.cluster_memberships.is_empty() {
+                        // Re-insert to update cluster memberships
+                        // Note: In production, we'd want an upsert operation
+                        store.insert_chunks(vec![chunk]).await?;
+                    }
+                }
+
+                // Insert summary chunks
+                if !summary_chunks.is_empty() {
+                    info!("Inserting {} cluster summaries...", summary_chunks.len());
+                    store.insert_chunks(summary_chunks).await?;
+                }
+            }
+            Err(e) => {
+                info!(
+                    "Cluster summarization failed: {} - continuing without summaries",
+                    e
+                );
+            }
+        }
     }
 
     info!("Ingestion complete!");
@@ -213,7 +281,12 @@ async fn cmd_query(
     println!("{}", "=".repeat(60));
 
     for (i, result) in results.iter().enumerate() {
-        println!("\n{}. [Score: {:.3}] {}", i + 1, result.score, result.chunk.level);
+        println!(
+            "\n{}. [Score: {:.3}] {}",
+            i + 1,
+            result.score,
+            result.chunk.level
+        );
 
         if show_path && !result.hierarchy_path.is_empty() {
             let path: Vec<&str> = result

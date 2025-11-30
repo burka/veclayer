@@ -32,6 +32,12 @@ pub enum Error {
 
     #[error("Invalid operation: {0}")]
     InvalidOperation(String),
+
+    #[error("Summarization error: {0}")]
+    Summarization(String),
+
+    #[error("Clustering error: {0}")]
+    Clustering(String),
 }
 
 impl Error {
@@ -57,5 +63,13 @@ impl Error {
 
     pub fn not_found(msg: impl Into<String>) -> Self {
         Self::NotFound(msg.into())
+    }
+
+    pub fn summarization(msg: impl Into<String>) -> Self {
+        Self::Summarization(msg.into())
+    }
+
+    pub fn clustering(msg: impl Into<String>) -> Self {
+        Self::Clustering(msg.into())
     }
 }

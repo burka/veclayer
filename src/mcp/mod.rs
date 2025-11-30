@@ -209,9 +209,15 @@ async fn handle_mcp_message(
             })
         }
         "tools/call" => {
-            let params = parsed.get("params").cloned().unwrap_or(serde_json::json!({}));
+            let params = parsed
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::json!({}));
             let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
-            let arguments = params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+            let arguments = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or(serde_json::json!({}));
 
             match tool_name {
                 "search" => {
@@ -448,9 +454,7 @@ async fn api_get_children(
     }
 }
 
-async fn api_stats(
-    State(state): State<AppState>,
-) -> Json<ApiResponse<serde_json::Value>> {
+async fn api_stats(State(state): State<AppState>) -> Json<ApiResponse<serde_json::Value>> {
     match state.store.stats().await {
         Ok(stats) => Json(ApiResponse::Success(serde_json::json!({
             "total_chunks": stats.total_chunks,
