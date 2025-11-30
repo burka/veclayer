@@ -1,5 +1,23 @@
 use serde::{Deserialize, Serialize};
 
+/// Soft cluster membership: probability of belonging to a cluster.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterMembership {
+    /// Cluster identifier
+    pub cluster_id: String,
+    /// Probability of belonging to this cluster (0.0 - 1.0)
+    pub probability: f32,
+}
+
+impl ClusterMembership {
+    pub fn new(cluster_id: impl Into<String>, probability: f32) -> Self {
+        Self {
+            cluster_id: cluster_id.into(),
+            probability: probability.clamp(0.0, 1.0),
+        }
+    }
+}
+
 /// Represents the hierarchical level of a chunk in the document structure.
 /// H1 = 1, H2 = 2, ..., H6 = 6, and content paragraphs under headings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -74,6 +92,19 @@ pub struct HierarchicalChunk {
 
     /// End position in the source document
     pub end_offset: usize,
+
+    /// Soft cluster memberships (RAPTOR-style)
+    /// A chunk can belong to multiple clusters with different probabilities
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cluster_memberships: Vec<ClusterMembership>,
+
+    /// Whether this chunk is an AI-generated summary of a cluster
+    #[serde(default)]
+    pub is_summary: bool,
+
+    /// If this is a summary chunk, IDs of chunks it summarizes
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub summarizes: Vec<String>,
 }
 
 impl HierarchicalChunk {
@@ -96,6 +127,32 @@ impl HierarchicalChunk {
             heading: None,
             start_offset: 0,
             end_offset: 0,
+            cluster_memberships: Vec::new(),
+            is_summary: false,
+            summarizes: Vec::new(),
+        }
+    }
+
+    /// Create a summary chunk for a cluster
+    pub fn new_summary(
+        content: String,
+        summarized_chunk_ids: Vec<String>,
+        embedding: Option<Vec<f32>>,
+    ) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            content,
+            embedding,
+            level: ChunkLevel::H1, // Summaries are top-level abstractions
+            parent_id: None,
+            path: "Summary".to_string(),
+            source_file: "[cluster-summary]".to_string(),
+            heading: Some("Cluster Summary".to_string()),
+            start_offset: 0,
+            end_offset: 0,
+            cluster_memberships: Vec::new(),
+            is_summary: true,
+            summarizes: summarized_chunk_ids,
         }
     }
 
@@ -116,6 +173,32 @@ impl HierarchicalChunk {
     pub fn with_embedding(mut self, embedding: Vec<f32>) -> Self {
         self.embedding = Some(embedding);
         self
+    }
+
+    /// Add a cluster membership
+    pub fn with_cluster_membership(
+        mut self,
+        cluster_id: impl Into<String>,
+        probability: f32,
+    ) -> Self {
+        self.cluster_memberships
+            .push(ClusterMembership::new(cluster_id, probability));
+        self
+    }
+
+    /// Set cluster memberships
+    pub fn with_cluster_memberships(mut self, memberships: Vec<ClusterMembership>) -> Self {
+        self.cluster_memberships = memberships;
+        self
+    }
+
+    /// Get primary cluster (highest probability)
+    pub fn primary_cluster(&self) -> Option<&ClusterMembership> {
+        self.cluster_memberships.iter().max_by(|a, b| {
+            a.probability
+                .partial_cmp(&b.probability)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     }
 
     /// Check if this chunk has an embedding

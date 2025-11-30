@@ -168,9 +168,10 @@ impl DocumentParser for MarkdownParser {
                 }
 
                 Event::End(TagEnd::Heading(_)) => {
-                    if let (Some(level), Some(heading)) =
-                        (state.current_heading_level.take(), state.current_heading.take())
-                    {
+                    if let (Some(level), Some(heading)) = (
+                        state.current_heading_level.take(),
+                        state.current_heading.take(),
+                    ) {
                         let heading = heading.trim().to_string();
                         if !heading.is_empty() {
                             state.create_heading_chunk(level, heading);
