@@ -73,3 +73,72 @@ impl Error {
         Self::Clustering(msg.into())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_parse() {
+        let err = Error::parse("test error");
+        assert!(matches!(err, Error::Parse(_)));
+        assert!(err.to_string().contains("test error"));
+    }
+
+    #[test]
+    fn test_error_embedding() {
+        let err = Error::embedding("embed failed");
+        assert!(matches!(err, Error::Embedding(_)));
+    }
+
+    #[test]
+    fn test_error_store() {
+        let err = Error::store("store error");
+        assert!(matches!(err, Error::Store(_)));
+    }
+
+    #[test]
+    fn test_error_search() {
+        let err = Error::search("search failed");
+        assert!(matches!(err, Error::Search(_)));
+    }
+
+    #[test]
+    fn test_error_config() {
+        let err = Error::config("invalid config");
+        assert!(matches!(err, Error::Config(_)));
+    }
+
+    #[test]
+    fn test_error_not_found() {
+        let err = Error::not_found("item missing");
+        assert!(matches!(err, Error::NotFound(_)));
+    }
+
+    #[test]
+    fn test_error_summarization() {
+        let err = Error::summarization("summary failed");
+        assert!(matches!(err, Error::Summarization(_)));
+    }
+
+    #[test]
+    fn test_error_clustering() {
+        let err = Error::clustering("cluster error");
+        assert!(matches!(err, Error::Clustering(_)));
+    }
+
+    #[test]
+    fn test_error_from_io() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let err: Error = io_err.into();
+        assert!(matches!(err, Error::Io(_)));
+    }
+
+    #[test]
+    fn test_error_display() {
+        let err = Error::parse("test message");
+        let display = format!("{}", err);
+        assert!(display.contains("Parsing error"));
+        assert!(display.contains("test message"));
+    }
+}

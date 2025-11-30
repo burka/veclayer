@@ -104,3 +104,150 @@ impl Config {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_config_new() {
+        let config = Config::new();
+        assert!(!config.read_only);
+        assert_eq!(config.port, 8080);
+        assert_eq!(config.host, "127.0.0.1");
+        assert_eq!(config.search_top_k, 5);
+        assert_eq!(config.search_children_k, 3);
+    }
+
+    #[test]
+    fn test_config_default() {
+        let config = Config::default();
+        assert_eq!(config.data_dir, PathBuf::from("./veclayer-data"));
+        assert_eq!(config.host, "127.0.0.1");
+        assert_eq!(config.port, 8080);
+        assert!(!config.read_only);
+        assert_eq!(config.search_top_k, 5);
+        assert_eq!(config.search_children_k, 3);
+    }
+
+    #[test]
+    fn test_config_with_data_dir_string() {
+        let config = Config::default().with_data_dir("/custom/path");
+        assert_eq!(config.data_dir, Path::new("/custom/path"));
+    }
+
+    #[test]
+    fn test_config_with_data_dir_pathbuf() {
+        let path = PathBuf::from("/some/path");
+        let config = Config::default().with_data_dir(path);
+        assert_eq!(config.data_dir, Path::new("/some/path"));
+    }
+
+    #[test]
+    fn test_config_with_host_string() {
+        let config = Config::default().with_host("0.0.0.0");
+        assert_eq!(config.host, "0.0.0.0");
+    }
+
+    #[test]
+    fn test_config_with_host_string_owned() {
+        let config = Config::default().with_host("localhost".to_string());
+        assert_eq!(config.host, "localhost");
+    }
+
+    #[test]
+    fn test_config_with_port() {
+        let config = Config::default().with_port(3000);
+        assert_eq!(config.port, 3000);
+    }
+
+    #[test]
+    fn test_config_with_read_only_true() {
+        let config = Config::default().with_read_only(true);
+        assert!(config.read_only);
+    }
+
+    #[test]
+    fn test_config_with_read_only_false() {
+        let config = Config::default().with_read_only(false);
+        assert!(!config.read_only);
+    }
+
+    #[test]
+    fn test_config_builder_chain() {
+        let config = Config::default()
+            .with_data_dir("/data")
+            .with_host("localhost")
+            .with_port(9000)
+            .with_read_only(true);
+
+        assert_eq!(config.data_dir, Path::new("/data"));
+        assert_eq!(config.host, "localhost");
+        assert_eq!(config.port, 9000);
+        assert!(config.read_only);
+    }
+
+    #[test]
+    fn test_config_builder_partial_chain() {
+        let config = Config::default().with_port(5000).with_host("0.0.0.0");
+
+        assert_eq!(config.port, 5000);
+        assert_eq!(config.host, "0.0.0.0");
+        assert_eq!(config.data_dir, PathBuf::from("./veclayer-data"));
+        assert!(!config.read_only);
+    }
+
+    #[test]
+    fn test_embedder_config_default_fastembed() {
+        let embedder = EmbedderConfig::default();
+        match embedder {
+            EmbedderConfig::FastEmbed { model } => {
+                assert_eq!(model, "BAAI/bge-small-en-v1.5");
+            }
+            _ => panic!("Expected FastEmbed variant"),
+        }
+    }
+
+    #[test]
+    fn test_config_clone() {
+        let config1 = Config::default().with_data_dir("/test").with_port(9999);
+        let config2 = config1.clone();
+
+        assert_eq!(config1.data_dir, config2.data_dir);
+        assert_eq!(config1.port, config2.port);
+        assert_eq!(config1.host, config2.host);
+        assert_eq!(config1.read_only, config2.read_only);
+    }
+
+    #[test]
+    fn test_config_debug_format() {
+        let config = Config::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("Config"));
+    }
+
+    #[test]
+    fn test_embedder_config_clone() {
+        let embedder1 = EmbedderConfig::FastEmbed {
+            model: "test-model".to_string(),
+        };
+        let embedder2 = embedder1.clone();
+
+        match (embedder1, embedder2) {
+            (EmbedderConfig::FastEmbed { model: m1 }, EmbedderConfig::FastEmbed { model: m2 }) => {
+                assert_eq!(m1, m2);
+            }
+            _ => panic!("Expected both to be FastEmbed"),
+        }
+    }
+
+    #[test]
+    fn test_embedder_config_debug_format() {
+        let embedder = EmbedderConfig::FastEmbed {
+            model: "test".to_string(),
+        };
+        let debug_str = format!("{:?}", embedder);
+        assert!(debug_str.contains("FastEmbed"));
+    }
+}
