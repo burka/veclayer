@@ -239,4 +239,191 @@ mod tests {
         assert_eq!(chunk.level, ChunkLevel::H1);
         assert!(chunk.parent_id.is_none());
     }
+
+    #[test]
+    fn test_chunk_level_from_heading() {
+        assert_eq!(ChunkLevel::from_heading(1), ChunkLevel::H1);
+        assert_eq!(ChunkLevel::from_heading(6), ChunkLevel::H6);
+        // Test clamping
+        assert_eq!(ChunkLevel::from_heading(0), ChunkLevel::H1);
+        assert_eq!(ChunkLevel::from_heading(10), ChunkLevel::H6);
+    }
+
+    #[test]
+    fn test_chunk_level_display() {
+        assert_eq!(format!("{}", ChunkLevel::H1), "H1");
+        assert_eq!(format!("{}", ChunkLevel::H6), "H6");
+        assert_eq!(format!("{}", ChunkLevel::CONTENT), "Content");
+    }
+
+    #[test]
+    fn test_chunk_level_depth() {
+        assert_eq!(ChunkLevel::H1.depth(), 1);
+        assert_eq!(ChunkLevel::CONTENT.depth(), 7);
+    }
+
+    #[test]
+    fn test_cluster_membership_new() {
+        let membership = ClusterMembership::new("cluster_1", 0.8);
+        assert_eq!(membership.cluster_id, "cluster_1");
+        assert!((membership.probability - 0.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_cluster_membership_probability_clamping() {
+        let low = ClusterMembership::new("c", -0.5);
+        assert_eq!(low.probability, 0.0);
+
+        let high = ClusterMembership::new("c", 1.5);
+        assert_eq!(high.probability, 1.0);
+    }
+
+    #[test]
+    fn test_chunk_with_heading() {
+        let chunk = HierarchicalChunk::new(
+            "content".to_string(),
+            ChunkLevel::H1,
+            None,
+            "path".to_string(),
+            "file.md".to_string(),
+        )
+        .with_heading("Test Heading");
+
+        assert_eq!(chunk.heading, Some("Test Heading".to_string()));
+    }
+
+    #[test]
+    fn test_chunk_with_offsets() {
+        let chunk = HierarchicalChunk::new(
+            "content".to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            "path".to_string(),
+            "file.md".to_string(),
+        )
+        .with_offsets(10, 50);
+
+        assert_eq!(chunk.start_offset, 10);
+        assert_eq!(chunk.end_offset, 50);
+    }
+
+    #[test]
+    fn test_chunk_with_embedding() {
+        let embedding = vec![0.1, 0.2, 0.3];
+        let chunk = HierarchicalChunk::new(
+            "content".to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            "path".to_string(),
+            "file.md".to_string(),
+        )
+        .with_embedding(embedding.clone());
+
+        assert_eq!(chunk.embedding, Some(embedding));
+        assert!(chunk.has_embedding());
+        assert_eq!(chunk.embedding_dim(), 3);
+    }
+
+    #[test]
+    fn test_chunk_no_embedding() {
+        let chunk = HierarchicalChunk::new(
+            "content".to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            "path".to_string(),
+            "file.md".to_string(),
+        );
+
+        assert!(!chunk.has_embedding());
+        assert_eq!(chunk.embedding_dim(), 0);
+    }
+
+    #[test]
+    fn test_chunk_with_cluster_membership() {
+        let chunk = HierarchicalChunk::new(
+            "content".to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            "path".to_string(),
+            "file.md".to_string(),
+        )
+        .with_cluster_membership("cluster_0", 0.9)
+        .with_cluster_membership("cluster_1", 0.3);
+
+        assert_eq!(chunk.cluster_memberships.len(), 2);
+        assert_eq!(chunk.cluster_memberships[0].cluster_id, "cluster_0");
+    }
+
+    #[test]
+    fn test_chunk_with_cluster_memberships() {
+        let memberships = vec![
+            ClusterMembership::new("c1", 0.8),
+            ClusterMembership::new("c2", 0.6),
+        ];
+
+        let chunk = HierarchicalChunk::new(
+            "content".to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            "path".to_string(),
+            "file.md".to_string(),
+        )
+        .with_cluster_memberships(memberships);
+
+        assert_eq!(chunk.cluster_memberships.len(), 2);
+    }
+
+    #[test]
+    fn test_chunk_primary_cluster() {
+        let chunk = HierarchicalChunk::new(
+            "content".to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            "path".to_string(),
+            "file.md".to_string(),
+        )
+        .with_cluster_membership("low", 0.2)
+        .with_cluster_membership("high", 0.9)
+        .with_cluster_membership("mid", 0.5);
+
+        let primary = chunk.primary_cluster().unwrap();
+        assert_eq!(primary.cluster_id, "high");
+    }
+
+    #[test]
+    fn test_chunk_primary_cluster_empty() {
+        let chunk = HierarchicalChunk::new(
+            "content".to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            "path".to_string(),
+            "file.md".to_string(),
+        );
+
+        assert!(chunk.primary_cluster().is_none());
+    }
+
+    #[test]
+    fn test_new_summary() {
+        let summary = HierarchicalChunk::new_summary(
+            "Summary text".to_string(),
+            vec!["chunk1".to_string(), "chunk2".to_string()],
+            Some(vec![0.1, 0.2, 0.3]),
+        );
+
+        assert!(summary.is_summary);
+        assert_eq!(summary.summarizes.len(), 2);
+        assert_eq!(summary.source_file, "[cluster-summary]");
+        assert_eq!(summary.level, ChunkLevel::H1);
+        assert!(summary.embedding.is_some());
+    }
+
+    #[test]
+    fn test_new_summary_without_embedding() {
+        let summary =
+            HierarchicalChunk::new_summary("Summary".to_string(), vec!["chunk1".to_string()], None);
+
+        assert!(summary.is_summary);
+        assert!(summary.embedding.is_none());
+    }
 }
