@@ -361,6 +361,7 @@ Reference counting handles most cleanup.
         recursive: true,
         summarize: true,
         model: "tinyllama".to_string(),
+        visibility: None,
     };
 
     let result = ingest(&data_dir, &docs_dir, &options).await;

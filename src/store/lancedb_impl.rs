@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use arrow_array::{
     Array, BooleanArray, FixedSizeListArray, Float32Array, Int64Array, RecordBatch,
-    RecordBatchIterator, StringArray, UInt32Array, UInt8Array,
+    RecordBatchIterator, StringArray, UInt16Array, UInt32Array, UInt8Array,
 };
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
@@ -71,8 +71,13 @@ impl LanceStore {
             Field::new("visibility", DataType::Utf8, false),
             Field::new("relations", DataType::Utf8, false), // JSON array
             Field::new("created_at", DataType::Int64, false),
-            Field::new("last_accessed", DataType::Int64, false),
-            Field::new("access_count", DataType::UInt32, false),
+            Field::new("last_rolled", DataType::Int64, false),
+            Field::new("access_hour", DataType::UInt16, false),
+            Field::new("access_day", DataType::UInt16, false),
+            Field::new("access_week", DataType::UInt16, false),
+            Field::new("access_month", DataType::UInt16, false),
+            Field::new("access_year", DataType::UInt16, false),
+            Field::new("access_total", DataType::UInt32, false),
             Field::new("expires_at", DataType::Int64, true),
         ]))
     }
@@ -136,14 +141,16 @@ impl LanceStore {
             .map(|c| serde_json::to_string(&c.relations).unwrap_or_else(|_| "[]".to_string()))
             .collect();
         let created_at: Vec<i64> = chunks.iter().map(|c| c.access_profile.created_at).collect();
-        let last_accessed: Vec<i64> = chunks
+        let last_rolled: Vec<i64> = chunks
             .iter()
-            .map(|c| c.access_profile.last_accessed)
+            .map(|c| c.access_profile.last_rolled)
             .collect();
-        let access_count: Vec<u32> = chunks
-            .iter()
-            .map(|c| c.access_profile.access_count)
-            .collect();
+        let access_hour: Vec<u16> = chunks.iter().map(|c| c.access_profile.hour).collect();
+        let access_day: Vec<u16> = chunks.iter().map(|c| c.access_profile.day).collect();
+        let access_week: Vec<u16> = chunks.iter().map(|c| c.access_profile.week).collect();
+        let access_month: Vec<u16> = chunks.iter().map(|c| c.access_profile.month).collect();
+        let access_year: Vec<u16> = chunks.iter().map(|c| c.access_profile.year).collect();
+        let access_total: Vec<u32> = chunks.iter().map(|c| c.access_profile.total).collect();
         let expires_at: Vec<Option<i64>> = chunks.iter().map(|c| c.expires_at).collect();
 
         // Build embeddings as FixedSizeList
@@ -185,8 +192,13 @@ impl LanceStore {
                 Arc::new(StringArray::from(visibility)),
                 Arc::new(StringArray::from(relations)),
                 Arc::new(Int64Array::from(created_at)),
-                Arc::new(Int64Array::from(last_accessed)),
-                Arc::new(UInt32Array::from(access_count)),
+                Arc::new(Int64Array::from(last_rolled)),
+                Arc::new(UInt16Array::from(access_hour)),
+                Arc::new(UInt16Array::from(access_day)),
+                Arc::new(UInt16Array::from(access_week)),
+                Arc::new(UInt16Array::from(access_month)),
+                Arc::new(UInt16Array::from(access_year)),
+                Arc::new(UInt32Array::from(access_total)),
                 Arc::new(Int64Array::from(expires_at)),
             ],
         )
@@ -236,10 +248,33 @@ impl LanceStore {
         let created_at_col = batch
             .column_by_name("created_at")
             .and_then(|c| c.as_any().downcast_ref::<Int64Array>());
-        let last_accessed_col = batch
+        // New RRD bucket columns
+        let last_rolled_col = batch
+            .column_by_name("last_rolled")
+            .and_then(|c| c.as_any().downcast_ref::<Int64Array>());
+        let access_hour_col = batch
+            .column_by_name("access_hour")
+            .and_then(|c| c.as_any().downcast_ref::<UInt16Array>());
+        let access_day_col = batch
+            .column_by_name("access_day")
+            .and_then(|c| c.as_any().downcast_ref::<UInt16Array>());
+        let access_week_col = batch
+            .column_by_name("access_week")
+            .and_then(|c| c.as_any().downcast_ref::<UInt16Array>());
+        let access_month_col = batch
+            .column_by_name("access_month")
+            .and_then(|c| c.as_any().downcast_ref::<UInt16Array>());
+        let access_year_col = batch
+            .column_by_name("access_year")
+            .and_then(|c| c.as_any().downcast_ref::<UInt16Array>());
+        let access_total_col = batch
+            .column_by_name("access_total")
+            .and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
+        // Legacy columns for backward compatibility
+        let legacy_last_accessed_col = batch
             .column_by_name("last_accessed")
             .and_then(|c| c.as_any().downcast_ref::<Int64Array>());
-        let access_count_col = batch
+        let legacy_access_count_col = batch
             .column_by_name("access_count")
             .and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
         let expires_at_col = batch
@@ -306,10 +341,33 @@ impl LanceStore {
                 })
                 .unwrap_or_default();
 
-            let access_profile = crate::chunk::AccessProfile {
-                created_at: created_at_col.map(|col| col.value(i)).unwrap_or(0),
-                last_accessed: last_accessed_col.map(|col| col.value(i)).unwrap_or(0),
-                access_count: access_count_col.map(|col| col.value(i)).unwrap_or(0),
+            let access_profile = if access_hour_col.is_some() {
+                // New RRD schema
+                crate::chunk::AccessProfile {
+                    created_at: created_at_col.map(|col| col.value(i)).unwrap_or(0),
+                    last_rolled: last_rolled_col.map(|col| col.value(i)).unwrap_or(0),
+                    hour: access_hour_col.map(|col| col.value(i)).unwrap_or(0),
+                    day: access_day_col.map(|col| col.value(i)).unwrap_or(0),
+                    week: access_week_col.map(|col| col.value(i)).unwrap_or(0),
+                    month: access_month_col.map(|col| col.value(i)).unwrap_or(0),
+                    year: access_year_col.map(|col| col.value(i)).unwrap_or(0),
+                    total: access_total_col.map(|col| col.value(i)).unwrap_or(0),
+                }
+            } else {
+                // Legacy schema: migrate old fields
+                let created_at = created_at_col.map(|col| col.value(i)).unwrap_or(0);
+                let last_accessed = legacy_last_accessed_col.map(|col| col.value(i)).unwrap_or(0);
+                let access_count = legacy_access_count_col.map(|col| col.value(i)).unwrap_or(0);
+                crate::chunk::AccessProfile {
+                    created_at,
+                    last_rolled: last_accessed,
+                    hour: 0,
+                    day: 0,
+                    week: 0,
+                    month: 0,
+                    year: 0,
+                    total: access_count,
+                }
             };
 
             let expires_at = expires_at_col.and_then(|col| {
@@ -542,6 +600,101 @@ impl VectorStore for LanceStore {
             chunks_by_level,
             source_files,
         })
+    }
+
+    async fn update_access_profiles(
+        &self,
+        updates: Vec<(String, crate::AccessProfile)>,
+    ) -> Result<()> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+
+        let table = self.get_table().await?;
+
+        for (chunk_id, profile) in updates {
+            let filter = format!("id = '{}'", chunk_id.replace('\'', "''"));
+            let columns: Vec<(&str, &str)> = Vec::new();
+            let last_rolled_str = profile.last_rolled.to_string();
+            let hour_str = profile.hour.to_string();
+            let day_str = profile.day.to_string();
+            let week_str = profile.week.to_string();
+            let month_str = profile.month.to_string();
+            let year_str = profile.year.to_string();
+            let total_str = profile.total.to_string();
+
+            let mut columns = columns;
+            columns.push(("last_rolled", last_rolled_str.as_str()));
+            columns.push(("access_hour", hour_str.as_str()));
+            columns.push(("access_day", day_str.as_str()));
+            columns.push(("access_week", week_str.as_str()));
+            columns.push(("access_month", month_str.as_str()));
+            columns.push(("access_year", year_str.as_str()));
+            columns.push(("access_total", total_str.as_str()));
+
+            let mut update = table.update();
+            for (col, val) in &columns {
+                update = update.column(col.to_string(), val.to_string());
+            }
+            update
+                .only_if(filter)
+                .execute()
+                .await
+                .map_err(|e| {
+                    Error::store(format!("Failed to update access profile: {}", e))
+                })?;
+        }
+
+        Ok(())
+    }
+
+    async fn update_visibility(&self, chunk_id: &str, visibility: &str) -> Result<()> {
+        let table = self.get_table().await?;
+        let filter = format!("id = '{}'", chunk_id.replace('\'', "''"));
+
+        table
+            .update()
+            .column("visibility", format!("'{}'", visibility.replace('\'', "''")))
+            .only_if(filter)
+            .execute()
+            .await
+            .map_err(|e| Error::store(format!("Failed to update visibility: {}", e)))?;
+
+        Ok(())
+    }
+
+    async fn add_relation(
+        &self,
+        chunk_id: &str,
+        relation: crate::ChunkRelation,
+    ) -> Result<()> {
+        // Read current chunk to get existing relations
+        let chunk = self
+            .get_by_id(chunk_id)
+            .await?
+            .ok_or_else(|| Error::store(format!("Chunk not found: {}", chunk_id)))?;
+
+        let mut relations = chunk.relations;
+        relations.push(relation);
+
+        let relations_json =
+            serde_json::to_string(&relations).unwrap_or_else(|_| "[]".to_string());
+
+        let table = self.get_table().await?;
+        let filter = format!("id = '{}'", chunk_id.replace('\'', "''"));
+
+        table
+            .update()
+            .column(
+                "relations",
+                format!("'{}'", relations_json.replace('\'', "''")),
+            )
+            .only_if(filter)
+            .execute()
+            .await
+            .map_err(|e| Error::store(format!("Failed to add relation: {}", e)))?;
+
+        Ok(())
     }
 }
 

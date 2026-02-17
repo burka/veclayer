@@ -50,6 +50,8 @@ pub struct QueryOptions {
     pub subtree: Option<String>,
     /// Deep search: include all visibilities (deep_only, expired, custom)
     pub deep: bool,
+    /// Recency window for relevancy boosting: "24h", "7d", "30d"
+    pub recent: Option<String>,
 }
 
 impl Default for QueryOptions {
@@ -59,6 +61,7 @@ impl Default for QueryOptions {
             show_path: false,
             subtree: None,
             deep: false,
+            recent: None,
         }
     }
 }
@@ -250,12 +253,19 @@ pub async fn query(
     let dimension = embedder.dimension();
     let store = LanceStore::open(data_dir, dimension).await?;
 
+    let recency_window = options
+        .recent
+        .as_deref()
+        .and_then(crate::RecencyWindow::from_str_opt);
+
     let config = SearchConfig {
         top_k: options.top_k,
         children_k: 3,
         max_depth: 3,
         min_score: 0.0,
         deep: options.deep,
+        recency_window,
+        recency_alpha: if recency_window.is_some() { 0.3 } else { 0.15 },
     };
 
     let search = HierarchicalSearch::new(store, embedder).with_config(config);

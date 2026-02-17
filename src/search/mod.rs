@@ -1,6 +1,7 @@
+use crate::chunk::now_epoch_secs;
 use crate::embedder::Embedder;
 use crate::store::{SearchResult, VectorStore};
-use crate::{ChunkLevel, HierarchicalChunk, Result};
+use crate::{ChunkLevel, HierarchicalChunk, RecencyWindow, Result};
 
 /// Result of a hierarchical search including the path through the hierarchy
 #[derive(Debug, Clone)]
@@ -28,6 +29,11 @@ pub struct SearchConfig {
     pub min_score: f32,
     /// Deep search: include all visibilities (DeepOnly, expired, custom)
     pub deep: bool,
+    /// Recency window for relevancy scoring. None = balanced weighting.
+    pub recency_window: Option<RecencyWindow>,
+    /// Blending factor: 0.0 = pure vector similarity, 1.0 = pure relevancy.
+    /// Default: 0.15
+    pub recency_alpha: f32,
 }
 
 impl Default for SearchConfig {
@@ -38,6 +44,8 @@ impl Default for SearchConfig {
             max_depth: 3,
             min_score: 0.0,
             deep: false,
+            recency_window: None,
+            recency_alpha: 0.15,
         }
     }
 }
@@ -102,9 +110,12 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
     /// 1. Find top-level matches
     /// 2. Filter by visibility (unless deep mode)
     /// 3. For each match, search its children
-    /// 4. Build a hierarchical result tree
+    /// 4. Record access and compute combined scores (vector + relevancy)
     pub async fn search(&self, query: &str) -> Result<Vec<HierarchicalSearchResult>> {
         let query_embedding = self.embed_query(query)?;
+        let now = now_epoch_secs();
+        let alpha = self.config.recency_alpha;
+        let recency_window = self.config.recency_window;
 
         // Fetch more than top_k so we still have enough after visibility filtering
         let fetch_k = if self.config.deep {
@@ -117,6 +128,7 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
         let top_results = self.store.search(&query_embedding, fetch_k, None).await?;
 
         let mut hierarchical_results = Vec::new();
+        let mut access_updates = Vec::new();
 
         for result in top_results {
             if result.score < self.config.min_score {
@@ -141,12 +153,31 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
                 .search_children(&query_embedding, &result.chunk)
                 .await?;
 
+            // Record access and compute combined score
+            let mut chunk = result.chunk;
+            let vector_score = result.score;
+            chunk.access_profile.record_access_at(now);
+
+            let final_score = if alpha > 0.0 {
+                let relevancy = chunk.access_profile.relevancy_score(recency_window);
+                vector_score * (1.0 - alpha) + relevancy * alpha
+            } else {
+                vector_score
+            };
+
+            access_updates.push((chunk.id.clone(), chunk.access_profile.clone()));
+
             hierarchical_results.push(HierarchicalSearchResult {
-                chunk: result.chunk,
-                score: result.score,
+                chunk,
+                score: final_score,
                 hierarchy_path,
                 relevant_children,
             });
+        }
+
+        // Persist access tracking (best effort — don't fail search)
+        if !access_updates.is_empty() {
+            let _ = self.store.update_access_profiles(access_updates).await;
         }
 
         Ok(hierarchical_results)
@@ -379,6 +410,25 @@ mod tests {
         async fn stats(&self) -> Result<crate::store::StoreStats> {
             Ok(crate::store::StoreStats::default())
         }
+
+        async fn update_access_profiles(
+            &self,
+            _updates: Vec<(String, crate::AccessProfile)>,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn update_visibility(&self, _chunk_id: &str, _visibility: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn add_relation(
+            &self,
+            _chunk_id: &str,
+            _relation: crate::ChunkRelation,
+        ) -> Result<()> {
+            Ok(())
+        }
     }
 
     /// Mock embedder for testing
@@ -549,6 +599,7 @@ mod tests {
             max_depth: 2,
             min_score: 0.5,
             deep: false,
+            ..Default::default()
         };
 
         let search = HierarchicalSearch::new(store, embedder).with_config(config);
@@ -828,8 +879,10 @@ mod tests {
         let search_results = search.search("test query").await.unwrap();
 
         // Only chunk1 should pass the min_score filter
+        // (min_score applies to the raw vector score, before relevancy blending)
         assert_eq!(search_results.len(), 1);
-        assert_eq!(search_results[0].score, 0.8);
+        // Score is blended: vector_score * (1 - alpha) + relevancy * alpha
+        assert!(search_results[0].score > 0.5);
     }
 
     #[tokio::test]
