@@ -20,81 +20,37 @@ impl ClusterMembership {
 
 // --- Identity & Memory Types ---
 
-/// How a chunk should be treated in search and aging.
+/// Well-known visibility values.
 ///
-/// Data describes itself: an architecture decision is "Always" visible,
-/// while an old chat log fades to "DeepOnly" over time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Visibility {
-    /// Always visible, never degraded (core knowledge, architecture decisions)
-    Always,
-    /// Standard cascade, ages naturally with access patterns
-    Normal,
-    /// Only found during explicit deep search (old logs, discarded ideas)
-    DeepOnly,
-    /// Self-destructing after expires_at timestamp (temporary planning data)
-    Expiring,
-    /// Cyclically relevant, driven by access frequency (quarterly reports, tax season)
-    Seasonal,
+/// Visibility is an open String field -- these are conventions, not a closed set.
+/// Custom values (e.g. "draft", "review", "archived") work without code changes.
+/// The search filter decides which visibilities are included.
+pub mod visibility {
+    pub const ALWAYS: &str = "always";
+    pub const NORMAL: &str = "normal";
+    pub const DEEP_ONLY: &str = "deep_only";
+    pub const EXPIRING: &str = "expiring";
+    pub const SEASONAL: &str = "seasonal";
 }
 
-impl Default for Visibility {
-    fn default() -> Self {
-        Visibility::Normal
-    }
-}
+/// Default set of visibilities included in a standard (non-deep) search.
+/// Custom visibilities are excluded by default -- opt-in via search config.
+pub const STANDARD_VISIBLE: &[&str] = &[
+    visibility::ALWAYS,
+    visibility::NORMAL,
+    visibility::SEASONAL,
+    visibility::EXPIRING,
+];
 
-impl std::fmt::Display for Visibility {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Visibility::Always => write!(f, "always"),
-            Visibility::Normal => write!(f, "normal"),
-            Visibility::DeepOnly => write!(f, "deep_only"),
-            Visibility::Expiring => write!(f, "expiring"),
-            Visibility::Seasonal => write!(f, "seasonal"),
-        }
-    }
-}
-
-impl std::str::FromStr for Visibility {
-    type Err = String;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s {
-            "always" => Ok(Visibility::Always),
-            "normal" => Ok(Visibility::Normal),
-            "deep_only" | "deep-only" | "deeponly" => Ok(Visibility::DeepOnly),
-            "expiring" => Ok(Visibility::Expiring),
-            "seasonal" => Ok(Visibility::Seasonal),
-            _ => Err(format!("Unknown visibility: {}", s)),
-        }
-    }
-}
-
-/// Kind of relation between two chunks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RelationKind {
-    /// This fact was replaced by newer information
-    SupersededBy,
-    /// Condensed into this summary node
-    SummarizedBy,
-    /// Loose thematic connection
-    RelatedTo,
-    /// Originated from this discussion/source
-    DerivedFrom,
-}
-
-impl std::fmt::Display for RelationKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RelationKind::SupersededBy => write!(f, "superseded_by"),
-            RelationKind::SummarizedBy => write!(f, "summarized_by"),
-            RelationKind::RelatedTo => write!(f, "related_to"),
-            RelationKind::DerivedFrom => write!(f, "derived_from"),
-        }
-    }
+/// Well-known relation kinds.
+///
+/// Relation kind is an open String field -- these are conventions.
+/// Custom kinds (e.g. "contradicts", "inspired_by", "blocks") work without code changes.
+pub mod relation {
+    pub const SUPERSEDED_BY: &str = "superseded_by";
+    pub const SUMMARIZED_BY: &str = "summarized_by";
+    pub const RELATED_TO: &str = "related_to";
+    pub const DERIVED_FROM: &str = "derived_from";
 }
 
 /// A directed relation from one chunk to another.
@@ -102,34 +58,37 @@ impl std::fmt::Display for RelationKind {
 /// Design constraint: relations are NOT the primary search path.
 /// You find a chunk via vector search, THEN navigate relations.
 /// Max 1-2 hops, no graph traversal.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `kind` is an open string. Use constants from `relation::` for well-known
+/// types, or any custom string for domain-specific relations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChunkRelation {
-    pub kind: RelationKind,
+    pub kind: String,
     pub target_id: String,
 }
 
 impl ChunkRelation {
-    pub fn new(kind: RelationKind, target_id: impl Into<String>) -> Self {
+    pub fn new(kind: impl Into<String>, target_id: impl Into<String>) -> Self {
         Self {
-            kind,
+            kind: kind.into(),
             target_id: target_id.into(),
         }
     }
 
     pub fn superseded_by(target_id: impl Into<String>) -> Self {
-        Self::new(RelationKind::SupersededBy, target_id)
+        Self::new(relation::SUPERSEDED_BY, target_id)
     }
 
     pub fn summarized_by(target_id: impl Into<String>) -> Self {
-        Self::new(RelationKind::SummarizedBy, target_id)
+        Self::new(relation::SUMMARIZED_BY, target_id)
     }
 
     pub fn related_to(target_id: impl Into<String>) -> Self {
-        Self::new(RelationKind::RelatedTo, target_id)
+        Self::new(relation::RELATED_TO, target_id)
     }
 
     pub fn derived_from(target_id: impl Into<String>) -> Self {
-        Self::new(RelationKind::DerivedFrom, target_id)
+        Self::new(relation::DERIVED_FROM, target_id)
     }
 }
 
@@ -185,6 +144,10 @@ fn now_epoch_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+fn default_visibility() -> String {
+    visibility::NORMAL.to_string()
 }
 
 /// Represents the hierarchical level of a chunk in the document structure.
@@ -280,11 +243,14 @@ pub struct HierarchicalChunk {
     pub summarizes: Vec<String>,
 
     // --- Identity & Memory fields ---
-    /// How this chunk should be treated in search and aging
-    #[serde(default)]
-    pub visibility: Visibility,
+    /// How this chunk should be treated in search and aging.
+    /// Open string -- use constants from `visibility::` or any custom value.
+    /// Default: "normal"
+    #[serde(default = "default_visibility")]
+    pub visibility: String,
 
-    /// Relations to other chunks (SupersededBy, RelatedTo, etc.)
+    /// Relations to other chunks. Each relation has an open `kind` string
+    /// and a `target_id`. Use constants from `relation::` or custom kinds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relations: Vec<ChunkRelation>,
 
@@ -320,7 +286,7 @@ impl HierarchicalChunk {
             cluster_memberships: Vec::new(),
             is_summary: false,
             summarizes: Vec::new(),
-            visibility: Visibility::default(),
+            visibility: default_visibility(),
             relations: Vec::new(),
             access_profile: AccessProfile::new(),
             expires_at: None,
@@ -347,7 +313,7 @@ impl HierarchicalChunk {
             cluster_memberships: Vec::new(),
             is_summary: true,
             summarizes: summarized_chunk_ids,
-            visibility: Visibility::default(),
+            visibility: default_visibility(),
             relations: Vec::new(),
             access_profile: AccessProfile::new(),
             expires_at: None,
@@ -390,9 +356,9 @@ impl HierarchicalChunk {
         self
     }
 
-    /// Set the visibility level
-    pub fn with_visibility(mut self, visibility: Visibility) -> Self {
-        self.visibility = visibility;
+    /// Set the visibility (any string -- use `visibility::` constants or custom values)
+    pub fn with_visibility(mut self, visibility: impl Into<String>) -> Self {
+        self.visibility = visibility.into();
         self
     }
 
@@ -402,35 +368,33 @@ impl HierarchicalChunk {
         self
     }
 
-    /// Set the expiry timestamp (for Expiring visibility)
+    /// Set the expiry timestamp. Sets visibility to "expiring" automatically.
     pub fn with_expires_at(mut self, expires_at: i64) -> Self {
-        self.visibility = Visibility::Expiring;
+        self.visibility = visibility::EXPIRING.to_string();
         self.expires_at = Some(expires_at);
         self
     }
 
-    /// Check if this chunk has expired
+    /// Check if this chunk has expired (has an expires_at in the past)
     pub fn is_expired(&self) -> bool {
-        if self.visibility != Visibility::Expiring {
-            return false;
-        }
         match self.expires_at {
             Some(expires) => now_epoch_secs() >= expires,
             None => false,
         }
     }
 
-    /// Check if this chunk is visible for a standard (non-deep) search
+    /// Check if this chunk is visible for a standard (non-deep) search.
+    /// Uses `STANDARD_VISIBLE` set. Expired chunks are excluded.
+    /// Custom visibilities not in that set are excluded by default.
     pub fn is_visible_standard(&self) -> bool {
-        match self.visibility {
-            Visibility::Always | Visibility::Normal | Visibility::Seasonal => true,
-            Visibility::DeepOnly => false,
-            Visibility::Expiring => !self.is_expired(),
+        if self.is_expired() {
+            return false;
         }
+        STANDARD_VISIBLE.contains(&self.visibility.as_str())
     }
 
-    /// Get relations of a specific kind
-    pub fn relations_of_kind(&self, kind: RelationKind) -> Vec<&ChunkRelation> {
+    /// Get relations of a specific kind (string match)
+    pub fn relations_of_kind(&self, kind: &str) -> Vec<&ChunkRelation> {
         self.relations.iter().filter(|r| r.kind == kind).collect()
     }
 
@@ -438,7 +402,7 @@ impl HierarchicalChunk {
     pub fn is_superseded(&self) -> bool {
         self.relations
             .iter()
-            .any(|r| r.kind == RelationKind::SupersededBy)
+            .any(|r| r.kind == relation::SUPERSEDED_BY)
     }
 
     /// Get primary cluster (highest probability)
@@ -680,51 +644,14 @@ mod tests {
 
     #[test]
     fn test_visibility_default() {
-        assert_eq!(Visibility::default(), Visibility::Normal);
-    }
-
-    #[test]
-    fn test_visibility_display() {
-        assert_eq!(format!("{}", Visibility::Always), "always");
-        assert_eq!(format!("{}", Visibility::Normal), "normal");
-        assert_eq!(format!("{}", Visibility::DeepOnly), "deep_only");
-        assert_eq!(format!("{}", Visibility::Expiring), "expiring");
-        assert_eq!(format!("{}", Visibility::Seasonal), "seasonal");
-    }
-
-    #[test]
-    fn test_visibility_from_str() {
-        assert_eq!("always".parse::<Visibility>().unwrap(), Visibility::Always);
-        assert_eq!("normal".parse::<Visibility>().unwrap(), Visibility::Normal);
-        assert_eq!(
-            "deep_only".parse::<Visibility>().unwrap(),
-            Visibility::DeepOnly
+        let chunk = HierarchicalChunk::new(
+            "content".to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            "path".to_string(),
+            "file.md".to_string(),
         );
-        assert_eq!(
-            "deep-only".parse::<Visibility>().unwrap(),
-            Visibility::DeepOnly
-        );
-        assert_eq!(
-            "deeponly".parse::<Visibility>().unwrap(),
-            Visibility::DeepOnly
-        );
-        assert_eq!(
-            "expiring".parse::<Visibility>().unwrap(),
-            Visibility::Expiring
-        );
-        assert_eq!(
-            "seasonal".parse::<Visibility>().unwrap(),
-            Visibility::Seasonal
-        );
-        assert!("unknown".parse::<Visibility>().is_err());
-    }
-
-    #[test]
-    fn test_visibility_serde_roundtrip() {
-        let json = serde_json::to_string(&Visibility::DeepOnly).unwrap();
-        assert_eq!(json, "\"deep_only\"");
-        let parsed: Visibility = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, Visibility::DeepOnly);
+        assert_eq!(chunk.visibility, "normal");
     }
 
     #[test]
@@ -736,55 +663,47 @@ mod tests {
             "path".to_string(),
             "file.md".to_string(),
         )
-        .with_visibility(Visibility::Always);
+        .with_visibility(visibility::ALWAYS);
 
-        assert_eq!(chunk.visibility, Visibility::Always);
+        assert_eq!(chunk.visibility, "always");
     }
 
     #[test]
-    fn test_chunk_default_visibility() {
+    fn test_chunk_custom_visibility() {
+        // Custom visibilities work without code changes
         let chunk = HierarchicalChunk::new(
-            "content".to_string(),
-            ChunkLevel::CONTENT,
+            "draft doc".to_string(),
+            ChunkLevel::H1,
             None,
             "path".to_string(),
             "file.md".to_string(),
-        );
+        )
+        .with_visibility("draft");
 
-        assert_eq!(chunk.visibility, Visibility::Normal);
+        assert_eq!(chunk.visibility, "draft");
+        // Custom visibilities are NOT in standard search by default
+        assert!(!chunk.is_visible_standard());
     }
 
     #[test]
     fn test_is_visible_standard() {
-        let always = HierarchicalChunk::new(
-            "".to_string(),
-            ChunkLevel::H1,
-            None,
-            "".to_string(),
-            "".to_string(),
-        )
-        .with_visibility(Visibility::Always);
-        assert!(always.is_visible_standard());
+        let make = |vis: &str| {
+            HierarchicalChunk::new(
+                "".to_string(),
+                ChunkLevel::H1,
+                None,
+                "".to_string(),
+                "".to_string(),
+            )
+            .with_visibility(vis)
+        };
 
-        let normal = HierarchicalChunk::new(
-            "".to_string(),
-            ChunkLevel::H1,
-            None,
-            "".to_string(),
-            "".to_string(),
-        )
-        .with_visibility(Visibility::Normal);
-        assert!(normal.is_visible_standard());
-
-        let deep = HierarchicalChunk::new(
-            "".to_string(),
-            ChunkLevel::H1,
-            None,
-            "".to_string(),
-            "".to_string(),
-        )
-        .with_visibility(Visibility::DeepOnly);
-        assert!(!deep.is_visible_standard());
+        assert!(make(visibility::ALWAYS).is_visible_standard());
+        assert!(make(visibility::NORMAL).is_visible_standard());
+        assert!(make(visibility::SEASONAL).is_visible_standard());
+        assert!(!make(visibility::DEEP_ONLY).is_visible_standard());
+        assert!(!make("draft").is_visible_standard());
+        assert!(!make("archived").is_visible_standard());
     }
 
     // --- Relation tests ---
@@ -792,17 +711,25 @@ mod tests {
     #[test]
     fn test_chunk_relation_constructors() {
         let r1 = ChunkRelation::superseded_by("new-id");
-        assert_eq!(r1.kind, RelationKind::SupersededBy);
+        assert_eq!(r1.kind, "superseded_by");
         assert_eq!(r1.target_id, "new-id");
 
         let r2 = ChunkRelation::related_to("other-id");
-        assert_eq!(r2.kind, RelationKind::RelatedTo);
+        assert_eq!(r2.kind, "related_to");
 
         let r3 = ChunkRelation::derived_from("source-id");
-        assert_eq!(r3.kind, RelationKind::DerivedFrom);
+        assert_eq!(r3.kind, "derived_from");
 
         let r4 = ChunkRelation::summarized_by("summary-id");
-        assert_eq!(r4.kind, RelationKind::SummarizedBy);
+        assert_eq!(r4.kind, "summarized_by");
+    }
+
+    #[test]
+    fn test_custom_relation_kind() {
+        // Custom relation kinds work without code changes
+        let r = ChunkRelation::new("contradicts", "other-id");
+        assert_eq!(r.kind, "contradicts");
+        assert_eq!(r.target_id, "other-id");
     }
 
     #[test]
@@ -833,11 +760,15 @@ mod tests {
         .with_relation(ChunkRelation::superseded_by("b"))
         .with_relation(ChunkRelation::related_to("c"));
 
-        let related = chunk.relations_of_kind(RelationKind::RelatedTo);
+        let related = chunk.relations_of_kind(relation::RELATED_TO);
         assert_eq!(related.len(), 2);
 
-        let superseded = chunk.relations_of_kind(RelationKind::SupersededBy);
+        let superseded = chunk.relations_of_kind(relation::SUPERSEDED_BY);
         assert_eq!(superseded.len(), 1);
+
+        // Custom kinds work with relations_of_kind too
+        let custom = chunk.relations_of_kind("contradicts");
+        assert_eq!(custom.len(), 0);
     }
 
     #[test]
@@ -845,7 +776,7 @@ mod tests {
         let relation = ChunkRelation::superseded_by("target-123");
         let json = serde_json::to_string(&relation).unwrap();
         let parsed: ChunkRelation = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.kind, RelationKind::SupersededBy);
+        assert_eq!(parsed.kind, "superseded_by");
         assert_eq!(parsed.target_id, "target-123");
     }
 
@@ -892,7 +823,7 @@ mod tests {
         )
         .with_expires_at(past);
 
-        assert_eq!(chunk.visibility, Visibility::Expiring);
+        assert_eq!(chunk.visibility, "expiring");
         assert!(chunk.is_expired());
         assert!(!chunk.is_visible_standard());
     }
