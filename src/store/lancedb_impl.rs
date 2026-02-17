@@ -614,29 +614,16 @@ impl VectorStore for LanceStore {
 
         for (chunk_id, profile) in updates {
             let filter = format!("id = '{}'", chunk_id.replace('\'', "''"));
-            let columns: Vec<(&str, &str)> = Vec::new();
-            let last_rolled_str = profile.last_rolled.to_string();
-            let hour_str = profile.hour.to_string();
-            let day_str = profile.day.to_string();
-            let week_str = profile.week.to_string();
-            let month_str = profile.month.to_string();
-            let year_str = profile.year.to_string();
-            let total_str = profile.total.to_string();
 
-            let mut columns = columns;
-            columns.push(("last_rolled", last_rolled_str.as_str()));
-            columns.push(("access_hour", hour_str.as_str()));
-            columns.push(("access_day", day_str.as_str()));
-            columns.push(("access_week", week_str.as_str()));
-            columns.push(("access_month", month_str.as_str()));
-            columns.push(("access_year", year_str.as_str()));
-            columns.push(("access_total", total_str.as_str()));
-
-            let mut update = table.update();
-            for (col, val) in &columns {
-                update = update.column(col.to_string(), val.to_string());
-            }
-            update
+            table
+                .update()
+                .column("last_rolled", profile.last_rolled.to_string())
+                .column("access_hour", profile.hour.to_string())
+                .column("access_day", profile.day.to_string())
+                .column("access_week", profile.week.to_string())
+                .column("access_month", profile.month.to_string())
+                .column("access_year", profile.year.to_string())
+                .column("access_total", profile.total.to_string())
                 .only_if(filter)
                 .execute()
                 .await
@@ -1022,5 +1009,193 @@ mod tests {
 
         let result = store.insert_chunks(vec![chunk]).await;
         assert!(result.is_err());
+    }
+
+    // --- Tests for new VectorStore methods ---
+
+    #[tokio::test]
+    async fn test_update_visibility() {
+        let (store, _temp) = create_test_store().await;
+
+        let chunk = create_test_chunk("vis-1", "Visibility test", ChunkLevel::H1);
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        // Default visibility should be "normal"
+        let before = store.get_by_id("vis-1").await.unwrap().unwrap();
+        assert_eq!(before.visibility, "normal");
+
+        // Promote to "always"
+        store.update_visibility("vis-1", "always").await.unwrap();
+        let after = store.get_by_id("vis-1").await.unwrap().unwrap();
+        assert_eq!(after.visibility, "always");
+
+        // Demote to "deep_only"
+        store.update_visibility("vis-1", "deep_only").await.unwrap();
+        let after2 = store.get_by_id("vis-1").await.unwrap().unwrap();
+        assert_eq!(after2.visibility, "deep_only");
+    }
+
+    #[tokio::test]
+    async fn test_update_visibility_custom_value() {
+        let (store, _temp) = create_test_store().await;
+
+        let chunk = create_test_chunk("vis-2", "Custom visibility", ChunkLevel::H1);
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        store.update_visibility("vis-2", "draft").await.unwrap();
+        let after = store.get_by_id("vis-2").await.unwrap().unwrap();
+        assert_eq!(after.visibility, "draft");
+    }
+
+    #[tokio::test]
+    async fn test_add_relation() {
+        let (store, _temp) = create_test_store().await;
+
+        let chunk1 = create_test_chunk("rel-1", "Source chunk", ChunkLevel::H1);
+        let chunk2 = create_test_chunk("rel-2", "Target chunk", ChunkLevel::H1);
+        store.insert_chunks(vec![chunk1, chunk2]).await.unwrap();
+
+        // Add a relation
+        let relation = crate::ChunkRelation::superseded_by("rel-2");
+        store.add_relation("rel-1", relation).await.unwrap();
+
+        let after = store.get_by_id("rel-1").await.unwrap().unwrap();
+        assert_eq!(after.relations.len(), 1);
+        assert_eq!(after.relations[0].kind, "superseded_by");
+        assert_eq!(after.relations[0].target_id, "rel-2");
+    }
+
+    #[tokio::test]
+    async fn test_add_multiple_relations() {
+        let (store, _temp) = create_test_store().await;
+
+        let chunk = create_test_chunk("multi-rel", "Multi-relation", ChunkLevel::H1);
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        store
+            .add_relation("multi-rel", crate::ChunkRelation::related_to("a"))
+            .await
+            .unwrap();
+        store
+            .add_relation("multi-rel", crate::ChunkRelation::derived_from("b"))
+            .await
+            .unwrap();
+
+        let after = store.get_by_id("multi-rel").await.unwrap().unwrap();
+        assert_eq!(after.relations.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_add_relation_nonexistent_chunk() {
+        let (store, _temp) = create_test_store().await;
+
+        let relation = crate::ChunkRelation::related_to("target");
+        let result = store.add_relation("nonexistent", relation).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_update_access_profiles() {
+        let (store, _temp) = create_test_store().await;
+
+        let chunk = create_test_chunk("access-1", "Access test", ChunkLevel::H1);
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let before = store.get_by_id("access-1").await.unwrap().unwrap();
+        assert_eq!(before.access_profile.total, 0);
+        assert_eq!(before.access_profile.hour, 0);
+
+        // Simulate a recorded access
+        let mut profile = before.access_profile.clone();
+        profile.hour = 3;
+        profile.total = 3;
+        profile.last_rolled = profile.created_at + 100;
+
+        store
+            .update_access_profiles(vec![("access-1".to_string(), profile)])
+            .await
+            .unwrap();
+
+        let after = store.get_by_id("access-1").await.unwrap().unwrap();
+        assert_eq!(after.access_profile.hour, 3);
+        assert_eq!(after.access_profile.total, 3);
+    }
+
+    #[tokio::test]
+    async fn test_update_access_profiles_empty() {
+        let (store, _temp) = create_test_store().await;
+
+        // Empty updates should be a no-op
+        let result = store.update_access_profiles(vec![]).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_visibility_roundtrip() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk = create_test_chunk("vis-rt", "Roundtrip test", ChunkLevel::H1);
+        chunk.visibility = "always".to_string();
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let retrieved = store.get_by_id("vis-rt").await.unwrap().unwrap();
+        assert_eq!(retrieved.visibility, "always");
+    }
+
+    #[tokio::test]
+    async fn test_relations_roundtrip() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk = create_test_chunk("rel-rt", "Relations roundtrip", ChunkLevel::H1);
+        chunk.relations = vec![
+            crate::ChunkRelation::superseded_by("newer"),
+            crate::ChunkRelation::related_to("sibling"),
+        ];
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let retrieved = store.get_by_id("rel-rt").await.unwrap().unwrap();
+        assert_eq!(retrieved.relations.len(), 2);
+        assert_eq!(retrieved.relations[0].kind, "superseded_by");
+        assert_eq!(retrieved.relations[1].kind, "related_to");
+    }
+
+    #[tokio::test]
+    async fn test_access_profile_roundtrip() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk = create_test_chunk("ap-rt", "AccessProfile roundtrip", ChunkLevel::H1);
+        chunk.access_profile.hour = 5;
+        chunk.access_profile.day = 10;
+        chunk.access_profile.week = 20;
+        chunk.access_profile.month = 50;
+        chunk.access_profile.year = 100;
+        chunk.access_profile.total = 185;
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let retrieved = store.get_by_id("ap-rt").await.unwrap().unwrap();
+        assert_eq!(retrieved.access_profile.hour, 5);
+        assert_eq!(retrieved.access_profile.day, 10);
+        assert_eq!(retrieved.access_profile.week, 20);
+        assert_eq!(retrieved.access_profile.month, 50);
+        assert_eq!(retrieved.access_profile.year, 100);
+        assert_eq!(retrieved.access_profile.total, 185);
+    }
+
+    #[tokio::test]
+    async fn test_update_visibility_sql_injection() {
+        let (store, _temp) = create_test_store().await;
+
+        let chunk = create_test_chunk("sqli-vis", "SQL injection test", ChunkLevel::H1);
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        // Attempt SQL injection via visibility value
+        store
+            .update_visibility("sqli-vis", "'; DROP TABLE chunks; --")
+            .await
+            .unwrap();
+
+        // Table should still work
+        let after = store.get_by_id("sqli-vis").await.unwrap().unwrap();
+        assert!(after.visibility.contains("DROP TABLE"));
     }
 }

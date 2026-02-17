@@ -16,6 +16,11 @@ pub struct HierarchicalSearchResult {
     pub relevant_children: Vec<SearchResult>,
 }
 
+/// Default blending factor when no recency window is active.
+pub const DEFAULT_RECENCY_ALPHA: f32 = 0.15;
+/// Blending factor when a recency window is explicitly requested.
+pub const ACTIVE_RECENCY_ALPHA: f32 = 0.3;
+
 /// Configuration for hierarchical search
 #[derive(Debug, Clone)]
 pub struct SearchConfig {
@@ -32,7 +37,7 @@ pub struct SearchConfig {
     /// Recency window for relevancy scoring. None = balanced weighting.
     pub recency_window: Option<RecencyWindow>,
     /// Blending factor: 0.0 = pure vector similarity, 1.0 = pure relevancy.
-    /// Default: 0.15
+    /// Default: 0.15 (or 0.3 when recency window is active).
     pub recency_alpha: f32,
 }
 
@@ -45,7 +50,18 @@ impl Default for SearchConfig {
             min_score: 0.0,
             deep: false,
             recency_window: None,
-            recency_alpha: 0.15,
+            recency_alpha: DEFAULT_RECENCY_ALPHA,
+        }
+    }
+}
+
+impl SearchConfig {
+    /// Derive the appropriate recency_alpha from the recency window.
+    pub fn alpha_for_window(window: Option<RecencyWindow>) -> f32 {
+        if window.is_some() {
+            ACTIVE_RECENCY_ALPHA
+        } else {
+            DEFAULT_RECENCY_ALPHA
         }
     }
 }
@@ -190,6 +206,9 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
         parent_id: &str,
     ) -> Result<Vec<HierarchicalSearchResult>> {
         let query_embedding = self.embed_query(query)?;
+        let now = now_epoch_secs();
+        let alpha = self.config.recency_alpha;
+        let recency_window = self.config.recency_window;
 
         // Get all children of this parent
         let children = self.store.get_children(parent_id).await?;
@@ -222,18 +241,39 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
             .collect();
 
         let mut results = Vec::new();
+        let mut access_updates = Vec::new();
+
         for result in top_children {
             let hierarchy_path = self.build_hierarchy_path(&result.chunk).await?;
             let relevant_children = self
                 .search_children(&query_embedding, &result.chunk)
                 .await?;
 
+            // Record access and compute combined score
+            let mut chunk = result.chunk;
+            let vector_score = result.score;
+            chunk.access_profile.record_access_at(now);
+
+            let final_score = if alpha > 0.0 {
+                let relevancy = chunk.access_profile.relevancy_score(recency_window);
+                vector_score * (1.0 - alpha) + relevancy * alpha
+            } else {
+                vector_score
+            };
+
+            access_updates.push((chunk.id.clone(), chunk.access_profile.clone()));
+
             results.push(HierarchicalSearchResult {
-                chunk: result.chunk,
-                score: result.score,
+                chunk,
+                score: final_score,
                 hierarchy_path,
                 relevant_children,
             });
+        }
+
+        // Persist access tracking (best effort)
+        if !access_updates.is_empty() {
+            let _ = self.store.update_access_profiles(access_updates).await;
         }
 
         Ok(results)
