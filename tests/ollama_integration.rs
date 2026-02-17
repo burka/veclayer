@@ -107,7 +107,10 @@ async fn test_ollama_summarizer_batch() {
     let summarizer = OllamaSummarizer::new().with_model("tinyllama");
 
     let groups = vec![
-        vec!["Rust has zero-cost abstractions.", "Rust compiles to native code."],
+        vec![
+            "Rust has zero-cost abstractions.",
+            "Rust compiles to native code.",
+        ],
         vec!["Python is interpreted.", "Python has dynamic typing."],
     ];
 
@@ -164,7 +167,8 @@ async fn test_cluster_pipeline_with_ollama() {
         "Python is dynamically typed and interpreted at runtime.",
     ];
 
-    let embeddings = embedder.embed(&texts.iter().map(|s| *s).collect::<Vec<_>>())
+    let embeddings = embedder
+        .embed(&texts.iter().map(|s| *s).collect::<Vec<_>>())
         .expect("Failed to embed");
 
     let chunks: Vec<HierarchicalChunk> = texts
@@ -193,7 +197,11 @@ async fn test_cluster_pipeline_with_ollama() {
         println!(
             "Chunk '{}': {:?}",
             &chunk.content[..50.min(chunk.content.len())],
-            chunk.cluster_memberships.iter().map(|m| (&m.cluster_id, m.probability)).collect::<Vec<_>>()
+            chunk
+                .cluster_memberships
+                .iter()
+                .map(|m| (&m.cluster_id, m.probability))
+                .collect::<Vec<_>>()
         );
         assert!(
             !chunk.cluster_memberships.is_empty(),
@@ -203,7 +211,10 @@ async fn test_cluster_pipeline_with_ollama() {
 
     // Verify summaries were generated
     println!("\n=== Generated Summaries ===");
-    assert!(!summary_chunks.is_empty(), "Should have generated summaries");
+    assert!(
+        !summary_chunks.is_empty(),
+        "Should have generated summaries"
+    );
     for summary in &summary_chunks {
         println!("Summary: {}", summary.content);
         assert!(summary.is_summary);
@@ -281,7 +292,10 @@ async fn test_cluster_pipeline_discovers_semantic_clusters() {
     assert!(!summaries.is_empty(), "Should generate cluster summaries");
 
     for summary in &summaries {
-        println!("\nCluster summary (covers {} chunks):", summary.summarizes.len());
+        println!(
+            "\nCluster summary (covers {} chunks):",
+            summary.summarizes.len()
+        );
         println!("{}", summary.content);
     }
 }
@@ -293,11 +307,11 @@ async fn test_cluster_pipeline_discovers_semantic_clusters() {
 #[tokio::test]
 #[ignore = "requires Ollama running locally"]
 async fn test_full_ingest_with_summarization() {
+    use std::fs;
     use tempfile::TempDir;
     use veclayer::commands::{ingest, IngestOptions};
     use veclayer::store::LanceStore;
     use veclayer::VectorStore;
-    use std::fs;
 
     if !ollama_available().await {
         eprintln!("Skipping: Ollama not available");
@@ -322,7 +336,8 @@ The compiler checks all memory access at compile time.
 Rust's type system prevents data races.
 Send and Sync traits ensure thread safety.
 "#,
-    ).expect("Failed to write rust.md");
+    )
+    .expect("Failed to write rust.md");
 
     fs::write(
         docs_dir.join("python.md"),
@@ -336,7 +351,8 @@ Types are checked at runtime.
 Python automatically manages memory.
 Reference counting handles most cleanup.
 "#,
-    ).expect("Failed to write python.md");
+    )
+    .expect("Failed to write python.md");
 
     let data_dir = temp_dir.path().join("veclayer-data");
 
@@ -351,11 +367,16 @@ Reference counting handles most cleanup.
     assert!(result.is_ok(), "Ingest failed: {:?}", result.err());
 
     let ingest_result = result.unwrap();
-    println!("Ingested {} chunks from {} files", ingest_result.total_chunks, ingest_result.files_processed);
+    println!(
+        "Ingested {} chunks from {} files",
+        ingest_result.total_chunks, ingest_result.files_processed
+    );
 
     // Verify store has chunks and summaries
     let embedder = FastEmbedder::new().expect("Failed to create embedder");
-    let store = LanceStore::open(&data_dir, embedder.dimension()).await.expect("Failed to open store");
+    let store = LanceStore::open(&data_dir, embedder.dimension())
+        .await
+        .expect("Failed to open store");
 
     let stats = store.stats().await.expect("Failed to get stats");
     println!("Store stats: {} total chunks", stats.total_chunks);
@@ -363,5 +384,8 @@ Reference counting handles most cleanup.
 
     // Should have original chunks plus any generated summaries
     assert!(stats.total_chunks > 0, "Store should have chunks");
-    assert!(stats.source_files.len() >= 2, "Should have indexed both files");
+    assert!(
+        stats.source_files.len() >= 2,
+        "Should have indexed both files"
+    );
 }
