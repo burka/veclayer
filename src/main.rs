@@ -73,6 +73,10 @@ enum Commands {
         /// Deep search: include all visibilities (deep_only, expired, custom)
         #[arg(long)]
         deep: bool,
+
+        /// Recency window for relevancy boosting: 24h, 7d, 30d
+        #[arg(long)]
+        recent: Option<String>,
     },
 
     /// Start the MCP server
@@ -129,12 +133,14 @@ async fn main() -> Result<()> {
             show_path,
             subtree,
             deep,
+            recent,
         } => {
             let options = QueryOptions {
                 top_k,
                 show_path,
                 subtree,
                 deep,
+                recent,
             };
             let results = veclayer::commands::query(&cli.data_dir, &query, &options).await?;
 
