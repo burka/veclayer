@@ -36,9 +36,9 @@ HierarchicalChunk {
     is_summary: bool,
     summarizes: Vec<String>,
 
-    // Identity & Memory
-    visibility: Visibility,           // Always, Normal, DeepOnly, Expiring, Seasonal
-    relations: Vec<ChunkRelation>,    // SupersededBy, SummarizedBy, RelatedTo, DerivedFrom
+    // Identity & Memory (open types -- extensible without code changes)
+    visibility: String,               // "always", "normal", "deep_only", or any custom value
+    relations: Vec<ChunkRelation>,    // kind is String: "superseded_by", "contradicts", ...
     access_profile: AccessProfile,    // created_at, last_accessed, access_count
     expires_at: Option<i64>,          // Für Expiring-Chunks
 }
@@ -46,29 +46,33 @@ HierarchicalChunk {
 
 ### Visibility
 
-Wie ein Chunk in Suche und Aging behandelt wird:
+**Offener String**, nicht Enum. Bekannte Werte als Konstanten, beliebig erweiterbar:
 
-| Variant | Beschreibung | Beispiel |
-|---------|-------------|---------|
-| `Always` | Immer sichtbar, nie degradiert | Architekturentscheidungen, Kernwissen |
-| `Normal` | Standard-Kaskade | Projektdiskussionen, aktuelle Arbeit |
-| `DeepOnly` | Nur bei expliziter tiefer Suche | Alte Chat-Logs, verworfene Ideen |
-| `Expiring` | Selbstzerstörend nach Zeitstempel | Temporäre Planungsdaten |
-| `Seasonal` | Zyklisch relevant | Quartalsberichte, wiederkehrende Aufgaben |
+| Wert | Beschreibung | Beispiel |
+|------|-------------|---------|
+| `"always"` | Immer sichtbar, nie degradiert | Architekturentscheidungen, Kernwissen |
+| `"normal"` | Standard-Kaskade | Projektdiskussionen, aktuelle Arbeit |
+| `"deep_only"` | Nur bei expliziter tiefer Suche | Alte Chat-Logs, verworfene Ideen |
+| `"expiring"` | Selbstzerstörend nach Zeitstempel | Temporäre Planungsdaten |
+| `"seasonal"` | Zyklisch relevant | Quartalsberichte, wiederkehrende Aufgaben |
+| `"draft"` | *Eigener Wert* | Entwürfe in Arbeit |
+| *beliebig* | *Eigener Wert* | Projektspezifische Kategorien |
 
-Standard-Suche: `Always` + `Normal` + `Seasonal` + nicht-abgelaufene `Expiring`.
-Deep-Suche (`--deep`): Alles.
+Standard-Suche: `always` + `normal` + `seasonal` + nicht-abgelaufene `expiring` (konfigurierbar).
+Deep-Suche (`--deep`): Alles. Unbekannte Visibilities: nur bei tiefer Suche.
 
 ### Relations
 
-Gerichtete, schlanke Verbindungen:
+**Offener String** als `kind`. Gerichtete, schlanke Verbindungen:
 
 | Kind | Semantik | Nutzen |
 |------|----------|--------|
-| `SupersededBy` | Fakt wurde durch neuere Info ersetzt | Wissensevolution |
-| `SummarizedBy` | Verdichtet in diesem Knoten | Navigierbare Verdichtung |
-| `RelatedTo` | Lose thematische Verbindung | Kontext-Entdeckung |
-| `DerivedFrom` | Entstand aus dieser Diskussion/Quelle | Herkunft nachvollziehen |
+| `"superseded_by"` | Fakt wurde durch neuere Info ersetzt | Wissensevolution |
+| `"summarized_by"` | Verdichtet in diesem Knoten | Navigierbare Verdichtung |
+| `"related_to"` | Lose thematische Verbindung | Kontext-Entdeckung |
+| `"derived_from"` | Entstand aus dieser Diskussion/Quelle | Herkunft nachvollziehen |
+| `"contradicts"` | *Eigener Typ* | Widerspruchs-Erkennung |
+| *beliebig* | *Eigener Typ* | Domainspezifische Relationen |
 
 ### AccessProfile
 

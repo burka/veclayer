@@ -12,7 +12,7 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::{connect, Connection, Table};
 
 use super::{SearchResult, StoreStats, VectorStore};
-use crate::{ChunkLevel, ClusterMembership, Error, HierarchicalChunk, Result, Visibility};
+use crate::{ChunkLevel, ClusterMembership, Error, HierarchicalChunk, Result};
 
 const TABLE_NAME: &str = "chunks";
 
@@ -130,7 +130,7 @@ impl LanceStore {
             .collect();
 
         // Identity & memory fields
-        let visibility: Vec<String> = chunks.iter().map(|c| c.visibility.to_string()).collect();
+        let visibility: Vec<String> = chunks.iter().map(|c| c.visibility.clone()).collect();
         let relations: Vec<String> = chunks
             .iter()
             .map(|c| serde_json::to_string(&c.relations).unwrap_or_else(|_| "[]".to_string()))
@@ -286,15 +286,15 @@ impl LanceStore {
                 .unwrap_or_default();
 
             // Parse identity & memory fields
-            let visibility: Visibility = visibility_col
+            let visibility: String = visibility_col
                 .and_then(|col| {
                     if col.is_null(i) {
                         None
                     } else {
-                        col.value(i).parse().ok()
+                        Some(col.value(i).to_string())
                     }
                 })
-                .unwrap_or_default();
+                .unwrap_or_else(|| crate::chunk::visibility::NORMAL.to_string());
 
             let relations: Vec<crate::chunk::ChunkRelation> = relations_col
                 .and_then(|col| {
