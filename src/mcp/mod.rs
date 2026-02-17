@@ -61,6 +61,29 @@ pub struct GetChildrenInput {
     pub parent_id: String,
 }
 
+/// Input for visibility changes (promote/demote)
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct VisibilityInput {
+    /// New visibility value (e.g. "always", "normal", "deep_only")
+    pub visibility: Option<String>,
+}
+
+/// Input for adding a relation
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RelateInput {
+    /// The source chunk ID
+    pub source_id: String,
+    /// The target chunk ID
+    pub target_id: String,
+    /// Relation kind (default: "related_to")
+    #[serde(default = "default_relation_kind")]
+    pub kind: String,
+}
+
+fn default_relation_kind() -> String {
+    "related_to".to_string()
+}
+
 /// Access profile summary for API responses
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct AccessProfileResponse {
@@ -374,38 +397,23 @@ async fn handle_mcp_message(
                         "isError": true
                     }),
                 },
-                "promote" => {
-                    let id = arguments.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                    let vis = arguments
-                        .get("visibility")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("always");
-
-                    match store.update_visibility(id, vis).await {
-                        Ok(()) => serde_json::json!({
-                            "content": [{
-                                "type": "text",
-                                "text": format!("Chunk {} promoted to visibility '{}'", id, vis)
-                            }]
-                        }),
-                        Err(e) => serde_json::json!({
-                            "content": [{ "type": "text", "text": format!("Error: {}", e) }],
-                            "isError": true
-                        }),
+                "promote" | "demote" => {
+                    let chunk_id = arguments.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    if chunk_id.is_empty() {
+                        return format_mcp_error(id, -32602, "Missing required parameter: id");
                     }
-                }
-                "demote" => {
-                    let id = arguments.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    let default_vis = if tool_name == "promote" { "always" } else { "deep_only" };
                     let vis = arguments
                         .get("visibility")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("deep_only");
+                        .unwrap_or(default_vis);
+                    let verb = if tool_name == "promote" { "promoted" } else { "demoted" };
 
-                    match store.update_visibility(id, vis).await {
+                    match store.update_visibility(chunk_id, vis).await {
                         Ok(()) => serde_json::json!({
                             "content": [{
                                 "type": "text",
-                                "text": format!("Chunk {} demoted to visibility '{}'", id, vis)
+                                "text": format!("Chunk {} {} to visibility '{}'", chunk_id, verb, vis)
                             }]
                         }),
                         Err(e) => serde_json::json!({
@@ -423,6 +431,9 @@ async fn handle_mcp_message(
                         .get("target_id")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
+                    if source_id.is_empty() || target_id.is_empty() {
+                        return format_mcp_error(id, -32602, "Missing required parameters: source_id and target_id");
+                    }
                     let kind = arguments
                         .get("kind")
                         .and_then(|v| v.as_str())
@@ -490,7 +501,7 @@ async fn execute_search(
         min_score: 0.0,
         deep: input.deep,
         recency_window,
-        recency_alpha: if recency_window.is_some() { 0.3 } else { 0.15 },
+        recency_alpha: SearchConfig::alpha_for_window(recency_window),
     };
 
     let search =
@@ -535,6 +546,9 @@ pub async fn run_http(config: Config) -> Result<()> {
         .route("/api/chunk/{id}", get(api_get_chunk))
         .route("/api/children/{parent_id}", get(api_get_children))
         .route("/api/stats", get(api_stats))
+        .route("/api/promote/{id}", post(api_promote))
+        .route("/api/demote/{id}", post(api_demote))
+        .route("/api/relate", post(api_relate))
         .layer(cors)
         .with_state(state);
 
@@ -604,6 +618,61 @@ async fn api_stats(State(state): State<AppState>) -> Json<ApiResponse<serde_json
             "chunks_by_level": stats.chunks_by_level,
             "source_files": stats.source_files,
         }))),
+        Err(e) => Json(ApiResponse::Error {
+            error: e.to_string(),
+        }),
+    }
+}
+
+async fn api_promote(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(input): Json<VisibilityInput>,
+) -> Json<ApiResponse<String>> {
+    let vis = input.visibility.as_deref().unwrap_or("always");
+    match state.store.update_visibility(&id, vis).await {
+        Ok(()) => Json(ApiResponse::Success(format!(
+            "Chunk {} promoted to visibility '{}'",
+            id, vis
+        ))),
+        Err(e) => Json(ApiResponse::Error {
+            error: e.to_string(),
+        }),
+    }
+}
+
+async fn api_demote(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(input): Json<VisibilityInput>,
+) -> Json<ApiResponse<String>> {
+    let vis = input.visibility.as_deref().unwrap_or("deep_only");
+    match state.store.update_visibility(&id, vis).await {
+        Ok(()) => Json(ApiResponse::Success(format!(
+            "Chunk {} demoted to visibility '{}'",
+            id, vis
+        ))),
+        Err(e) => Json(ApiResponse::Error {
+            error: e.to_string(),
+        }),
+    }
+}
+
+async fn api_relate(
+    State(state): State<AppState>,
+    Json(input): Json<RelateInput>,
+) -> Json<ApiResponse<String>> {
+    if input.source_id.is_empty() || input.target_id.is_empty() {
+        return Json(ApiResponse::Error {
+            error: "source_id and target_id are required".to_string(),
+        });
+    }
+    let relation = crate::ChunkRelation::new(&input.kind, &input.target_id);
+    match state.store.add_relation(&input.source_id, relation).await {
+        Ok(()) => Json(ApiResponse::Success(format!(
+            "Added relation '{}' from {} to {}",
+            input.kind, input.source_id, input.target_id
+        ))),
         Err(e) => Json(ApiResponse::Error {
             error: e.to_string(),
         }),

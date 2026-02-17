@@ -54,15 +54,15 @@ Identität entsteht aus dem Zusammenspiel von:
 ### Datenmodell vorhanden (v0.2 – in Arbeit)
 - [x] **Visibility** – Offene Strings mit bekannten Werten (always, normal, deep_only, expiring, seasonal) + beliebige eigene
 - [x] **Relations** – Offene Strings (superseded_by, summarized_by, related_to, derived_from) + beliebige eigene
-- [x] **AccessProfile** – created_at, last_accessed, access_count
+- [x] **AccessProfile** – RRD-Style Buckets (hour, day, week, month, year, total)
 - [x] **Expiry** – Selbstzerstörende Daten mit Zeitstempel
-- [ ] Visibility-Filter in der Suche
-- [ ] CLI-Kommandos: promote, demote, relate
-- [ ] Access-Tracking bei Suchergebnissen
-- [ ] Ingest mit --visibility Flag
+- [x] Visibility-Filter in der Suche (`--deep` für alle, Standard filtert deep_only/expired)
+- [x] MCP-Tools: promote, demote, relate (stdio + HTTP API)
+- [x] Access-Tracking bei Suchergebnissen (RRD-Buckets + Relevancy Scoring)
+- [x] Ingest mit `--visibility` Flag
+- [x] Recency-Suche mit `--recent 24h/7d/30d`
 
 ### Geplant
-- [ ] Vollständiges RRD-Style Access Tracking (feste Zeitfenster-Buckets)
 - [ ] Überlappende Bäume (Multi-Dimension: Thema × Zeit × Projekt)
 - [ ] Zusammenfassungen als Baum-Hierarchie (statt flacher Cluster-Summaries)
 - [ ] Turso/Limbo als Embedded-Backend (SQLite-kompatibel, Pure Rust)
@@ -148,7 +148,7 @@ Jeder Chunk kann mit unterschiedlicher Wahrscheinlichkeit zu mehreren Clustern g
 | Struktur | Fixed-size Windows | Key-Value-Paare | Heading-aware Hierarchie |
 | Kontext | Verloren | Kein Zusammenhang | Bewahrt via Parent-Links |
 | Wichtigkeit | Alles gleich | Alles gleich | Visibility (Always → DeepOnly) |
-| Zeitliche Relevanz | Keine | Keine | Access Tracking + Aging |
+| Zeitliche Relevanz | Keine | Keine | RRD Access Tracking + Aging |
 | Wissensevolution | Keine | Überschreiben | SupersededBy-Relations |
 | Selbstreflexion | Keine | Keine | Reflexions-Pattern |
 
@@ -188,6 +188,7 @@ veclayer ingest ./docs                    # Rekursiv + Summarization (Standard)
 veclayer ingest ./docs --no-summarize     # Ohne Clustering/Summaries (schneller)
 veclayer ingest ./docs --no-recursive     # Nur ein Verzeichnis
 veclayer ingest ./docs --model tinyllama  # Anderes Ollama-Modell
+veclayer ingest ./docs --visibility always  # Alle Chunks als "always" markieren
 ```
 
 ### `veclayer query <QUERY>`
@@ -197,6 +198,10 @@ veclayer query "memory safety"            # Standard-Suche
 veclayer query "memory safety" -k 10      # Top 10 Ergebnisse
 veclayer query "memory safety" -p         # Hierarchie-Pfad anzeigen
 veclayer query "auth" --subtree chunk_id  # Innerhalb eines Teilbaums suchen
+veclayer query "auth" --deep              # Alle Visibilities durchsuchen
+veclayer query "auth" --recent 24h        # Favorisiert kürzlich zugegriffene Chunks
+veclayer query "auth" --recent 7d         # Wochenfenster
+veclayer query "auth" --recent 30d        # Monatsfenster
 ```
 
 ### `veclayer serve`
@@ -236,15 +241,16 @@ VECLAYER_SEARCH_CHILDREN_K=3
 
 ## Roadmap
 
-### Phase 1: Identity-Grundlagen nutzbar machen (v0.2)
+### Phase 1: Identity-Grundlagen nutzbar machen (v0.2) ✓
 
-Das Datenmodell ist vorhanden. Jetzt geht es darum, es in der Suche und CLI nutzbar zu machen:
+Das Datenmodell ist vorhanden und in Suche, MCP und CLI nutzbar:
 
-- **Visibility-Filter in der Suche** – Standard-Suche schließt DeepOnly und abgelaufene Chunks aus; `--deep` durchsucht alles
-- **Access-Tracking** – Jeder Suchtreffer aktualisiert `last_accessed` und `access_count`
-- **CLI: promote/demote** – `veclayer promote <id> --visibility always`
-- **CLI: relate** – `veclayer relate <id> --superseded-by <new-id>`
-- **Ingest mit Visibility** – `veclayer ingest --visibility always ./core-docs`
+- ✓ **Visibility-Filter in der Suche** – Standard-Suche schließt DeepOnly und abgelaufene Chunks aus; `--deep` durchsucht alles
+- ✓ **RRD-Style Access-Tracking** – Jeder Suchtreffer aktualisiert Buckets (hour/day/week/month/year/total) + Relevancy Scoring
+- ✓ **MCP: promote/demote** – Visibility über MCP-Tools und HTTP API ändern
+- ✓ **MCP: relate** – Relationen über MCP-Tools und HTTP API hinzufügen
+- ✓ **Ingest mit Visibility** – `veclayer ingest --visibility always ./core-docs`
+- ✓ **Recency-Suche** – `--recent 24h/7d/30d` für zeitgewichtete Relevanz
 
 ### Phase 2: Zusammenfassungen als Hierarchie (v0.3)
 
@@ -252,21 +258,12 @@ Das Datenmodell ist vorhanden. Jetzt geht es darum, es in der Suche und CLI nutz
 - Batch-Generierung im Nachgang mit LLM-Unterstützung und Kontext
 - Reflexionsfunktion: Die Datenbank stellt gezielt Fragen zu den Daten
 
-### Phase 3: Vollständiges Memory Aging (v0.4)
+### Phase 3: Erweitertes Memory Aging (v0.4)
 
-**RRD-Style Access Tracking**
-```
-┌─────────────────────────────────────────────────────┐
-│              AccessProfile (40 Bytes)                │
-├──────────┬──────────┬────────┬───────┬──────────────┤
-│  1min    │  10min   │  1h    │  24h  │  7d  30d ... │
-│  (u16)   │  (u16)   │  (u16) │ (u16) │  total (u32) │
-└──────────┴──────────┴────────┴───────┴──────────────┘
-```
+RRD-Style Access Tracking ist implementiert (siehe Phase 1). Geplant:
 
-- Feste Buckets pro Chunk, konstante Größe, keine wachsenden Logs
-- Periodische Aggregation von feineren in gröbere Buckets
-- Relevanzprofil zur Suchzeit: `--recent 7d`, `--deep`, Standard
+- Automatische Visibility-Degradation basierend auf Alter + Access-Muster
+- Agent-gesteuerte Reflexion: "Was war diese Woche relevant?"
 
 ### Phase 4: Überlappende Bäume (v0.5)
 
@@ -296,7 +293,7 @@ Kein Core-Feature, sondern ein Agent-Pattern auf VecLayer – extern getriggert:
 | Vektor-Suche | LanceDB (Prototyp) | File-basiert, einfach |
 | Parsing | pulldown-cmark | Markdown → Heading-Hierarchie direkt nutzbar |
 | MCP Server | axum | Direkte Integration in Claude, andere Agenten |
-| CLI | clap | `ingest`, `query`, `serve`, `stats`, `sources` |
+| CLI | clap | `ingest`, `query`, `serve`, `stats`, `sources` + MCP tools |
 
 ## Deployment
 
