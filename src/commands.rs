@@ -265,7 +265,7 @@ pub async fn query(
         min_score: 0.0,
         deep: options.deep,
         recency_window,
-        recency_alpha: if recency_window.is_some() { 0.3 } else { 0.15 },
+        recency_alpha: SearchConfig::alpha_for_window(recency_window),
     };
 
     let search = HierarchicalSearch::new(store, embedder).with_config(config);
