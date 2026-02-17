@@ -47,6 +47,10 @@ enum Commands {
         /// Ollama model for summarization
         #[arg(long, env = "VECLAYER_OLLAMA_MODEL", default_value = "llama3.2")]
         model: String,
+
+        /// Visibility to assign to all ingested chunks (e.g. "always", "deep_only", or any custom value)
+        #[arg(long)]
+        visibility: Option<String>,
     },
 
     /// Query the vector store with hierarchical search
@@ -65,6 +69,10 @@ enum Commands {
         /// Search within a specific subtree (parent chunk ID)
         #[arg(long)]
         subtree: Option<String>,
+
+        /// Deep search: include all visibilities (deep_only, expired, custom)
+        #[arg(long)]
+        deep: bool,
     },
 
     /// Start the MCP server
@@ -105,11 +113,13 @@ async fn main() -> Result<()> {
             no_recursive,
             no_summarize,
             model,
+            visibility,
         } => {
             let options = IngestOptions {
                 recursive: !no_recursive,
                 summarize: !no_summarize,
                 model,
+                visibility,
             };
             veclayer::commands::ingest(&cli.data_dir, &path, &options).await?;
         }
@@ -118,11 +128,13 @@ async fn main() -> Result<()> {
             top_k,
             show_path,
             subtree,
+            deep,
         } => {
             let options = QueryOptions {
                 top_k,
                 show_path,
                 subtree,
+                deep,
             };
             let results = veclayer::commands::query(&cli.data_dir, &query, &options).await?;
 
