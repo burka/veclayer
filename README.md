@@ -52,8 +52,8 @@ Identität entsteht aus dem Zusammenspiel von:
 - [x] 12-Factor-Konfiguration via Environment-Variablen
 
 ### Datenmodell vorhanden (v0.2 – in Arbeit)
-- [x] **Visibility** – Always, Normal, DeepOnly, Expiring, Seasonal
-- [x] **Relations** – SupersededBy, SummarizedBy, RelatedTo, DerivedFrom
+- [x] **Visibility** – Offene Strings mit bekannten Werten (always, normal, deep_only, expiring, seasonal) + beliebige eigene
+- [x] **Relations** – Offene Strings (superseded_by, summarized_by, related_to, derived_from) + beliebige eigene
 - [x] **AccessProfile** – created_at, last_accessed, access_count
 - [x] **Expiry** – Selbstzerstörende Daten mit Zeitstempel
 - [ ] Visibility-Filter in der Suche
@@ -102,25 +102,37 @@ Der Agent bekommt bei jeder Ebene genug Kontext, um zu entscheiden: "Reicht mir 
 
 ### Self-Describing Data
 
-Jeder Chunk trägt seine eigene Behandlungsanweisung:
+Jeder Chunk trägt seine eigene Sichtbarkeit als offenen String. Bekannte Werte als Konstanten, aber erweiterbar ohne Code-Änderung:
 
 ```rust
-Visibility::Always    // Kernwissen, nie degradiert
-Visibility::Normal    // Standard, altert natürlich
-Visibility::DeepOnly  // Nur bei expliziter tiefer Suche
-Visibility::Expiring  // Selbstzerstörend nach Zeitstempel
-Visibility::Seasonal  // Zyklisch relevant
+// Bekannte Werte (visibility::ALWAYS, visibility::NORMAL, ...)
+chunk.with_visibility("always")     // Kernwissen, nie degradiert
+chunk.with_visibility("normal")     // Standard, altert natürlich
+chunk.with_visibility("deep_only")  // Nur bei expliziter tiefer Suche
+chunk.with_visibility("expiring")   // Selbstzerstörend nach Zeitstempel
+
+// Eigene Werte -- funktionieren ohne Code-Änderung
+chunk.with_visibility("draft")      // Eigene Kategorie
+chunk.with_visibility("archived")   // Eigene Kategorie
 ```
+
+Standard-Suche zeigt `always`, `normal`, `seasonal`, `expiring` (nicht abgelaufen). Alles andere nur bei tiefer Suche. Welche Werte in welchem Suchmodus sichtbar sind, ist konfigurierbar.
 
 ### Relationen
 
-Schlanke, gerichtete Verbindungen zwischen Chunks:
+Schlanke, gerichtete Verbindungen. Auch hier: `kind` ist ein offener String.
 
 ```rust
-ChunkRelation::superseded_by("newer-fact-id")  // Fakt ersetzt
-ChunkRelation::summarized_by("summary-id")     // Verdichtet
-ChunkRelation::related_to("other-id")          // Thematisch verbunden
-ChunkRelation::derived_from("source-id")       // Entstanden aus
+// Bekannte Werte
+ChunkRelation::superseded_by("newer-fact-id")
+ChunkRelation::summarized_by("summary-id")
+ChunkRelation::related_to("other-id")
+ChunkRelation::derived_from("source-id")
+
+// Eigene Relationen
+ChunkRelation::new("contradicts", "other-id")
+ChunkRelation::new("blocks", "issue-id")
+ChunkRelation::new("inspired_by", "source-id")
 ```
 
 Bewusste Einschränkung: Max 1-2 Hops, keine Graph-Traversierung.

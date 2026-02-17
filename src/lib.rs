@@ -12,8 +12,8 @@ pub mod store;
 pub mod summarizer;
 
 pub use chunk::{
-    AccessProfile, ChunkLevel, ChunkRelation, ClusterMembership, HierarchicalChunk, RelationKind,
-    Visibility,
+    relation, visibility, AccessProfile, ChunkLevel, ChunkRelation, ClusterMembership,
+    HierarchicalChunk, STANDARD_VISIBLE,
 };
 pub use cluster::{ClusterPipeline, SoftClusterer};
 pub use config::Config;
