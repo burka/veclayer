@@ -31,6 +31,9 @@ pub struct SearchInput {
     /// Deep search: include all visibilities (deep_only, expired, custom)
     #[serde(default)]
     pub deep: bool,
+    /// Recency window for relevancy scoring: "24h", "7d", "30d", or null
+    #[serde(default)]
+    pub recency: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -58,6 +61,17 @@ pub struct GetChildrenInput {
     pub parent_id: String,
 }
 
+/// Access profile summary for API responses
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AccessProfileResponse {
+    pub hour: u16,
+    pub day: u16,
+    pub week: u16,
+    pub month: u16,
+    pub year: u16,
+    pub total: u32,
+}
+
 /// A simplified chunk for API responses
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ChunkResponse {
@@ -69,6 +83,7 @@ pub struct ChunkResponse {
     pub heading: Option<String>,
     pub parent_id: Option<String>,
     pub visibility: String,
+    pub access: AccessProfileResponse,
 }
 
 impl From<&crate::HierarchicalChunk> for ChunkResponse {
@@ -82,6 +97,14 @@ impl From<&crate::HierarchicalChunk> for ChunkResponse {
             heading: chunk.heading.clone(),
             parent_id: chunk.parent_id.clone(),
             visibility: chunk.visibility.clone(),
+            access: AccessProfileResponse {
+                hour: chunk.access_profile.hour,
+                day: chunk.access_profile.day,
+                week: chunk.access_profile.week,
+                month: chunk.access_profile.month,
+                year: chunk.access_profile.year,
+                total: chunk.access_profile.total,
+            },
         }
     }
 }
@@ -176,7 +199,8 @@ async fn handle_mcp_message(
                                 "query": { "type": "string", "description": "The search query" },
                                 "limit": { "type": "integer", "description": "Number of results", "default": 5 },
                                 "include_children": { "type": "boolean", "description": "Include children", "default": false },
-                                "deep": { "type": "boolean", "description": "Deep search: include all visibilities (deep_only, expired, custom)", "default": false }
+                                "deep": { "type": "boolean", "description": "Deep search: include all visibilities (deep_only, expired, custom)", "default": false },
+                                "recency": { "type": "string", "description": "Recency window for relevancy boosting: 24h, 7d, or 30d" }
                             },
                             "required": ["query"]
                         }
@@ -209,6 +233,43 @@ async fn handle_mcp_message(
                         "inputSchema": {
                             "type": "object",
                             "properties": {}
+                        }
+                    },
+                    {
+                        "name": "promote",
+                        "description": "Promote a chunk's visibility (e.g. to 'always' so it appears in every search)",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string", "description": "The chunk ID" },
+                                "visibility": { "type": "string", "description": "New visibility (always, normal, seasonal)", "default": "always" }
+                            },
+                            "required": ["id"]
+                        }
+                    },
+                    {
+                        "name": "demote",
+                        "description": "Demote a chunk's visibility (e.g. to 'deep_only' to hide from standard search)",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string", "description": "The chunk ID" },
+                                "visibility": { "type": "string", "description": "New visibility", "default": "deep_only" }
+                            },
+                            "required": ["id"]
+                        }
+                    },
+                    {
+                        "name": "relate",
+                        "description": "Add a relation between two chunks (e.g. superseded_by, related_to, derived_from)",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "source_id": { "type": "string", "description": "The source chunk ID" },
+                                "target_id": { "type": "string", "description": "The target chunk ID" },
+                                "kind": { "type": "string", "description": "Relation kind (superseded_by, summarized_by, related_to, derived_from, or custom)", "default": "related_to" }
+                            },
+                            "required": ["source_id", "target_id"]
                         }
                     }
                 ]
@@ -313,6 +374,74 @@ async fn handle_mcp_message(
                         "isError": true
                     }),
                 },
+                "promote" => {
+                    let id = arguments.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    let vis = arguments
+                        .get("visibility")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("always");
+
+                    match store.update_visibility(id, vis).await {
+                        Ok(()) => serde_json::json!({
+                            "content": [{
+                                "type": "text",
+                                "text": format!("Chunk {} promoted to visibility '{}'", id, vis)
+                            }]
+                        }),
+                        Err(e) => serde_json::json!({
+                            "content": [{ "type": "text", "text": format!("Error: {}", e) }],
+                            "isError": true
+                        }),
+                    }
+                }
+                "demote" => {
+                    let id = arguments.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    let vis = arguments
+                        .get("visibility")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("deep_only");
+
+                    match store.update_visibility(id, vis).await {
+                        Ok(()) => serde_json::json!({
+                            "content": [{
+                                "type": "text",
+                                "text": format!("Chunk {} demoted to visibility '{}'", id, vis)
+                            }]
+                        }),
+                        Err(e) => serde_json::json!({
+                            "content": [{ "type": "text", "text": format!("Error: {}", e) }],
+                            "isError": true
+                        }),
+                    }
+                }
+                "relate" => {
+                    let source_id = arguments
+                        .get("source_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let target_id = arguments
+                        .get("target_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let kind = arguments
+                        .get("kind")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("related_to");
+
+                    let relation = crate::ChunkRelation::new(kind, target_id);
+                    match store.add_relation(source_id, relation).await {
+                        Ok(()) => serde_json::json!({
+                            "content": [{
+                                "type": "text",
+                                "text": format!("Added relation '{}' from {} to {}", kind, source_id, target_id)
+                            }]
+                        }),
+                        Err(e) => serde_json::json!({
+                            "content": [{ "type": "text", "text": format!("Error: {}", e) }],
+                            "isError": true
+                        }),
+                    }
+                }
                 _ => serde_json::json!({
                     "content": [{ "type": "text", "text": format!("Unknown tool: {}", tool_name) }],
                     "isError": true
@@ -349,12 +478,19 @@ async fn execute_search(
     embedder: &Arc<FastEmbedder>,
     input: SearchInput,
 ) -> Result<Vec<SearchResultResponse>> {
+    let recency_window = input
+        .recency
+        .as_deref()
+        .and_then(crate::RecencyWindow::from_str_opt);
+
     let config = SearchConfig {
         top_k: input.limit,
         children_k: if input.include_children { 3 } else { 0 },
         max_depth: 3,
         min_score: 0.0,
         deep: input.deep,
+        recency_window,
+        recency_alpha: if recency_window.is_some() { 0.3 } else { 0.15 },
     };
 
     let search =

@@ -2,7 +2,7 @@ mod lancedb_impl;
 
 pub use lancedb_impl::LanceStore;
 
-use crate::{ChunkLevel, HierarchicalChunk, Result};
+use crate::{AccessProfile, ChunkLevel, ChunkRelation, HierarchicalChunk, Result};
 use std::future::Future;
 
 /// Search result from the vector store
@@ -50,6 +50,26 @@ pub trait VectorStore: Send + Sync {
 
     /// Get statistics about the store.
     fn stats(&self) -> impl Future<Output = Result<StoreStats>> + Send;
+
+    /// Update access profiles for multiple chunks (used after search).
+    fn update_access_profiles(
+        &self,
+        updates: Vec<(String, AccessProfile)>,
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    /// Update the visibility of a chunk (for promote/demote).
+    fn update_visibility(
+        &self,
+        chunk_id: &str,
+        visibility: &str,
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    /// Add a relation to a chunk.
+    fn add_relation(
+        &self,
+        chunk_id: &str,
+        relation: ChunkRelation,
+    ) -> impl Future<Output = Result<()>> + Send;
 }
 
 /// Statistics about the vector store
@@ -72,4 +92,7 @@ crate::arc_impl!(VectorStore {
     fn get_by_source(&self, source_file: &str) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
     fn delete_by_source(&self, source_file: &str) -> impl Future<Output = Result<usize>> + Send;
     fn stats(&self) -> impl Future<Output = Result<StoreStats>> + Send;
+    fn update_access_profiles(&self, updates: Vec<(String, AccessProfile)>) -> impl Future<Output = Result<()>> + Send;
+    fn update_visibility(&self, chunk_id: &str, visibility: &str) -> impl Future<Output = Result<()>> + Send;
+    fn add_relation(&self, chunk_id: &str, relation: ChunkRelation) -> impl Future<Output = Result<()>> + Send;
 });

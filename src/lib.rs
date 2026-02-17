@@ -13,7 +13,7 @@ pub mod summarizer;
 
 pub use chunk::{
     relation, visibility, AccessProfile, ChunkLevel, ChunkRelation, ClusterMembership,
-    HierarchicalChunk, STANDARD_VISIBLE,
+    HierarchicalChunk, RecencyWindow, STANDARD_VISIBLE,
 };
 pub use cluster::{ClusterPipeline, SoftClusterer};
 pub use config::Config;
