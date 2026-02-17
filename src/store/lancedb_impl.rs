@@ -3,8 +3,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{
-    Array, BooleanArray, FixedSizeListArray, Float32Array, RecordBatch, RecordBatchIterator,
-    StringArray, UInt8Array,
+    Array, BooleanArray, FixedSizeListArray, Float32Array, Int64Array, RecordBatch,
+    RecordBatchIterator, StringArray, UInt32Array, UInt8Array,
 };
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
@@ -12,7 +12,7 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::{connect, Connection, Table};
 
 use super::{SearchResult, StoreStats, VectorStore};
-use crate::{ChunkLevel, ClusterMembership, Error, HierarchicalChunk, Result};
+use crate::{ChunkLevel, ClusterMembership, Error, HierarchicalChunk, Result, Visibility};
 
 const TABLE_NAME: &str = "chunks";
 
@@ -67,6 +67,13 @@ impl LanceStore {
             Field::new("cluster_memberships", DataType::Utf8, false), // JSON array
             Field::new("is_summary", DataType::Boolean, false),
             Field::new("summarizes", DataType::Utf8, false), // JSON array of chunk IDs
+            // Identity & memory fields
+            Field::new("visibility", DataType::Utf8, false),
+            Field::new("relations", DataType::Utf8, false), // JSON array
+            Field::new("created_at", DataType::Int64, false),
+            Field::new("last_accessed", DataType::Int64, false),
+            Field::new("access_count", DataType::UInt32, false),
+            Field::new("expires_at", DataType::Int64, true),
         ]))
     }
 
@@ -122,6 +129,23 @@ impl LanceStore {
             .map(|c| serde_json::to_string(&c.summarizes).unwrap_or_else(|_| "[]".to_string()))
             .collect();
 
+        // Identity & memory fields
+        let visibility: Vec<String> = chunks.iter().map(|c| c.visibility.to_string()).collect();
+        let relations: Vec<String> = chunks
+            .iter()
+            .map(|c| serde_json::to_string(&c.relations).unwrap_or_else(|_| "[]".to_string()))
+            .collect();
+        let created_at: Vec<i64> = chunks.iter().map(|c| c.access_profile.created_at).collect();
+        let last_accessed: Vec<i64> = chunks
+            .iter()
+            .map(|c| c.access_profile.last_accessed)
+            .collect();
+        let access_count: Vec<u32> = chunks
+            .iter()
+            .map(|c| c.access_profile.access_count)
+            .collect();
+        let expires_at: Vec<Option<i64>> = chunks.iter().map(|c| c.expires_at).collect();
+
         // Build embeddings as FixedSizeList
         let mut embedding_values: Vec<f32> = Vec::with_capacity(chunks.len() * self.dimension);
         for chunk in chunks {
@@ -158,6 +182,12 @@ impl LanceStore {
                 Arc::new(StringArray::from(cluster_memberships)),
                 Arc::new(BooleanArray::from(is_summary)),
                 Arc::new(StringArray::from(summarizes)),
+                Arc::new(StringArray::from(visibility)),
+                Arc::new(StringArray::from(relations)),
+                Arc::new(Int64Array::from(created_at)),
+                Arc::new(Int64Array::from(last_accessed)),
+                Arc::new(UInt32Array::from(access_count)),
+                Arc::new(Int64Array::from(expires_at)),
             ],
         )
         .map_err(|e| Error::store(format!("Failed to create record batch: {}", e)))
@@ -185,7 +215,7 @@ impl LanceStore {
         let source_files = Self::extract_column::<StringArray>(batch, 6, "source_file")?;
         let headings = Self::extract_column::<StringArray>(batch, 7, "heading")?;
 
-        // New RAPTOR fields (optional for backwards compatibility)
+        // RAPTOR fields (optional for backwards compatibility)
         let cluster_memberships_col = batch
             .column_by_name("cluster_memberships")
             .and_then(|c| c.as_any().downcast_ref::<StringArray>());
@@ -195,6 +225,26 @@ impl LanceStore {
         let summarizes_col = batch
             .column_by_name("summarizes")
             .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+
+        // Identity & memory fields (optional for backwards compatibility)
+        let visibility_col = batch
+            .column_by_name("visibility")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let relations_col = batch
+            .column_by_name("relations")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let created_at_col = batch
+            .column_by_name("created_at")
+            .and_then(|c| c.as_any().downcast_ref::<Int64Array>());
+        let last_accessed_col = batch
+            .column_by_name("last_accessed")
+            .and_then(|c| c.as_any().downcast_ref::<Int64Array>());
+        let access_count_col = batch
+            .column_by_name("access_count")
+            .and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
+        let expires_at_col = batch
+            .column_by_name("expires_at")
+            .and_then(|c| c.as_any().downcast_ref::<Int64Array>());
 
         let mut chunks = Vec::with_capacity(batch.num_rows());
 
@@ -235,6 +285,41 @@ impl LanceStore {
                 })
                 .unwrap_or_default();
 
+            // Parse identity & memory fields
+            let visibility: Visibility = visibility_col
+                .and_then(|col| {
+                    if col.is_null(i) {
+                        None
+                    } else {
+                        col.value(i).parse().ok()
+                    }
+                })
+                .unwrap_or_default();
+
+            let relations: Vec<crate::chunk::ChunkRelation> = relations_col
+                .and_then(|col| {
+                    if col.is_null(i) {
+                        None
+                    } else {
+                        serde_json::from_str(col.value(i)).ok()
+                    }
+                })
+                .unwrap_or_default();
+
+            let access_profile = crate::chunk::AccessProfile {
+                created_at: created_at_col.map(|col| col.value(i)).unwrap_or(0),
+                last_accessed: last_accessed_col.map(|col| col.value(i)).unwrap_or(0),
+                access_count: access_count_col.map(|col| col.value(i)).unwrap_or(0),
+            };
+
+            let expires_at = expires_at_col.and_then(|col| {
+                if col.is_null(i) {
+                    None
+                } else {
+                    Some(col.value(i))
+                }
+            });
+
             chunks.push(HierarchicalChunk {
                 id: ids.value(i).to_string(),
                 content: contents.value(i).to_string(),
@@ -257,6 +342,10 @@ impl LanceStore {
                 cluster_memberships,
                 is_summary,
                 summarizes,
+                visibility,
+                relations,
+                access_profile,
+                expires_at,
             });
         }
 

@@ -11,7 +11,10 @@ pub mod search;
 pub mod store;
 pub mod summarizer;
 
-pub use chunk::{ChunkLevel, ClusterMembership, HierarchicalChunk};
+pub use chunk::{
+    AccessProfile, ChunkLevel, ChunkRelation, ClusterMembership, HierarchicalChunk, RelationKind,
+    Visibility,
+};
 pub use cluster::{ClusterPipeline, SoftClusterer};
 pub use config::Config;
 pub use embedder::Embedder;
