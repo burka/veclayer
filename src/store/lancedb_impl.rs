@@ -46,6 +46,29 @@ impl LanceStore {
         Ok(store)
     }
 
+    /// Open a store for metadata-only operations (stats, sources).
+    /// Does not require an embedder — uses a placeholder dimension.
+    /// The table must already exist or will be created with a placeholder schema.
+    pub async fn open_metadata(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        std::fs::create_dir_all(path)?;
+
+        let uri = path.to_string_lossy().to_string();
+        let connection = connect(&uri)
+            .execute()
+            .await
+            .map_err(|e| Error::store(format!("Failed to connect to LanceDB: {}", e)))?;
+
+        let store = Self {
+            connection,
+            dimension: 384, // placeholder — not used for reads
+        };
+
+        store.ensure_table().await?;
+
+        Ok(store)
+    }
+
     fn schema(&self) -> Arc<Schema> {
         Arc::new(Schema::new(vec![
             Field::new("id", DataType::Utf8, false),

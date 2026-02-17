@@ -319,9 +319,7 @@ pub async fn serve(data_dir: &Path, options: &ServeOptions) -> Result<()> {
 
 /// Show statistics about the vector store
 pub async fn stats(data_dir: &Path) -> Result<StatsResult> {
-    let embedder = FastEmbedder::new()?;
-    let dimension = embedder.dimension();
-    let store = LanceStore::open(data_dir, dimension).await?;
+    let store = LanceStore::open_metadata(data_dir).await?;
 
     let store_stats = store.stats().await?;
 
@@ -334,9 +332,7 @@ pub async fn stats(data_dir: &Path) -> Result<StatsResult> {
 
 /// List all indexed source files
 pub async fn sources(data_dir: &Path) -> Result<Vec<String>> {
-    let embedder = FastEmbedder::new()?;
-    let dimension = embedder.dimension();
-    let store = LanceStore::open(data_dir, dimension).await?;
+    let store = LanceStore::open_metadata(data_dir).await?;
 
     let store_stats = store.stats().await?;
 
