@@ -26,6 +26,8 @@ pub struct SearchConfig {
     pub max_depth: usize,
     /// Minimum score threshold
     pub min_score: f32,
+    /// Deep search: include all visibilities (DeepOnly, expired, custom)
+    pub deep: bool,
 }
 
 impl Default for SearchConfig {
@@ -35,6 +37,7 @@ impl Default for SearchConfig {
             children_k: 3,
             max_depth: 3,
             min_score: 0.0,
+            deep: false,
         }
     }
 }
@@ -97,22 +100,37 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
 
     /// Perform a full hierarchical search
     /// 1. Find top-level matches
-    /// 2. For each match, search its children
-    /// 3. Build a hierarchical result tree
+    /// 2. Filter by visibility (unless deep mode)
+    /// 3. For each match, search its children
+    /// 4. Build a hierarchical result tree
     pub async fn search(&self, query: &str) -> Result<Vec<HierarchicalSearchResult>> {
         let query_embedding = self.embed_query(query)?;
 
+        // Fetch more than top_k so we still have enough after visibility filtering
+        let fetch_k = if self.config.deep {
+            self.config.top_k
+        } else {
+            self.config.top_k * 2
+        };
+
         // Step 1: Find top-level matches across all levels
-        let top_results = self
-            .store
-            .search(&query_embedding, self.config.top_k, None)
-            .await?;
+        let top_results = self.store.search(&query_embedding, fetch_k, None).await?;
 
         let mut hierarchical_results = Vec::new();
 
         for result in top_results {
             if result.score < self.config.min_score {
                 continue;
+            }
+
+            // Step 2: Visibility filter (skip unless deep mode)
+            if !self.config.deep && !result.chunk.is_visible_standard() {
+                continue;
+            }
+
+            // Stop once we have enough results
+            if hierarchical_results.len() >= self.config.top_k {
+                break;
             }
 
             // Build the hierarchy path (from root to this chunk)
@@ -164,11 +182,12 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
         // Sort by score descending
         sort_by_score_desc(&mut scored_children);
 
-        // Take top results
+        // Take top results, applying visibility filter
         let top_children: Vec<_> = scored_children
             .into_iter()
-            .take(self.config.top_k)
             .filter(|r| r.score >= self.config.min_score)
+            .filter(|r| self.config.deep || r.chunk.is_visible_standard())
+            .take(self.config.top_k)
             .collect();
 
         let mut results = Vec::new();
@@ -529,6 +548,7 @@ mod tests {
             children_k: 5,
             max_depth: 2,
             min_score: 0.5,
+            deep: false,
         };
 
         let search = HierarchicalSearch::new(store, embedder).with_config(config);
