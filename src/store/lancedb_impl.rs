@@ -706,6 +706,74 @@ impl VectorStore for LanceStore {
 
         Ok(())
     }
+
+    async fn get_hot_chunks(&self, limit: usize) -> Result<Vec<HierarchicalChunk>> {
+        let table = self.get_table().await?;
+
+        // Query all chunks, we'll sort by access_total in memory
+        // (LanceDB doesn't support ORDER BY on non-vector columns directly)
+        let results = table
+            .query()
+            .only_if("access_total > 0")
+            .execute()
+            .await
+            .map_err(|e| Error::search(format!("Failed to query hot chunks: {}", e)))?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| Error::search(format!("Failed to collect hot chunks: {}", e)))?;
+
+        let mut all_chunks = Vec::new();
+        for batch in results {
+            let mut chunks = self.batch_to_chunks(&batch)?;
+            all_chunks.append(&mut chunks);
+        }
+
+        // Sort by total desc, then by hour desc (most recently active first)
+        all_chunks.sort_by(|a, b| {
+            b.access_profile
+                .total
+                .cmp(&a.access_profile.total)
+                .then(b.access_profile.hour.cmp(&a.access_profile.hour))
+        });
+
+        all_chunks.truncate(limit);
+        Ok(all_chunks)
+    }
+
+    async fn get_stale_chunks(&self, stale_seconds: i64, limit: usize) -> Result<Vec<HierarchicalChunk>> {
+        let now = crate::chunk::now_epoch_secs();
+        let cutoff = now - stale_seconds;
+
+        let table = self.get_table().await?;
+
+        // Get chunks where last_rolled is before the cutoff and all recent buckets are 0
+        let filter = format!(
+            "last_rolled < {} AND access_hour = 0 AND access_day = 0 AND access_week = 0 AND (visibility = 'normal' OR visibility = 'always')",
+            cutoff
+        );
+
+        let results = table
+            .query()
+            .only_if(filter)
+            .execute()
+            .await
+            .map_err(|e| Error::search(format!("Failed to query stale chunks: {}", e)))?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| Error::search(format!("Failed to collect stale chunks: {}", e)))?;
+
+        let mut all_chunks = Vec::new();
+        for batch in results {
+            let mut chunks = self.batch_to_chunks(&batch)?;
+            all_chunks.append(&mut chunks);
+        }
+
+        // Sort by last_rolled ascending (stalest first)
+        all_chunks.sort_by_key(|c| c.access_profile.last_rolled);
+
+        all_chunks.truncate(limit);
+        Ok(all_chunks)
+    }
 }
 
 #[cfg(test)]
@@ -1220,5 +1288,117 @@ mod tests {
         // Table should still work
         let after = store.get_by_id("sqli-vis").await.unwrap().unwrap();
         assert!(after.visibility.contains("DROP TABLE"));
+    }
+
+    #[tokio::test]
+    async fn test_get_hot_chunks_empty() {
+        let (store, _temp) = create_test_store().await;
+
+        let hot = store.get_hot_chunks(10).await.unwrap();
+        assert!(hot.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_hot_chunks_sorted() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk1 = create_test_chunk("hot-1", "Low access", ChunkLevel::H1);
+        chunk1.access_profile.total = 5;
+        chunk1.access_profile.hour = 1;
+
+        let mut chunk2 = create_test_chunk("hot-2", "High access", ChunkLevel::H1);
+        chunk2.access_profile.total = 50;
+        chunk2.access_profile.hour = 10;
+
+        let mut chunk3 = create_test_chunk("hot-3", "No access", ChunkLevel::H1);
+        chunk3.access_profile.total = 0;
+
+        store
+            .insert_chunks(vec![chunk1, chunk2, chunk3])
+            .await
+            .unwrap();
+
+        let hot = store.get_hot_chunks(10).await.unwrap();
+        // chunk3 (total=0) should be excluded
+        assert_eq!(hot.len(), 2);
+        assert_eq!(hot[0].id, "hot-2"); // highest total first
+        assert_eq!(hot[1].id, "hot-1");
+    }
+
+    #[tokio::test]
+    async fn test_get_hot_chunks_limit() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk1 = create_test_chunk("lim-1", "A", ChunkLevel::H1);
+        chunk1.access_profile.total = 10;
+        let mut chunk2 = create_test_chunk("lim-2", "B", ChunkLevel::H1);
+        chunk2.access_profile.total = 20;
+        let mut chunk3 = create_test_chunk("lim-3", "C", ChunkLevel::H1);
+        chunk3.access_profile.total = 30;
+
+        store
+            .insert_chunks(vec![chunk1, chunk2, chunk3])
+            .await
+            .unwrap();
+
+        let hot = store.get_hot_chunks(2).await.unwrap();
+        assert_eq!(hot.len(), 2);
+        assert_eq!(hot[0].id, "lim-3");
+        assert_eq!(hot[1].id, "lim-2");
+    }
+
+    #[tokio::test]
+    async fn test_get_stale_chunks_empty() {
+        let (store, _temp) = create_test_store().await;
+
+        let stale = store.get_stale_chunks(86_400, 10).await.unwrap();
+        assert!(stale.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_stale_chunks_filters_active() {
+        let (store, _temp) = create_test_store().await;
+
+        let now = crate::chunk::now_epoch_secs();
+
+        // Active chunk: recent last_rolled, has hour accesses
+        let mut active = create_test_chunk("active", "Active chunk", ChunkLevel::H1);
+        active.access_profile.last_rolled = now;
+        active.access_profile.hour = 3;
+        active.access_profile.total = 3;
+
+        // Stale chunk: old last_rolled, no recent buckets
+        let mut stale = create_test_chunk("stale", "Stale chunk", ChunkLevel::H1);
+        stale.access_profile.last_rolled = now - 90 * 86_400; // 90 days ago
+        stale.access_profile.hour = 0;
+        stale.access_profile.day = 0;
+        stale.access_profile.week = 0;
+        stale.access_profile.total = 10;
+
+        store.insert_chunks(vec![active, stale]).await.unwrap();
+
+        let result = store.get_stale_chunks(30 * 86_400, 10).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "stale");
+    }
+
+    #[tokio::test]
+    async fn test_get_stale_chunks_excludes_deep_only() {
+        let (store, _temp) = create_test_store().await;
+
+        let now = crate::chunk::now_epoch_secs();
+
+        // Already deep_only — should not be returned as candidate
+        let mut chunk = create_test_chunk("deep", "Already archived", ChunkLevel::H1);
+        chunk.visibility = "deep_only".to_string();
+        chunk.access_profile.last_rolled = now - 90 * 86_400;
+        chunk.access_profile.hour = 0;
+        chunk.access_profile.day = 0;
+        chunk.access_profile.week = 0;
+
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let result = store.get_stale_chunks(30 * 86_400, 10).await.unwrap();
+        assert!(result.is_empty());
     }
 }

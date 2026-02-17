@@ -64,11 +64,10 @@ Identität entsteht aus dem Zusammenspiel von:
 
 ### Geplant
 - [ ] Überlappende Bäume (Multi-Dimension: Thema × Zeit × Projekt)
-- [ ] Zusammenfassungen als Baum-Hierarchie (statt flacher Cluster-Summaries)
 - [ ] Turso/Limbo als Embedded-Backend (SQLite-kompatibel, Pure Rust)
 - [ ] PostgreSQL + pgvector Backend (Production)
 - [ ] Multi-Format-Parsing (PDF, HTML, Code via tree-sitter)
-- [ ] Reflexions-API (extern triggerbar)
+- [ ] Periodisches Auto-Aging (cron/scheduled)
 
 ## Wie es funktioniert
 
@@ -212,6 +211,22 @@ veclayer serve --mcp-stdio    # Stdio-Transport (für Claude Desktop)
 veclayer serve --read-only    # Production-Modus
 ```
 
+### MCP Tools (via `--mcp-stdio` oder HTTP API)
+
+| Tool | Beschreibung |
+|------|-------------|
+| `search` | Hierarchische Vektorsuche mit Visibility-Filter und Recency |
+| `get_chunk` | Chunk per ID abrufen |
+| `get_children` | Kinder eines Chunks abrufen |
+| `stats` | Index-Statistiken |
+| `promote` | Visibility hochstufen (z.B. → 'always') |
+| `demote` | Visibility herunterstufen (z.B. → 'deep_only') |
+| `relate` | Relation zwischen Chunks anlegen |
+| `reflect` | Reflexionsbericht: Hot/Stale Chunks + empfohlene Aktionen |
+| `ingest_chunk` | Neuen Chunk direkt schreiben (Agent-Beobachtungen, Summaries) |
+| `configure_aging` | Aging-Regeln setzen (Tage, Ziel-Visibility) |
+| `apply_aging` | Aging-Regeln jetzt ausführen |
+
 ### `veclayer stats` / `veclayer sources`
 
 ```bash
@@ -252,18 +267,23 @@ Das Datenmodell ist vorhanden und in Suche, MCP und CLI nutzbar:
 - ✓ **Ingest mit Visibility** – `veclayer ingest --visibility always ./core-docs`
 - ✓ **Recency-Suche** – `--recent 24h/7d/30d` für zeitgewichtete Relevanz
 
-### Phase 2: Zusammenfassungen als Hierarchie (v0.3)
+### Phase 2: Agent-Driven Memory Management (v0.3) ✓
 
-- Zusammenfassungen werden vom Cluster-Add-on zum Kernkonzept: Jeder Elternknoten IST eine Zusammenfassung seiner Kinder
-- Batch-Generierung im Nachgang mit LLM-Unterstützung und Kontext
-- Reflexionsfunktion: Die Datenbank stellt gezielt Fragen zu den Daten
+Der Agent kuratiert seinen eigenen Speicher über MCP-Tools:
+
+- ✓ **reflect** – Reflexionsbericht: Hot Chunks, stale Chunks, empfohlene Aktionen
+- ✓ **ingest_chunk** – Agent schreibt Chunks direkt (Beobachtungen, Summaries, Entscheidungen)
+- ✓ **configure_aging** – Agent setzt Degradierungsregeln (z.B. "normal → deep_only nach 30 Tagen")
+- ✓ **apply_aging** – Aging-Regeln ausführen, stale Chunks automatisch degradieren
+- ✓ **MCP Instructions** – Ausführliche Einführung beim Connect: Was VecLayer ist, Reflexions-Pattern, Summarization-Pattern
+- Zusammenfassungen werden vom Agent erstellt (search → synthesize → ingest_chunk + relate)
 
 ### Phase 3: Erweitertes Memory Aging (v0.4)
 
-RRD-Style Access Tracking ist implementiert (siehe Phase 1). Geplant:
+Grundlagen implementiert (configure_aging + apply_aging). Geplant:
 
-- Automatische Visibility-Degradation basierend auf Alter + Access-Muster
-- Agent-gesteuerte Reflexion: "Was war diese Woche relevant?"
+- Automatische periodische Aging-Ausführung (z.B. cron-getriggert)
+- Agent-gesteuerte Reflexion als Routine: "Was war diese Woche relevant?"
 
 ### Phase 4: Überlappende Bäume (v0.5)
 
@@ -275,13 +295,15 @@ Ein Datensatz kann in mehreren Bäumen gleichzeitig existieren – gruppiert nac
 - **PostgreSQL + pgvector** für Production
 - **Multi-Format Parsing** (PDF, HTML, Code via tree-sitter)
 
-### Reflexions-Pattern (Agent-Ebene)
+### Reflexions-Pattern (Agent-Ebene) ✓
 
-Kein Core-Feature, sondern ein Agent-Pattern auf VecLayer – extern getriggert:
+Implementiert als `reflect` MCP-Tool + Instructions. Der Agent wird beim Connect instruiert:
 
-- Chunks mit hohen Access-Counts der letzten Woche reviewen
-- Widersprüche erkennen und flaggen
-- Entscheiden: Zusammenfassen? Promoten? Archivieren?
+- `reflect` aufrufen, wenn Zeit ist (Session-Start, Idle-Time, Session-Ende)
+- Hot Chunks reviewen: Sind sie noch aktuell? Brauchen sie ein Update?
+- Stale Chunks degradieren: `apply_aging` oder manuell `demote`
+- Summaries erstellen: Verwandte Chunks lesen → Zusammenfassung → `ingest_chunk`
+- Kernwissen promoten: Wichtige Entscheidungen, Präferenzen → `promote` zu 'always'
 
 ## Technischer Stack
 
