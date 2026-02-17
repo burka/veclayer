@@ -469,6 +469,18 @@ mod tests {
         ) -> Result<()> {
             Ok(())
         }
+
+        async fn get_hot_chunks(&self, _limit: usize) -> Result<Vec<HierarchicalChunk>> {
+            Ok(vec![])
+        }
+
+        async fn get_stale_chunks(
+            &self,
+            _stale_seconds: i64,
+            _limit: usize,
+        ) -> Result<Vec<HierarchicalChunk>> {
+            Ok(vec![])
+        }
     }
 
     /// Mock embedder for testing

@@ -1,3 +1,4 @@
+pub mod aging;
 pub mod chunk;
 pub mod cluster;
 pub mod commands;
