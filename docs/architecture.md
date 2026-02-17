@@ -1,31 +1,88 @@
 # VecLayer Architektur
 
-VecLayer ist eine hierarchische Vektor-Datenbank, die Wissen in Bäumen organisiert. Zusammenfassungen bilden die Hierarchie – nicht als Metadaten, sondern als verdichteter Inhalt mit eigenem Embedding.
+VecLayer ist eine hierarchische Vektor-Datenbank mit Gedächtnis-Funktionen. Das Ziel: Session-übergreifende Identität für KI-Agenten durch strukturiertes, alterndes, selbstbeschreibendes Wissen.
 
-## Kernkonzepte
+## Kernprinzipien
 
-### Hierarchisches Chunking
+1. **Zusammenfassungen sind die Hierarchie** – Nicht Metadaten, sondern verdichteter Inhalt mit eigenem Embedding
+2. **Daten beschreiben sich selbst** – Visibility, Relationen, Access-Profile sind Teil jedes Chunks
+3. **Finden, dann navigieren** – Vektor-Suche findet, Relations ermöglichen 1-2 Hops, keine Graph-Traversierung
+4. **Pragmatisch, nicht perfekt** – Bewährte Patterns (RRD, Event Sourcing, hierarchisches Indexing) statt Neuerfindung
 
-Dokumente werden anhand ihrer natürlichen Struktur (Überschriften, Abschnitte) in Chunks aufgeteilt. Jeder Chunk pflegt eine Eltern-Kind-Beziehung.
+## Datenmodell
 
-#### Chunk-Ebenen
+### HierarchicalChunk
 
-- H1: Kapitel (oberste Ebene)
-- H2: Abschnitte innerhalb von Kapiteln
-- H3-H6: Unterabschnitte
-- Content: Absätze und Textblöcke
+Das zentrale Datenobjekt. Jeder Chunk trägt:
 
-#### Eltern-Kind-Beziehungen
+```rust
+HierarchicalChunk {
+    // Identität
+    id: String,
+    content: String,
+    embedding: Option<Vec<f32>>,
 
-Jeder Chunk speichert eine Referenz zu seinem Eltern-Chunk, was Baum-Traversierung bei der Suche ermöglicht.
+    // Hierarchie
+    level: ChunkLevel,        // H1-H6, Content
+    parent_id: Option<String>,
+    path: String,             // "Chapter 1 > Section 1.1 > Details"
 
-### Zusammenfassungen als Hierarchie
+    // Herkunft
+    source_file: String,
+    heading: Option<String>,
 
-Die zentrale Erkenntnis: Zusammenfassungen *sind* die Hierarchie. Jeder Knoten auf höherer Ebene enthält eine verdichtete Repräsentation seiner Kinder. Die Zusammenfassung ist nicht ein Label, sondern durchsuchbarer Inhalt mit eigenem Embedding.
+    // Clustering
+    cluster_memberships: Vec<ClusterMembership>,
+    is_summary: bool,
+    summarizes: Vec<String>,
 
-### Embedding-Strategie
+    // Identity & Memory
+    visibility: Visibility,           // Always, Normal, DeepOnly, Expiring, Seasonal
+    relations: Vec<ChunkRelation>,    // SupersededBy, SummarizedBy, RelatedTo, DerivedFrom
+    access_profile: AccessProfile,    // created_at, last_accessed, access_count
+    expires_at: Option<i64>,          // Für Expiring-Chunks
+}
+```
 
-Jeder Chunk wird unabhängig eingebettet, aber die Suche nutzt die Hierarchie für kontextuelles Traversieren.
+### Visibility
+
+Wie ein Chunk in Suche und Aging behandelt wird:
+
+| Variant | Beschreibung | Beispiel |
+|---------|-------------|---------|
+| `Always` | Immer sichtbar, nie degradiert | Architekturentscheidungen, Kernwissen |
+| `Normal` | Standard-Kaskade | Projektdiskussionen, aktuelle Arbeit |
+| `DeepOnly` | Nur bei expliziter tiefer Suche | Alte Chat-Logs, verworfene Ideen |
+| `Expiring` | Selbstzerstörend nach Zeitstempel | Temporäre Planungsdaten |
+| `Seasonal` | Zyklisch relevant | Quartalsberichte, wiederkehrende Aufgaben |
+
+Standard-Suche: `Always` + `Normal` + `Seasonal` + nicht-abgelaufene `Expiring`.
+Deep-Suche (`--deep`): Alles.
+
+### Relations
+
+Gerichtete, schlanke Verbindungen:
+
+| Kind | Semantik | Nutzen |
+|------|----------|--------|
+| `SupersededBy` | Fakt wurde durch neuere Info ersetzt | Wissensevolution |
+| `SummarizedBy` | Verdichtet in diesem Knoten | Navigierbare Verdichtung |
+| `RelatedTo` | Lose thematische Verbindung | Kontext-Entdeckung |
+| `DerivedFrom` | Entstand aus dieser Diskussion/Quelle | Herkunft nachvollziehen |
+
+### AccessProfile
+
+Basis für Memory Aging:
+
+```rust
+AccessProfile {
+    created_at: i64,      // Wann erstellt (Unix epoch)
+    last_accessed: i64,   // Wann zuletzt abgerufen
+    access_count: u32,    // Wie oft abgerufen
+}
+```
+
+Später erweiterbar zu RRD-Style Buckets (feste Zeitfenster, konstante Größe).
 
 ## System-Komponenten
 
@@ -33,140 +90,84 @@ Jeder Chunk wird unabhängig eingebettet, aber die Suche nutzt die Hierarchie f�
 
 Abstraktion für verschiedene Dokumentformate.
 
-#### MarkdownParser (implementiert)
-
-Nutzt pulldown-cmark für Markdown-Parsing. Extrahiert Überschriften und Inhaltsblöcke mit Hierarchie.
-
-#### Geplante Parser
-
-- PdfParser: PDF-Dokumente
-- HtmlParser: Webseiten
-- CodeParser: Syntax-aware Chunking via tree-sitter
-
-### VectorStore Trait
-
-Abstraktion über Vektor-Datenbanken.
-
-#### LanceDB (aktuell)
-
-Serverless Vektor-Datenbank, lokal gespeichert.
-
-- Kein Server erforderlich
-- Schnelle lokale Queries
-- Einfaches Deployment
-
-Schema: id, content, embedding, level, parent_id, path, source_file, heading, cluster_memberships, is_summary, summarizes
-
-#### Turso/Limbo (geplant)
-
-SQLite-kompatibel, Pure Rust, Vector Search eingebaut. Ersetzt LanceDB als primäres Embedded-Backend.
-
-#### PostgreSQL + pgvector (geplant)
-
-Für Production-Deployments: skalierbar, Backup, HA.
+- **MarkdownParser** (implementiert): pulldown-cmark, Heading-Hierarchie
+- **Geplant:** PDF, HTML, Code (tree-sitter)
 
 ### Embedder Trait
 
 Abstraktion über Embedding-Modelle.
 
-#### FastEmbed (implementiert)
+- **FastEmbedder** (implementiert): ONNX Runtime, CPU, BAAI/bge-small-en-v1.5 (384 Dim.)
+- **Geplant:** Ollama (GPU), OpenAI API
 
-ONNX Runtime für lokales CPU-Embedding. Standard: BAAI/bge-small-en-v1.5 (384 Dimensionen).
+### VectorStore Trait
 
-#### Geplante Embedder
+Abstraktion über Vektor-Datenbanken.
 
-- Ollama: GPU-beschleunigtes lokales Embedding
-- OpenAI: Cloud-basierte Embedding-API
+- **LanceStore** (implementiert): Serverless, file-basiert, kein Setup
+- **Geplant:** Turso/Limbo (SQLite, Pure Rust), PostgreSQL + pgvector
+
+Schema umfasst alle Chunk-Felder inkl. Visibility, Relations, AccessProfile.
 
 ### Summarizer Trait
 
-Abstraktion für Zusammenfassungs-Generierung.
-
-#### OllamaSummarizer (implementiert)
-
-Lokales LLM via Ollama REST API. Standard: llama3.2.
+- **OllamaSummarizer** (implementiert): Lokales LLM via REST API
 
 ### Clusterer Trait
 
-RAPTOR-Style Soft Clustering mit K-Means.
+- **SoftClusterer** (implementiert): K-Means mit Soft Assignments
+- **ClusterPipeline**: Clustering → Summarization → Embedding → Store
 
-- Soft Assignments (ein Chunk kann zu mehreren Clustern gehören)
-- Automatische Bestimmung der optimalen Cluster-Anzahl (Elbow-Methode)
-- LLM-Zusammenfassungen pro Cluster
+### HierarchicalSearch
+
+Orchestriert die Suche:
+
+1. Query einbetten
+2. Top-k-Matches finden (über alle Ebenen oder gefiltert)
+3. Für jeden Match: Hierarchie-Pfad aufbauen (root → match)
+4. Für jeden Match: Relevante Kinder suchen
+5. Ergebnis: Chunk + Score + Hierarchie-Pfad + Kinder
+
+### MCP Server
+
+Model Context Protocol für KI-Assistenten-Integration:
+
+- HTTP (axum, Standard) oder Stdio (für Claude Desktop)
+- Endpoints: /search, /get-chunk, /get-children, /subtree-search, /stats
 
 ## Suchstrategie
 
-### Top-Down-Kaskade
+### Standard-Suche
 
 1. Query einbetten
-2. In Wurzelknoten/Zusammenfassungen suchen
-3. Beste Matches identifizieren
-4. In Kinder der Matches abtauchen
-5. Hierarchische Ergebnisse mit Kontext zurückgeben
+2. Nearest-Neighbor über alle Chunks
+3. Post-Filter: nur `is_visible_standard()` (schließt DeepOnly + Expired aus)
+4. Hierarchie-Kontext aufbauen
+5. Access-Profile der Treffer aktualisieren
+
+### Deep-Suche (`--deep`)
+
+Wie Standard, aber ohne Visibility-Filter. Findet auch DeepOnly-Chunks.
 
 ### Subtree-Suche
 
-Wenn bekannt ist, in welchem Abschnitt gesucht werden soll, kann direkt in einem Teilbaum gesucht werden.
-
-## Geplante Konzepte
-
-### Self-Describing Data (Visibility)
-
-Daten konfigurieren selbst, wie sie behandelt werden:
-
-- **Always** – Immer sichtbar, nie degradiert (Architekturentscheidungen)
-- **Normal** – Standard-Kaskade, altert natürlich
-- **DeepOnly** – Nur bei expliziter tiefer Suche
-- **Expiring** – Selbstzerstörend nach Datum
-- **Seasonal** – Zyklisch relevant, gesteuert über Zugriffshäufigkeit
-
-### Memory Aging (RRD-Style)
-
-Access-Tracking über feste Zeitfenster (inspiriert von RRDtool):
-
-```
-AccessProfile (40 Bytes):
-[1min | 10min | 1h | 24h | 7d | 30d | total]
-```
-
-- Feste Buckets, konstanter Speicher
-- Periodische Aggregation (fein → grob)
-- Relevanzprofil zur Suchzeit wählbar
-
-### Relationen
-
-Schlanke Annotationen zwischen Chunks:
-
-- `SupersededBy(id)` – Fakt wurde durch neuere Info ersetzt
-- `SummarizedBy(id)` – Verdichtet in diesem Knoten
-- `RelatedTo(id)` – Lose thematische Verbindung
-- `DerivedFrom(id)` – Entstand aus dieser Diskussion
-
-Bewusste Einschränkung: Maximal 1-2 Hops, keine Graph-Traversierung.
-
-### Überlappende Bäume
-
-Ein Datensatz kann in mehreren Bäumen gleichzeitig existieren (Thema, Zeit, Projekt, Person). Realisierung über mehrere Parent-Pointer pro Chunk.
+Suche eingeschränkt auf Kinder eines bestimmten Parent-Chunks.
 
 ## Deployment
 
-### Single Binary
+Single Binary + Datenverzeichnis (`./veclayer-data/`). Keine externen Services für den Einstieg.
 
-VecLayer kompiliert zu einer einzigen Binary mit allen Dependencies.
+## Konfiguration
 
-### Datenverzeichnis
+12-Factor via Environment-Variablen:
 
-Alle Daten in einem Verzeichnis (./veclayer-data/). Kopieren für Backup oder Deployment.
-
-### Konfiguration
-
-Environment-Variablen (12-Factor):
-
-- `VECLAYER_DATA_DIR`: Datenverzeichnis
-- `VECLAYER_EMBEDDER`: fastembed oder ollama
-- `VECLAYER_OLLAMA_MODEL`: LLM-Modell für Summarization
-- `VECLAYER_OLLAMA_URL`: Ollama-Endpoint
-- `VECLAYER_PORT`: Server-Port
-- `VECLAYER_HOST`: Server-Host
-- `VECLAYER_SEARCH_TOP_K`: Anzahl Top-Level-Ergebnisse
-- `VECLAYER_SEARCH_CHILDREN_K`: Anzahl Kinder pro Ergebnis
+| Variable | Default | Beschreibung |
+|----------|---------|-------------|
+| `VECLAYER_DATA_DIR` | `./veclayer-data` | Datenverzeichnis |
+| `VECLAYER_EMBEDDER` | `fastembed` | Embedder (fastembed, ollama) |
+| `VECLAYER_OLLAMA_MODEL` | `llama3.2` | LLM für Summarization |
+| `VECLAYER_OLLAMA_URL` | `http://localhost:11434` | Ollama-Endpoint |
+| `VECLAYER_PORT` | `8080` | Server-Port |
+| `VECLAYER_HOST` | `127.0.0.1` | Server-Host |
+| `VECLAYER_SEARCH_TOP_K` | `5` | Top-Level-Ergebnisse |
+| `VECLAYER_SEARCH_CHILDREN_K` | `3` | Kinder pro Ergebnis |

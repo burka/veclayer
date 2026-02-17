@@ -18,6 +18,175 @@ impl ClusterMembership {
     }
 }
 
+// --- Identity & Memory Types ---
+
+/// How a chunk should be treated in search and aging.
+///
+/// Data describes itself: an architecture decision is "Always" visible,
+/// while an old chat log fades to "DeepOnly" over time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Visibility {
+    /// Always visible, never degraded (core knowledge, architecture decisions)
+    Always,
+    /// Standard cascade, ages naturally with access patterns
+    Normal,
+    /// Only found during explicit deep search (old logs, discarded ideas)
+    DeepOnly,
+    /// Self-destructing after expires_at timestamp (temporary planning data)
+    Expiring,
+    /// Cyclically relevant, driven by access frequency (quarterly reports, tax season)
+    Seasonal,
+}
+
+impl Default for Visibility {
+    fn default() -> Self {
+        Visibility::Normal
+    }
+}
+
+impl std::fmt::Display for Visibility {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Visibility::Always => write!(f, "always"),
+            Visibility::Normal => write!(f, "normal"),
+            Visibility::DeepOnly => write!(f, "deep_only"),
+            Visibility::Expiring => write!(f, "expiring"),
+            Visibility::Seasonal => write!(f, "seasonal"),
+        }
+    }
+}
+
+impl std::str::FromStr for Visibility {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "always" => Ok(Visibility::Always),
+            "normal" => Ok(Visibility::Normal),
+            "deep_only" | "deep-only" | "deeponly" => Ok(Visibility::DeepOnly),
+            "expiring" => Ok(Visibility::Expiring),
+            "seasonal" => Ok(Visibility::Seasonal),
+            _ => Err(format!("Unknown visibility: {}", s)),
+        }
+    }
+}
+
+/// Kind of relation between two chunks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationKind {
+    /// This fact was replaced by newer information
+    SupersededBy,
+    /// Condensed into this summary node
+    SummarizedBy,
+    /// Loose thematic connection
+    RelatedTo,
+    /// Originated from this discussion/source
+    DerivedFrom,
+}
+
+impl std::fmt::Display for RelationKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RelationKind::SupersededBy => write!(f, "superseded_by"),
+            RelationKind::SummarizedBy => write!(f, "summarized_by"),
+            RelationKind::RelatedTo => write!(f, "related_to"),
+            RelationKind::DerivedFrom => write!(f, "derived_from"),
+        }
+    }
+}
+
+/// A directed relation from one chunk to another.
+///
+/// Design constraint: relations are NOT the primary search path.
+/// You find a chunk via vector search, THEN navigate relations.
+/// Max 1-2 hops, no graph traversal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkRelation {
+    pub kind: RelationKind,
+    pub target_id: String,
+}
+
+impl ChunkRelation {
+    pub fn new(kind: RelationKind, target_id: impl Into<String>) -> Self {
+        Self {
+            kind,
+            target_id: target_id.into(),
+        }
+    }
+
+    pub fn superseded_by(target_id: impl Into<String>) -> Self {
+        Self::new(RelationKind::SupersededBy, target_id)
+    }
+
+    pub fn summarized_by(target_id: impl Into<String>) -> Self {
+        Self::new(RelationKind::SummarizedBy, target_id)
+    }
+
+    pub fn related_to(target_id: impl Into<String>) -> Self {
+        Self::new(RelationKind::RelatedTo, target_id)
+    }
+
+    pub fn derived_from(target_id: impl Into<String>) -> Self {
+        Self::new(RelationKind::DerivedFrom, target_id)
+    }
+}
+
+/// Basic access tracking for memory aging.
+///
+/// This is the foundation for RRD-style bucketed access profiles.
+/// For now: simple counters. Later: fixed-size time buckets (1min, 10min, 1h, 24h, 7d, 30d, total).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessProfile {
+    /// When this chunk was created (Unix epoch seconds)
+    pub created_at: i64,
+    /// When this chunk was last accessed (Unix epoch seconds)
+    pub last_accessed: i64,
+    /// Total number of times this chunk has been accessed
+    pub access_count: u32,
+}
+
+impl AccessProfile {
+    pub fn new() -> Self {
+        let now = now_epoch_secs();
+        Self {
+            created_at: now,
+            last_accessed: now,
+            access_count: 0,
+        }
+    }
+
+    /// Record an access, updating last_accessed and incrementing count
+    pub fn record_access(&mut self) {
+        self.last_accessed = now_epoch_secs();
+        self.access_count = self.access_count.saturating_add(1);
+    }
+
+    /// Seconds since last access
+    pub fn seconds_since_access(&self) -> i64 {
+        now_epoch_secs() - self.last_accessed
+    }
+
+    /// Seconds since creation
+    pub fn age_seconds(&self) -> i64 {
+        now_epoch_secs() - self.created_at
+    }
+}
+
+impl Default for AccessProfile {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn now_epoch_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
 /// Represents the hierarchical level of a chunk in the document structure.
 /// H1 = 1, H2 = 2, ..., H6 = 6, and content paragraphs under headings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -60,6 +229,10 @@ impl std::fmt::Display for ChunkLevel {
 }
 
 /// A hierarchical chunk representing a section of a document.
+///
+/// This is the core data unit of VecLayer. Each chunk carries its content,
+/// its position in the hierarchy, and metadata about how it should be treated
+/// (visibility, relations, access patterns).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HierarchicalChunk {
     /// Unique identifier for this chunk
@@ -105,6 +278,23 @@ pub struct HierarchicalChunk {
     /// If this is a summary chunk, IDs of chunks it summarizes
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub summarizes: Vec<String>,
+
+    // --- Identity & Memory fields ---
+    /// How this chunk should be treated in search and aging
+    #[serde(default)]
+    pub visibility: Visibility,
+
+    /// Relations to other chunks (SupersededBy, RelatedTo, etc.)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relations: Vec<ChunkRelation>,
+
+    /// Access tracking for memory aging
+    #[serde(default)]
+    pub access_profile: AccessProfile,
+
+    /// Optional expiry timestamp for Expiring visibility (Unix epoch seconds)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
 }
 
 impl HierarchicalChunk {
@@ -130,6 +320,10 @@ impl HierarchicalChunk {
             cluster_memberships: Vec::new(),
             is_summary: false,
             summarizes: Vec::new(),
+            visibility: Visibility::default(),
+            relations: Vec::new(),
+            access_profile: AccessProfile::new(),
+            expires_at: None,
         }
     }
 
@@ -153,6 +347,10 @@ impl HierarchicalChunk {
             cluster_memberships: Vec::new(),
             is_summary: true,
             summarizes: summarized_chunk_ids,
+            visibility: Visibility::default(),
+            relations: Vec::new(),
+            access_profile: AccessProfile::new(),
+            expires_at: None,
         }
     }
 
@@ -190,6 +388,57 @@ impl HierarchicalChunk {
     pub fn with_cluster_memberships(mut self, memberships: Vec<ClusterMembership>) -> Self {
         self.cluster_memberships = memberships;
         self
+    }
+
+    /// Set the visibility level
+    pub fn with_visibility(mut self, visibility: Visibility) -> Self {
+        self.visibility = visibility;
+        self
+    }
+
+    /// Add a relation to another chunk
+    pub fn with_relation(mut self, relation: ChunkRelation) -> Self {
+        self.relations.push(relation);
+        self
+    }
+
+    /// Set the expiry timestamp (for Expiring visibility)
+    pub fn with_expires_at(mut self, expires_at: i64) -> Self {
+        self.visibility = Visibility::Expiring;
+        self.expires_at = Some(expires_at);
+        self
+    }
+
+    /// Check if this chunk has expired
+    pub fn is_expired(&self) -> bool {
+        if self.visibility != Visibility::Expiring {
+            return false;
+        }
+        match self.expires_at {
+            Some(expires) => now_epoch_secs() >= expires,
+            None => false,
+        }
+    }
+
+    /// Check if this chunk is visible for a standard (non-deep) search
+    pub fn is_visible_standard(&self) -> bool {
+        match self.visibility {
+            Visibility::Always | Visibility::Normal | Visibility::Seasonal => true,
+            Visibility::DeepOnly => false,
+            Visibility::Expiring => !self.is_expired(),
+        }
+    }
+
+    /// Get relations of a specific kind
+    pub fn relations_of_kind(&self, kind: RelationKind) -> Vec<&ChunkRelation> {
+        self.relations.iter().filter(|r| r.kind == kind).collect()
+    }
+
+    /// Check if this chunk has been superseded
+    pub fn is_superseded(&self) -> bool {
+        self.relations
+            .iter()
+            .any(|r| r.kind == RelationKind::SupersededBy)
     }
 
     /// Get primary cluster (highest probability)
@@ -425,5 +674,255 @@ mod tests {
 
         assert!(summary.is_summary);
         assert!(summary.embedding.is_none());
+    }
+
+    // --- Visibility tests ---
+
+    #[test]
+    fn test_visibility_default() {
+        assert_eq!(Visibility::default(), Visibility::Normal);
+    }
+
+    #[test]
+    fn test_visibility_display() {
+        assert_eq!(format!("{}", Visibility::Always), "always");
+        assert_eq!(format!("{}", Visibility::Normal), "normal");
+        assert_eq!(format!("{}", Visibility::DeepOnly), "deep_only");
+        assert_eq!(format!("{}", Visibility::Expiring), "expiring");
+        assert_eq!(format!("{}", Visibility::Seasonal), "seasonal");
+    }
+
+    #[test]
+    fn test_visibility_from_str() {
+        assert_eq!("always".parse::<Visibility>().unwrap(), Visibility::Always);
+        assert_eq!("normal".parse::<Visibility>().unwrap(), Visibility::Normal);
+        assert_eq!(
+            "deep_only".parse::<Visibility>().unwrap(),
+            Visibility::DeepOnly
+        );
+        assert_eq!(
+            "deep-only".parse::<Visibility>().unwrap(),
+            Visibility::DeepOnly
+        );
+        assert_eq!(
+            "deeponly".parse::<Visibility>().unwrap(),
+            Visibility::DeepOnly
+        );
+        assert_eq!(
+            "expiring".parse::<Visibility>().unwrap(),
+            Visibility::Expiring
+        );
+        assert_eq!(
+            "seasonal".parse::<Visibility>().unwrap(),
+            Visibility::Seasonal
+        );
+        assert!("unknown".parse::<Visibility>().is_err());
+    }
+
+    #[test]
+    fn test_visibility_serde_roundtrip() {
+        let json = serde_json::to_string(&Visibility::DeepOnly).unwrap();
+        assert_eq!(json, "\"deep_only\"");
+        let parsed: Visibility = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, Visibility::DeepOnly);
+    }
+
+    #[test]
+    fn test_chunk_with_visibility() {
+        let chunk = HierarchicalChunk::new(
+            "core decision".to_string(),
+            ChunkLevel::H1,
+            None,
+            "path".to_string(),
+            "file.md".to_string(),
+        )
+        .with_visibility(Visibility::Always);
+
+        assert_eq!(chunk.visibility, Visibility::Always);
+    }
+
+    #[test]
+    fn test_chunk_default_visibility() {
+        let chunk = HierarchicalChunk::new(
+            "content".to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            "path".to_string(),
+            "file.md".to_string(),
+        );
+
+        assert_eq!(chunk.visibility, Visibility::Normal);
+    }
+
+    #[test]
+    fn test_is_visible_standard() {
+        let always = HierarchicalChunk::new(
+            "".to_string(),
+            ChunkLevel::H1,
+            None,
+            "".to_string(),
+            "".to_string(),
+        )
+        .with_visibility(Visibility::Always);
+        assert!(always.is_visible_standard());
+
+        let normal = HierarchicalChunk::new(
+            "".to_string(),
+            ChunkLevel::H1,
+            None,
+            "".to_string(),
+            "".to_string(),
+        )
+        .with_visibility(Visibility::Normal);
+        assert!(normal.is_visible_standard());
+
+        let deep = HierarchicalChunk::new(
+            "".to_string(),
+            ChunkLevel::H1,
+            None,
+            "".to_string(),
+            "".to_string(),
+        )
+        .with_visibility(Visibility::DeepOnly);
+        assert!(!deep.is_visible_standard());
+    }
+
+    // --- Relation tests ---
+
+    #[test]
+    fn test_chunk_relation_constructors() {
+        let r1 = ChunkRelation::superseded_by("new-id");
+        assert_eq!(r1.kind, RelationKind::SupersededBy);
+        assert_eq!(r1.target_id, "new-id");
+
+        let r2 = ChunkRelation::related_to("other-id");
+        assert_eq!(r2.kind, RelationKind::RelatedTo);
+
+        let r3 = ChunkRelation::derived_from("source-id");
+        assert_eq!(r3.kind, RelationKind::DerivedFrom);
+
+        let r4 = ChunkRelation::summarized_by("summary-id");
+        assert_eq!(r4.kind, RelationKind::SummarizedBy);
+    }
+
+    #[test]
+    fn test_chunk_with_relation() {
+        let chunk = HierarchicalChunk::new(
+            "old fact".to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            "path".to_string(),
+            "file.md".to_string(),
+        )
+        .with_relation(ChunkRelation::superseded_by("newer-fact"));
+
+        assert_eq!(chunk.relations.len(), 1);
+        assert!(chunk.is_superseded());
+    }
+
+    #[test]
+    fn test_relations_of_kind() {
+        let chunk = HierarchicalChunk::new(
+            "content".to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            "path".to_string(),
+            "file.md".to_string(),
+        )
+        .with_relation(ChunkRelation::related_to("a"))
+        .with_relation(ChunkRelation::superseded_by("b"))
+        .with_relation(ChunkRelation::related_to("c"));
+
+        let related = chunk.relations_of_kind(RelationKind::RelatedTo);
+        assert_eq!(related.len(), 2);
+
+        let superseded = chunk.relations_of_kind(RelationKind::SupersededBy);
+        assert_eq!(superseded.len(), 1);
+    }
+
+    #[test]
+    fn test_relation_serde_roundtrip() {
+        let relation = ChunkRelation::superseded_by("target-123");
+        let json = serde_json::to_string(&relation).unwrap();
+        let parsed: ChunkRelation = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.kind, RelationKind::SupersededBy);
+        assert_eq!(parsed.target_id, "target-123");
+    }
+
+    // --- AccessProfile tests ---
+
+    #[test]
+    fn test_access_profile_new() {
+        let profile = AccessProfile::new();
+        assert_eq!(profile.access_count, 0);
+        assert!(profile.created_at > 0);
+        assert!(profile.last_accessed > 0);
+    }
+
+    #[test]
+    fn test_access_profile_record_access() {
+        let mut profile = AccessProfile::new();
+        assert_eq!(profile.access_count, 0);
+
+        profile.record_access();
+        assert_eq!(profile.access_count, 1);
+
+        profile.record_access();
+        assert_eq!(profile.access_count, 2);
+    }
+
+    #[test]
+    fn test_access_profile_default() {
+        let profile = AccessProfile::default();
+        assert_eq!(profile.access_count, 0);
+        assert!(profile.created_at > 0);
+    }
+
+    // --- Expiring tests ---
+
+    #[test]
+    fn test_chunk_with_expires_at() {
+        let past = now_epoch_secs() - 3600; // 1 hour ago
+        let chunk = HierarchicalChunk::new(
+            "temp".to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            "path".to_string(),
+            "file.md".to_string(),
+        )
+        .with_expires_at(past);
+
+        assert_eq!(chunk.visibility, Visibility::Expiring);
+        assert!(chunk.is_expired());
+        assert!(!chunk.is_visible_standard());
+    }
+
+    #[test]
+    fn test_chunk_not_expired() {
+        let future = now_epoch_secs() + 3600; // 1 hour from now
+        let chunk = HierarchicalChunk::new(
+            "temp".to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            "path".to_string(),
+            "file.md".to_string(),
+        )
+        .with_expires_at(future);
+
+        assert!(!chunk.is_expired());
+        assert!(chunk.is_visible_standard());
+    }
+
+    #[test]
+    fn test_non_expiring_never_expired() {
+        let chunk = HierarchicalChunk::new(
+            "normal".to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            "path".to_string(),
+            "file.md".to_string(),
+        );
+
+        assert!(!chunk.is_expired());
     }
 }
