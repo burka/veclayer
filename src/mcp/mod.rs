@@ -28,6 +28,9 @@ pub struct SearchInput {
     pub limit: usize,
     #[serde(default)]
     pub include_children: bool,
+    /// Deep search: include all visibilities (deep_only, expired, custom)
+    #[serde(default)]
+    pub deep: bool,
 }
 
 fn default_limit() -> usize {
@@ -65,6 +68,7 @@ pub struct ChunkResponse {
     pub source_file: String,
     pub heading: Option<String>,
     pub parent_id: Option<String>,
+    pub visibility: String,
 }
 
 impl From<&crate::HierarchicalChunk> for ChunkResponse {
@@ -77,6 +81,7 @@ impl From<&crate::HierarchicalChunk> for ChunkResponse {
             source_file: chunk.source_file.clone(),
             heading: chunk.heading.clone(),
             parent_id: chunk.parent_id.clone(),
+            visibility: chunk.visibility.clone(),
         }
     }
 }
@@ -170,7 +175,8 @@ async fn handle_mcp_message(
                             "properties": {
                                 "query": { "type": "string", "description": "The search query" },
                                 "limit": { "type": "integer", "description": "Number of results", "default": 5 },
-                                "include_children": { "type": "boolean", "description": "Include children", "default": false }
+                                "include_children": { "type": "boolean", "description": "Include children", "default": false },
+                                "deep": { "type": "boolean", "description": "Deep search: include all visibilities (deep_only, expired, custom)", "default": false }
                             },
                             "required": ["query"]
                         }
@@ -348,6 +354,7 @@ async fn execute_search(
         children_k: if input.include_children { 3 } else { 0 },
         max_depth: 3,
         min_score: 0.0,
+        deep: input.deep,
     };
 
     let search =

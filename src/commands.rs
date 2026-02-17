@@ -24,6 +24,8 @@ pub struct IngestOptions {
     pub summarize: bool,
     /// Ollama model to use for summarization
     pub model: String,
+    /// Visibility to assign to ingested chunks (default: "normal")
+    pub visibility: Option<String>,
 }
 
 impl Default for IngestOptions {
@@ -32,6 +34,7 @@ impl Default for IngestOptions {
             recursive: true,
             summarize: true,
             model: "llama3.2".to_string(),
+            visibility: None,
         }
     }
 }
@@ -45,6 +48,8 @@ pub struct QueryOptions {
     pub show_path: bool,
     /// Search within a specific subtree (parent chunk ID)
     pub subtree: Option<String>,
+    /// Deep search: include all visibilities (deep_only, expired, custom)
+    pub deep: bool,
 }
 
 impl Default for QueryOptions {
@@ -53,6 +58,7 @@ impl Default for QueryOptions {
             top_k: 5,
             show_path: false,
             subtree: None,
+            deep: false,
         }
     }
 }
@@ -152,6 +158,13 @@ pub async fn ingest(data_dir: &Path, path: &Path, options: &IngestOptions) -> Re
             continue;
         }
 
+        // Apply visibility if specified
+        if let Some(ref vis) = options.visibility {
+            for chunk in &mut chunks {
+                chunk.visibility = vis.clone();
+            }
+        }
+
         // Generate embeddings
         let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
         let embeddings = embedder.embed(&texts)?;
@@ -242,6 +255,7 @@ pub async fn query(
         children_k: 3,
         max_depth: 3,
         min_score: 0.0,
+        deep: options.deep,
     };
 
     let search = HierarchicalSearch::new(store, embedder).with_config(config);
