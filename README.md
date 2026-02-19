@@ -1,351 +1,180 @@
 # VecLayer
 
-**Hierarchische Vektor-Datenbank mit Gedächtnis – persistente Identität für KI-Agenten.**
+**Langzeitgedaechtnis fuer KI-Agenten. Hierarchisch, perspektivisch, alterndes Wissen.**
 
-> **Status:** Experimental – Prototyp, APIs können sich ändern
-> **Autor:** Florian Schmidt, entwickelt im Dialog mit Claude
+> Status: In Development -- Prototyp, APIs koennen sich aendern
+> Autor: Florian Schmidt, entwickelt im Dialog mit Claude
 
 ## Was ist VecLayer?
 
-VecLayer ist eine hierarchische Vektor-Datenbank, die Wissen in Bäumen organisiert statt in flachen Chunk-Listen. Höhere Knoten im Baum enthalten automatisch generierte Zusammenfassungen der darunterliegenden Inhalte. Dadurch kann eine Suche zuerst den Überblick liefern und bei Bedarf in die Tiefe gehen – wie ein Mensch, der sich erst an das Thema erinnert und dann an die Details.
+VecLayer organisiert Wissen als Hierarchie: Zusammenfassungen ueber Zusammenfassungen, in beliebiger Tiefe, aus verschiedenen Perspektiven auf die gleichen Rohdaten. Eine Suche beginnt beim Ueberblick und geht bei Bedarf in die Tiefe -- wie menschliches Erinnern.
 
-Das zentrale Ziel: **Session-übergreifende Identität für KI-Agenten ermöglichen.** Nicht als flache Faktensammlung, sondern als strukturiertes, alterndes, selbstbeschreibendes Gedächtnis.
+Statt flacher Chunk-Listen oder Key-Value-Speicher bietet VecLayer strukturiertes, alterndes, selbstbeschreibendes Gedaechtnis. Aus der statistischen Form aller Erinnerungen -- Embedding-Cluster gewichtet nach Salienz -- waechst organisch eine Identitaet.
 
-VecLayer kombiniert dafür drei Konzepte:
+## Warum
 
-1. **Hierarchische Wissensorganisation** – Zusammenfassungen *sind* die Hierarchie, nicht ein Extra-Feature
-2. **Self-Describing Data** – Daten konfigurieren selbst, wie wichtig sie sind und wie sie altern
-3. **Memory Aging** – Zugriffsmuster bestimmen Relevanz, Wichtiges bleibt präsent, Unwichtiges verblasst
+Aktuelle KI-Systeme haben ein Gedaechtnis-Problem:
 
-VecLayer ist als Rust-Bibliothek mit MCP-Server-Interface konzipiert. Single Binary + Datenverzeichnis, kein Setup.
-
-## Warum Identität?
-
-Aktuelle KI-Systeme haben ein Gedächtnis-Problem:
-
-- Jede Session startet als Tabula rasa – oder mit ein paar flachen Fakten
-- Es gibt kein Gefühl für "wichtig" vs. "Rauschen"
+- Jede Session startet als Tabula rasa -- oder mit flachen Fakten
+- Flaches RAG verliert Struktur: ein 200-seitiges Dokument wird zu gleichwertigen Fragmenten
+- Es gibt kein Gefuehl fuer "wichtig" vs. "Rauschen"
 - Nichts altert. Veraltete Information steht gleichberechtigt neben aktueller
 - Ein Agent kann seine Erinnerungen nicht aktiv pflegen oder reflektieren
 
-Identität entsteht aus dem Zusammenspiel von:
+VecLayer loest das durch drei Konzepte:
 
-| Dimension | VecLayer-Feature |
-|-----------|-----------------|
-| Akkumuliertes Wissen | Hierarchische Bäume mit Zusammenfassungen |
-| Was ist wichtig? | Visibility (Always / Normal / DeepOnly) |
-| Was ist aktuell? | Memory Aging (Access Tracking) |
-| Wie hat sich mein Wissen entwickelt? | Relations (SupersededBy) |
-| Aktive Selbstpflege | Reflexions-Pattern (extern getriggert) |
+1. **Hierarchische Wissensorganisation** -- Zusammenfassungen *sind* die Hierarchie
+2. **Perspektiven** -- Sechs Default-Perspektiven strukturieren das Wissen; jederzeit erweiterbar
+3. **Memory Aging + Salienz** -- Nicht die haeufigsten, sondern die bedeutsamsten Erinnerungen kommen nach oben
 
-## Aktueller Stand
+Identitaet entsteht aus dem Zusammenspiel: Beim Verbinden erhaelt der Agent ein Priming -- wer bin ich, was beschaeftigt mich, worauf sollte ich achten.
 
-### Implementiert (v0.1 – Prototyp)
-- [x] Markdown-Parsing mit Heading-Hierarchie (pulldown-cmark)
-- [x] FastEmbed-Embeddings (ONNX, CPU-only)
-- [x] LanceDB-Backend (serverless, kein Setup)
-- [x] RAPTOR-Style Soft Clustering + LLM-Summaries (via Ollama)
-- [x] Hierarchische Suche mit Kontext-Aufbau
-- [x] MCP-Server für KI-Assistenten-Integration (HTTP + stdio)
-- [x] CLI: ingest, query, serve, stats, sources
-- [x] Trait-basierte Architektur (DocumentParser, Embedder, VectorStore, Summarizer)
-- [x] 12-Factor-Konfiguration via Environment-Variablen
+## Architektur-Ueberblick
 
-### Datenmodell vorhanden (v0.2 – in Arbeit)
-- [x] **Visibility** – Offene Strings mit bekannten Werten (always, normal, deep_only, expiring, seasonal) + beliebige eigene
-- [x] **Relations** – Offene Strings (superseded_by, summarized_by, related_to, derived_from) + beliebige eigene
-- [x] **AccessProfile** – RRD-Style Buckets (hour, day, week, month, year, total)
-- [x] **Expiry** – Selbstzerstörende Daten mit Zeitstempel
-- [x] Visibility-Filter in der Suche (`--deep` für alle, Standard filtert deep_only/expired)
-- [x] MCP-Tools: promote, demote, relate (stdio + HTTP API)
-- [x] Access-Tracking bei Suchergebnissen (RRD-Buckets + Relevancy Scoring)
-- [x] Ingest mit `--visibility` Flag
-- [x] Recency-Suche mit `--recent 24h/7d/30d`
+### Ein Primitiv: Entry
 
-### Geplant
-- [ ] Dynamic Agent Priming (Identity-Narrativ + offene Fäden + Meta-Learnings beim Connect)
-- [ ] Überlappende Bäume (Multi-Dimension: Thema × Zeit × Projekt)
-- [ ] Salienz-Engine (berechnet aus Dichte, Revisionen, Spread, Widersprüchen)
-- [ ] UCAN-basiertes Share (kryptographisch signierte Capability Tokens)
-- [ ] Turso/Limbo als Embedded-Backend (SQLite-kompatibel, Pure Rust)
-- [ ] PostgreSQL + pgvector Backend (Production)
+Alles ist ein Entry. Keine Leaf/Node-Trennung. Ein Typ-Feld klassifiziert:
 
-## Wie es funktioniert
+| Typ | Bedeutung |
+|-----|-----------|
+| `raw` | Originaldaten, unveraendert |
+| `summary` | Zusammenfassung von Kindern |
+| `meta` | Reflexion, Bewertung |
+| `impression` | Spontane Beobachtung |
 
-### Ingest-Pipeline
+ID = `sha256(content)` -- erste 7 Hex-Chars in der CLI (wie git). Identischer Content = identische ID = idempotent.
+
+### Perspektiven, nicht Baeume
+
+Sechs Default-Perspektiven strukturieren das Wissen:
+
+| Perspektive | Was sie erfasst |
+|-------------|----------------|
+| `intentions` | Absichten, Ziele, Vorhaben |
+| `people` | Personen, Beziehungen, Rollen |
+| `temporal` | Zeitverlauf, Entwicklungen |
+| `knowledge` | Dauerhaftes Fachwissen |
+| `decisions` | Entscheidungen, Abwaegungen |
+| `learnings` | Erkenntnisse, Lessons Learned |
+
+Jederzeit erweiterbar mit eigenen Perspektiven. Jede Perspektive hat Hints, die dem LLM zeigen, welches Material relevant ist.
+
+### Memory Aging
+
+RRD-inspiriertes Access-Tracking mit festen Zeitfenstern:
 
 ```
-Dokument → Parser → Hierarchy Builder → Embeddings → Clustering → Store
-                       │                                │
-                  parent/child                soft assignments +
-                  relationships               LLM-Zusammenfassungen
+hour | day | week | month | year | total
 ```
 
-### Suche: Top-Down-Kaskade
+Zugriffsmuster bestimmen Sichtbarkeit. Wichtiges bleibt praesent, Ungenutztes verblasst kontrolliert. Konfigurierbare Degradierungs-Regeln.
 
-```
-Suche: "Was war die Architekturentscheidung bei VecLayer?"
+### Salienz
 
-1. Suche in Wurzelknoten (Zusammenfassungen aller Themen)
-   → Match: "Softwarearchitektur" (Score 0.8)
+Salienz != Haeufigkeit. Gemessen an:
+- Interaktionsdichte (wie oft zugegriffen)
+- Widerspruechen (kollidiert mit anderem Wissen)
+- Wirkungsbreite (in wie vielen Perspektiven relevant)
 
-2. Suche in Kindern von "Softwarearchitektur"
-   → Match: "VecLayer" (Score 0.9)
+Ranking: `semantic_similarity x recency x salience`
 
-3. Suche in Kindern von "VecLayer"
-   → Match: "Architektur-Evolution" (Score 0.95)
+### Identitaet
 
-4. Liefere Zusammenfassung + Option auf Detail-Chunks
-```
+Aus Embedding-Clustern gewichtet nach Salienz waechst eine Identitaet. Beim Connect erhaelt der Agent ein Priming: Identity-Narrativ, offene Faeden, aktuelle Learnings.
 
-Der Agent bekommt bei jeder Ebene genug Kontext, um zu entscheiden: "Reicht mir das, oder gehe ich tiefer?"
+## Was VecLayer macht vs. was das LLM macht
 
-### Self-Describing Data
+| VecLayer (speichert, strukturiert, rechnet) | LLM (sucht, vertieft, reflektiert) |
+|---------------------------------------------|-------------------------------------|
+| Entries speichern + Embeddings erzeugen | Zusammenfassungen generieren |
+| Semantische Suche mit Perspektiven-Filter | Suchstrategie waehlen |
+| Access-Profile tracken + Salienz berechnen | Material bewerten + reflektieren |
+| Visibility degradieren (Aging) | Entscheiden was promoted/demoted wird |
+| Hierarchie navigieren (Focus) | Synthese aus aufbereitetem Material |
+| Identity-Cluster berechnen | Priming interpretieren |
+| Relationen verwalten | Relationen vorschlagen |
 
-Jeder Chunk trägt seine eigene Sichtbarkeit als offenen String. Bekannte Werte als Konstanten, aber erweiterbar ohne Code-Änderung:
-
-```rust
-// Bekannte Werte (visibility::ALWAYS, visibility::NORMAL, ...)
-chunk.with_visibility("always")     // Kernwissen, nie degradiert
-chunk.with_visibility("normal")     // Standard, altert natürlich
-chunk.with_visibility("deep_only")  // Nur bei expliziter tiefer Suche
-chunk.with_visibility("expiring")   // Selbstzerstörend nach Zeitstempel
-
-// Eigene Werte -- funktionieren ohne Code-Änderung
-chunk.with_visibility("draft")      // Eigene Kategorie
-chunk.with_visibility("archived")   // Eigene Kategorie
-```
-
-Standard-Suche zeigt `always`, `normal`, `seasonal`, `expiring` (nicht abgelaufen). Alles andere nur bei tiefer Suche. Welche Werte in welchem Suchmodus sichtbar sind, ist konfigurierbar.
-
-### Relationen
-
-Schlanke, gerichtete Verbindungen. Auch hier: `kind` ist ein offener String.
-
-```rust
-// Bekannte Werte
-ChunkRelation::superseded_by("newer-fact-id")
-ChunkRelation::summarized_by("summary-id")
-ChunkRelation::related_to("other-id")
-ChunkRelation::derived_from("source-id")
-
-// Eigene Relationen
-ChunkRelation::new("contradicts", "other-id")
-ChunkRelation::new("blocks", "issue-id")
-ChunkRelation::new("inspired_by", "source-id")
-```
-
-Bewusste Einschränkung: Max 1-2 Hops, keine Graph-Traversierung.
-
-### Soft Clustering
-
-Jeder Chunk kann mit unterschiedlicher Wahrscheinlichkeit zu mehreren Clustern gehören. Für jeden Cluster generiert ein LLM eine Zusammenfassung, die selbst durchsuchbar wird.
-
-## vs Flat Chunking / Flat Memory
-
-| Aspekt | Flat Chunking | Flat Memory (Claude/GPT) | VecLayer |
-|--------|---------------|-------------------------|----------|
-| Struktur | Fixed-size Windows | Key-Value-Paare | Heading-aware Hierarchie |
-| Kontext | Verloren | Kein Zusammenhang | Bewahrt via Parent-Links |
-| Wichtigkeit | Alles gleich | Alles gleich | Visibility (Always → DeepOnly) |
-| Zeitliche Relevanz | Keine | Keine | RRD Access Tracking + Aging |
-| Wissensevolution | Keine | Überschreiben | SupersededBy-Relations |
-| Selbstreflexion | Keine | Keine | Reflexions-Pattern |
-
-## Installation
-
-```bash
-cargo install --path .
-```
-
-Voraussetzungen:
-- Rust 1.75+
-- Ollama (optional, für Summarization) – `ollama pull llama3.2`
+VecLayer denkt nicht selbst. Es speichert, strukturiert und rechnet. Das LLM sucht, vertieft, reflektiert ueber aufbereitetes Material, generiert Zusammenfassungen und schreibt sie zurueck. Optional orchestriert ein Schlaf-Zyklus das automatisch.
 
 ## Quick Start
 
 ```bash
-# Dokumentenordner indexieren
-veclayer ingest ./docs
+# Neuen VecLayer-Speicher initialisieren
+veclayer init
+
+# Wissen hinzufuegen
+veclayer add ./docs                        # Dateien/Verzeichnisse
+veclayer add "Kernentscheidung: Rust"      # Einzelner Text
+veclayer add --perspective decisions "Wir nehmen Turso statt Postgres"
 
 # Suchen
-veclayer query "Wie funktioniert Authentifizierung"
+veclayer search "Architekturentscheidungen"
+veclayer search --perspective decisions "Backend"
 
-# Suche mit Hierarchie-Pfad
-veclayer query -p "Fehlerbehandlung"
+# In die Tiefe gehen
+veclayer focus abc1234
 
-# Status prüfen
-veclayer stats
-veclayer sources
+# Server starten (MCP/HTTP)
+veclayer serve
 ```
 
-## CLI-Referenz
+## CLI-Uebersicht
 
-### `veclayer ingest <PATH>`
+| Kommando | Beschreibung |
+|----------|-------------|
+| `init` | Neuen VecLayer-Speicher anlegen |
+| `add` | Wissen hinzufuegen (Text, Datei, Verzeichnis) |
+| `search` / `s` | Semantische Suche mit Perspektiven-Filter |
+| `focus` / `f` | In einen Entry eintauchen, Kinder anzeigen |
+| `status` | Speicher-Statistiken |
+| `serve` | MCP/HTTP-Server starten |
+| `compact` | Aging ausfuehren, Salienz berechnen |
+| `id` | Identitaets-Zusammenfassung anzeigen |
+| `reflect` | Read-only Material-Aufbereitung |
+| `think` | LLM-gestuetzte Reflexion + Konsolidierung |
+| `p` | Perspektiven verwalten (list, create, remove) |
+| `config` | Konfiguration anzeigen/aendern |
+| `help` | Kontextuelle Hilfe |
 
-```bash
-veclayer ingest ./docs                    # Rekursiv + Summarization (Standard)
-veclayer ingest ./docs --no-summarize     # Ohne Clustering/Summaries (schneller)
-veclayer ingest ./docs --no-recursive     # Nur ein Verzeichnis
-veclayer ingest ./docs --model tinyllama  # Anderes Ollama-Modell
-veclayer ingest ./docs --visibility always  # Alle Chunks als "always" markieren
-```
-
-### `veclayer query <QUERY>`
-
-```bash
-veclayer query "memory safety"            # Standard-Suche
-veclayer query "memory safety" -k 10      # Top 10 Ergebnisse
-veclayer query "memory safety" -p         # Hierarchie-Pfad anzeigen
-veclayer query "auth" --subtree chunk_id  # Innerhalb eines Teilbaums suchen
-veclayer query "auth" --deep              # Alle Visibilities durchsuchen
-veclayer query "auth" --recent 24h        # Favorisiert kürzlich zugegriffene Chunks
-veclayer query "auth" --recent 7d         # Wochenfenster
-veclayer query "auth" --recent 30d        # Monatsfenster
-```
-
-### `veclayer serve`
-
-```bash
-veclayer serve                # HTTP-Server (Standard)
-veclayer serve --mcp-stdio    # Stdio-Transport (für Claude Desktop)
-veclayer serve --read-only    # Production-Modus
-```
-
-### MCP Tools (via `--mcp-stdio` oder HTTP API)
-
-5-Tool Agent-Interface, orientiert an der Vision:
-
-| Tool | Beschreibung |
-|------|-------------|
-| `recall` | Semantische Vektorsuche mit Recency-Boost und Visibility-Filter |
-| `focus` | In einen Knoten eintauchen: Node + Kinder, optional mit semantischem Reranking per Frage-Lens |
-| `store` | Neues Wissen speichern (Beobachtungen, Summaries, Entscheidungen). Server generiert Embeddings |
-| `think` | Kuratierungs-Hub: Reflexionsbericht (default) oder Aktionen (promote/demote/relate/configure_aging/apply_aging) |
-| `share` | Scoped Share-Token generieren (Preview — UCAN-Signing geplant) |
-
-Zusätzlich: `stats` (GET /api/stats) für Index-Statistiken.
-
-### `veclayer stats` / `veclayer sources`
-
-```bash
-veclayer stats    # Index-Statistiken anzeigen
-veclayer sources  # Indexierte Dateien auflisten
-```
-
-### Globale Optionen
-
-```bash
--d, --data-dir <PATH>   # Speicherort (Standard: ./veclayer-data)
--v, --verbose           # Ausführliche Ausgabe
-```
-
-### Konfiguration (12-Factor)
-
-```env
-VECLAYER_DATA_DIR=./veclayer-data
-VECLAYER_EMBEDDER=fastembed        # oder ollama
-VECLAYER_OLLAMA_MODEL=llama3.2
-VECLAYER_OLLAMA_URL=http://localhost:11434
-VECLAYER_PORT=8080
-VECLAYER_HOST=127.0.0.1
-VECLAYER_SEARCH_TOP_K=5
-VECLAYER_SEARCH_CHILDREN_K=3
-```
-
-## Roadmap
-
-### Phase 1: Identity-Grundlagen nutzbar machen (v0.2) ✓
-
-Das Datenmodell ist vorhanden und in Suche, MCP und CLI nutzbar:
-
-- ✓ **Visibility-Filter in der Suche** – Standard-Suche schließt DeepOnly und abgelaufene Chunks aus; `--deep` durchsucht alles
-- ✓ **RRD-Style Access-Tracking** – Jeder Suchtreffer aktualisiert Buckets (hour/day/week/month/year/total) + Relevancy Scoring
-- ✓ **MCP: promote/demote** – Visibility über MCP-Tools und HTTP API ändern
-- ✓ **MCP: relate** – Relationen über MCP-Tools und HTTP API hinzufügen
-- ✓ **Ingest mit Visibility** – `veclayer ingest --visibility always ./core-docs`
-- ✓ **Recency-Suche** – `--recent 24h/7d/30d` für zeitgewichtete Relevanz
-
-### Phase 2: 5-Tool Agent Interface (v0.3) ✓
-
-Sauberes 5-Tool MCP-Interface nach Vision:
-
-- ✓ **recall** – Semantische Suche (war: search)
-- ✓ **focus** – In einen Knoten eintauchen + semantisches Reranking per Embedding-Cosine-Similarity (war: get_chunk/get_children)
-- ✓ **store** – Neues Wissen speichern (war: ingest_chunk)
-- ✓ **think** – Kuratierungs-Hub: Reflexion (default) + promote/demote/relate/configure_aging/apply_aging per `action`-Parameter
-- ✓ **share** – Scoped Share-Token (Preview, UCAN geplant)
-- ✓ **MCP Instructions** – Ausführliche Einführung beim Connect: Tools, Reflexions-Pattern, Summarization-Pattern
-- Alle alten Tool-Namen entfernt (clean API)
-
-### Phase 3: Dynamic Agent Priming (v0.4)
-
-Geplant:
-
-- Per-Agent Startup-Briefing: Identity-Narrativ, offene Fäden, Meta-Learnings
-- Generiert aus höchsten Summaries + Hot Chunks + ungelösten Relationen
-
-### Phase 4: Überlappende Bäume (v0.5)
-
-Ein Datensatz kann in mehreren Bäumen gleichzeitig existieren – gruppiert nach Thema, Zeit, Projekt, Person. Mehrere Parent-Pointer pro Chunk.
-
-### Phase 5: Backends & Parsing (v0.6+)
-
-- **Turso/Limbo** als Embedded-Backend (SQLite-kompatibel, Pure Rust)
-- **PostgreSQL + pgvector** für Production
-- **Multi-Format Parsing** (PDF, HTML, Code via tree-sitter)
-
-### Reflexions-Pattern (Agent-Ebene) ✓
-
-Implementiert als `reflect` MCP-Tool + Instructions. Der Agent wird beim Connect instruiert:
-
-- `think` aufrufen, wenn Zeit ist (Session-Start, Idle-Time, Session-Ende)
-- Hot Chunks reviewen: Sind sie noch aktuell? Brauchen sie ein Update?
-- Stale Chunks degradieren: `think(action='apply_aging')` oder `think(action='demote', id=...)`
-- Summaries erstellen: `recall` → `focus` → Zusammenfassung → `store` → `think(action='relate', kind='summarized_by')`
-- Kernwissen promoten: `think(action='promote', id=...)` zu 'always'
+Aliase: `store` = `add`, `s` = `search`, `f` = `focus`
 
 ## Technischer Stack
 
-| Komponente | Technologie | Begründung |
-|---|---|---|
-| Sprache | Rust | Performance, Memory Safety, Single Binary |
-| Embeddings | fastembed (CPU) | Trait-basiert, austauschbar |
-| Summarization | Ollama (lokal) | Lokales LLM, kein Cloud-Dependency |
-| Vektor-Suche | LanceDB (Prototyp) | File-basiert, einfach |
-| Parsing | pulldown-cmark | Markdown → Heading-Hierarchie direkt nutzbar |
-| MCP Server | axum | Direkte Integration in Claude, andere Agenten |
-| CLI | clap | `ingest`, `query`, `serve`, `stats`, `sources` + MCP tools |
+| Komponente | Technologie |
+|---|---|
+| Sprache | Rust |
+| Storage | LanceDB (Prototyp), Turso/SQLite (geplant) |
+| Embeddings | fastembed (CPU, ONNX) -- Trait-basiert, austauschbar |
+| Parsing | pulldown-cmark (Markdown), erweiterbar |
+| Server | axum (MCP + HTTP) |
+| CLI | clap v4 |
+| Konfiguration | TOML + ENV Overrides (12-Factor) |
 
-## Deployment
+## Aktueller Stand
 
-```
-Minimal:    veclayer binary + veclayer-data/ → fertig
-Production: veclayer binary → PostgreSQL + pgvector (geplant)
-```
+### Implementiert (Prototyp)
+- [x] Markdown-Parsing mit Heading-Hierarchie
+- [x] FastEmbed-Embeddings (ONNX, CPU-only)
+- [x] LanceDB-Backend (serverless)
+- [x] RAPTOR-Style Soft Clustering + LLM-Summaries (via Ollama)
+- [x] Hierarchische Suche mit Visibility-Filter
+- [x] RRD-Style Access-Tracking (hour/day/week/month/year/total)
+- [x] Agent-konfigurierbare Aging-Regeln
+- [x] 5-Tool MCP-Interface: recall, focus, store, think, share
+- [x] HTTP REST API
+- [x] Trait-basierte Architektur (DocumentParser, Embedder, VectorStore, Summarizer)
+- [x] 12-Factor-Konfiguration via ENV
 
-## Entwicklung
-
-```bash
-# Tests ausführen
-cargo test
-
-# Ollama-Integrationstests
-cargo test --test ollama_integration -- --ignored
-
-# Coverage prüfen
-cargo tarpaulin --out Html
-```
-
-## Entstehungsgeschichte
-
-Das Konzept entstand in mehreren Gesprächen zwischen Florian und Claude (November 2025 – Februar 2026):
-
-1. **Ausgangspunkt:** Frustration mit flachem RAG – Dokumente für brieflotse.de verloren ihre Struktur beim Chunking.
-2. **Erste Idee (Nov 2025):** Hierarchische Vektor-Indexierung – Heading-Levels als natürliche Baumstruktur. Rust-Prototyp mit LanceDB, MCP-Server für Claude.
-3. **Naming (Nov 2025):** Aus Kandidaten wie Hive, Strata, Hierav wurde "VecLayer".
-4. **Memory-Aging-Erweiterung (Feb 2026):** Aus der Frage "Wie könnte ein KI-Agent seine Erinnerungen managen?" entstand das RRD-inspirierte Access-Tracking, Self-Describing Data, und das Meditations-Pattern. Die Erkenntnis: Zusammenfassungen *sind* die Hierarchie.
-5. **Identitäts-Framing (Feb 2026):** VecLayer ist nicht "besseres RAG" – es ist ein **persistenter Identitätsspeicher für KI-Agenten**. Die Kombination aus Hierarchie, Visibility, Aging und Reflexion ermöglicht session-übergreifende Identität.
+### Gaps zum Konzept (in Arbeit)
+- [ ] Content-Hash IDs statt UUID
+- [ ] Entry-Typ (raw/summary/meta/impression) statt is_summary bool
+- [ ] Perspektiven (6 Defaults + Custom)
+- [ ] Salienz-Berechnung (Dichte, Widersprueche, Spread)
+- [ ] Identity-View + Priming beim Connect
+- [ ] CLI aligned mit Spec (init, add, search, focus)
+- [ ] Summarizer/Clustering aus Core raus (VecLayer denkt nicht)
+- [ ] TOML-Config + ENV Overrides
+- [ ] Schlaf-Zyklus (optionaler Orchestrator)
 
 ## Lizenz
 
