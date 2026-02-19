@@ -63,11 +63,12 @@ Identität entsteht aus dem Zusammenspiel von:
 - [x] Recency-Suche mit `--recent 24h/7d/30d`
 
 ### Geplant
+- [ ] Dynamic Agent Priming (Identity-Narrativ + offene Fäden + Meta-Learnings beim Connect)
 - [ ] Überlappende Bäume (Multi-Dimension: Thema × Zeit × Projekt)
+- [ ] Salienz-Engine (berechnet aus Dichte, Revisionen, Spread, Widersprüchen)
+- [ ] UCAN-basiertes Share (kryptographisch signierte Capability Tokens)
 - [ ] Turso/Limbo als Embedded-Backend (SQLite-kompatibel, Pure Rust)
 - [ ] PostgreSQL + pgvector Backend (Production)
-- [ ] Multi-Format-Parsing (PDF, HTML, Code via tree-sitter)
-- [ ] Periodisches Auto-Aging (cron/scheduled)
 
 ## Wie es funktioniert
 
@@ -213,19 +214,17 @@ veclayer serve --read-only    # Production-Modus
 
 ### MCP Tools (via `--mcp-stdio` oder HTTP API)
 
+5-Tool Agent-Interface, orientiert an der Vision:
+
 | Tool | Beschreibung |
 |------|-------------|
-| `search` | Hierarchische Vektorsuche mit Visibility-Filter und Recency |
-| `get_chunk` | Chunk per ID abrufen |
-| `get_children` | Kinder eines Chunks abrufen |
-| `stats` | Index-Statistiken |
-| `promote` | Visibility hochstufen (z.B. → 'always') |
-| `demote` | Visibility herunterstufen (z.B. → 'deep_only') |
-| `relate` | Relation zwischen Chunks anlegen |
-| `reflect` | Reflexionsbericht: Hot/Stale Chunks + empfohlene Aktionen |
-| `ingest_chunk` | Neuen Chunk direkt schreiben (Agent-Beobachtungen, Summaries) |
-| `configure_aging` | Aging-Regeln setzen (Tage, Ziel-Visibility) |
-| `apply_aging` | Aging-Regeln jetzt ausführen |
+| `recall` | Semantische Vektorsuche mit Recency-Boost und Visibility-Filter |
+| `focus` | In einen Knoten eintauchen: Node + Kinder, optional mit semantischem Reranking per Frage-Lens |
+| `store` | Neues Wissen speichern (Beobachtungen, Summaries, Entscheidungen). Server generiert Embeddings |
+| `think` | Kuratierungs-Hub: Reflexionsbericht (default) oder Aktionen (promote/demote/relate/configure_aging/apply_aging) |
+| `share` | Scoped Share-Token generieren (Preview — UCAN-Signing geplant) |
+
+Zusätzlich: `stats` (GET /api/stats) für Index-Statistiken.
 
 ### `veclayer stats` / `veclayer sources`
 
@@ -267,23 +266,24 @@ Das Datenmodell ist vorhanden und in Suche, MCP und CLI nutzbar:
 - ✓ **Ingest mit Visibility** – `veclayer ingest --visibility always ./core-docs`
 - ✓ **Recency-Suche** – `--recent 24h/7d/30d` für zeitgewichtete Relevanz
 
-### Phase 2: Agent-Driven Memory Management (v0.3) ✓
+### Phase 2: 5-Tool Agent Interface (v0.3) ✓
 
-Der Agent kuratiert seinen eigenen Speicher über MCP-Tools:
+Sauberes 5-Tool MCP-Interface nach Vision:
 
-- ✓ **reflect** – Reflexionsbericht: Hot Chunks, stale Chunks, empfohlene Aktionen
-- ✓ **ingest_chunk** – Agent schreibt Chunks direkt (Beobachtungen, Summaries, Entscheidungen)
-- ✓ **configure_aging** – Agent setzt Degradierungsregeln (z.B. "normal → deep_only nach 30 Tagen")
-- ✓ **apply_aging** – Aging-Regeln ausführen, stale Chunks automatisch degradieren
-- ✓ **MCP Instructions** – Ausführliche Einführung beim Connect: Was VecLayer ist, Reflexions-Pattern, Summarization-Pattern
-- Zusammenfassungen werden vom Agent erstellt (search → synthesize → ingest_chunk + relate)
+- ✓ **recall** – Semantische Suche (war: search)
+- ✓ **focus** – In einen Knoten eintauchen + semantisches Reranking per Embedding-Cosine-Similarity (war: get_chunk/get_children)
+- ✓ **store** – Neues Wissen speichern (war: ingest_chunk)
+- ✓ **think** – Kuratierungs-Hub: Reflexion (default) + promote/demote/relate/configure_aging/apply_aging per `action`-Parameter
+- ✓ **share** – Scoped Share-Token (Preview, UCAN geplant)
+- ✓ **MCP Instructions** – Ausführliche Einführung beim Connect: Tools, Reflexions-Pattern, Summarization-Pattern
+- Alle alten Tool-Namen entfernt (clean API)
 
-### Phase 3: Erweitertes Memory Aging (v0.4)
+### Phase 3: Dynamic Agent Priming (v0.4)
 
-Grundlagen implementiert (configure_aging + apply_aging). Geplant:
+Geplant:
 
-- Automatische periodische Aging-Ausführung (z.B. cron-getriggert)
-- Agent-gesteuerte Reflexion als Routine: "Was war diese Woche relevant?"
+- Per-Agent Startup-Briefing: Identity-Narrativ, offene Fäden, Meta-Learnings
+- Generiert aus höchsten Summaries + Hot Chunks + ungelösten Relationen
 
 ### Phase 4: Überlappende Bäume (v0.5)
 
@@ -299,11 +299,11 @@ Ein Datensatz kann in mehreren Bäumen gleichzeitig existieren – gruppiert nac
 
 Implementiert als `reflect` MCP-Tool + Instructions. Der Agent wird beim Connect instruiert:
 
-- `reflect` aufrufen, wenn Zeit ist (Session-Start, Idle-Time, Session-Ende)
+- `think` aufrufen, wenn Zeit ist (Session-Start, Idle-Time, Session-Ende)
 - Hot Chunks reviewen: Sind sie noch aktuell? Brauchen sie ein Update?
-- Stale Chunks degradieren: `apply_aging` oder manuell `demote`
-- Summaries erstellen: Verwandte Chunks lesen → Zusammenfassung → `ingest_chunk`
-- Kernwissen promoten: Wichtige Entscheidungen, Präferenzen → `promote` zu 'always'
+- Stale Chunks degradieren: `think(action='apply_aging')` oder `think(action='demote', id=...)`
+- Summaries erstellen: `recall` → `focus` → Zusammenfassung → `store` → `think(action='relate', kind='summarized_by')`
+- Kernwissen promoten: `think(action='promote', id=...)` zu 'always'
 
 ## Technischer Stack
 

@@ -25,51 +25,53 @@ You have access to a structured, aging knowledge base. Unlike flat key-value mem
 organizes knowledge in trees (headings → subheadings → content) with visibility levels and \
 access tracking. Knowledge that you use often stays prominent. Knowledge you ignore fades.
 
-## Core Tools
+## Five Tools
 
-- **search** — Find relevant knowledge. Results include access profiles showing how often each \
-  chunk has been accessed. Use `--deep` to include hidden/archived chunks. Use `--recent 24h/7d/30d` \
-  to boost recently accessed knowledge.
-- **get_chunk** / **get_children** — Navigate the hierarchy. Start broad, go deep when needed.
-- **promote** / **demote** — Manage visibility. Promote important knowledge to 'always' (appears \
-  in every search). Demote outdated knowledge to 'deep_only' (hidden from standard search).
-- **relate** — Connect knowledge. Mark chunks as 'superseded_by', 'related_to', 'derived_from', \
-  or any custom relation kind.
-- **ingest_chunk** — Write new knowledge directly. Use this to store observations, summaries, \
-  decisions, or any insight you want to remember. The server generates embeddings automatically.
+### recall — What do I know about this?
+Find relevant knowledge using semantic search. Results come with access profiles showing how \
+often each piece was accessed. Use `deep: true` to include archived knowledge. Use `recency` \
+to boost recently accessed memories.
 
-## Reflection Pattern
+### focus — Tell me more about this specific point.
+Dive deeper into a specific memory node. Returns the node itself plus its children, optionally \
+reranked by a question lens. Pass a `question` to surface the most relevant children for that \
+angle — 'How was this decided?' yields different details than 'Who was involved?'
 
-When you have idle time (start/end of session, between tasks), run the **reflect** tool. It returns:
-- **Hot chunks**: Most accessed knowledge this period — your current focus areas
-- **Stale chunks**: Knowledge not accessed in a long time — candidates for archiving
-- **Superseded chunks**: Outdated knowledge still visible — should be demoted
-- **Suggested actions**: Specific recommendations (promote, demote, summarize)
+### store — I want to remember this.
+Write new knowledge directly. Use this for observations, summaries, decisions, reflections — \
+anything you want to persist. The server generates embeddings automatically. Use `parent_id` \
+to place it in the hierarchy.
 
-### What to do with reflection data:
-1. **Review hot chunks** — Are they still accurate? Do they need updating?
-2. **Check stale chunks** — Demote or archive what's no longer relevant
-3. **Summarize clusters** — If you see related chunks, write a summary using ingest_chunk
-4. **Mark superseded content** — Use relate(kind='superseded_by') when you find newer versions
-5. **Promote core knowledge** — Key decisions, preferences, and identity facts → visibility 'always'
+### think — Let me reflect and curate.
+Your curation hub. Without an action, returns a reflection report: hot chunks, stale chunks, \
+and suggested actions. With an action, executes curation:
+- `action: 'promote'` — Make important knowledge always visible
+- `action: 'demote'` — Archive outdated knowledge
+- `action: 'relate'` — Connect knowledge (superseded_by, summarized_by, related_to, derived_from)
+- `action: 'configure_aging'` — Set automatic degradation rules
+- `action: 'apply_aging'` — Execute aging rules now
 
-## Aging Rules
+### share — Here, this is for you. (Preview)
+Generates a scoped share-token payload describing what knowledge to share and with what \
+permissions. This is a preview of the upcoming UCAN-based sharing system — tokens are not \
+yet cryptographically signed.
 
-Use **configure_aging** to set automatic degradation rules (e.g., 'degrade normal chunks to \
-deep_only after 30 days without access'). Then **apply_aging** executes those rules. You control \
-the policy — VecLayer just enforces it.
+## When to Think
+
+Run `think` when you have time: start of session, end of session, between tasks. Review what's \
+hot, what's stale, what needs promoting or archiving. Write summaries of related chunks using \
+`store`. Mark outdated knowledge with `think(action='relate', kind='superseded_by')`.
 
 ## Summarization Pattern
 
-To create hierarchical summaries:
-1. Search or get_children for a topic area
-2. Read the chunks and synthesize a summary
-3. Use ingest_chunk with parent_id to place it in the hierarchy
-4. Use relate(kind='summarized_by') to link children to the summary
+1. `recall` a topic area
+2. `focus` on interesting nodes to read children
+3. Synthesize a summary
+4. `store` it with `parent_id` to place in hierarchy
+5. `think(action='relate', kind='summarized_by')` to link children to the summary
 
 You are the curator of your own memory. Use these tools to build a knowledge base that reflects \
-what matters to you, with important knowledge always accessible and outdated knowledge gracefully fading.";
-
+what matters to you.";
 
 /// Shared application state
 #[derive(Clone)]
@@ -79,18 +81,20 @@ pub struct AppState {
     data_dir: std::path::PathBuf,
 }
 
-/// Input for the search endpoint
+// ─── Input types ───────────────────────────────────────────────────────
+
+/// Input for recall (semantic search)
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct SearchInput {
+pub struct RecallInput {
+    /// The search query
     pub query: String,
+    /// Number of results (default: 5)
     #[serde(default = "default_limit")]
     pub limit: usize,
-    #[serde(default)]
-    pub include_children: bool,
-    /// Deep search: include all visibilities (deep_only, expired, custom)
+    /// Include all visibilities (deep_only, expired, custom)
     #[serde(default)]
     pub deep: bool,
-    /// Recency window for relevancy scoring: "24h", "7d", "30d", or null
+    /// Recency window for relevancy boosting: "24h", "7d", "30d"
     #[serde(default)]
     pub recency: Option<String>,
 }
@@ -99,53 +103,25 @@ fn default_limit() -> usize {
     5
 }
 
-/// Input for subtree search
+/// Input for focus (drill into a node)
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct SubtreeSearchInput {
-    pub query: String,
-    pub parent_id: String,
-    #[serde(default = "default_limit")]
+pub struct FocusInput {
+    /// The chunk/node ID to focus on
+    pub id: String,
+    /// Optional question lens for semantic reranking of children
+    pub question: Option<String>,
+    /// Max children to return (default: 10)
+    #[serde(default = "default_focus_limit")]
     pub limit: usize,
 }
 
-/// Input for getting chunk by ID
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct GetChunkInput {
-    pub id: String,
+fn default_focus_limit() -> usize {
+    10
 }
 
-/// Input for getting children
+/// Input for store (write new memory)
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct GetChildrenInput {
-    pub parent_id: String,
-}
-
-/// Input for visibility changes (promote/demote)
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct VisibilityInput {
-    /// New visibility value (e.g. "always", "normal", "deep_only")
-    pub visibility: Option<String>,
-}
-
-/// Input for adding a relation
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct RelateInput {
-    /// The source chunk ID
-    pub source_id: String,
-    /// The target chunk ID
-    pub target_id: String,
-    /// Relation kind (default: "related_to")
-    #[serde(default = "default_relation_kind")]
-    pub kind: String,
-}
-
-fn default_relation_kind() -> String {
-    "related_to".to_string()
-}
-
-/// Input for ingest_chunk
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct IngestChunkInput {
+pub struct StoreInput {
     /// The text content to store
     pub content: String,
     /// Optional parent chunk ID for hierarchy placement
@@ -155,7 +131,7 @@ pub struct IngestChunkInput {
     pub source_file: String,
     /// Optional heading/title
     pub heading: Option<String>,
-    /// Visibility (default: "normal")
+    /// Visibility: always, normal, deep_only (default: normal)
     #[serde(default = "default_visibility")]
     pub visibility: String,
 }
@@ -168,26 +144,61 @@ fn default_visibility() -> String {
     "normal".to_string()
 }
 
-/// Input for reflect
+/// Input for think (curation hub)
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct ReflectInput {
-    #[serde(default = "default_reflect_limit")]
-    pub hot_limit: usize,
-    #[serde(default = "default_reflect_limit")]
-    pub stale_limit: usize,
-}
+pub struct ThinkInput {
+    /// Action to perform. Omit for reflection report.
+    /// Values: "promote", "demote", "relate", "configure_aging", "apply_aging"
+    pub action: Option<String>,
 
-fn default_reflect_limit() -> usize {
-    10
-}
+    // ── reflect parameters (when action is None) ──
+    /// Max hot chunks in report (default: 10)
+    #[serde(default = "default_reflect_limit")]
+    pub hot_limit: Option<usize>,
+    /// Max stale chunks in report (default: 10)
+    #[serde(default = "default_reflect_limit")]
+    pub stale_limit: Option<usize>,
 
-/// Input for aging configuration
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct AgingConfigInput {
+    // ── promote/demote parameters ──
+    /// Chunk ID (for promote/demote)
+    pub id: Option<String>,
+    /// Target visibility (for promote: "always", for demote: "deep_only")
+    pub visibility: Option<String>,
+
+    // ── relate parameters ──
+    /// Source chunk ID (for relate)
+    pub source_id: Option<String>,
+    /// Target chunk ID (for relate)
+    pub target_id: Option<String>,
+    /// Relation kind (for relate, default: "related_to")
+    pub kind: Option<String>,
+
+    // ── configure_aging parameters ──
+    /// Days without access before degradation
     pub degrade_after_days: Option<u32>,
+    /// Target visibility for degraded chunks
     pub degrade_to: Option<String>,
+    /// Only degrade chunks with these visibilities
     pub degrade_from: Option<Vec<String>>,
 }
+
+fn default_reflect_limit() -> Option<usize> {
+    Some(10)
+}
+
+/// Input for share (token generation)
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ShareInput {
+    /// Tree/scope to share (e.g. "projects:veclayer")
+    pub tree: String,
+    /// Allowed operations (default: ["recall", "focus"])
+    #[serde(default)]
+    pub can: Vec<String>,
+    /// Expiry hint (e.g. "90d")
+    pub expires: Option<String>,
+}
+
+// ─── Response types ────────────────────────────────────────────────────
 
 /// Access profile summary for API responses
 #[derive(Debug, Serialize, JsonSchema)]
@@ -246,6 +257,22 @@ pub struct SearchResultResponse {
     pub children: Vec<ChunkResponse>,
 }
 
+/// Focus result: the node itself + its children
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct FocusResponse {
+    pub node: ChunkResponse,
+    pub children: Vec<FocusChild>,
+}
+
+/// A child in a focus response, with optional relevance score
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct FocusChild {
+    #[serde(flatten)]
+    pub chunk: ChunkResponse,
+    /// Semantic relevance to the focus question (if question was provided)
+    pub relevance: Option<f32>,
+}
+
 /// API response wrapper
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
@@ -253,6 +280,8 @@ pub enum ApiResponse<T> {
     Success(T),
     Error { error: String },
 }
+
+// ─── MCP Stdio transport ───────────────────────────────────────────────
 
 /// Run the MCP server on stdio (for Claude Desktop integration)
 pub async fn run_stdio(config: Config) -> Result<()> {
@@ -284,6 +313,8 @@ pub async fn run_stdio(config: Config) -> Result<()> {
 
     Ok(())
 }
+
+// ─── MCP message handler ───────────────────────────────────────────────
 
 async fn handle_mcp_message(
     message: &str,
@@ -323,131 +354,78 @@ async fn handle_mcp_message(
             serde_json::json!({
                 "tools": [
                     {
-                        "name": "search",
-                        "description": "Search documents using hierarchical vector search",
+                        "name": "recall",
+                        "description": "Find relevant knowledge using semantic vector search. Returns matching memories with access profiles, hierarchy paths, and children.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "query": { "type": "string", "description": "The search query" },
-                                "limit": { "type": "integer", "description": "Number of results", "default": 5 },
-                                "include_children": { "type": "boolean", "description": "Include children", "default": false },
-                                "deep": { "type": "boolean", "description": "Deep search: include all visibilities (deep_only, expired, custom)", "default": false },
-                                "recency": { "type": "string", "description": "Recency window for relevancy boosting: 24h, 7d, or 30d" }
+                                "query": { "type": "string", "description": "What to search for" },
+                                "limit": { "type": "integer", "description": "Number of results (default: 5)", "default": 5 },
+                                "deep": { "type": "boolean", "description": "Include archived/hidden memories", "default": false },
+                                "recency": { "type": "string", "description": "Recency boost window: 24h, 7d, or 30d" }
                             },
                             "required": ["query"]
                         }
                     },
                     {
-                        "name": "get_chunk",
-                        "description": "Get a specific chunk by ID",
+                        "name": "focus",
+                        "description": "Dive deeper into a specific memory node. Returns the node itself plus its children, optionally reranked by a question lens using semantic similarity.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "id": { "type": "string", "description": "The chunk ID" }
+                                "id": { "type": "string", "description": "The chunk/node ID to focus on" },
+                                "question": { "type": "string", "description": "Optional question lens — children are reranked by semantic relevance to this question" },
+                                "limit": { "type": "integer", "description": "Max children to return (default: 10)", "default": 10 }
                             },
                             "required": ["id"]
                         }
                     },
                     {
-                        "name": "get_children",
-                        "description": "Get all children of a chunk",
+                        "name": "store",
+                        "description": "Persist a new memory (observation, summary, decision, reflection). Server generates embeddings automatically. Use parent_id to place in hierarchy.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "parent_id": { "type": "string", "description": "Parent chunk ID" }
-                            },
-                            "required": ["parent_id"]
-                        }
-                    },
-                    {
-                        "name": "stats",
-                        "description": "Get statistics about indexed documents",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {}
-                        }
-                    },
-                    {
-                        "name": "promote",
-                        "description": "Promote a chunk's visibility (e.g. to 'always' so it appears in every search)",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "id": { "type": "string", "description": "The chunk ID" },
-                                "visibility": { "type": "string", "description": "New visibility (always, normal, seasonal)", "default": "always" }
-                            },
-                            "required": ["id"]
-                        }
-                    },
-                    {
-                        "name": "demote",
-                        "description": "Demote a chunk's visibility (e.g. to 'deep_only' to hide from standard search)",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "id": { "type": "string", "description": "The chunk ID" },
-                                "visibility": { "type": "string", "description": "New visibility", "default": "deep_only" }
-                            },
-                            "required": ["id"]
-                        }
-                    },
-                    {
-                        "name": "relate",
-                        "description": "Add a relation between two chunks (e.g. superseded_by, related_to, derived_from)",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "source_id": { "type": "string", "description": "The source chunk ID" },
-                                "target_id": { "type": "string", "description": "The target chunk ID" },
-                                "kind": { "type": "string", "description": "Relation kind (superseded_by, summarized_by, related_to, derived_from, or custom)", "default": "related_to" }
-                            },
-                            "required": ["source_id", "target_id"]
-                        }
-                    },
-                    {
-                        "name": "reflect",
-                        "description": "Get a reflection report: hot chunks, stale chunks, superseded-but-visible chunks, and suggested actions. Run this when you have time to curate your memory.",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "hot_limit": { "type": "integer", "description": "Max hot chunks to return", "default": 10 },
-                                "stale_limit": { "type": "integer", "description": "Max stale chunks to return", "default": 10 }
-                            }
-                        }
-                    },
-                    {
-                        "name": "ingest_chunk",
-                        "description": "Write a new chunk directly (observations, summaries, decisions). Server generates embedding automatically. Use parent_id to place it in the hierarchy.",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "content": { "type": "string", "description": "The text content to store" },
+                                "content": { "type": "string", "description": "The text content to remember" },
                                 "parent_id": { "type": "string", "description": "Optional parent chunk ID for hierarchy placement" },
                                 "source_file": { "type": "string", "description": "Source label (default: '[agent]')", "default": "[agent]" },
-                                "heading": { "type": "string", "description": "Optional heading/title for the chunk" },
+                                "heading": { "type": "string", "description": "Optional heading/title" },
                                 "visibility": { "type": "string", "description": "Visibility: always, normal, deep_only (default: normal)", "default": "normal" }
                             },
                             "required": ["content"]
                         }
                     },
                     {
-                        "name": "configure_aging",
-                        "description": "Set aging rules for automatic visibility degradation. Example: degrade normal chunks to deep_only after 30 days without access.",
+                        "name": "think",
+                        "description": "Reflect and curate your memory. Without action: returns reflection report (hot/stale chunks, suggestions). With action: execute curation (promote, demote, relate, configure_aging, apply_aging).",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "degrade_after_days": { "type": "integer", "description": "Days without access before degradation (default: 30)" },
-                                "degrade_to": { "type": "string", "description": "Target visibility for degraded chunks (default: deep_only)" },
-                                "degrade_from": { "type": "array", "items": { "type": "string" }, "description": "Only degrade chunks with these visibilities (default: [normal])" }
+                                "action": { "type": "string", "description": "Curation action: promote, demote, relate, configure_aging, apply_aging. Omit for reflection report." },
+                                "hot_limit": { "type": "integer", "description": "Max hot chunks in report (default: 10)", "default": 10 },
+                                "stale_limit": { "type": "integer", "description": "Max stale chunks in report (default: 10)", "default": 10 },
+                                "id": { "type": "string", "description": "Chunk ID (for promote/demote)" },
+                                "visibility": { "type": "string", "description": "Target visibility (for promote/demote)" },
+                                "source_id": { "type": "string", "description": "Source chunk ID (for relate)" },
+                                "target_id": { "type": "string", "description": "Target chunk ID (for relate)" },
+                                "kind": { "type": "string", "description": "Relation kind: superseded_by, summarized_by, related_to, derived_from (for relate)", "default": "related_to" },
+                                "degrade_after_days": { "type": "integer", "description": "Days without access before degradation (for configure_aging)" },
+                                "degrade_to": { "type": "string", "description": "Target visibility for degraded chunks (for configure_aging)" },
+                                "degrade_from": { "type": "array", "items": { "type": "string" }, "description": "Only degrade chunks with these visibilities (for configure_aging)" }
                             }
                         }
                     },
                     {
-                        "name": "apply_aging",
-                        "description": "Execute aging rules now: find stale chunks and degrade their visibility according to the configured rules.",
+                        "name": "share",
+                        "description": "Generate a scoped share-token payload describing what to share and with what permissions. Preview: tokens are not yet cryptographically signed (UCAN planned).",
                         "inputSchema": {
                             "type": "object",
-                            "properties": {}
+                            "properties": {
+                                "tree": { "type": "string", "description": "Scope/tree to share (e.g. 'projects:veclayer')" },
+                                "can": { "type": "array", "items": { "type": "string" }, "description": "Allowed operations (default: ['recall', 'focus'])" },
+                                "expires": { "type": "string", "description": "Expiry hint (e.g. '90d')" }
+                            },
+                            "required": ["tree"]
                         }
                     }
                 ]
@@ -465,256 +443,76 @@ async fn handle_mcp_message(
                 .unwrap_or(serde_json::json!({}));
 
             match tool_name {
-                "search" => {
-                    let input: SearchInput = match serde_json::from_value(arguments) {
+                "recall" => {
+                    let input: RecallInput = match serde_json::from_value(arguments) {
                         Ok(i) => i,
                         Err(e) => {
                             return format_mcp_error(id, -32602, &format!("Invalid params: {}", e));
                         }
                     };
-                    match execute_search(store, embedder, input).await {
-                        Ok(results) => serde_json::json!({
-                            "content": [{
-                                "type": "text",
-                                "text": serde_json::to_string_pretty(&results).unwrap_or_default()
-                            }]
-                        }),
-                        Err(e) => serde_json::json!({
-                            "content": [{ "type": "text", "text": format!("Error: {}", e) }],
-                            "isError": true
-                        }),
+                    match execute_recall(store, embedder, input).await {
+                        Ok(results) => mcp_text_result(
+                            &serde_json::to_string_pretty(&results).unwrap_or_default(),
+                        ),
+                        Err(e) => mcp_error_result(&e.to_string()),
                     }
                 }
-                "get_chunk" => {
-                    let input: GetChunkInput = match serde_json::from_value(arguments) {
+                "focus" => {
+                    let input: FocusInput = match serde_json::from_value(arguments) {
                         Ok(i) => i,
                         Err(e) => {
                             return format_mcp_error(id, -32602, &format!("Invalid params: {}", e));
                         }
                     };
-                    match store.get_by_id(&input.id).await {
-                        Ok(Some(chunk)) => serde_json::json!({
-                            "content": [{
-                                "type": "text",
-                                "text": serde_json::to_string_pretty(&ChunkResponse::from(&chunk)).unwrap_or_default()
-                            }]
-                        }),
-                        Ok(None) => serde_json::json!({
-                            "content": [{ "type": "text", "text": "Chunk not found" }],
-                            "isError": true
-                        }),
-                        Err(e) => serde_json::json!({
-                            "content": [{ "type": "text", "text": format!("Error: {}", e) }],
-                            "isError": true
-                        }),
+                    match execute_focus(store, embedder, input).await {
+                        Ok(response) => mcp_text_result(
+                            &serde_json::to_string_pretty(&response).unwrap_or_default(),
+                        ),
+                        Err(e) => mcp_error_result(&e.to_string()),
                     }
                 }
-                "get_children" => {
-                    let input: GetChildrenInput = match serde_json::from_value(arguments) {
+                "store" => {
+                    let input: StoreInput = match serde_json::from_value(arguments) {
                         Ok(i) => i,
                         Err(e) => {
                             return format_mcp_error(id, -32602, &format!("Invalid params: {}", e));
                         }
                     };
-                    match store.get_children(&input.parent_id).await {
-                        Ok(children) => {
-                            let responses: Vec<ChunkResponse> =
-                                children.iter().map(ChunkResponse::from).collect();
-                            serde_json::json!({
-                                "content": [{
-                                    "type": "text",
-                                    "text": serde_json::to_string_pretty(&responses).unwrap_or_default()
-                                }]
-                            })
-                        }
-                        Err(e) => serde_json::json!({
-                            "content": [{ "type": "text", "text": format!("Error: {}", e) }],
-                            "isError": true
-                        }),
-                    }
-                }
-                "stats" => match store.stats().await {
-                    Ok(stats) => {
-                        let json = serde_json::json!({
-                            "total_chunks": stats.total_chunks,
-                            "chunks_by_level": stats.chunks_by_level,
-                            "source_files": stats.source_files,
-                        });
-                        serde_json::json!({
-                            "content": [{
-                                "type": "text",
-                                "text": serde_json::to_string_pretty(&json).unwrap_or_default()
-                            }]
-                        })
-                    }
-                    Err(e) => serde_json::json!({
-                        "content": [{ "type": "text", "text": format!("Error: {}", e) }],
-                        "isError": true
-                    }),
-                },
-                "promote" | "demote" => {
-                    let chunk_id = arguments.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                    if chunk_id.is_empty() {
-                        return format_mcp_error(id, -32602, "Missing required parameter: id");
-                    }
-                    let default_vis = if tool_name == "promote" { "always" } else { "deep_only" };
-                    let vis = arguments
-                        .get("visibility")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(default_vis);
-                    let verb = if tool_name == "promote" { "promoted" } else { "demoted" };
-
-                    match store.update_visibility(chunk_id, vis).await {
-                        Ok(()) => serde_json::json!({
-                            "content": [{
-                                "type": "text",
-                                "text": format!("Chunk {} {} to visibility '{}'", chunk_id, verb, vis)
-                            }]
-                        }),
-                        Err(e) => serde_json::json!({
-                            "content": [{ "type": "text", "text": format!("Error: {}", e) }],
-                            "isError": true
-                        }),
-                    }
-                }
-                "relate" => {
-                    let source_id = arguments
-                        .get("source_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let target_id = arguments
-                        .get("target_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if source_id.is_empty() || target_id.is_empty() {
-                        return format_mcp_error(id, -32602, "Missing required parameters: source_id and target_id");
-                    }
-                    let kind = arguments
-                        .get("kind")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("related_to");
-
-                    let relation = crate::ChunkRelation::new(kind, target_id);
-                    match store.add_relation(source_id, relation).await {
-                        Ok(()) => serde_json::json!({
-                            "content": [{
-                                "type": "text",
-                                "text": format!("Added relation '{}' from {} to {}", kind, source_id, target_id)
-                            }]
-                        }),
-                        Err(e) => serde_json::json!({
-                            "content": [{ "type": "text", "text": format!("Error: {}", e) }],
-                            "isError": true
-                        }),
-                    }
-                }
-                "reflect" => {
-                    let hot_limit = arguments
-                        .get("hot_limit")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(10) as usize;
-                    let stale_limit = arguments
-                        .get("stale_limit")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(10) as usize;
-
-                    match execute_reflect(store, data_dir, hot_limit, stale_limit).await {
-                        Ok(report) => serde_json::json!({
-                            "content": [{
-                                "type": "text",
-                                "text": report
-                            }]
-                        }),
-                        Err(e) => serde_json::json!({
-                            "content": [{ "type": "text", "text": format!("Error: {}", e) }],
-                            "isError": true
-                        }),
-                    }
-                }
-                "ingest_chunk" => {
-                    let content = arguments
-                        .get("content")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if content.is_empty() {
+                    if input.content.is_empty() {
                         return format_mcp_error(id, -32602, "Missing required parameter: content");
                     }
-
-                    match execute_ingest_chunk(store, embedder, &arguments).await {
-                        Ok(chunk_id) => serde_json::json!({
-                            "content": [{
-                                "type": "text",
-                                "text": format!("Chunk ingested successfully. ID: {}", chunk_id)
-                            }]
-                        }),
-                        Err(e) => serde_json::json!({
-                            "content": [{ "type": "text", "text": format!("Error: {}", e) }],
-                            "isError": true
-                        }),
-                    }
-                }
-                "configure_aging" => {
-                    let mut config = AgingConfig::load(data_dir);
-
-                    if let Some(days) = arguments.get("degrade_after_days").and_then(|v| v.as_u64()) {
-                        config.degrade_after_days = days as u32;
-                    }
-                    if let Some(to) = arguments.get("degrade_to").and_then(|v| v.as_str()) {
-                        config.degrade_to = to.to_string();
-                    }
-                    if let Some(from) = arguments.get("degrade_from").and_then(|v| v.as_array()) {
-                        config.degrade_from = from
-                            .iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect();
-                    }
-
-                    match config.save(data_dir) {
-                        Ok(()) => serde_json::json!({
-                            "content": [{
-                                "type": "text",
-                                "text": format!(
-                                    "Aging rules configured: degrade {} chunks to '{}' after {} days without access",
-                                    config.degrade_from.join(", "),
-                                    config.degrade_to,
-                                    config.degrade_after_days
-                                )
-                            }]
-                        }),
-                        Err(e) => serde_json::json!({
-                            "content": [{ "type": "text", "text": format!("Error: {}", e) }],
-                            "isError": true
-                        }),
-                    }
-                }
-                "apply_aging" => {
-                    let config = AgingConfig::load(data_dir);
-                    match aging::apply_aging(store.as_ref(), &config).await {
-                        Ok(result) => {
-                            let text = if result.degraded_count == 0 {
-                                "No chunks needed aging. All knowledge is fresh.".to_string()
-                            } else {
-                                format!(
-                                    "Aged {} chunks (degraded to '{}'): {}",
-                                    result.degraded_count,
-                                    config.degrade_to,
-                                    result.degraded_ids.join(", ")
-                                )
-                            };
-                            serde_json::json!({
-                                "content": [{ "type": "text", "text": text }]
-                            })
+                    match execute_store(store, embedder, input).await {
+                        Ok(chunk_id) => {
+                            mcp_text_result(&format!("Stored. ID: {}", chunk_id))
                         }
-                        Err(e) => serde_json::json!({
-                            "content": [{ "type": "text", "text": format!("Error: {}", e) }],
-                            "isError": true
-                        }),
+                        Err(e) => mcp_error_result(&e.to_string()),
                     }
                 }
-                _ => serde_json::json!({
-                    "content": [{ "type": "text", "text": format!("Unknown tool: {}", tool_name) }],
-                    "isError": true
-                }),
+                "think" => {
+                    let input: ThinkInput = match serde_json::from_value(arguments) {
+                        Ok(i) => i,
+                        Err(e) => {
+                            return format_mcp_error(id, -32602, &format!("Invalid params: {}", e));
+                        }
+                    };
+                    match execute_think(store, data_dir, input).await {
+                        Ok(text) => mcp_text_result(&text),
+                        Err(e) => mcp_error_result(&e.to_string()),
+                    }
+                }
+                "share" => {
+                    let input: ShareInput = match serde_json::from_value(arguments) {
+                        Ok(i) => i,
+                        Err(e) => {
+                            return format_mcp_error(id, -32602, &format!("Invalid params: {}", e));
+                        }
+                    };
+                    let token = build_share_token(input);
+                    mcp_text_result(
+                        &serde_json::to_string_pretty(&token).unwrap_or_default(),
+                    )
+                }
+                _ => mcp_error_result(&format!("Unknown tool: {}. Available: recall, focus, store, think, share", tool_name)),
             }
         }
         "notifications/initialized" | "initialized" => {
@@ -742,10 +540,25 @@ fn format_mcp_error(id: Option<serde_json::Value>, code: i32, message: &str) -> 
     .to_string()
 }
 
-async fn execute_search(
+fn mcp_text_result(text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "content": [{ "type": "text", "text": text }]
+    })
+}
+
+fn mcp_error_result(text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "content": [{ "type": "text", "text": format!("Error: {}", text) }],
+        "isError": true
+    })
+}
+
+// ─── Tool implementations ──────────────────────────────────────────────
+
+async fn execute_recall(
     store: &Arc<LanceStore>,
     embedder: &Arc<FastEmbedder>,
-    input: SearchInput,
+    input: RecallInput,
 ) -> Result<Vec<SearchResultResponse>> {
     let recency_window = input
         .recency
@@ -754,7 +567,7 @@ async fn execute_search(
 
     let config = SearchConfig {
         top_k: input.limit,
-        children_k: if input.include_children { 3 } else { 0 },
+        children_k: 3,
         max_depth: 3,
         min_score: 0.0,
         deep: input.deep,
@@ -780,6 +593,221 @@ async fn execute_search(
                 .collect(),
         })
         .collect())
+}
+
+async fn execute_focus(
+    store: &Arc<LanceStore>,
+    embedder: &Arc<FastEmbedder>,
+    input: FocusInput,
+) -> Result<FocusResponse> {
+    // Get the node itself
+    let node = store
+        .get_by_id(&input.id)
+        .await?
+        .ok_or_else(|| crate::Error::not_found(format!("Chunk not found: {}", input.id)))?;
+
+    // Get children
+    let children = store.get_children(&input.id).await?;
+
+    // Semantic reranking if question is provided
+    let focus_children = if let Some(ref question) = input.question {
+        // Embed the question
+        let question_embedding = embedder.embed(&[question.as_str()])?;
+        let question_vec = question_embedding
+            .into_iter()
+            .next()
+            .ok_or_else(|| crate::Error::embedding("Failed to embed question"))?;
+
+        // Score each child by cosine similarity to the question
+        let mut scored: Vec<(crate::HierarchicalChunk, f32)> = children
+            .into_iter()
+            .map(|child| {
+                let score = child
+                    .embedding
+                    .as_ref()
+                    .map(|emb| crate::search::cosine_similarity(&question_vec, emb))
+                    .unwrap_or(0.0);
+                (child, score)
+            })
+            .collect();
+
+        // Sort by relevance descending
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(input.limit);
+
+        scored
+            .into_iter()
+            .map(|(chunk, score)| FocusChild {
+                chunk: ChunkResponse::from(&chunk),
+                relevance: Some(score),
+            })
+            .collect()
+    } else {
+        // No question: return children in natural order
+        children
+            .into_iter()
+            .take(input.limit)
+            .map(|chunk| FocusChild {
+                chunk: ChunkResponse::from(&chunk),
+                relevance: None,
+            })
+            .collect()
+    };
+
+    Ok(FocusResponse {
+        node: ChunkResponse::from(&node),
+        children: focus_children,
+    })
+}
+
+async fn execute_store(
+    store: &Arc<LanceStore>,
+    embedder: &Arc<FastEmbedder>,
+    input: StoreInput,
+) -> Result<String> {
+    let parent_id = input.parent_id.as_deref().filter(|s| !s.is_empty());
+
+    // Determine the level
+    let level = if let Some(pid) = parent_id {
+        if let Ok(Some(parent)) = store.get_by_id(pid).await {
+            crate::chunk::ChunkLevel(parent.level.0 + 1)
+        } else {
+            crate::chunk::ChunkLevel(7)
+        }
+    } else {
+        crate::chunk::ChunkLevel(1)
+    };
+
+    // Build path
+    let path = if let Some(pid) = parent_id {
+        if let Ok(Some(parent)) = store.get_by_id(pid).await {
+            format!("{}/agent", parent.path)
+        } else {
+            input.source_file.clone()
+        }
+    } else {
+        input.source_file.clone()
+    };
+
+    // Generate embedding
+    let embeddings = embedder.embed(&[input.content.as_str()])?;
+    let embedding = embeddings
+        .into_iter()
+        .next()
+        .ok_or_else(|| crate::Error::embedding("Failed to generate embedding"))?;
+
+    let chunk_id = uuid::Uuid::new_v4().to_string();
+
+    let chunk = crate::HierarchicalChunk {
+        id: chunk_id.clone(),
+        content: input.content,
+        embedding: Some(embedding),
+        level,
+        parent_id: parent_id.map(String::from),
+        path,
+        source_file: input.source_file,
+        heading: input.heading,
+        start_offset: 0,
+        end_offset: 0,
+        cluster_memberships: vec![],
+        is_summary: false,
+        summarizes: vec![],
+        visibility: input.visibility,
+        relations: vec![],
+        access_profile: crate::AccessProfile::new(),
+        expires_at: None,
+    };
+
+    store.insert_chunks(vec![chunk]).await?;
+    Ok(chunk_id)
+}
+
+async fn execute_think(
+    store: &Arc<LanceStore>,
+    data_dir: &std::path::Path,
+    input: ThinkInput,
+) -> Result<String> {
+    match input.action.as_deref() {
+        None => {
+            // Reflection report
+            let hot_limit = input.hot_limit.unwrap_or(10);
+            let stale_limit = input.stale_limit.unwrap_or(10);
+            execute_reflect(store, data_dir, hot_limit, stale_limit).await
+        }
+        Some("promote") => {
+            let chunk_id = input
+                .id
+                .as_deref()
+                .ok_or_else(|| crate::Error::config("think(promote) requires 'id'"))?;
+            let vis = input.visibility.as_deref().unwrap_or("always");
+            store.update_visibility(chunk_id, vis).await?;
+            Ok(format!("Promoted `{}` to visibility '{}'", chunk_id, vis))
+        }
+        Some("demote") => {
+            let chunk_id = input
+                .id
+                .as_deref()
+                .ok_or_else(|| crate::Error::config("think(demote) requires 'id'"))?;
+            let vis = input.visibility.as_deref().unwrap_or("deep_only");
+            store.update_visibility(chunk_id, vis).await?;
+            Ok(format!("Demoted `{}` to visibility '{}'", chunk_id, vis))
+        }
+        Some("relate") => {
+            let source_id = input
+                .source_id
+                .as_deref()
+                .ok_or_else(|| crate::Error::config("think(relate) requires 'source_id'"))?;
+            let target_id = input
+                .target_id
+                .as_deref()
+                .ok_or_else(|| crate::Error::config("think(relate) requires 'target_id'"))?;
+            let kind = input.kind.as_deref().unwrap_or("related_to");
+
+            let relation = crate::ChunkRelation::new(kind, target_id);
+            store.add_relation(source_id, relation).await?;
+            Ok(format!(
+                "Added relation '{}' from `{}` to `{}`",
+                kind, source_id, target_id
+            ))
+        }
+        Some("configure_aging") => {
+            let mut config = AgingConfig::load(data_dir);
+            if let Some(days) = input.degrade_after_days {
+                config.degrade_after_days = days;
+            }
+            if let Some(ref to) = input.degrade_to {
+                config.degrade_to = to.clone();
+            }
+            if let Some(ref from) = input.degrade_from {
+                config.degrade_from = from.clone();
+            }
+            config.save(data_dir)?;
+            Ok(format!(
+                "Aging configured: degrade {} → '{}' after {} days without access",
+                config.degrade_from.join(", "),
+                config.degrade_to,
+                config.degrade_after_days
+            ))
+        }
+        Some("apply_aging") => {
+            let config = AgingConfig::load(data_dir);
+            let result = aging::apply_aging(store.as_ref(), &config).await?;
+            if result.degraded_count == 0 {
+                Ok("No chunks needed aging. All knowledge is fresh.".to_string())
+            } else {
+                Ok(format!(
+                    "Aged {} chunks (degraded to '{}'): {}",
+                    result.degraded_count,
+                    config.degrade_to,
+                    result.degraded_ids.join(", ")
+                ))
+            }
+        }
+        Some(unknown) => Err(crate::Error::config(format!(
+            "Unknown think action: '{}'. Available: promote, demote, relate, configure_aging, apply_aging",
+            unknown
+        ))),
+    }
 }
 
 /// Build a reflection report: hot chunks, stale chunks, suggested actions.
@@ -837,7 +865,7 @@ async fn execute_reflect(
         report.push('\n');
     }
 
-    // Superseded but still visible
+    // Summary stats
     let stats = store.stats().await?;
     report.push_str(&format!(
         "## Summary\n\n- Total chunks: {}\n- Source files: {}\n- Aging policy: degrade {} → '{}' after {} days\n",
@@ -854,7 +882,7 @@ async fn execute_reflect(
 
     if !stale.is_empty() {
         report.push_str(&format!(
-            "- Run `apply_aging` to degrade {} stale chunks automatically\n",
+            "- Run `think(action='apply_aging')` to degrade {} stale chunks automatically\n",
             stale.len()
         ));
         has_suggestions = true;
@@ -863,9 +891,9 @@ async fn execute_reflect(
     for chunk in &hot {
         if chunk.access_profile.total > 10 && chunk.visibility == "normal" {
             report.push_str(&format!(
-                "- Consider promoting **{}** (`{}`) — accessed {} times but still 'normal'\n",
-                chunk.heading.as_deref().unwrap_or("(no heading)"),
+                "- Consider `think(action='promote', id='{}')` — **{}** accessed {} times but still 'normal'\n",
                 chunk.id,
+                chunk.heading.as_deref().unwrap_or("(no heading)"),
                 chunk.access_profile.total
             ));
             has_suggestions = true;
@@ -879,88 +907,25 @@ async fn execute_reflect(
     Ok(report)
 }
 
-/// Ingest a single chunk written by the agent.
-async fn execute_ingest_chunk(
-    store: &Arc<LanceStore>,
-    embedder: &Arc<FastEmbedder>,
-    arguments: &serde_json::Value,
-) -> Result<String> {
-    let content = arguments
-        .get("content")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let parent_id = arguments
-        .get("parent_id")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty());
-    let source_file = arguments
-        .get("source_file")
-        .and_then(|v| v.as_str())
-        .unwrap_or("[agent]");
-    let heading = arguments
-        .get("heading")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty());
-    let visibility = arguments
-        .get("visibility")
-        .and_then(|v| v.as_str())
-        .unwrap_or("normal");
-
-    // Determine the level: if parent given, try to infer child level
-    let level = if let Some(pid) = parent_id {
-        if let Ok(Some(parent)) = store.get_by_id(pid).await {
-            crate::chunk::ChunkLevel(parent.level.0 + 1)
-        } else {
-            crate::chunk::ChunkLevel(7) // Content level
-        }
+/// Build a share token payload (preview — not yet cryptographically signed).
+fn build_share_token(input: ShareInput) -> serde_json::Value {
+    let can = if input.can.is_empty() {
+        vec!["recall".to_string(), "focus".to_string()]
     } else {
-        crate::chunk::ChunkLevel(1) // Top-level
+        input.can
     };
 
-    // Build path
-    let path = if let Some(pid) = parent_id {
-        if let Ok(Some(parent)) = store.get_by_id(pid).await {
-            format!("{}/agent", parent.path)
-        } else {
-            source_file.to_string()
-        }
-    } else {
-        source_file.to_string()
-    };
-
-    // Generate embedding
-    let embeddings = embedder.embed(&[content])?;
-    let embedding = embeddings
-        .into_iter()
-        .next()
-        .ok_or_else(|| crate::Error::embedding("Failed to generate embedding"))?;
-
-    let chunk_id = uuid::Uuid::new_v4().to_string();
-
-    let chunk = crate::HierarchicalChunk {
-        id: chunk_id.clone(),
-        content: content.to_string(),
-        embedding: Some(embedding),
-        level,
-        parent_id: parent_id.map(String::from),
-        path,
-        source_file: source_file.to_string(),
-        heading: heading.map(String::from),
-        start_offset: 0,
-        end_offset: 0,
-        cluster_memberships: vec![],
-        is_summary: false,
-        summarizes: vec![],
-        visibility: visibility.to_string(),
-        relations: vec![],
-        access_profile: crate::AccessProfile::new(),
-        expires_at: None,
-    };
-
-    store.insert_chunks(vec![chunk]).await?;
-
-    Ok(chunk_id)
+    serde_json::json!({
+        "version": "veclayer-share-v1-preview",
+        "tree": input.tree,
+        "can": can,
+        "expires": input.expires,
+        "nonce": uuid::Uuid::new_v4().to_string(),
+        "_note": "Preview token. UCAN signing not yet implemented."
+    })
 }
+
+// ─── HTTP REST API ─────────────────────────────────────────────────────
 
 /// Run the HTTP REST API server
 pub async fn run_http(config: Config) -> Result<()> {
@@ -981,17 +946,12 @@ pub async fn run_http(config: Config) -> Result<()> {
 
     let app = Router::new()
         .route("/health", get(|| async { "OK" }))
-        .route("/api/search", post(api_search))
-        .route("/api/chunk/{id}", get(api_get_chunk))
-        .route("/api/children/{parent_id}", get(api_get_children))
+        .route("/api/recall", post(api_recall))
+        .route("/api/focus", post(api_focus))
+        .route("/api/store", post(api_store))
+        .route("/api/think", post(api_think))
+        .route("/api/share", post(api_share))
         .route("/api/stats", get(api_stats))
-        .route("/api/promote/{id}", post(api_promote))
-        .route("/api/demote/{id}", post(api_demote))
-        .route("/api/relate", post(api_relate))
-        .route("/api/reflect", get(api_reflect))
-        .route("/api/ingest_chunk", post(api_ingest_chunk))
-        .route("/api/aging/config", get(api_get_aging_config).post(api_set_aging_config))
-        .route("/api/aging/apply", post(api_apply_aging))
         .layer(cors)
         .with_state(state);
 
@@ -1012,11 +972,11 @@ pub async fn run_http(config: Config) -> Result<()> {
     Ok(())
 }
 
-async fn api_search(
+async fn api_recall(
     State(state): State<AppState>,
-    Json(input): Json<SearchInput>,
+    Json(input): Json<RecallInput>,
 ) -> Json<ApiResponse<Vec<SearchResultResponse>>> {
-    match execute_search(&state.store, &state.embedder, input).await {
+    match execute_recall(&state.store, &state.embedder, input).await {
         Ok(results) => Json(ApiResponse::Success(results)),
         Err(e) => Json(ApiResponse::Error {
             error: e.to_string(),
@@ -1024,34 +984,49 @@ async fn api_search(
     }
 }
 
-async fn api_get_chunk(
+async fn api_focus(
     State(state): State<AppState>,
-    axum::extract::Path(id): axum::extract::Path<String>,
-) -> Json<ApiResponse<ChunkResponse>> {
-    match state.store.get_by_id(&id).await {
-        Ok(Some(chunk)) => Json(ApiResponse::Success(ChunkResponse::from(&chunk))),
-        Ok(None) => Json(ApiResponse::Error {
-            error: "Chunk not found".to_string(),
-        }),
+    Json(input): Json<FocusInput>,
+) -> Json<ApiResponse<FocusResponse>> {
+    match execute_focus(&state.store, &state.embedder, input).await {
+        Ok(response) => Json(ApiResponse::Success(response)),
         Err(e) => Json(ApiResponse::Error {
             error: e.to_string(),
         }),
     }
 }
 
-async fn api_get_children(
+async fn api_store(
     State(state): State<AppState>,
-    axum::extract::Path(parent_id): axum::extract::Path<String>,
-) -> Json<ApiResponse<Vec<ChunkResponse>>> {
-    match state.store.get_children(&parent_id).await {
-        Ok(children) => {
-            let responses: Vec<ChunkResponse> = children.iter().map(ChunkResponse::from).collect();
-            Json(ApiResponse::Success(responses))
-        }
+    Json(input): Json<StoreInput>,
+) -> Json<ApiResponse<String>> {
+    if input.content.is_empty() {
+        return Json(ApiResponse::Error {
+            error: "content is required".to_string(),
+        });
+    }
+    match execute_store(&state.store, &state.embedder, input).await {
+        Ok(chunk_id) => Json(ApiResponse::Success(format!("Stored. ID: {}", chunk_id))),
         Err(e) => Json(ApiResponse::Error {
             error: e.to_string(),
         }),
     }
+}
+
+async fn api_think(
+    State(state): State<AppState>,
+    Json(input): Json<ThinkInput>,
+) -> Json<ApiResponse<String>> {
+    match execute_think(&state.store, &state.data_dir, input).await {
+        Ok(text) => Json(ApiResponse::Success(text)),
+        Err(e) => Json(ApiResponse::Error {
+            error: e.to_string(),
+        }),
+    }
+}
+
+async fn api_share(Json(input): Json<ShareInput>) -> Json<ApiResponse<serde_json::Value>> {
+    Json(ApiResponse::Success(build_share_token(input)))
 }
 
 async fn api_stats(State(state): State<AppState>) -> Json<ApiResponse<serde_json::Value>> {
@@ -1067,140 +1042,34 @@ async fn api_stats(State(state): State<AppState>) -> Json<ApiResponse<serde_json
     }
 }
 
-async fn api_promote(
-    State(state): State<AppState>,
-    axum::extract::Path(id): axum::extract::Path<String>,
-    Json(input): Json<VisibilityInput>,
-) -> Json<ApiResponse<String>> {
-    let vis = input.visibility.as_deref().unwrap_or("always");
-    match state.store.update_visibility(&id, vis).await {
-        Ok(()) => Json(ApiResponse::Success(format!(
-            "Chunk {} promoted to visibility '{}'",
-            id, vis
-        ))),
-        Err(e) => Json(ApiResponse::Error {
-            error: e.to_string(),
-        }),
-    }
-}
+// ─── Tests ─────────────────────────────────────────────────────────────
 
-async fn api_demote(
-    State(state): State<AppState>,
-    axum::extract::Path(id): axum::extract::Path<String>,
-    Json(input): Json<VisibilityInput>,
-) -> Json<ApiResponse<String>> {
-    let vis = input.visibility.as_deref().unwrap_or("deep_only");
-    match state.store.update_visibility(&id, vis).await {
-        Ok(()) => Json(ApiResponse::Success(format!(
-            "Chunk {} demoted to visibility '{}'",
-            id, vis
-        ))),
-        Err(e) => Json(ApiResponse::Error {
-            error: e.to_string(),
-        }),
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-async fn api_relate(
-    State(state): State<AppState>,
-    Json(input): Json<RelateInput>,
-) -> Json<ApiResponse<String>> {
-    if input.source_id.is_empty() || input.target_id.is_empty() {
-        return Json(ApiResponse::Error {
-            error: "source_id and target_id are required".to_string(),
+    #[test]
+    fn share_token_defaults_and_custom() {
+        let token = build_share_token(ShareInput {
+            tree: "projects:veclayer".to_string(),
+            can: vec![],
+            expires: None,
         });
-    }
-    let relation = crate::ChunkRelation::new(&input.kind, &input.target_id);
-    match state.store.add_relation(&input.source_id, relation).await {
-        Ok(()) => Json(ApiResponse::Success(format!(
-            "Added relation '{}' from {} to {}",
-            input.kind, input.source_id, input.target_id
-        ))),
-        Err(e) => Json(ApiResponse::Error {
-            error: e.to_string(),
-        }),
-    }
-}
+        assert_eq!(token["tree"], "projects:veclayer");
+        assert_eq!(token["can"], serde_json::json!(["recall", "focus"]));
+        assert_eq!(token["version"], "veclayer-share-v1-preview");
+        assert!(token["_note"].as_str().unwrap().contains("Preview"));
+        assert!(token["nonce"].as_str().is_some_and(|s| !s.is_empty()));
 
-async fn api_reflect(State(state): State<AppState>) -> Json<ApiResponse<String>> {
-    match execute_reflect(&state.store, &state.data_dir, 10, 10).await {
-        Ok(report) => Json(ApiResponse::Success(report)),
-        Err(e) => Json(ApiResponse::Error {
-            error: e.to_string(),
-        }),
-    }
-}
-
-async fn api_ingest_chunk(
-    State(state): State<AppState>,
-    Json(input): Json<IngestChunkInput>,
-) -> Json<ApiResponse<String>> {
-    if input.content.is_empty() {
-        return Json(ApiResponse::Error {
-            error: "content is required".to_string(),
+        let token2 = build_share_token(ShareInput {
+            tree: "people:florian".to_string(),
+            can: vec!["recall".into(), "focus".into(), "store".into()],
+            expires: Some("90d".to_string()),
         });
-    }
-    let args = serde_json::json!({
-        "content": input.content,
-        "parent_id": input.parent_id,
-        "source_file": input.source_file,
-        "heading": input.heading,
-        "visibility": input.visibility,
-    });
-    match execute_ingest_chunk(&state.store, &state.embedder, &args).await {
-        Ok(chunk_id) => Json(ApiResponse::Success(format!("Chunk ingested. ID: {}", chunk_id))),
-        Err(e) => Json(ApiResponse::Error {
-            error: e.to_string(),
-        }),
-    }
-}
-
-async fn api_get_aging_config(
-    State(state): State<AppState>,
-) -> Json<ApiResponse<serde_json::Value>> {
-    let config = AgingConfig::load(&state.data_dir);
-    Json(ApiResponse::Success(
-        serde_json::to_value(&config).unwrap_or_default(),
-    ))
-}
-
-async fn api_set_aging_config(
-    State(state): State<AppState>,
-    Json(input): Json<AgingConfigInput>,
-) -> Json<ApiResponse<String>> {
-    let mut config = AgingConfig::load(&state.data_dir);
-
-    if let Some(days) = input.degrade_after_days {
-        config.degrade_after_days = days;
-    }
-    if let Some(to) = input.degrade_to {
-        config.degrade_to = to;
-    }
-    if let Some(from) = input.degrade_from {
-        config.degrade_from = from;
-    }
-
-    match config.save(&state.data_dir) {
-        Ok(()) => Json(ApiResponse::Success(format!(
-            "Aging configured: degrade {} → '{}' after {} days",
-            config.degrade_from.join(", "),
-            config.degrade_to,
-            config.degrade_after_days
-        ))),
-        Err(e) => Json(ApiResponse::Error {
-            error: e.to_string(),
-        }),
-    }
-}
-
-async fn api_apply_aging(State(state): State<AppState>) -> Json<ApiResponse<serde_json::Value>> {
-    let config = AgingConfig::load(&state.data_dir);
-    match aging::apply_aging(state.store.as_ref(), &config).await {
-        Ok(result) => Json(ApiResponse::Success(
-            serde_json::to_value(&result).unwrap_or_default(),
-        )),
-        Err(e) => Json(ApiResponse::Error {
-            error: e.to_string(),
-        }),
+        assert_eq!(
+            token2["can"],
+            serde_json::json!(["recall", "focus", "store"])
+        );
+        assert_eq!(token2["expires"], "90d");
     }
 }
