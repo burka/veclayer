@@ -5,6 +5,10 @@ edition = "2021"
 description = "Hierarchical vector indexing for documents"
 license = "MIT"
 
+[features]
+default = ["llm"]
+llm = ["dep:reqwest", "dep:linfa", "dep:linfa-clustering", "dep:ndarray"]
+
 [dependencies]
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
@@ -34,6 +38,7 @@ futures = "0.3"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.8"
 
 # Error handling
 anyhow = "1"
@@ -50,13 +55,11 @@ sha2 = "0.10"
 walkdir = "2"
 schemars = "0.8"
 
-# HTTP client (for Ollama)
-reqwest = { version = "0.12", features = ["json"] }
-
-# Clustering
-linfa = "0.7"
-linfa-clustering = "0.7"
-ndarray = "0.15"  # Must match linfa's ndarray version
+# LLM-dependent (gated behind "llm" feature)
+reqwest = { version = "0.12", features = ["json"], optional = true }
+linfa = { version = "0.7", optional = true }
+linfa-clustering = { version = "0.7", optional = true }
+ndarray = { version = "0.15", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
