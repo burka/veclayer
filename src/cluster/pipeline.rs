@@ -308,7 +308,7 @@ mod tests {
         // Verify summaries were created
         assert!(!summaries.is_empty(), "Should have created summaries");
         for summary in &summaries {
-            assert!(summary.is_summary, "Chunk should be marked as summary");
+            assert!(summary.is_summary(), "Chunk should be marked as summary");
             assert!(
                 !summary.summarizes.is_empty(),
                 "Summary should reference chunks"
@@ -445,7 +445,7 @@ mod tests {
 
         for summary in &summaries {
             // Verify summary structure
-            assert!(summary.is_summary);
+            assert!(summary.is_summary());
             assert_eq!(summary.level, ChunkLevel::H1);
             assert_eq!(summary.source_file, "[cluster-summary]");
             assert_eq!(summary.path, "Summary");

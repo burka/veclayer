@@ -696,7 +696,7 @@ async fn execute_store(
         .next()
         .ok_or_else(|| crate::Error::embedding("Failed to generate embedding"))?;
 
-    let chunk_id = uuid::Uuid::new_v4().to_string();
+    let chunk_id = crate::chunk::content_hash(&input.content);
 
     let chunk = crate::HierarchicalChunk {
         id: chunk_id.clone(),
@@ -710,7 +710,7 @@ async fn execute_store(
         start_offset: 0,
         end_offset: 0,
         cluster_memberships: vec![],
-        is_summary: false,
+        entry_type: crate::chunk::EntryType::Raw,
         summarizes: vec![],
         visibility: input.visibility,
         relations: vec![],
@@ -920,7 +920,7 @@ fn build_share_token(input: ShareInput) -> serde_json::Value {
         "tree": input.tree,
         "can": can,
         "expires": input.expires,
-        "nonce": uuid::Uuid::new_v4().to_string(),
+        "nonce": crate::chunk::content_hash(&format!("nonce-{}", crate::chunk::now_epoch_secs())),
         "_note": "Preview token. UCAN signing not yet implemented."
     })
 }

@@ -1,4 +1,54 @@
+use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
+
+/// Generate a content-hash ID from content using SHA-256.
+/// Returns the full hex-encoded hash.
+pub fn content_hash(content: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Return the short form of a content-hash ID (first 7 hex chars, like git).
+pub fn short_id(id: &str) -> &str {
+    if id.len() >= 7 {
+        &id[..7]
+    } else {
+        id
+    }
+}
+
+/// The type of an entry. Replaces the old `is_summary` boolean.
+///
+/// - `raw` -- Original data, unmodified (ingested text, file content)
+/// - `summary` -- Generated summary of child entries
+/// - `meta` -- Reflection, assessment, evaluation
+/// - `impression` -- Spontaneous observation, quick note
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EntryType {
+    Raw,
+    Summary,
+    Meta,
+    Impression,
+}
+
+impl Default for EntryType {
+    fn default() -> Self {
+        Self::Raw
+    }
+}
+
+impl std::fmt::Display for EntryType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Raw => write!(f, "raw"),
+            Self::Summary => write!(f, "summary"),
+            Self::Meta => write!(f, "meta"),
+            Self::Impression => write!(f, "impression"),
+        }
+    }
+}
 
 /// Soft cluster membership: probability of belonging to a cluster.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -454,11 +504,11 @@ pub struct HierarchicalChunk {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cluster_memberships: Vec<ClusterMembership>,
 
-    /// Whether this chunk is an AI-generated summary of a cluster
+    /// Entry type: raw, summary, meta, or impression.
     #[serde(default)]
-    pub is_summary: bool,
+    pub entry_type: EntryType,
 
-    /// If this is a summary chunk, IDs of chunks it summarizes
+    /// If this is a summary entry, IDs of entries it summarizes
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub summarizes: Vec<String>,
 
@@ -484,7 +534,8 @@ pub struct HierarchicalChunk {
 }
 
 impl HierarchicalChunk {
-    /// Create a new chunk with a generated UUID
+    /// Create a new chunk with a content-hash ID (SHA-256).
+    /// Identical content always produces the same ID (idempotent).
     pub fn new(
         content: String,
         level: ChunkLevel,
@@ -492,8 +543,9 @@ impl HierarchicalChunk {
         path: String,
         source_file: String,
     ) -> Self {
+        let id = content_hash(&content);
         Self {
-            id: uuid::Uuid::new_v4().to_string(),
+            id,
             content,
             embedding: None,
             level,
@@ -504,7 +556,7 @@ impl HierarchicalChunk {
             start_offset: 0,
             end_offset: 0,
             cluster_memberships: Vec::new(),
-            is_summary: false,
+            entry_type: EntryType::Raw,
             summarizes: Vec::new(),
             visibility: default_visibility(),
             relations: Vec::new(),
@@ -513,14 +565,16 @@ impl HierarchicalChunk {
         }
     }
 
-    /// Create a summary chunk for a cluster
+    /// Create a summary entry for a cluster.
+    /// ID is derived from the content hash (idempotent).
     pub fn new_summary(
         content: String,
         summarized_chunk_ids: Vec<String>,
         embedding: Option<Vec<f32>>,
     ) -> Self {
+        let id = content_hash(&content);
         Self {
-            id: uuid::Uuid::new_v4().to_string(),
+            id,
             content,
             embedding,
             level: ChunkLevel::H1, // Summaries are top-level abstractions
@@ -531,13 +585,24 @@ impl HierarchicalChunk {
             start_offset: 0,
             end_offset: 0,
             cluster_memberships: Vec::new(),
-            is_summary: true,
+            entry_type: EntryType::Summary,
             summarizes: summarized_chunk_ids,
             visibility: default_visibility(),
             relations: Vec::new(),
             access_profile: AccessProfile::new(),
             expires_at: None,
         }
+    }
+
+    /// Check if this entry is a summary.
+    pub fn is_summary(&self) -> bool {
+        self.entry_type == EntryType::Summary
+    }
+
+    /// Set the entry type
+    pub fn with_entry_type(mut self, entry_type: EntryType) -> Self {
+        self.entry_type = entry_type;
+        self
     }
 
     /// Set the heading for this chunk
@@ -667,10 +732,53 @@ mod tests {
             "test.md".to_string(),
         );
 
-        assert!(!chunk.id.is_empty());
+        assert_eq!(chunk.id, content_hash("Test content"));
         assert_eq!(chunk.content, "Test content");
         assert_eq!(chunk.level, ChunkLevel::H1);
         assert!(chunk.parent_id.is_none());
+    }
+
+    #[test]
+    fn test_content_hash_deterministic() {
+        let id1 = content_hash("hello world");
+        let id2 = content_hash("hello world");
+        assert_eq!(id1, id2);
+
+        let id3 = content_hash("hello world!");
+        assert_ne!(id1, id3);
+    }
+
+    #[test]
+    fn test_content_hash_is_sha256_hex() {
+        let id = content_hash("test");
+        assert_eq!(id.len(), 64);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_short_id() {
+        let id = content_hash("test");
+        assert_eq!(short_id(&id).len(), 7);
+        assert_eq!(short_id(&id), &id[..7]);
+    }
+
+    #[test]
+    fn test_idempotent_chunk_creation() {
+        let chunk1 = HierarchicalChunk::new(
+            "Same content".to_string(),
+            ChunkLevel::H1,
+            None,
+            "path1".to_string(),
+            "file1.md".to_string(),
+        );
+        let chunk2 = HierarchicalChunk::new(
+            "Same content".to_string(),
+            ChunkLevel::H2,
+            Some("parent".to_string()),
+            "path2".to_string(),
+            "file2.md".to_string(),
+        );
+        assert_eq!(chunk1.id, chunk2.id);
     }
 
     #[test]
@@ -844,7 +952,8 @@ mod tests {
             Some(vec![0.1, 0.2, 0.3]),
         );
 
-        assert!(summary.is_summary);
+        assert!(summary.is_summary());
+        assert_eq!(summary.entry_type, EntryType::Summary);
         assert_eq!(summary.summarizes.len(), 2);
         assert_eq!(summary.source_file, "[cluster-summary]");
         assert_eq!(summary.level, ChunkLevel::H1);
@@ -856,8 +965,30 @@ mod tests {
         let summary =
             HierarchicalChunk::new_summary("Summary".to_string(), vec!["chunk1".to_string()], None);
 
-        assert!(summary.is_summary);
+        assert!(summary.is_summary());
         assert!(summary.embedding.is_none());
+
+    }
+
+    #[test]
+    fn test_entry_type_default_is_raw() {
+        let chunk = HierarchicalChunk::new(
+            "content".to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            "path".to_string(),
+            "file.md".to_string(),
+        );
+        assert_eq!(chunk.entry_type, EntryType::Raw);
+        assert!(!chunk.is_summary());
+    }
+
+    #[test]
+    fn test_entry_type_display() {
+        assert_eq!(format!("{}", EntryType::Raw), "raw");
+        assert_eq!(format!("{}", EntryType::Summary), "summary");
+        assert_eq!(format!("{}", EntryType::Meta), "meta");
+        assert_eq!(format!("{}", EntryType::Impression), "impression");
     }
 
     // --- Visibility tests ---
