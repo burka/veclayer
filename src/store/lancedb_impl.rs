@@ -88,7 +88,7 @@ impl LanceStore {
             Field::new("heading", DataType::Utf8, true),
             // RAPTOR-style clustering fields
             Field::new("cluster_memberships", DataType::Utf8, false), // JSON array
-            Field::new("is_summary", DataType::Boolean, false),
+            Field::new("entry_type", DataType::Utf8, false),
             Field::new("summarizes", DataType::Utf8, false), // JSON array of chunk IDs
             // Identity & memory fields
             Field::new("visibility", DataType::Utf8, false),
@@ -151,7 +151,7 @@ impl LanceStore {
                 serde_json::to_string(&c.cluster_memberships).unwrap_or_else(|_| "[]".to_string())
             })
             .collect();
-        let is_summary: Vec<bool> = chunks.iter().map(|c| c.is_summary).collect();
+        let entry_type: Vec<String> = chunks.iter().map(|c| c.entry_type.to_string()).collect();
         let summarizes: Vec<String> = chunks
             .iter()
             .map(|c| serde_json::to_string(&c.summarizes).unwrap_or_else(|_| "[]".to_string()))
@@ -210,7 +210,7 @@ impl LanceStore {
                 Arc::new(StringArray::from(source_files)),
                 Arc::new(StringArray::from(headings)),
                 Arc::new(StringArray::from(cluster_memberships)),
-                Arc::new(BooleanArray::from(is_summary)),
+                Arc::new(StringArray::from(entry_type)),
                 Arc::new(StringArray::from(summarizes)),
                 Arc::new(StringArray::from(visibility)),
                 Arc::new(StringArray::from(relations)),
@@ -254,9 +254,9 @@ impl LanceStore {
         let cluster_memberships_col = batch
             .column_by_name("cluster_memberships")
             .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let is_summary_col = batch
-            .column_by_name("is_summary")
-            .and_then(|c| c.as_any().downcast_ref::<BooleanArray>());
+        let entry_type_col = batch
+            .column_by_name("entry_type")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
         let summarizes_col = batch
             .column_by_name("summarizes")
             .and_then(|c| c.as_any().downcast_ref::<StringArray>());
@@ -327,10 +327,21 @@ impl LanceStore {
                 })
                 .unwrap_or_default();
 
-            // Parse is_summary
-            let is_summary = is_summary_col
-                .map(|col| !col.is_null(i) && col.value(i))
-                .unwrap_or(false);
+            // Parse entry_type
+            let entry_type = entry_type_col
+                .and_then(|col| {
+                    if col.is_null(i) {
+                        None
+                    } else {
+                        match col.value(i) {
+                            "summary" => Some(crate::chunk::EntryType::Summary),
+                            "meta" => Some(crate::chunk::EntryType::Meta),
+                            "impression" => Some(crate::chunk::EntryType::Impression),
+                            _ => Some(crate::chunk::EntryType::Raw),
+                        }
+                    }
+                })
+                .unwrap_or(crate::chunk::EntryType::Raw);
 
             // Parse summarizes from JSON
             let summarizes: Vec<String> = summarizes_col
@@ -421,7 +432,7 @@ impl LanceStore {
                 start_offset: 0,
                 end_offset: 0,
                 cluster_memberships,
-                is_summary,
+                entry_type,
                 summarizes,
                 visibility,
                 relations,
@@ -1035,7 +1046,7 @@ mod tests {
             ClusterMembership::new("cluster-a", 0.8),
             ClusterMembership::new("cluster-b", 0.6),
         ];
-        chunk.is_summary = true;
+        chunk.entry_type = crate::chunk::EntryType::Summary;
         chunk.summarizes = vec!["chunk-1".to_string(), "chunk-2".to_string()];
 
         store.insert_chunks(vec![chunk.clone()]).await.unwrap();
@@ -1047,7 +1058,7 @@ mod tests {
         assert!((retrieved.cluster_memberships[0].probability - 0.8).abs() < 0.01);
         assert_eq!(retrieved.cluster_memberships[1].cluster_id, "cluster-b");
         assert!((retrieved.cluster_memberships[1].probability - 0.6).abs() < 0.01);
-        assert!(retrieved.is_summary);
+        assert!(retrieved.is_summary());
         assert_eq!(retrieved.summarizes.len(), 2);
         assert!(retrieved.summarizes.contains(&"chunk-1".to_string()));
         assert!(retrieved.summarizes.contains(&"chunk-2".to_string()));
@@ -1063,7 +1074,7 @@ mod tests {
         let retrieved = store.get_by_id("cluster-2").await.unwrap().unwrap();
 
         assert_eq!(retrieved.cluster_memberships.len(), 0);
-        assert!(!retrieved.is_summary);
+        assert!(!retrieved.is_summary());
         assert_eq!(retrieved.summarizes.len(), 0);
     }
 
