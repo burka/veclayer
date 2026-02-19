@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::info;
 
+use crate::chunk::short_id;
 use crate::cluster::ClusterPipeline;
 use crate::embedder::FastEmbedder;
 use crate::parser::MarkdownParser;
@@ -15,46 +16,57 @@ use crate::store::LanceStore;
 use crate::summarizer::OllamaSummarizer;
 use crate::{Config, DocumentParser, Embedder, Result, VectorStore};
 
-/// Options for document ingestion
+// --- Option types ---
+
+/// Options for adding knowledge (files, directories, or inline text)
 #[derive(Debug, Clone)]
-pub struct IngestOptions {
+pub struct AddOptions {
     /// Enable recursive directory processing
     pub recursive: bool,
     /// Enable cluster summarization
     pub summarize: bool,
     /// Ollama model to use for summarization
     pub model: String,
-    /// Visibility to assign to ingested chunks (default: "normal")
+    /// Visibility to assign to entries (default: "normal")
     pub visibility: Option<String>,
+    /// Entry type: "raw", "meta", "impression"
+    pub entry_type: String,
 }
 
-impl Default for IngestOptions {
+/// Backwards-compatible alias
+pub type IngestOptions = AddOptions;
+
+impl Default for AddOptions {
     fn default() -> Self {
         Self {
             recursive: true,
             summarize: true,
             model: "llama3.2".to_string(),
             visibility: None,
+            entry_type: "raw".to_string(),
         }
     }
 }
 
-/// Options for search queries
+/// Options for semantic search
 #[derive(Debug, Clone)]
-pub struct QueryOptions {
+pub struct SearchOptions {
     /// Number of top results to return
     pub top_k: usize,
     /// Show full hierarchy path in results
     pub show_path: bool,
-    /// Search within a specific subtree (parent chunk ID)
+    /// Search within a specific subtree (entry ID)
     pub subtree: Option<String>,
-    /// Deep search: include all visibilities (deep_only, expired, custom)
+    /// Deep search: include all visibilities
     pub deep: bool,
-    /// Recency window for relevancy boosting: "24h", "7d", "30d"
+    /// Recency window: "24h", "7d", "30d"
     pub recent: Option<String>,
 }
 
-impl Default for QueryOptions {
+/// Backwards-compatible alias
+pub type QueryOptions = SearchOptions;
+
+impl Default for SearchOptions {
     fn default() -> Self {
         Self {
             top_k: 5,
@@ -62,6 +74,24 @@ impl Default for QueryOptions {
             subtree: None,
             deep: false,
             recent: None,
+        }
+    }
+}
+
+/// Options for focus command
+#[derive(Debug, Clone)]
+pub struct FocusOptions {
+    /// Optional question to rerank children by relevance
+    pub question: Option<String>,
+    /// Max children to display
+    pub limit: usize,
+}
+
+impl Default for FocusOptions {
+    fn default() -> Self {
+        Self {
+            question: None,
+            limit: 10,
         }
     }
 }
@@ -90,46 +120,90 @@ impl Default for ServeOptions {
     }
 }
 
-/// Result of an ingestion operation
+// --- Result types ---
+
+/// Result of an add/ingest operation
 #[derive(Debug)]
-pub struct IngestResult {
-    /// Total number of chunks processed
-    pub total_chunks: usize,
-    /// Number of summary chunks created (if summarization was enabled)
-    pub summary_chunks: usize,
+pub struct AddResult {
+    /// Total number of entries processed
+    pub total_entries: usize,
+    /// Number of summary entries created
+    pub summary_entries: usize,
     /// Number of files processed
     pub files_processed: usize,
 }
 
-/// Result of a query operation
+/// Backwards-compatible alias
+pub type IngestResult = AddResult;
+
+/// Result of a search/query operation
 #[derive(Debug)]
-pub struct QueryResult {
-    /// The matched chunk
+pub struct SearchResult {
+    /// The matched entry
     pub chunk: crate::HierarchicalChunk,
     /// Similarity score
     pub score: f32,
     /// Full hierarchy path
     pub hierarchy_path: Vec<crate::HierarchicalChunk>,
-    /// Relevant children chunks
-    pub relevant_children: Vec<QueryResult>,
+    /// Relevant children
+    pub relevant_children: Vec<SearchResult>,
 }
+
+/// Backwards-compatible alias
+pub type QueryResult = SearchResult;
 
 /// Store statistics
 #[derive(Debug)]
 pub struct StatsResult {
-    /// Total number of chunks
+    /// Total number of entries
     pub total_chunks: usize,
-    /// Chunks organized by level
+    /// Entries organized by level
     pub chunks_by_level: std::collections::HashMap<u8, usize>,
     /// List of source files
     pub source_files: Vec<String>,
 }
 
-/// Ingest documents into the vector store
+// --- Command implementations ---
+
+/// Initialize a new VecLayer store in the given directory.
+pub fn init(data_dir: &Path) -> Result<()> {
+    if data_dir.exists() {
+        println!("VecLayer store already exists at {}", data_dir.display());
+        println!("  {} entries", "use `veclayer add` to add knowledge");
+    } else {
+        std::fs::create_dir_all(data_dir)?;
+        println!("Initialized VecLayer store at {}", data_dir.display());
+    }
+    println!("\nNext steps:");
+    println!("  veclayer add ./docs       # Add files");
+    println!("  veclayer add \"text\"        # Add inline text");
+    println!("  veclayer search \"query\"    # Search");
+    Ok(())
+}
+
+/// Add knowledge to the store (files, directories, or inline text).
 ///
-/// This function processes files from the specified path, generates embeddings,
-/// and optionally performs cluster summarization.
-pub async fn ingest(data_dir: &Path, path: &Path, options: &IngestOptions) -> Result<IngestResult> {
+/// If `input` is a path to a file or directory, it parses and ingests documents.
+/// Otherwise, it treats the input as inline text content.
+pub async fn add(data_dir: &Path, input: &str, options: &AddOptions) -> Result<AddResult> {
+    let input_path = Path::new(input);
+
+    if input_path.exists() {
+        // Input is a file or directory -- ingest it
+        add_files(data_dir, input_path, options).await
+    } else {
+        // Input is inline text -- store as a single entry
+        add_text(data_dir, input, options).await
+    }
+}
+
+/// Backwards-compatible alias
+pub async fn ingest(data_dir: &Path, path: &Path, options: &AddOptions) -> Result<AddResult> {
+    add_files(data_dir, path, options).await
+}
+
+/// Add files from a path to the store.
+async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result<AddResult> {
     info!("Initializing embedder...");
     let embedder = FastEmbedder::new()?;
     let dimension = embedder.dimension();
@@ -147,54 +221,46 @@ pub async fn ingest(data_dir: &Path, path: &Path, options: &IngestOptions) -> Re
     for file in &files {
         info!("Processing {:?}...", file);
 
-        // Delete existing chunks from this file
         let deleted = store.delete_by_source(&file.to_string_lossy()).await?;
         if deleted > 0 {
-            info!("  Removed {} existing chunks", deleted);
+            info!("  Removed {} existing entries", deleted);
         }
 
-        // Parse the file
         let mut chunks = parser.parse_file(file)?;
-        info!("  Parsed {} chunks", chunks.len());
+        info!("  Parsed {} entries", chunks.len());
 
         if chunks.is_empty() {
             continue;
         }
 
-        // Apply visibility if specified
         if let Some(ref vis) = options.visibility {
             for chunk in &mut chunks {
                 chunk.visibility = vis.clone();
             }
         }
 
-        // Generate embeddings
         let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
         let embeddings = embedder.embed(&texts)?;
 
-        // Attach embeddings to chunks
         for (chunk, embedding) in chunks.iter_mut().zip(embeddings.into_iter()) {
             chunk.embedding = Some(embedding);
         }
 
-        // Insert into store
         store.insert_chunks(chunks.clone()).await?;
         info!("  Indexed successfully");
 
         all_chunks.extend(chunks);
     }
 
-    let total_chunks = all_chunks.len();
-    let mut summary_chunks = 0;
+    let total_entries = all_chunks.len();
+    let mut summary_entries = 0;
 
-    // Phase 2: Cluster and summarize if enabled
     if options.summarize && !all_chunks.is_empty() {
         info!(
             "Starting cluster summarization with model '{}'...",
             options.model
         );
 
-        // Create a new embedder for the pipeline (to embed summaries)
         let summary_embedder = FastEmbedder::new()?;
         let summarizer = OllamaSummarizer::new().with_model(&options.model);
 
@@ -204,22 +270,18 @@ pub async fn ingest(data_dir: &Path, path: &Path, options: &IngestOptions) -> Re
 
         match pipeline.process(all_chunks).await {
             Ok((updated_chunks, summary_chunk_list)) => {
-                // Update existing chunks with cluster memberships
                 for chunk in updated_chunks {
                     if !chunk.cluster_memberships.is_empty() {
-                        // Re-insert to update cluster memberships
-                        // Note: In production, we'd want an upsert operation
                         store.insert_chunks(vec![chunk]).await?;
                     }
                 }
 
-                // Insert summary chunks
                 if !summary_chunk_list.is_empty() {
                     info!(
                         "Inserting {} cluster summaries...",
                         summary_chunk_list.len()
                     );
-                    summary_chunks = summary_chunk_list.len();
+                    summary_entries = summary_chunk_list.len();
                     store.insert_chunks(summary_chunk_list).await?;
                 }
             }
@@ -232,23 +294,137 @@ pub async fn ingest(data_dir: &Path, path: &Path, options: &IngestOptions) -> Re
         }
     }
 
-    info!("Ingestion complete!");
+    println!(
+        "Added {} entries ({} summaries) from {} files",
+        total_entries, summary_entries, files.len()
+    );
 
-    Ok(IngestResult {
-        total_chunks,
-        summary_chunks,
+    Ok(AddResult {
+        total_entries,
+        summary_entries,
         files_processed: files.len(),
     })
 }
 
-/// Query the vector store with hierarchical search
-///
-/// Returns matching results with their hierarchy paths and relevant children.
-pub async fn query(
+/// Add inline text as a single entry.
+async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<AddResult> {
+    let embedder = FastEmbedder::new()?;
+    let dimension = embedder.dimension();
+    let store = LanceStore::open(data_dir, dimension).await?;
+
+    let entry_type = match options.entry_type.as_str() {
+        "meta" => crate::chunk::EntryType::Meta,
+        "impression" => crate::chunk::EntryType::Impression,
+        "summary" => crate::chunk::EntryType::Summary,
+        _ => crate::chunk::EntryType::Raw,
+    };
+
+    let mut chunk = crate::HierarchicalChunk::new(
+        text.to_string(),
+        crate::ChunkLevel::CONTENT,
+        None,
+        String::new(),
+        "[inline]".to_string(),
+    )
+    .with_entry_type(entry_type);
+
+    if let Some(ref vis) = options.visibility {
+        chunk.visibility = vis.clone();
+    }
+
+    let embeddings = embedder.embed(&[text])?;
+    chunk.embedding = Some(
+        embeddings
+            .into_iter()
+            .next()
+            .ok_or_else(|| crate::Error::embedding("Failed to generate embedding"))?,
+    );
+
+    let id = chunk.id.clone();
+    store.insert_chunks(vec![chunk]).await?;
+
+    println!("Added entry {} ({})", short_id(&id), entry_type);
+
+    Ok(AddResult {
+        total_entries: 1,
+        summary_entries: 0,
+        files_processed: 0,
+    })
+}
+
+/// Semantic search with hierarchical results (prints output).
+pub async fn search(data_dir: &Path, query_str: &str, options: &SearchOptions) -> Result<()> {
+    let results = search_results(data_dir, query_str, options).await?;
+
+    if results.is_empty() {
+        println!("No results found.");
+        return Ok(());
+    }
+
+    println!("\nSearch results for: \"{}\"\n", query_str);
+    println!("{}", "=".repeat(60));
+
+    for (i, result) in results.iter().enumerate() {
+        println!(
+            "\n{}. [Score: {:.3}] {} ({})",
+            i + 1,
+            result.score,
+            result.chunk.level,
+            result.chunk.entry_type,
+        );
+
+        if options.show_path && !result.hierarchy_path.is_empty() {
+            let path: Vec<&str> = result
+                .hierarchy_path
+                .iter()
+                .filter_map(|c| c.heading.as_deref())
+                .collect();
+            println!("   Path: {}", path.join(" > "));
+        }
+
+        println!("   Source: {}", result.chunk.source_file);
+
+        if let Some(ref heading) = result.chunk.heading {
+            println!("   Heading: {}", heading);
+        }
+
+        let content = if result.chunk.content.len() > 200 {
+            format!("{}...", &result.chunk.content[..200])
+        } else {
+            result.chunk.content.clone()
+        };
+        println!("   Content: {}", content.replace('\n', " "));
+
+        if !result.relevant_children.is_empty() {
+            println!("   Children:");
+            for child in &result.relevant_children {
+                let preview = if child.chunk.content.len() > 80 {
+                    format!("{}...", &child.chunk.content[..80])
+                } else {
+                    child.chunk.content.clone()
+                };
+                println!(
+                    "     - [Score: {:.3}] {}",
+                    child.score,
+                    preview.replace('\n', " ")
+                );
+            }
+        }
+
+        println!("   ID: {}", short_id(&result.chunk.id));
+    }
+
+    println!("\n{} results. Use `veclayer focus <id>` to drill in.", results.len());
+
+    Ok(())
+}
+
+/// Run search and return structured results (for programmatic use).
+pub async fn search_results(
     data_dir: &Path,
-    query: &str,
-    options: &QueryOptions,
-) -> Result<Vec<QueryResult>> {
+    query_str: &str,
+    options: &SearchOptions,
+) -> Result<Vec<SearchResult>> {
     let embedder = FastEmbedder::new()?;
     let dimension = embedder.dimension();
     let store = LanceStore::open(data_dir, dimension).await?;
@@ -268,25 +444,24 @@ pub async fn query(
         recency_alpha: SearchConfig::alpha_for_window(recency_window),
     };
 
-    let search = HierarchicalSearch::new(store, embedder).with_config(config);
+    let search_engine = HierarchicalSearch::new(store, embedder).with_config(config);
 
     let results = if let Some(ref parent_id) = options.subtree {
-        search.search_subtree(query, parent_id).await?
+        search_engine.search_subtree(query_str, parent_id).await?
     } else {
-        search.search(query).await?
+        search_engine.search(query_str).await?
     };
 
-    // Convert internal search results to our QueryResult type
     Ok(results
         .into_iter()
-        .map(|r| QueryResult {
+        .map(|r| SearchResult {
             chunk: r.chunk,
             score: r.score,
             hierarchy_path: r.hierarchy_path,
             relevant_children: r
                 .relevant_children
                 .into_iter()
-                .map(|c| QueryResult {
+                .map(|c| SearchResult {
                     chunk: c.chunk,
                     score: c.score,
                     hierarchy_path: vec![],
@@ -297,27 +472,127 @@ pub async fn query(
         .collect())
 }
 
-/// Start the MCP server (HTTP or stdio transport)
-pub async fn serve(data_dir: &Path, options: &ServeOptions) -> Result<()> {
-    let config = Config::default()
-        .with_data_dir(data_dir)
-        .with_host(&options.host)
-        .with_port(options.port)
-        .with_read_only(options.read_only);
-
-    if options.mcp_stdio {
-        info!("Starting MCP server on stdio...");
-        crate::mcp::run_stdio(config).await
-    } else {
-        info!(
-            "Starting HTTP server on {}:{}...",
-            options.host, options.port
-        );
-        crate::mcp::run_http(config).await
-    }
+/// Backwards-compatible alias
+pub async fn query(
+    data_dir: &Path,
+    query_str: &str,
+    options: &SearchOptions,
+) -> Result<Vec<SearchResult>> {
+    search_results(data_dir, query_str, options).await
 }
 
-/// Show statistics about the vector store
+/// Focus on an entry: show details and children.
+pub async fn focus(data_dir: &Path, id: &str, options: &FocusOptions) -> Result<()> {
+    let embedder = FastEmbedder::new()?;
+    let dimension = embedder.dimension();
+    let store = LanceStore::open(data_dir, dimension).await?;
+
+    let entry = store
+        .get_by_id(id)
+        .await?
+        .ok_or_else(|| crate::Error::not_found(format!("Entry {} not found", id)))?;
+
+    // Display entry details
+    println!("Entry {}", short_id(&entry.id));
+    println!("{}", "=".repeat(50));
+    println!("  Type: {}", entry.entry_type);
+    println!("  Level: {}", entry.level);
+    println!("  Visibility: {}", entry.visibility);
+    println!("  Source: {}", entry.source_file);
+    if let Some(ref heading) = entry.heading {
+        println!("  Heading: {}", heading);
+    }
+    if !entry.relations.is_empty() {
+        println!("  Relations:");
+        for rel in &entry.relations {
+            println!("    {} -> {}", rel.kind, short_id(&rel.target_id));
+        }
+    }
+    println!("\n{}\n", entry.content);
+
+    // Get and display children
+    let mut children = store.get_children(&entry.id).await?;
+
+    if !children.is_empty() {
+        // Optionally rerank by question
+        if let Some(ref question) = options.question {
+            let query_emb = embedder.embed(&[question.as_str()])?;
+            if let Some(query_vec) = query_emb.into_iter().next() {
+                children.sort_by(|a, b| {
+                    let score_a = a
+                        .embedding
+                        .as_ref()
+                        .map(|e| crate::search::cosine_similarity(&query_vec, e))
+                        .unwrap_or(0.0);
+                    let score_b = b
+                        .embedding
+                        .as_ref()
+                        .map(|e| crate::search::cosine_similarity(&query_vec, e))
+                        .unwrap_or(0.0);
+                    score_b
+                        .partial_cmp(&score_a)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+        }
+
+        let shown = children.iter().take(options.limit).count();
+        println!("Children ({}/{}):", shown, children.len());
+        for child in children.iter().take(options.limit) {
+            let preview = if child.content.len() > 100 {
+                format!("{}...", &child.content[..100])
+            } else {
+                child.content.clone()
+            };
+            println!(
+                "  {} [{}] {}",
+                short_id(&child.id),
+                child.entry_type,
+                preview.replace('\n', " ")
+            );
+        }
+
+        println!(
+            "\nUse `veclayer focus <child-id>` to drill deeper."
+        );
+    } else {
+        println!("(no children)");
+    }
+
+    Ok(())
+}
+
+/// Print store status (statistics).
+pub async fn status(data_dir: &Path) -> Result<()> {
+    let result = stats(data_dir).await?;
+
+    println!("VecLayer Status");
+    println!("{}", "=".repeat(40));
+    println!("Store: {}", data_dir.display());
+    println!("Total entries: {}", result.total_chunks);
+    println!("\nEntries by level:");
+    for level in 1..=7 {
+        if let Some(count) = result.chunks_by_level.get(&level) {
+            let level_name = if level <= 6 {
+                format!("H{}", level)
+            } else {
+                "Content".to_string()
+            };
+            println!("  {}: {}", level_name, count);
+        }
+    }
+    println!("\nSource files: {}", result.source_files.len());
+
+    if !result.source_files.is_empty() {
+        println!("\nNext: `veclayer search \"query\"` or `veclayer add <path>`");
+    } else {
+        println!("\nStore is empty. Use `veclayer add <path>` to add knowledge.");
+    }
+
+    Ok(())
+}
+
+/// Show statistics about the store (returns structured data).
 pub async fn stats(data_dir: &Path) -> Result<StatsResult> {
     let store = LanceStore::open_metadata(data_dir).await?;
 
@@ -330,7 +605,23 @@ pub async fn stats(data_dir: &Path) -> Result<StatsResult> {
     })
 }
 
-/// List all indexed source files
+/// Print indexed source files.
+pub async fn print_sources(data_dir: &Path) -> Result<()> {
+    let result = sources(data_dir).await?;
+
+    if result.is_empty() {
+        println!("No files indexed. Use `veclayer add <path>` to add knowledge.");
+    } else {
+        println!("Indexed source files:");
+        for file in &result {
+            println!("  {}", file);
+        }
+    }
+
+    Ok(())
+}
+
+/// List all indexed source files (returns data).
 pub async fn sources(data_dir: &Path) -> Result<Vec<String>> {
     let store = LanceStore::open_metadata(data_dir).await?;
 
@@ -339,9 +630,7 @@ pub async fn sources(data_dir: &Path) -> Result<Vec<String>> {
     Ok(store_stats.source_files)
 }
 
-/// Collect files from a path, optionally recursively
-///
-/// This function respects the parser's can_parse method to filter files.
+/// Collect files from a path, optionally recursively.
 pub fn collect_files(
     path: &Path,
     recursive: bool,
@@ -386,19 +675,27 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_ingest_options_default() {
-        let opts = IngestOptions::default();
+    fn test_add_options_default() {
+        let opts = AddOptions::default();
         assert!(opts.recursive);
         assert!(opts.summarize);
         assert_eq!(opts.model, "llama3.2");
+        assert_eq!(opts.entry_type, "raw");
     }
 
     #[test]
-    fn test_query_options_default() {
-        let opts = QueryOptions::default();
+    fn test_search_options_default() {
+        let opts = SearchOptions::default();
         assert_eq!(opts.top_k, 5);
         assert!(!opts.show_path);
         assert!(opts.subtree.is_none());
+    }
+
+    #[test]
+    fn test_focus_options_default() {
+        let opts = FocusOptions::default();
+        assert!(opts.question.is_none());
+        assert_eq!(opts.limit, 10);
     }
 
     #[test]
@@ -408,6 +705,26 @@ mod tests {
         assert_eq!(opts.port, 8080);
         assert!(!opts.read_only);
         assert!(!opts.mcp_stdio);
+    }
+
+    #[test]
+    fn test_init_creates_directory() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let store_dir = temp_dir.path().join("new-store");
+
+        init(&store_dir)?;
+
+        assert!(store_dir.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn test_init_existing_directory() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+
+        // Should not error on existing directory
+        init(temp_dir.path())?;
+        Ok(())
     }
 
     #[test]
@@ -434,7 +751,6 @@ mod tests {
         let parser = MarkdownParser::new();
         let files = collect_files(&file_path, false, &parser)?;
 
-        // MarkdownParser should not parse non-.md files
         assert_eq!(files.len(), 0);
 
         Ok(())
@@ -467,11 +783,9 @@ mod tests {
 
         let parser = MarkdownParser::new();
 
-        // Non-recursive should find only 1 file
         let files_non_recursive = collect_files(temp_dir.path(), false, &parser)?;
         assert_eq!(files_non_recursive.len(), 1);
 
-        // Recursive should find both files
         let files_recursive = collect_files(temp_dir.path(), true, &parser)?;
         assert_eq!(files_recursive.len(), 2);
 
