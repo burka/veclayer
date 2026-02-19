@@ -1,0 +1,2 @@
+[env]
+PROTOC_INCLUDE = { value = "third_party/protobuf", relative = true }

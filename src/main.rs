@@ -79,6 +79,71 @@ enum Commands {
         recent: Option<String>,
     },
 
+    /// Recall memories (new API naming)
+    Recall {
+        /// The recall query
+        query: String,
+
+        /// Number of top results
+        #[arg(short = 'k', long, default_value = "5")]
+        top_k: usize,
+
+        /// Show full hierarchy path
+        #[arg(short = 'p', long)]
+        show_path: bool,
+
+        /// Search within a specific subtree (parent chunk ID)
+        #[arg(long)]
+        subtree: Option<String>,
+
+        /// Deep search: include all visibilities (deep_only, expired, custom)
+        #[arg(long)]
+        deep: bool,
+
+        /// Recency window for relevancy boosting: 24h, 7d, 30d
+        #[arg(long)]
+        recent: Option<String>,
+    },
+
+    /// Store a new memory chunk (new API naming)
+    Store {
+        /// Content to store
+        content: String,
+
+        /// Optional parent chunk id
+        #[arg(long)]
+        parent_id: Option<String>,
+
+        /// Optional heading
+        #[arg(long)]
+        heading: Option<String>,
+
+        /// Visibility of the stored chunk
+        #[arg(long, default_value = "normal")]
+        visibility: String,
+
+        /// Source label
+        #[arg(long, default_value = "[agent]")]
+        source_file: String,
+    },
+
+    /// Reflect on memory curation (new API naming)
+    Think,
+
+    /// Share scope preview (new API naming)
+    Share {
+        /// Tree scope
+        tree: String,
+
+        /// Capability list (repeatable)
+        #[arg(long = "can")]
+        can: Vec<String>,
+
+        /// Expiry hint (e.g. 90d)
+        #[arg(long)]
+        expires: Option<String>,
+    },
+
     /// Start the MCP server
     Serve {
         /// Port to listen on
@@ -200,6 +265,88 @@ async fn main() -> Result<()> {
 
                 println!("   ID: {}", result.chunk.id);
             }
+        }
+        Commands::Recall {
+            query,
+            top_k,
+            show_path,
+            subtree,
+            deep,
+            recent,
+        } => {
+            let options = QueryOptions {
+                top_k,
+                show_path,
+                subtree,
+                deep,
+                recent,
+            };
+            let results = veclayer::commands::query(&cli.data_dir, &query, &options).await?;
+
+            if results.is_empty() {
+                println!("No results found.");
+                return Ok(());
+            }
+
+            println!("\nRecall results for: \"{}\"\n", query);
+            println!("{}", "=".repeat(60));
+
+            for (i, result) in results.iter().enumerate() {
+                println!(
+                    "\n{}. [Score: {:.3}] {}",
+                    i + 1,
+                    result.score,
+                    result.chunk.level
+                );
+
+                if show_path && !result.hierarchy_path.is_empty() {
+                    let path: Vec<&str> = result
+                        .hierarchy_path
+                        .iter()
+                        .filter_map(|c| c.heading.as_deref())
+                        .collect();
+                    println!("   Path: {}", path.join(" > "));
+                }
+
+                println!("   Source: {}", result.chunk.source_file);
+                if let Some(ref heading) = result.chunk.heading {
+                    println!("   Heading: {}", heading);
+                }
+
+                let content = if result.chunk.content.len() > 200 {
+                    format!("{}...", &result.chunk.content[..200])
+                } else {
+                    result.chunk.content.clone()
+                };
+                println!("   Content: {}", content.replace('\n', " "));
+                println!("   ID: {}", result.chunk.id);
+            }
+        }
+        Commands::Store {
+            content,
+            parent_id,
+            heading,
+            visibility,
+            source_file,
+        } => {
+            let id = veclayer::commands::store(
+                &cli.data_dir,
+                &content,
+                parent_id.as_deref(),
+                heading.as_deref(),
+                &visibility,
+                &source_file,
+            )
+            .await?;
+            println!("Stored chunk: {}", id);
+        }
+        Commands::Think => {
+            let report = veclayer::commands::think(&cli.data_dir, 10, 10).await?;
+            println!("{}", report);
+        }
+        Commands::Share { tree, can, expires } => {
+            let token = veclayer::commands::share(&tree, can, expires.as_deref());
+            println!("{}", token);
         }
         Commands::Serve {
             port,

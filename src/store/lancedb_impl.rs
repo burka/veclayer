@@ -379,7 +379,9 @@ impl LanceStore {
             } else {
                 // Legacy schema: migrate old fields
                 let created_at = created_at_col.map(|col| col.value(i)).unwrap_or(0);
-                let last_accessed = legacy_last_accessed_col.map(|col| col.value(i)).unwrap_or(0);
+                let last_accessed = legacy_last_accessed_col
+                    .map(|col| col.value(i))
+                    .unwrap_or(0);
                 let access_count = legacy_access_count_col.map(|col| col.value(i)).unwrap_or(0);
                 crate::chunk::AccessProfile {
                     created_at,
@@ -650,9 +652,7 @@ impl VectorStore for LanceStore {
                 .only_if(filter)
                 .execute()
                 .await
-                .map_err(|e| {
-                    Error::store(format!("Failed to update access profile: {}", e))
-                })?;
+                .map_err(|e| Error::store(format!("Failed to update access profile: {}", e)))?;
         }
 
         Ok(())
@@ -664,7 +664,10 @@ impl VectorStore for LanceStore {
 
         table
             .update()
-            .column("visibility", format!("'{}'", visibility.replace('\'', "''")))
+            .column(
+                "visibility",
+                format!("'{}'", visibility.replace('\'', "''")),
+            )
             .only_if(filter)
             .execute()
             .await
@@ -673,11 +676,7 @@ impl VectorStore for LanceStore {
         Ok(())
     }
 
-    async fn add_relation(
-        &self,
-        chunk_id: &str,
-        relation: crate::ChunkRelation,
-    ) -> Result<()> {
+    async fn add_relation(&self, chunk_id: &str, relation: crate::ChunkRelation) -> Result<()> {
         // Read current chunk to get existing relations
         let chunk = self
             .get_by_id(chunk_id)
@@ -687,8 +686,7 @@ impl VectorStore for LanceStore {
         let mut relations = chunk.relations;
         relations.push(relation);
 
-        let relations_json =
-            serde_json::to_string(&relations).unwrap_or_else(|_| "[]".to_string());
+        let relations_json = serde_json::to_string(&relations).unwrap_or_else(|_| "[]".to_string());
 
         let table = self.get_table().await?;
         let filter = format!("id = '{}'", chunk_id.replace('\'', "''"));
@@ -740,7 +738,11 @@ impl VectorStore for LanceStore {
         Ok(all_chunks)
     }
 
-    async fn get_stale_chunks(&self, stale_seconds: i64, limit: usize) -> Result<Vec<HierarchicalChunk>> {
+    async fn get_stale_chunks(
+        &self,
+        stale_seconds: i64,
+        limit: usize,
+    ) -> Result<Vec<HierarchicalChunk>> {
         let now = crate::chunk::now_epoch_secs();
         let cutoff = now - stale_seconds;
 

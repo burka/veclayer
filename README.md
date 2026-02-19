@@ -38,11 +38,23 @@ Identität entsteht aus dem Zusammenspiel von:
 | Wie hat sich mein Wissen entwickelt? | Relations (SupersededBy) |
 | Aktive Selbstpflege | Reflexions-Pattern (extern getriggert) |
 
+## Vision-Zielbild (abgleichbar)
+
+VecLayer zielt auf ein agentenzentriertes Langzeitgedächtnis mit fünf Kernfähigkeiten:
+
+1. **recall** – relevante Erinnerungen facettiert finden
+2. **focus** – aus Zusammenfassung in Evidenz-Details absteigen
+3. **store** – neue Erkenntnisse dauerhaft ablegen und verorten
+4. **think** – Widersprüche/Konsolidierung aktiv kuratieren
+5. **share** – gezielt und nachvollziehbar Berechtigungen teilen
+
+Die aktuelle Implementierung ist auf diese API ausgerichtet; die verbleibenden Gaps sind in `Roadmap.md` und `Tasks.md` explizit nachverfolgbar.
+
 ## Aktueller Stand
 
 ### Implementiert (v0.1 – Prototyp)
 - [x] Markdown-Parsing mit Heading-Hierarchie (pulldown-cmark)
-- [x] FastEmbed-Embeddings (ONNX, CPU-only)
+- [x] Deterministische lokale Embeddings (offline, ohne Model-Download)
 - [x] LanceDB-Backend (serverless, kein Setup)
 - [x] RAPTOR-Style Soft Clustering + LLM-Summaries (via Ollama)
 - [x] Hierarchische Suche mit Kontext-Aufbau
@@ -57,12 +69,13 @@ Identität entsteht aus dem Zusammenspiel von:
 - [x] **AccessProfile** – RRD-Style Buckets (hour, day, week, month, year, total)
 - [x] **Expiry** – Selbstzerstörende Daten mit Zeitstempel
 - [x] Visibility-Filter in der Suche (`--deep` für alle, Standard filtert deep_only/expired)
-- [x] MCP-Tools: promote, demote, relate (stdio + HTTP API)
+- [x] MCP-Tools: recall, focus, store, think, share (stdio + HTTP API)
 - [x] Access-Tracking bei Suchergebnissen (RRD-Buckets + Relevancy Scoring)
 - [x] Ingest mit `--visibility` Flag
 - [x] Recency-Suche mit `--recent 24h/7d/30d`
 
 ### Geplant
+- [ ] Dynamisches Agent-Priming (Identitätsnarrativ, offene Threads, Meta-Learnings)
 - [ ] Überlappende Bäume (Multi-Dimension: Thema × Zeit × Projekt)
 - [ ] Turso/Limbo als Embedded-Backend (SQLite-kompatibel, Pure Rust)
 - [ ] PostgreSQL + pgvector Backend (Production)
@@ -215,17 +228,11 @@ veclayer serve --read-only    # Production-Modus
 
 | Tool | Beschreibung |
 |------|-------------|
-| `search` | Hierarchische Vektorsuche mit Visibility-Filter und Recency |
-| `get_chunk` | Chunk per ID abrufen |
-| `get_children` | Kinder eines Chunks abrufen |
-| `stats` | Index-Statistiken |
-| `promote` | Visibility hochstufen (z.B. → 'always') |
-| `demote` | Visibility herunterstufen (z.B. → 'deep_only') |
-| `relate` | Relation zwischen Chunks anlegen |
-| `reflect` | Reflexionsbericht: Hot/Stale Chunks + empfohlene Aktionen |
-| `ingest_chunk` | Neuen Chunk direkt schreiben (Agent-Beobachtungen, Summaries) |
-| `configure_aging` | Aging-Regeln setzen (Tage, Ziel-Visibility) |
-| `apply_aging` | Aging-Regeln jetzt ausführen |
+| `recall` | Semantische Erinnerungssuche mit Recency-Optionen |
+| `focus` | Vertiefung ab Node/Chunk mit optionaler Frage-Linse |
+| `store` | Speichert neue Erinnerung als Chunk inkl. optionaler Einordnung |
+| `think` | Reflexionsbericht (hot/stale + Kuratierungshinweise) |
+| `share` | Erzeugt Scope-/Capability-Token-Payload für Sharing-Workflows |
 
 ### `veclayer stats` / `veclayer sources`
 
@@ -245,7 +252,7 @@ veclayer sources  # Indexierte Dateien auflisten
 
 ```env
 VECLAYER_DATA_DIR=./veclayer-data
-VECLAYER_EMBEDDER=fastembed        # oder ollama
+VECLAYER_EMBEDDER=fastembed-local        # oder ollama
 VECLAYER_OLLAMA_MODEL=llama3.2
 VECLAYER_OLLAMA_URL=http://localhost:11434
 VECLAYER_PORT=8080

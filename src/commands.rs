@@ -4,6 +4,7 @@
 //! both from the CLI and programmatically as a library.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use tracing::info;
 
@@ -297,6 +298,120 @@ pub async fn query(
         .collect())
 }
 
+/// Store a single memory chunk and return its ID.
+pub async fn store(
+    data_dir: &Path,
+    content: &str,
+    parent_id: Option<&str>,
+    heading: Option<&str>,
+    visibility: &str,
+    source_file: &str,
+) -> Result<String> {
+    let embedder = FastEmbedder::new()?;
+    let dimension = embedder.dimension();
+    let store = LanceStore::open(data_dir, dimension).await?;
+
+    let embeddings = embedder.embed(&[content])?;
+    let id = uuid::Uuid::new_v4().to_string();
+
+    let level = if let Some(pid) = parent_id {
+        if let Some(parent) = store.get_by_id(pid).await? {
+            crate::ChunkLevel(parent.level.0 + 1)
+        } else {
+            crate::ChunkLevel(7)
+        }
+    } else {
+        crate::ChunkLevel(1)
+    };
+
+    let path = if let Some(pid) = parent_id {
+        if let Some(parent) = store.get_by_id(pid).await? {
+            format!("{}/agent", parent.path)
+        } else {
+            source_file.to_string()
+        }
+    } else {
+        source_file.to_string()
+    };
+
+    let mut chunk = crate::HierarchicalChunk::new(
+        content.to_string(),
+        level,
+        parent_id.map(str::to_string),
+        path,
+        source_file.to_string(),
+    );
+    chunk.id = id.clone();
+    chunk.embedding = embeddings.into_iter().next();
+    chunk.heading = heading.map(str::to_string);
+    chunk.visibility = visibility.to_string();
+
+    store.insert_chunks(vec![chunk]).await?;
+    Ok(id)
+}
+
+/// Generate reflection report for think command.
+pub async fn think(data_dir: &Path, hot_limit: usize, stale_limit: usize) -> Result<String> {
+    let embedder = FastEmbedder::new()?;
+    let dimension = embedder.dimension();
+    let store = Arc::new(LanceStore::open(data_dir, dimension).await?);
+    let aging_config = crate::aging::AgingConfig::load(data_dir);
+
+    let hot = store.get_hot_chunks(hot_limit).await?;
+    let stale = store
+        .get_stale_chunks(aging_config.stale_seconds(), stale_limit)
+        .await?;
+
+    let mut report = String::new();
+    report.push_str("# Reflection Report\n\n");
+    report.push_str("## Hot Chunks\n\n");
+    if hot.is_empty() {
+        report.push_str("No hot chunks yet.\n\n");
+    } else {
+        for chunk in &hot {
+            report.push_str(&format!(
+                "- {} [{}] total={}\n",
+                chunk.heading.as_deref().unwrap_or("(no heading)"),
+                chunk.visibility,
+                chunk.access_profile.total
+            ));
+        }
+        report.push('\n');
+    }
+
+    report.push_str("## Stale Chunks\n\n");
+    if stale.is_empty() {
+        report.push_str("No stale chunks detected.\n");
+    } else {
+        for chunk in &stale {
+            report.push_str(&format!(
+                "- {} [{}] {}\n",
+                chunk.heading.as_deref().unwrap_or("(no heading)"),
+                chunk.visibility,
+                chunk.id
+            ));
+        }
+    }
+
+    Ok(report)
+}
+
+/// Build a share token payload for CLI usage.
+pub fn share(tree: &str, can: Vec<String>, expires: Option<&str>) -> serde_json::Value {
+    let capabilities = if can.is_empty() {
+        vec!["recall".to_string(), "focus".to_string()]
+    } else {
+        can
+    };
+
+    serde_json::json!({
+        "version": "veclayer-share-v1",
+        "tree": tree,
+        "can": capabilities,
+        "expires": expires,
+        "nonce": uuid::Uuid::new_v4().to_string()
+    })
+}
 /// Start the MCP server (HTTP or stdio transport)
 pub async fn serve(data_dir: &Path, options: &ServeOptions) -> Result<()> {
     let config = Config::default()
@@ -511,5 +626,28 @@ mod tests {
         assert!(result.is_empty());
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tool_tests {
+    use super::share;
+
+    #[test]
+    fn test_share_defaults_and_custom_capabilities() {
+        let token = share("projects:veclayer", vec![], None);
+        assert_eq!(token["tree"], "projects:veclayer");
+        assert_eq!(token["can"], serde_json::json!(["recall", "focus"]));
+
+        let token2 = share(
+            "projects:veclayer:decisions",
+            vec!["recall".into(), "focus".into(), "store".into()],
+            Some("90d"),
+        );
+        assert_eq!(token2["expires"], "90d");
+        assert_eq!(
+            token2["can"],
+            serde_json::json!(["recall", "focus", "store"])
+        );
     }
 }

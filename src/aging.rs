@@ -53,8 +53,9 @@ impl AgingConfig {
     /// Save to the data directory.
     pub fn save(&self, data_dir: &Path) -> Result<()> {
         let path = data_dir.join(AGING_CONFIG_FILE);
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| crate::Error::config(format!("Failed to serialize aging config: {}", e)))?;
+        let json = serde_json::to_string_pretty(self).map_err(|e| {
+            crate::Error::config(format!("Failed to serialize aging config: {}", e))
+        })?;
         std::fs::write(&path, json)?;
         Ok(())
     }
@@ -75,10 +76,7 @@ pub struct AgingResult {
 }
 
 /// Apply aging rules: find stale chunks and degrade their visibility.
-pub async fn apply_aging<S: VectorStore>(
-    store: &S,
-    config: &AgingConfig,
-) -> Result<AgingResult> {
+pub async fn apply_aging<S: VectorStore>(store: &S, config: &AgingConfig) -> Result<AgingResult> {
     let now = now_epoch_secs();
     let cutoff_secs = config.stale_seconds();
 

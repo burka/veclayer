@@ -275,7 +275,8 @@ impl AccessProfile {
             self.last_rolled = now;
         } else if elapsed >= SECS_PER_MONTH {
             // hour + day + week + month all cascade into year
-            self.year = self.year
+            self.year = self
+                .year
                 .saturating_add(self.month)
                 .saturating_add(self.week)
                 .saturating_add(self.day)
@@ -287,7 +288,8 @@ impl AccessProfile {
             self.last_rolled = now;
         } else if elapsed >= SECS_PER_WEEK {
             // hour + day + week all cascade into month
-            self.month = self.month
+            self.month = self
+                .month
                 .saturating_add(self.week)
                 .saturating_add(self.day)
                 .saturating_add(self.hour);
@@ -297,9 +299,7 @@ impl AccessProfile {
             self.last_rolled = now;
         } else if elapsed >= SECS_PER_DAY {
             // hour + day both cascade into week
-            self.week = self.week
-                .saturating_add(self.day)
-                .saturating_add(self.hour);
+            self.week = self.week.saturating_add(self.day).saturating_add(self.hour);
             self.day = 0;
             self.hour = 0;
             self.last_rolled = now;
@@ -1062,7 +1062,7 @@ mod tests {
         // 2 hours later: hour rolls into day
         profile.record_access_at(base + SECS_PER_HOUR + 100);
         assert_eq!(profile.hour, 1); // the new access
-        assert_eq!(profile.day, 3);  // rolled from hour
+        assert_eq!(profile.day, 3); // rolled from hour
         assert_eq!(profile.total, 4);
     }
 
@@ -1076,7 +1076,7 @@ mod tests {
         // Jump forward 2 days
         profile.record_access_at(base + SECS_PER_DAY + 100);
         assert_eq!(profile.hour, 1);
-        assert_eq!(profile.day, 0);  // day was zeroed
+        assert_eq!(profile.day, 0); // day was zeroed
         assert_eq!(profile.week, 2); // rolled from hour->day already, then day->week
         assert_eq!(profile.total, 3);
     }
@@ -1217,7 +1217,10 @@ mod tests {
     fn test_recency_window_from_str() {
         assert_eq!(RecencyWindow::from_str_opt("24h"), Some(RecencyWindow::Day));
         assert_eq!(RecencyWindow::from_str_opt("7d"), Some(RecencyWindow::Week));
-        assert_eq!(RecencyWindow::from_str_opt("30d"), Some(RecencyWindow::Month));
+        assert_eq!(
+            RecencyWindow::from_str_opt("30d"),
+            Some(RecencyWindow::Month)
+        );
         assert_eq!(RecencyWindow::from_str_opt("day"), Some(RecencyWindow::Day));
         assert_eq!(RecencyWindow::from_str_opt("invalid"), None);
     }

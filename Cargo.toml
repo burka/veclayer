@@ -14,9 +14,6 @@ lancedb = "0.21"
 arrow-array = "55"
 arrow-schema = "55"
 
-# Embeddings
-fastembed = "4"
-
 # Markdown parsing
 pulldown-cmark = "0.13"
 

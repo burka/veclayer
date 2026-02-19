@@ -137,7 +137,7 @@ Orchestriert die Suche:
 Model Context Protocol für KI-Assistenten-Integration:
 
 - HTTP (axum, Standard) oder Stdio (für Claude Desktop)
-- Endpoints: /search, /get-chunk, /get-children, /subtree-search, /stats
+- Endpoints (visionnah): /api/recall, /api/focus, /api/store, /api/think, /api/share
 
 ## Suchstrategie
 
@@ -168,10 +168,39 @@ Single Binary + Datenverzeichnis (`./veclayer-data/`). Keine externen Services f
 | Variable | Default | Beschreibung |
 |----------|---------|-------------|
 | `VECLAYER_DATA_DIR` | `./veclayer-data` | Datenverzeichnis |
-| `VECLAYER_EMBEDDER` | `fastembed` | Embedder (fastembed, ollama) |
+| `VECLAYER_EMBEDDER` | `fastembed-local` | Lokaler deterministischer Embedder |
 | `VECLAYER_OLLAMA_MODEL` | `llama3.2` | LLM für Summarization |
 | `VECLAYER_OLLAMA_URL` | `http://localhost:11434` | Ollama-Endpoint |
 | `VECLAYER_PORT` | `8080` | Server-Port |
 | `VECLAYER_HOST` | `127.0.0.1` | Server-Host |
 | `VECLAYER_SEARCH_TOP_K` | `5` | Top-Level-Ergebnisse |
 | `VECLAYER_SEARCH_CHILDREN_K` | `3` | Kinder pro Ergebnis |
+
+## Vision-Fit Analyse (Stand heute)
+
+Gegenüber der Zielvision "Leaf/Node + Multi-Tree + Agent-Priming + UCAN-Share" ist die Architektur **solide als Prototyp-Basis**, aber noch nicht voll deckungsgleich.
+
+### Was schon gut passt
+- Hierarchische Zusammenfassungen als Suchoberfläche.
+- Offene Visibility- und Relationstypen für evolvierbares Schema.
+- Access-Profile und recency-gewichtete Suche als Basis für Memory Aging.
+- MCP-Integration und Single-Binary-Deployment.
+
+### Größte Abweichungen
+- Datenmodell ist noch chunk-zentriert statt getrennt in immutable Leaves + mutable Nodes.
+- Es fehlt die Multi-Tree-Sicht (Projekt/Person/Zeit/Wissen auf denselben Leaves).
+- Priming ist statisch (Instruktionstext), nicht agentenspezifisch generiert.
+- Es gibt kein kryptografisches Sharing-Modell (UCAN) und keine Attenuation-Kette.
+- Salience ist noch kein eigener, aus mehreren Signalen berechneter Score.
+
+### Architektur-Risiko ohne Gegenmaßnahmen
+Wenn das chunk-zentrierte Modell zu lange bestehen bleibt, werden spätere Features (faceted recall, identity projection, multi-agent collaboration) migrationsintensiver und schwieriger rückwärtskompatibel.
+
+### Empfehlung
+Als nächstes zuerst die **semantische API-Schicht** (`recall/focus/store/think/share`) umsetzen. Danach das Datenmodell evolutionär schärfen: Leaf/Node-Verhalten klar definieren, aber Korrekturen an Leaves über Versionierung/Supersession zulassen, statt früh eine harte, unflexible Trennung zu erzwingen.
+
+
+## Vision-Narrativ in der Produktoberfläche
+
+Damit das Zielbild in der Praxis sichtbar bleibt, sollen CLI, MCP und REST dieselbe mentale API sprechen (`recall`, `focus`, `store`, `think`, `share`).
+Diese einheitliche Benennung reduziert Übersetzungsaufwand für Agenten, vereinfacht Prompting und macht Architekturentscheidungen in der Nutzung direkt erkennbar.
