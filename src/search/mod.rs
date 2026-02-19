@@ -354,7 +354,7 @@ fn sort_by_score_desc(results: &mut [SearchResult]) {
 }
 
 /// Compute cosine similarity between two vectors
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return 0.0;
     }
