@@ -15,20 +15,7 @@ pub async fn execute_recall(
     embedder: &Arc<FastEmbedder>,
     input: RecallInput,
 ) -> Result<Vec<SearchResultResponse>> {
-    let recency_window = input
-        .recency
-        .as_deref()
-        .and_then(crate::RecencyWindow::from_str_opt);
-
-    let config = SearchConfig {
-        top_k: input.limit,
-        children_k: 3,
-        max_depth: 3,
-        min_score: 0.0,
-        deep: input.deep,
-        recency_window,
-        recency_alpha: SearchConfig::alpha_for_window(recency_window),
-    };
+    let config = SearchConfig::for_query(input.limit, input.deep, input.recency.as_deref());
 
     let search =
         HierarchicalSearch::new(Arc::clone(store), Arc::clone(embedder)).with_config(config);

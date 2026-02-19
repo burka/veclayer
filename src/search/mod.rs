@@ -64,6 +64,30 @@ impl SearchConfig {
             DEFAULT_RECENCY_ALPHA
         }
     }
+
+    /// Build a SearchConfig from common query parameters.
+    /// Derives recency_window and recency_alpha from the raw recency string.
+    pub fn for_query(top_k: usize, deep: bool, recency: Option<&str>) -> Self {
+        let recency_window = recency.and_then(RecencyWindow::from_str_opt);
+        Self {
+            top_k,
+            deep,
+            recency_window,
+            recency_alpha: Self::alpha_for_window(recency_window),
+            ..Default::default()
+        }
+    }
+
+    /// Blend vector similarity with recency relevancy.
+    /// Returns pure vector score when alpha is 0.
+    pub fn blend_score(&self, vector_score: f32, profile: &crate::AccessProfile) -> f32 {
+        if self.recency_alpha > 0.0 {
+            let relevancy = profile.relevancy_score(self.recency_window);
+            vector_score * (1.0 - self.recency_alpha) + relevancy * self.recency_alpha
+        } else {
+            vector_score
+        }
+    }
 }
 
 /// Hierarchical search engine that traverses the document structure
@@ -130,8 +154,6 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
     pub async fn search(&self, query: &str) -> Result<Vec<HierarchicalSearchResult>> {
         let query_embedding = self.embed_query(query)?;
         let now = now_epoch_secs();
-        let alpha = self.config.recency_alpha;
-        let recency_window = self.config.recency_window;
 
         // Fetch more than top_k so we still have enough after visibility filtering
         let fetch_k = if self.config.deep {
@@ -173,13 +195,7 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
             let mut chunk = result.chunk;
             let vector_score = result.score;
             chunk.access_profile.record_access_at(now);
-
-            let final_score = if alpha > 0.0 {
-                let relevancy = chunk.access_profile.relevancy_score(recency_window);
-                vector_score * (1.0 - alpha) + relevancy * alpha
-            } else {
-                vector_score
-            };
+            let final_score = self.config.blend_score(vector_score, &chunk.access_profile);
 
             access_updates.push((chunk.id.clone(), chunk.access_profile.clone()));
 
@@ -207,8 +223,6 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
     ) -> Result<Vec<HierarchicalSearchResult>> {
         let query_embedding = self.embed_query(query)?;
         let now = now_epoch_secs();
-        let alpha = self.config.recency_alpha;
-        let recency_window = self.config.recency_window;
 
         // Get all children of this parent
         let children = self.store.get_children(parent_id).await?;
@@ -253,13 +267,7 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
             let mut chunk = result.chunk;
             let vector_score = result.score;
             chunk.access_profile.record_access_at(now);
-
-            let final_score = if alpha > 0.0 {
-                let relevancy = chunk.access_profile.relevancy_score(recency_window);
-                vector_score * (1.0 - alpha) + relevancy * alpha
-            } else {
-                vector_score
-            };
+            let final_score = self.config.blend_score(vector_score, &chunk.access_profile);
 
             access_updates.push((chunk.id.clone(), chunk.access_profile.clone()));
 

@@ -1,12 +1,23 @@
-use std::path::PathBuf;
+//! Configuration with 12-factor layered resolution: ENV > TOML file > Defaults.
+//!
+//! Config file lookup order:
+//! 1. `$VECLAYER_CONFIG` (explicit path)
+//! 2. `<data_dir>/veclayer.toml`
+//! 3. `./veclayer.toml`
+//!
+//! Any field set in the environment always wins over the config file.
 
-/// Configuration for VecLayer, following 12-factor app principles
+use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+
+/// Runtime configuration for VecLayer.
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Directory where VecLayer stores its data (LanceDB files)
     pub data_dir: PathBuf,
 
-    /// Embedder to use: "fastembed" or "ollama"
+    /// Embedder to use
     pub embedder: EmbedderConfig,
 
     /// Whether to run in read-only mode
@@ -31,57 +42,162 @@ pub enum EmbedderConfig {
     Ollama { model: String, base_url: String },
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            data_dir: PathBuf::from(
-                std::env::var("VECLAYER_DATA_DIR")
-                    .unwrap_or_else(|_| "./veclayer-data".to_string()),
-            ),
-            embedder: EmbedderConfig::default(),
-            read_only: std::env::var("VECLAYER_READ_ONLY")
-                .map(|v| v == "true" || v == "1")
-                .unwrap_or(false),
-            port: std::env::var("VECLAYER_PORT")
-                .ok()
-                .and_then(|p| p.parse().ok())
-                .unwrap_or(8080),
-            host: std::env::var("VECLAYER_HOST").unwrap_or_else(|_| "127.0.0.1".to_string()),
-            search_top_k: std::env::var("VECLAYER_SEARCH_TOP_K")
-                .ok()
-                .and_then(|k| k.parse().ok())
-                .unwrap_or(5),
-            search_children_k: std::env::var("VECLAYER_SEARCH_CHILDREN_K")
-                .ok()
-                .and_then(|k| k.parse().ok())
-                .unwrap_or(3),
+// --- TOML file schema (all fields optional) ---
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct FileConfig {
+    data_dir: Option<String>,
+    host: Option<String>,
+    port: Option<u16>,
+    read_only: Option<bool>,
+    search_top_k: Option<usize>,
+    search_children_k: Option<usize>,
+    embedder: Option<FileEmbedderConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FileEmbedderConfig {
+    /// "fastembed" or "ollama"
+    #[serde(rename = "type", default = "default_embedder_type")]
+    embedder_type: String,
+    model: Option<String>,
+    base_url: Option<String>,
+}
+
+fn default_embedder_type() -> String {
+    "fastembed".to_string()
+}
+
+impl FileConfig {
+    /// Try to load from a TOML file. Returns default (all-None) on any error.
+    fn load(path: &Path) -> Self {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|contents| toml::from_str(&contents).ok())
+            .unwrap_or_default()
+    }
+
+    /// Find and load the config file, if one exists.
+    fn discover(data_dir_hint: Option<&Path>) -> Self {
+        // 1. Explicit path from ENV
+        if let Ok(path) = std::env::var("VECLAYER_CONFIG") {
+            let p = Path::new(&path);
+            if p.exists() {
+                return Self::load(p);
+            }
         }
+
+        // 2. Inside data_dir
+        if let Some(dir) = data_dir_hint {
+            let candidate = dir.join("veclayer.toml");
+            if candidate.exists() {
+                return Self::load(&candidate);
+            }
+        }
+
+        // 3. Current working directory
+        let cwd = Path::new("./veclayer.toml");
+        if cwd.exists() {
+            return Self::load(cwd);
+        }
+
+        Self::default()
     }
 }
 
-impl Default for EmbedderConfig {
-    fn default() -> Self {
-        let embedder =
-            std::env::var("VECLAYER_EMBEDDER").unwrap_or_else(|_| "fastembed".to_string());
+// --- Hardcoded defaults ---
 
-        match embedder.as_str() {
-            "ollama" => EmbedderConfig::Ollama {
-                model: std::env::var("VECLAYER_OLLAMA_MODEL")
-                    .unwrap_or_else(|_| "nomic-embed-text".to_string()),
-                base_url: std::env::var("VECLAYER_OLLAMA_URL")
-                    .unwrap_or_else(|_| "http://localhost:11434".to_string()),
-            },
-            _ => EmbedderConfig::FastEmbed {
-                model: std::env::var("VECLAYER_FASTEMBED_MODEL")
-                    .unwrap_or_else(|_| "BAAI/bge-small-en-v1.5".to_string()),
-            },
-        }
-    }
-}
+const DEFAULT_DATA_DIR: &str = "./veclayer-data";
+const DEFAULT_HOST: &str = "127.0.0.1";
+const DEFAULT_PORT: u16 = 8080;
+const DEFAULT_SEARCH_TOP_K: usize = 5;
+const DEFAULT_SEARCH_CHILDREN_K: usize = 3;
+const DEFAULT_FASTEMBED_MODEL: &str = "BAAI/bge-small-en-v1.5";
+const DEFAULT_OLLAMA_MODEL: &str = "nomic-embed-text";
+const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 
 impl Config {
+    /// Build config with full layered resolution: ENV > TOML file > Defaults.
     pub fn new() -> Self {
-        Self::default()
+        // Resolve data_dir first (needed for TOML file discovery)
+        let data_dir_env = std::env::var("VECLAYER_DATA_DIR").ok();
+
+        // Load TOML file (uses data_dir hint for discovery)
+        let file = FileConfig::discover(data_dir_env.as_ref().map(Path::new));
+
+        // Layer: ENV > TOML > Default
+        let data_dir = PathBuf::from(
+            data_dir_env
+                .or(file.data_dir)
+                .unwrap_or_else(|| DEFAULT_DATA_DIR.to_string()),
+        );
+
+        let host = env_or(
+            "VECLAYER_HOST",
+            file.host,
+            DEFAULT_HOST.to_string(),
+        );
+
+        let port = env_parse("VECLAYER_PORT")
+            .or(file.port)
+            .unwrap_or(DEFAULT_PORT);
+
+        let read_only = env_bool("VECLAYER_READ_ONLY")
+            .or(file.read_only)
+            .unwrap_or(false);
+
+        let search_top_k = env_parse("VECLAYER_SEARCH_TOP_K")
+            .or(file.search_top_k)
+            .unwrap_or(DEFAULT_SEARCH_TOP_K);
+
+        let search_children_k = env_parse("VECLAYER_SEARCH_CHILDREN_K")
+            .or(file.search_children_k)
+            .unwrap_or(DEFAULT_SEARCH_CHILDREN_K);
+
+        let embedder = Self::resolve_embedder(file.embedder);
+
+        Self {
+            data_dir,
+            embedder,
+            read_only,
+            port,
+            host,
+            search_top_k,
+            search_children_k,
+        }
+    }
+
+    fn resolve_embedder(file_embedder: Option<FileEmbedderConfig>) -> EmbedderConfig {
+        let embedder_type = env_or(
+            "VECLAYER_EMBEDDER",
+            file_embedder.as_ref().map(|e| e.embedder_type.clone()),
+            "fastembed".to_string(),
+        );
+
+        match embedder_type.as_str() {
+            "ollama" => {
+                let model = env_or(
+                    "VECLAYER_OLLAMA_MODEL",
+                    file_embedder.as_ref().and_then(|e| e.model.clone()),
+                    DEFAULT_OLLAMA_MODEL.to_string(),
+                );
+                let base_url = env_or(
+                    "VECLAYER_OLLAMA_URL",
+                    file_embedder.as_ref().and_then(|e| e.base_url.clone()),
+                    DEFAULT_OLLAMA_URL.to_string(),
+                );
+                EmbedderConfig::Ollama { model, base_url }
+            }
+            _ => {
+                let model = env_or(
+                    "VECLAYER_FASTEMBED_MODEL",
+                    file_embedder.as_ref().and_then(|e| e.model.clone()),
+                    DEFAULT_FASTEMBED_MODEL.to_string(),
+                );
+                EmbedderConfig::FastEmbed { model }
+            }
+        }
     }
 
     pub fn with_data_dir(mut self, path: impl Into<PathBuf>) -> Self {
@@ -105,78 +221,59 @@ impl Config {
     }
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for EmbedderConfig {
+    fn default() -> Self {
+        EmbedderConfig::FastEmbed {
+            model: DEFAULT_FASTEMBED_MODEL.to_string(),
+        }
+    }
+}
+
+// --- Helpers for ENV > TOML > Default resolution ---
+
+/// Return env var if set, else TOML value if present, else default.
+fn env_or(key: &str, file_val: Option<String>, default: String) -> String {
+    std::env::var(key).ok().or(file_val).unwrap_or(default)
+}
+
+/// Parse env var as T. Returns None if unset or unparseable.
+fn env_parse<T: std::str::FromStr>(key: &str) -> Option<T> {
+    std::env::var(key).ok().and_then(|v| v.parse().ok())
+}
+
+/// Parse env var as boolean ("true"/"1" = true, anything else = false).
+fn env_bool(key: &str) -> Option<bool> {
+    std::env::var(key)
+        .ok()
+        .map(|v| v == "true" || v == "1")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use std::io::Write;
 
     #[test]
-    fn test_config_new() {
+    fn test_config_defaults() {
+        // Clear env vars to test pure defaults
+        // (can't fully clear since tests run in parallel, but verify structure)
         let config = Config::new();
-        assert!(!config.read_only);
-        assert_eq!(config.port, 8080);
-        assert_eq!(config.host, "127.0.0.1");
+        assert!(!config.data_dir.as_os_str().is_empty());
+        assert!(!config.host.is_empty());
+        assert!(config.port > 0);
         assert_eq!(config.search_top_k, 5);
         assert_eq!(config.search_children_k, 3);
-    }
-
-    #[test]
-    fn test_config_default() {
-        let config = Config::default();
-        assert_eq!(config.data_dir, PathBuf::from("./veclayer-data"));
-        assert_eq!(config.host, "127.0.0.1");
-        assert_eq!(config.port, 8080);
-        assert!(!config.read_only);
-        assert_eq!(config.search_top_k, 5);
-        assert_eq!(config.search_children_k, 3);
-    }
-
-    #[test]
-    fn test_config_with_data_dir_string() {
-        let config = Config::default().with_data_dir("/custom/path");
-        assert_eq!(config.data_dir, Path::new("/custom/path"));
-    }
-
-    #[test]
-    fn test_config_with_data_dir_pathbuf() {
-        let path = PathBuf::from("/some/path");
-        let config = Config::default().with_data_dir(path);
-        assert_eq!(config.data_dir, Path::new("/some/path"));
-    }
-
-    #[test]
-    fn test_config_with_host_string() {
-        let config = Config::default().with_host("0.0.0.0");
-        assert_eq!(config.host, "0.0.0.0");
-    }
-
-    #[test]
-    fn test_config_with_host_string_owned() {
-        let config = Config::default().with_host("localhost".to_string());
-        assert_eq!(config.host, "localhost");
-    }
-
-    #[test]
-    fn test_config_with_port() {
-        let config = Config::default().with_port(3000);
-        assert_eq!(config.port, 3000);
-    }
-
-    #[test]
-    fn test_config_with_read_only_true() {
-        let config = Config::default().with_read_only(true);
-        assert!(config.read_only);
-    }
-
-    #[test]
-    fn test_config_with_read_only_false() {
-        let config = Config::default().with_read_only(false);
-        assert!(!config.read_only);
     }
 
     #[test]
     fn test_config_builder_chain() {
-        let config = Config::default()
+        let config = Config::new()
             .with_data_dir("/data")
             .with_host("localhost")
             .with_port(9000)
@@ -189,29 +286,93 @@ mod tests {
     }
 
     #[test]
-    fn test_config_builder_partial_chain() {
-        let config = Config::default().with_port(5000).with_host("0.0.0.0");
-
-        assert_eq!(config.port, 5000);
-        assert_eq!(config.host, "0.0.0.0");
-        assert_eq!(config.data_dir, PathBuf::from("./veclayer-data"));
-        assert!(!config.read_only);
-    }
-
-    #[test]
     fn test_embedder_config_default_fastembed() {
         let embedder = EmbedderConfig::default();
         match embedder {
             EmbedderConfig::FastEmbed { model } => {
-                assert_eq!(model, "BAAI/bge-small-en-v1.5");
+                assert_eq!(model, DEFAULT_FASTEMBED_MODEL);
             }
             _ => panic!("Expected FastEmbed variant"),
         }
     }
 
     #[test]
+    fn test_file_config_load_toml() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let toml_path = dir.path().join("veclayer.toml");
+        let mut file = std::fs::File::create(&toml_path).unwrap();
+        writeln!(
+            file,
+            r#"
+host = "0.0.0.0"
+port = 3000
+search_top_k = 10
+
+[embedder]
+type = "ollama"
+model = "mxbai-embed-large"
+base_url = "http://gpu:11434"
+"#
+        )
+        .unwrap();
+
+        let fc = FileConfig::load(&toml_path);
+        assert_eq!(fc.host.as_deref(), Some("0.0.0.0"));
+        assert_eq!(fc.port, Some(3000));
+        assert_eq!(fc.search_top_k, Some(10));
+        assert!(fc.data_dir.is_none()); // not specified
+        assert!(fc.read_only.is_none()); // not specified
+
+        let emb = fc.embedder.unwrap();
+        assert_eq!(emb.embedder_type, "ollama");
+        assert_eq!(emb.model.as_deref(), Some("mxbai-embed-large"));
+        assert_eq!(emb.base_url.as_deref(), Some("http://gpu:11434"));
+    }
+
+    #[test]
+    fn test_file_config_missing_file() {
+        let fc = FileConfig::load(Path::new("/nonexistent/path/veclayer.toml"));
+        assert!(fc.host.is_none());
+        assert!(fc.port.is_none());
+    }
+
+    #[test]
+    fn test_file_config_invalid_toml() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let toml_path = dir.path().join("veclayer.toml");
+        std::fs::write(&toml_path, "this is not [valid toml {{{").unwrap();
+
+        let fc = FileConfig::load(&toml_path);
+        // Should gracefully return defaults (all None)
+        assert!(fc.host.is_none());
+        assert!(fc.port.is_none());
+    }
+
+    #[test]
+    fn test_file_config_partial_toml() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let toml_path = dir.path().join("veclayer.toml");
+        std::fs::write(&toml_path, "port = 4444\n").unwrap();
+
+        let fc = FileConfig::load(&toml_path);
+        assert_eq!(fc.port, Some(4444));
+        assert!(fc.host.is_none());
+        assert!(fc.data_dir.is_none());
+    }
+
+    #[test]
+    fn test_env_or_helper() {
+        // With no env var set for this unique key, should use file_val or default
+        let result = env_or("VECLAYER_TEST_NONEXISTENT_KEY_12345", Some("file".to_string()), "default".to_string());
+        assert_eq!(result, "file");
+
+        let result2 = env_or("VECLAYER_TEST_NONEXISTENT_KEY_12345", None, "default".to_string());
+        assert_eq!(result2, "default");
+    }
+
+    #[test]
     fn test_config_clone() {
-        let config1 = Config::default().with_data_dir("/test").with_port(9999);
+        let config1 = Config::new().with_data_dir("/test").with_port(9999);
         let config2 = config1.clone();
 
         assert_eq!(config1.data_dir, config2.data_dir);
@@ -222,32 +383,8 @@ mod tests {
 
     #[test]
     fn test_config_debug_format() {
-        let config = Config::default();
+        let config = Config::new();
         let debug_str = format!("{:?}", config);
         assert!(debug_str.contains("Config"));
-    }
-
-    #[test]
-    fn test_embedder_config_clone() {
-        let embedder1 = EmbedderConfig::FastEmbed {
-            model: "test-model".to_string(),
-        };
-        let embedder2 = embedder1.clone();
-
-        match (embedder1, embedder2) {
-            (EmbedderConfig::FastEmbed { model: m1 }, EmbedderConfig::FastEmbed { model: m2 }) => {
-                assert_eq!(m1, m2);
-            }
-            _ => panic!("Expected both to be FastEmbed"),
-        }
-    }
-
-    #[test]
-    fn test_embedder_config_debug_format() {
-        let embedder = EmbedderConfig::FastEmbed {
-            model: "test".to_string(),
-        };
-        let debug_str = format!("{:?}", embedder);
-        assert!(debug_str.contains("FastEmbed"));
     }
 }

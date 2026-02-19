@@ -8,11 +8,13 @@ use std::path::{Path, PathBuf};
 use tracing::info;
 
 use crate::chunk::short_id;
+#[cfg(feature = "llm")]
 use crate::cluster::ClusterPipeline;
 use crate::embedder::FastEmbedder;
 use crate::parser::MarkdownParser;
 use crate::search::{HierarchicalSearch, SearchConfig};
 use crate::store::LanceStore;
+#[cfg(feature = "llm")]
 use crate::summarizer::OllamaSummarizer;
 use crate::{Config, DocumentParser, Embedder, Result, VectorStore};
 
@@ -255,6 +257,7 @@ async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result
     let total_entries = all_chunks.len();
     let mut summary_entries = 0;
 
+    #[cfg(feature = "llm")]
     if options.summarize && !all_chunks.is_empty() {
         info!(
             "Starting cluster summarization with model '{}'...",
@@ -429,20 +432,7 @@ pub async fn search_results(
     let dimension = embedder.dimension();
     let store = LanceStore::open(data_dir, dimension).await?;
 
-    let recency_window = options
-        .recent
-        .as_deref()
-        .and_then(crate::RecencyWindow::from_str_opt);
-
-    let config = SearchConfig {
-        top_k: options.top_k,
-        children_k: 3,
-        max_depth: 3,
-        min_score: 0.0,
-        deep: options.deep,
-        recency_window,
-        recency_alpha: SearchConfig::alpha_for_window(recency_window),
-    };
+    let config = SearchConfig::for_query(options.top_k, options.deep, options.recent.as_deref());
 
     let search_engine = HierarchicalSearch::new(store, embedder).with_config(config);
 
@@ -628,6 +618,21 @@ pub async fn sources(data_dir: &Path) -> Result<Vec<String>> {
     let store_stats = store.stats().await?;
 
     Ok(store_stats.source_files)
+}
+
+/// Start the MCP/HTTP server.
+pub async fn serve(data_dir: &Path, options: &ServeOptions) -> Result<()> {
+    let config = Config::new()
+        .with_data_dir(data_dir)
+        .with_host(&options.host)
+        .with_port(options.port)
+        .with_read_only(options.read_only);
+
+    if options.mcp_stdio {
+        crate::mcp::run_stdio(config).await
+    } else {
+        crate::mcp::run_http(config).await
+    }
 }
 
 /// Collect files from a path, optionally recursively.
