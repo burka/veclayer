@@ -690,7 +690,7 @@ impl VectorStore for LanceStore {
         let table = self.get_table().await?;
 
         for (chunk_id, profile) in updates {
-            let filter = eq_filter("id", chunk_id);
+            let filter = eq_filter("id", &chunk_id);
 
             table
                 .update()

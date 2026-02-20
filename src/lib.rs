@@ -8,6 +8,8 @@ pub mod config;
 pub mod embedder;
 pub mod error;
 pub mod identity;
+#[cfg(feature = "llm")]
+pub mod llm;
 pub mod macros;
 pub mod mcp;
 pub mod parser;
@@ -17,6 +19,8 @@ pub mod search;
 pub mod store;
 #[cfg(feature = "llm")]
 pub mod summarizer;
+#[cfg(feature = "llm")]
+pub mod think;
 
 pub use chunk::{
     content_hash, relation, short_id, visibility, AccessProfile, ChunkLevel, ChunkRelation,
@@ -27,6 +31,8 @@ pub use cluster::{ClusterPipeline, SoftClusterer};
 pub use config::Config;
 pub use embedder::Embedder;
 pub use error::{Error, Result};
+#[cfg(feature = "llm")]
+pub use llm::{LlmBackend, LlmProvider};
 pub use parser::DocumentParser;
 pub use search::HierarchicalSearch;
 pub use store::VectorStore;

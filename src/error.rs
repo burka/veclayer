@@ -38,6 +38,9 @@ pub enum Error {
 
     #[error("Clustering error: {0}")]
     Clustering(String),
+
+    #[error("LLM error: {0}")]
+    Llm(String),
 }
 
 impl Error {
@@ -71,6 +74,10 @@ impl Error {
 
     pub fn clustering(msg: impl Into<String>) -> Self {
         Self::Clustering(msg.into())
+    }
+
+    pub fn llm(msg: impl Into<String>) -> Self {
+        Self::Llm(msg.into())
     }
 }
 

@@ -236,6 +236,39 @@ pub async fn execute_think(
                 ))
             }
         }
+        #[cfg(feature = "llm")]
+        Some("consolidate") => {
+            let config = crate::Config::new().with_data_dir(data_dir);
+            let llm = crate::llm::LlmBackend::from_config(&config.llm);
+            let embedder = crate::embedder::FastEmbedder::new()
+                .map_err(|e| crate::Error::llm(format!("Failed to init embedder: {}", e)))?;
+
+            let result =
+                crate::think::execute(store.as_ref(), &embedder, &llm, data_dir).await?;
+
+            if result.entries_created.is_empty() {
+                return Ok("Nothing to consolidate. Memory is well-organized.".to_string());
+            }
+
+            let mut report = format!(
+                "## Think Cycle Complete\n\n- Narrative: {}\n- Consolidations: {}\n- Learnings: {}\n\n",
+                if result.narrative_id.is_some() { "yes" } else { "no" },
+                result.consolidations_added,
+                result.learnings_added,
+            );
+            report.push_str("### Entries Created\n\n");
+            for entry in &result.entries_created {
+                report.push_str(&format!(
+                    "- **{}** ({}) `{}`\n",
+                    entry.content_preview, entry.entry_type, entry.id
+                ));
+            }
+            Ok(report)
+        }
+        #[cfg(not(feature = "llm"))]
+        Some("consolidate") => {
+            Err(crate::Error::config("think(consolidate) requires the 'llm' feature"))
+        }
         Some("salience") => {
             let limit = input.hot_limit.unwrap_or(10);
             let hot = store.get_hot_chunks(limit * 2).await?;
@@ -256,7 +289,7 @@ pub async fn execute_think(
             Ok(report)
         }
         Some(unknown) => Err(crate::Error::config(format!(
-            "Unknown think action: '{}'. Available: promote, demote, relate, configure_aging, apply_aging, salience",
+            "Unknown think action: '{}'. Available: promote, demote, relate, configure_aging, apply_aging, salience, consolidate",
             unknown
         ))),
     }
