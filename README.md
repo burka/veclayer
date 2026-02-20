@@ -171,7 +171,7 @@ Aliase: `store` = `add`, `s` = `search`, `f` = `focus`
 Das gesamte mechanische Fundament steht -- alles was VecLayer ohne LLM leisten soll, funktioniert:
 
 - [x] **Core (Phase 1):** Entry mit SHA-256 Content-Hash, EntryType-Enum (raw/summary/meta/impression), CLI aligned mit Spec, LLM aus Core extrahiert (Feature-Flag `llm`), TOML-Config + ENV Overrides, SRP-Refactoring
-- [x] **Perspektiven (Phase 2):** 6 Default-Perspektiven + Custom, typisierte Relationen (SupersededBy, SummarizedBy, VersionOf, RelatedTo, DerivedFrom), facettierte Suche, `veclayer p` fuer Perspektiven-Management
+- [x] **Perspektiven (Phase 2):** 7 Default-Perspektiven + Custom, typisierte Relationen (SupersededBy, SummarizedBy, VersionOf, RelatedTo, DerivedFrom), facettierte Suche, `veclayer p` fuer Perspektiven-Management
 - [x] **Aging + Salienz (Phase 3):** Salienz-Komposit aus Interaktionsdichte, Perspektiven-Spread und Revisions-Aktivitaet, Ranking-Formel mit Salienz-Gewichtung, compact-Kommando, Salienz-Schutz beim Aging
 - [x] **Identity + Reflect (Phase 4):** Salienz-gewichtete Embedding-Centroids pro Perspektive, Open Threads (ungeloeste Widersprueche, aktive Deliberation), Reflect-Report, dynamisches Priming beim MCP-Connect
 
