@@ -130,7 +130,10 @@ pub async fn apply_aging<S: VectorStore>(
 
         store
             .update_visibility(&chunk.id, &config.degrade_to)
-            .await?;
+            .await
+            .map_err(|e| {
+                crate::Error::store(format!("Failed to degrade chunk {}: {}", chunk.id, e))
+            })?;
         degraded_ids.push(chunk.id.clone());
     }
 

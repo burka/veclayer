@@ -141,10 +141,11 @@ fn compute_centroids(
                 total_salience += score.composite;
 
                 if let Some(ref emb) = chunk.embedding {
+                    if emb.len() != dim {
+                        continue; // skip mismatched embeddings
+                    }
                     for (i, val) in emb.iter().enumerate() {
-                        if i < dim {
-                            centroid[i] += val * w;
-                        }
+                        centroid[i] += val * w;
                     }
                 }
             }
