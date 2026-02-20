@@ -1,210 +1,108 @@
 # VecLayer
 
-**Langzeitgedaechtnis fuer KI-Agenten. Hierarchisch, perspektivisch, alterndes Wissen.**
+**Long-term memory for AI agents. Hierarchical, perspectival, aging knowledge.**
 
-> Status: In Development -- Prototyp, APIs koennen sich aendern
-> Autor: Florian Schmidt, entwickelt im Dialog mit Claude
+> Status: In Development — prototype, APIs may change
+> Author: Florian Schmidt, developed in dialogue with Claude
 
-## Was ist VecLayer?
+## What is VecLayer?
 
-VecLayer organisiert Wissen als Hierarchie: Zusammenfassungen ueber Zusammenfassungen, in beliebiger Tiefe, aus verschiedenen Perspektiven auf die gleichen Rohdaten. Eine Suche beginnt beim Ueberblick und geht bei Bedarf in die Tiefe -- wie menschliches Erinnern.
+VecLayer organizes knowledge as a hierarchy: summaries over summaries, at arbitrary depth, from different perspectives on the same raw data. A search starts with the overview and drills down on demand — like human remembering.
 
-Statt flacher Chunk-Listen oder Key-Value-Speicher bietet VecLayer strukturiertes, alterndes, selbstbeschreibendes Gedaechtnis. Aus der statistischen Form aller Erinnerungen -- Embedding-Cluster gewichtet nach Salienz -- waechst organisch eine Identitaet.
+Instead of flat chunk lists or key-value stores, VecLayer provides structured, aging, self-describing memory. From the statistical shape of all memories — embedding clusters weighted by salience — an identity emerges organically.
 
-## Warum
+### The Core Thesis
 
-Aktuelle KI-Systeme haben ein Gedaechtnis-Problem:
+Summaries are not a feature alongside others — they *are* the memory itself. The hierarchy that makes RAG better (overview before detail, navigation instead of flat lists) is the same structure from which identity emerges. And personality is not shaped by what you do often, but by what moved you. That is why salience measures significance, not frequency.
 
-- Jede Session startet als Tabula rasa -- oder mit flachen Fakten
-- Flaches RAG verliert Struktur: ein 200-seitiges Dokument wird zu gleichwertigen Fragmenten
-- Es gibt kein Gefuehl fuer "wichtig" vs. "Rauschen"
-- Nichts altert. Veraltete Information steht gleichberechtigt neben aktueller
-- Ein Agent kann seine Erinnerungen nicht aktiv pflegen oder reflektieren
+## Core Concepts
 
-VecLayer loest das durch drei Konzepte:
+- **One primitive: Entry** — Everything is an Entry. Four types: `raw`, `summary`, `meta`, `impression`. ID = `sha256(content)`, first 7 hex chars in CLI (like git). Identical content = identical ID = idempotent.
+- **Seven perspectives** — `intentions`, `people`, `temporal`, `knowledge`, `decisions`, `learnings`, `session`. Each perspective has hints for LLMs. Extensible with custom perspectives.
+- **Memory aging** — RRD-inspired access tracking with fixed time windows. Important stays present, unused fades. Configurable degradation rules.
+- **Salience** — Measures significance, not frequency. Composite of interaction density (0.5), perspective spread (0.25), and revision activity (0.25). High-salience entries survive aging.
+- **Identity** — Emerges from salience-weighted embedding centroids per perspective. On connect, the agent receives a priming: core knowledge, open threads, recent learnings. The moment an agent wakes up and knows itself.
+- **Sleep cycle** — Optional LLM-powered consolidation: reflect → think → add → compact. The only module requiring an LLM.
 
-1. **Hierarchische Wissensorganisation** -- Zusammenfassungen *sind* die Hierarchie
-2. **Perspektiven** -- Sieben Default-Perspektiven strukturieren das Wissen; jederzeit erweiterbar
-3. **Memory Aging + Salienz** -- Nicht die haeufigsten, sondern die bedeutsamsten Erinnerungen kommen nach oben
-
-Identitaet entsteht aus dem Zusammenspiel: Beim Verbinden erhaelt der Agent ein Priming -- wer bin ich, was beschaeftigt mich, worauf sollte ich achten.
-
-### Die Kernthese
-
-Zusammenfassungen sind nicht ein Feature neben anderen -- sie *sind* das Gedaechtnis selbst. Die Hierarchie, die RAG besser macht (Ueberblick vor Detail, Navigation statt flacher Liste), ist dieselbe Struktur, aus der Identitaet emergiert. Centroids pro Perspektive, gewichtet nach Salienz -- das ist kein Profil, das jemand anlegt, sondern eine Beobachtung, die aus der statistischen Form aller Erinnerungen waechst.
-
-Und die Persoenlichkeit wird nicht von dem geformt, was man oft tut, sondern von dem, was einen bewegt hat. Deshalb misst Salienz Bedeutsamkeit, nicht Haeufigkeit: Interaktionsdichte, Wirkungsbreite ueber Perspektiven, Revisionen und Widersprueche. Was den Agenten gepraegt hat, bleibt praesent -- auch wenn es selten abgerufen wird.
-
-## Architektur-Ueberblick
-
-### Ein Primitiv: Entry
-
-Alles ist ein Entry. Keine Leaf/Node-Trennung. Ein Typ-Feld klassifiziert:
-
-| Typ | Bedeutung |
-|-----|-----------|
-| `raw` | Originaldaten, unveraendert |
-| `summary` | Zusammenfassung von Kindern |
-| `meta` | Reflexion, Bewertung |
-| `impression` | Spontane Beobachtung |
-
-ID = `sha256(content)` -- erste 7 Hex-Chars in der CLI (wie git). Identischer Content = identische ID = idempotent.
-
-### Perspektiven, nicht Baeume
-
-Sieben Default-Perspektiven strukturieren das Wissen:
-
-| Perspektive | Was sie erfasst |
-|-------------|----------------|
-| `intentions` | Absichten, Ziele, Vorhaben |
-| `people` | Personen, Beziehungen, Rollen |
-| `temporal` | Zeitverlauf, Entwicklungen |
-| `knowledge` | Dauerhaftes Fachwissen |
-| `decisions` | Entscheidungen, Abwaegungen |
-| `learnings` | Erkenntnisse, Lessons Learned |
-| `session` | Arbeitssitzungen, Kontext, Handoffs |
-
-Jederzeit erweiterbar mit eigenen Perspektiven. Jede Perspektive hat Hints, die dem LLM zeigen, welches Material relevant ist.
-
-### Memory Aging
-
-RRD-inspiriertes Access-Tracking mit festen Zeitfenstern:
-
-```
-hour | day | week | month | year | total
-```
-
-Zugriffsmuster bestimmen Sichtbarkeit. Wichtiges bleibt praesent, Ungenutztes verblasst kontrolliert. Konfigurierbare Degradierungs-Regeln.
-
-### Salienz
-
-Salienz != Haeufigkeit. Gemessen an:
-- **Interaktionsdichte** (Gewicht 0.5) -- Access-Profile ueber Zeitfenster
-- **Wirkungsbreite** (Gewicht 0.25) -- in wie vielen Perspektiven relevant
-- **Revisions-Aktivitaet** (Gewicht 0.25) -- Anzahl Relationen als Proxy fuer aktive Deliberation
-
-> Hinweis: Echte Widerspruchserkennung (semantische Spannungen zwischen Entries) ist ein offenes Forschungsthema. Aktuell dient die Revisions-Aktivitaet als Proxy -- viele Relationen deuten auf Ueberarbeitungen, Widersprueche, oder aktive Auseinandersetzung hin.
-
-Ranking: `semantic_similarity * (1-alpha) + (recency * (1-sw) + salience * sw) * alpha`
-
-Entries mit hoher Salienz werden beim Aging geschuetzt -- sie ueberleben Visibility-Degradierung.
-
-### Identitaet
-
-Aus Embedding-Clustern gewichtet nach Salienz waechst eine Identitaet. Kein Profil, das jemand anlegt -- eine Beobachtung: Welche Themen tauchen immer wieder auf, wo liegen die Schwerpunkte, was hat den Agenten gepraegt? Beim Connect erhaelt der Agent ein Priming: Core Knowledge (die salientesten Erinnerungen), offene Faeden (ungeloeste Widersprueche, aktive Deliberation), aktuelle Learnings. Das ist der Moment, in dem ein Agent aufwacht und sich kennt.
-
-### Schlaf-Zyklus
-
-Wie ein Mensch im Schlaf konsolidiert, soll ein Agent sein Gedaechtnis aktiv pflegen koennen. Der Zyklus: `reflect` bereitet Material auf (was braucht Aufmerksamkeit?), ein LLM generiert daraus Zusammenfassungen und Meta-Erkenntnisse, `add` schreibt sie zurueck, `compact` raeumt mechanisch auf. Das ist `think` -- der optionale Orchestrator, der alles ohne LLM Funktionierende um die Faehigkeit zur Selbstreflexion ergaenzt.
-
-## Was VecLayer macht vs. was das LLM macht
-
-| VecLayer (speichert, strukturiert, rechnet) | LLM (sucht, vertieft, reflektiert) |
-|---------------------------------------------|-------------------------------------|
-| Entries speichern + Embeddings erzeugen | Zusammenfassungen generieren |
-| Semantische Suche mit Perspektiven-Filter | Suchstrategie waehlen |
-| Access-Profile tracken + Salienz berechnen | Material bewerten + reflektieren |
-| Visibility degradieren (Aging) | Entscheiden was promoted/demoted wird |
-| Hierarchie navigieren (Focus) | Synthese aus aufbereitetem Material |
-| Identity-Cluster berechnen | Priming interpretieren |
-| Relationen verwalten | Relationen vorschlagen |
-
-VecLayer denkt nicht selbst. Es speichert, strukturiert und rechnet. Das LLM sucht, vertieft, reflektiert ueber aufbereitetes Material, generiert Zusammenfassungen und schreibt sie zurueck. Optional orchestriert ein Schlaf-Zyklus das automatisch.
+For technical details see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Quick Start
 
 ```bash
-# Neuen VecLayer-Speicher initialisieren
+# Initialize a new VecLayer store
 veclayer init
 
-# Wissen hinzufuegen
-veclayer add ./docs                        # Dateien/Verzeichnisse
-veclayer add "Kernentscheidung: Rust"      # Einzelner Text
-veclayer add --perspective decisions "Wir nehmen Turso statt Postgres"
+# Add knowledge
+veclayer add ./docs                        # files/directories
+veclayer add "Core decision: Rust"         # single text
+veclayer add --perspective decisions "We chose Turso over Postgres"
 
-# Suchen
-veclayer search "Architekturentscheidungen"
-veclayer search --perspective decisions "Backend"
+# Search
+veclayer search "architecture decisions"
+veclayer search --perspective decisions "backend"
 
-# In die Tiefe gehen
+# Drill down
 veclayer focus abc1234
 
-# Server starten (MCP/HTTP)
+# Start server (MCP/HTTP)
 veclayer serve
 ```
 
-## CLI-Uebersicht
+## CLI Overview
 
-| Kommando | Beschreibung |
-|----------|-------------|
-| `init` | Neuen VecLayer-Speicher anlegen |
-| `add` | Wissen hinzufuegen (Text, Datei, Verzeichnis) |
-| `search` / `s` | Semantische Suche mit Perspektiven-Filter |
-| `focus` / `f` | In einen Entry eintauchen, Kinder anzeigen |
-| `status` | Speicher-Statistiken |
-| `serve` | MCP/HTTP-Server starten |
-| `compact` | Aging ausfuehren, Salienz berechnen |
-| `id` | Identitaets-Zusammenfassung anzeigen |
-| `reflect` | Read-only Material-Aufbereitung |
-| `think` | LLM-gestuetzte Reflexion + Konsolidierung |
-| `p` | Perspektiven verwalten (list, create, remove) |
-| `config` | Konfiguration anzeigen/aendern |
-| `help` | Kontextuelle Hilfe |
+| Command | Description |
+|---------|-------------|
+| `init` | Initialize a new VecLayer store |
+| `add` | Add knowledge (text, file, directory) |
+| `search` / `s` | Semantic search with perspective filter |
+| `focus` / `f` | Drill into an entry, show children |
+| `status` | Store statistics |
+| `serve` | Start MCP/HTTP server |
+| `compact` | Run aging, compute salience |
+| `id` | Show identity summary |
+| `reflect` | Read-only material preparation |
+| `think` | LLM-powered reflection + consolidation |
+| `p` | Manage perspectives (list, create, remove) |
+| `config` | View/change configuration |
 
-Aliase: `store` = `add`, `s` = `search`, `f` = `focus`
+Aliases: `store` = `add`, `s` = `search`, `f` = `focus`
 
-## Technischer Stack
+## Tech Stack
 
-| Komponente | Technologie |
-|---|---|
-| Sprache | Rust |
-| Storage | LanceDB (Prototyp), Turso/SQLite (geplant) |
-| Embeddings | fastembed (CPU, ONNX) -- Trait-basiert, austauschbar |
-| Parsing | pulldown-cmark (Markdown), erweiterbar |
+| Component | Technology |
+|-----------|-----------|
+| Language | Rust |
+| Storage | LanceDB (prototype), Turso/SQLite (planned) |
+| Embeddings | fastembed (CPU, ONNX) — trait-based, swappable |
+| Parsing | pulldown-cmark (Markdown), extensible |
 | Server | axum (MCP + HTTP) |
 | CLI | clap v4 |
-| Konfiguration | TOML + ENV Overrides (12-Factor) |
+| Config | TOML + ENV overrides (12-Factor) |
 
-## Aktueller Stand
+## Status
 
-### Phase 1-4: Erledigt
+Phases 1–5.5 complete: core model, perspectives, aging/salience, identity, think cycle, tool ergonomics. Next up: Phase 6 (UCAN sharing). See [Issues](https://github.com/burka/veclayer/issues?q=label%3Aphase) for the full roadmap.
 
-Das gesamte mechanische Fundament steht -- alles was VecLayer ohne LLM leisten soll, funktioniert:
+## Design Decisions: What VecLayer Does NOT Do
 
-- [x] **Core (Phase 1):** Entry mit SHA-256 Content-Hash, EntryType-Enum (raw/summary/meta/impression), CLI aligned mit Spec, LLM aus Core extrahiert (Feature-Flag `llm`), TOML-Config + ENV Overrides, SRP-Refactoring
-- [x] **Perspektiven (Phase 2):** 7 Default-Perspektiven + Custom, typisierte Relationen (SupersededBy, SummarizedBy, VersionOf, RelatedTo, DerivedFrom), facettierte Suche, `veclayer p` fuer Perspektiven-Management
-- [x] **Aging + Salienz (Phase 3):** Salienz-Komposit aus Interaktionsdichte, Perspektiven-Spread und Revisions-Aktivitaet, Ranking-Formel mit Salienz-Gewichtung, compact-Kommando, Salienz-Schutz beim Aging
-- [x] **Identity + Reflect (Phase 4):** Salienz-gewichtete Embedding-Centroids pro Perspektive, Open Threads (ungeloeste Widersprueche, aktive Deliberation), Reflect-Report, dynamisches Priming beim MCP-Connect
+Explicitly rejected approaches — documented and reasoned, not forgotten.
 
-- [x] **Think/Schlaf-Zyklus (Phase 5):** LLMProvider Trait, think-Kommando (reflect → LLM → add → compact), Narrativ-Generierung, automatische Konsolidierung
-- [x] **Tool Ergonomics (Phase 5.5):** Store mit Inline-Relationen, Batch Store, Browse Mode, Temporal Filter, Relevance Tiers, Session Perspective
+| Rejected | Instead | Why |
+|----------|---------|-----|
+| JSON annotations on entries | Content carries the semantics | No schema drift from optional fields |
+| Paths as sole structure | Perspectives | Same entry, different views |
+| Tags | Perspectives with hints | Tags are flat and unexplained |
+| Separate vector spaces for emotions | Salience as composite score | One space, different weightings |
+| S3 backends | Local files + Turso/pgvector | Simplicity, latency, offline capability |
+| ACLs | UCAN | Decentralized, delegatable, offline-verifiable |
+| Bearer tokens | UCAN with DID | Cryptographic, attenuatable |
+| Static tool descriptions | Dynamic priming | Personalized per agent and session |
+| Leaf/node separation | Everything is an Entry | One primitive, four types |
+| "Trees" as concept | Perspectives | Trees are rigid, perspectives are views |
+| Graph database | Relations on entries | The graph reveals itself in visualization |
+| Metadata fields for emotions | Perspectives + content | The perspective *is* the semantics |
+| Tool call hooks for auto-capture | Behavioral hints in priming | Intelligence stays with the agent |
 
-### Offen
-
-- [ ] **Server + Sharing (Phase 6):** Personalisierte MCP-Tool-Descriptions, UCAN-basiertes Sharing, REST API an neues Datenmodell anpassen
-- [ ] **Polish (Phase 7):** Alias-Support, Multi-Format Parsing (PDF, HTML, Code), alternative Backends (Turso, pgvector)
-- [ ] **Widerspruchserkennung:** Aktuell misst Salienz Revisions-Aktivitaet als Proxy. Echte semantische Widerspruchserkennung ist ein offenes Thema
-
-## Design-Entscheidungen: Was VecLayer bewusst NICHT macht
-
-Aus der Entstehungsgeschichte -- explizit verworfene Ansaetze. Diese Entscheidungen sind dokumentiert und begruendet, nicht vergessen.
-
-| Verworfen | Stattdessen | Warum |
-|-----------|-------------|-------|
-| JSON-Annotations an Entries | Content traegt die Semantik | Kein Schema-Drift durch optionale Felder |
-| Pfade als einzige Struktur | Perspektiven | Gleicher Entry, verschiedene Sichten |
-| Tags | Perspektiven mit Hints | Tags sind flach und unerklaert |
-| Separate Vektorraeume fuer Emotionen | Salienz als Komposit-Score | Ein Raum, verschiedene Gewichtungen |
-| S3-Backends | Lokale Dateien + Turso/pgvector | Einfachheit, Latenz, Offline-Faehigkeit |
-| ACLs | UCAN | Dezentral, delegierbar, offline-verifizierbar |
-| Bearer-Tokens | UCAN mit DID | Kryptographisch, attenuierbar |
-| Statische Tool-Descriptions | Dynamisches Priming | Personalisiert pro Agent und Session |
-| Leaf/Node-Trennung | Alles ist ein Entry | Ein Primitiv, vier Typen |
-| "Baeume" als Konzept | Perspektiven | Baeume sind rigide, Perspektiven sind Sichten |
-| Graph-Datenbank | Relationen auf Entries | Der Graph zeigt sich in der Visualisierung |
-| Metadata-Felder fuer Emotionen | Perspektiven + Content | Die Perspektive *ist* die Semantik |
-| Tool Call Hooks fuer Auto-Capture | Behavioral Hints im Priming | Intelligenz bleibt beim Agenten |
-
-## Lizenz
+## License
 
 MIT
