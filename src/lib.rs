@@ -7,6 +7,7 @@ pub mod commands;
 pub mod config;
 pub mod embedder;
 pub mod error;
+pub mod identity;
 pub mod macros;
 pub mod mcp;
 pub mod parser;
