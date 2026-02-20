@@ -167,9 +167,7 @@ async fn test_cluster_pipeline_with_ollama() {
         "Python is dynamically typed and interpreted at runtime.",
     ];
 
-    let embeddings = embedder
-        .embed(&texts.iter().map(|s| *s).collect::<Vec<_>>())
-        .expect("Failed to embed");
+    let embeddings = embedder.embed(texts.as_ref()).expect("Failed to embed");
 
     let chunks: Vec<HierarchicalChunk> = texts
         .iter()
