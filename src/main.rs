@@ -28,7 +28,7 @@ struct Cli {
     verbose: bool,
 
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -175,6 +175,12 @@ enum Commands {
         #[command(subcommand)]
         action: CompactActionCmd,
     },
+
+    /// Show identity summary (perspectives, core knowledge, open threads)
+    Id,
+
+    /// Generate a comprehensive reflection report (priming-ready)
+    Reflect,
 }
 
 #[derive(Subcommand)]
@@ -232,7 +238,16 @@ async fn main() -> Result<()> {
 
     init_logging(cli.verbose);
 
-    match cli.command {
+    let command = match cli.command {
+        Some(cmd) => cmd,
+        None => {
+            // No subcommand: show orientation
+            veclayer::commands::orientation(&cli.data_dir).await?;
+            return Ok(());
+        }
+    };
+
+    match command {
         Commands::Init => {
             veclayer::commands::init(&cli.data_dir)?;
         }
@@ -345,6 +360,12 @@ async fn main() -> Result<()> {
                 ),
             };
             veclayer::commands::compact(&cli.data_dir, compact_action, &options).await?;
+        }
+        Commands::Id => {
+            veclayer::commands::identity(&cli.data_dir).await?;
+        }
+        Commands::Reflect => {
+            veclayer::commands::reflect(&cli.data_dir).await?;
         }
     }
 

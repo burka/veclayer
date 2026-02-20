@@ -67,6 +67,18 @@ async fn handle_mcp_message(
 
     let result = match method {
         "initialize" => {
+            // Generate dynamic priming from identity
+            let priming = match crate::identity::compute_identity(store.as_ref(), data_dir).await {
+                Ok(snapshot) => {
+                    let p = crate::identity::generate_priming(&snapshot);
+                    if p.len() > 50 {
+                        format!("{}\n\n---\n\n{}", MCP_INSTRUCTIONS, p)
+                    } else {
+                        MCP_INSTRUCTIONS.to_string()
+                    }
+                }
+                Err(_) => MCP_INSTRUCTIONS.to_string(),
+            };
             serde_json::json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": { "tools": {} },
@@ -74,7 +86,7 @@ async fn handle_mcp_message(
                     "name": "veclayer",
                     "version": env!("CARGO_PKG_VERSION")
                 },
-                "instructions": MCP_INSTRUCTIONS
+                "instructions": priming
             })
         }
         "tools/list" => tool_list(),

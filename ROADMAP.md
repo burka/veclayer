@@ -116,26 +116,29 @@ Von Zugriffsfrequenz zu echtem Bedeutungs-Ranking.
   - `think(action='salience')` — Salienz-Report via MCP
   - reflect-Report zeigt Salienz-Scores fuer Hot und Stale Chunks
 
-### Phase 4 -- Identity + Reflect
+### Phase 4 -- Identity + Reflect **DONE**
 
 Aus dem Gedaechtnis eine Identitaet emergieren lassen.
 
-- [ ] **Identity-Cluster:**
-  - Embedding-Centroids gewichtet nach Salienz
-  - Berechenbar ohne LLM
-- [ ] **Open Threads:**
-  - Ungeloeste Widersprueche, offene Entscheidungen
-  - Berechenbar aus Relationen + Salienz
-- [ ] **Reflect** (read-only Material-Aufbereitung):
-  - Hot Chunks, Stale Chunks, Identity-Snapshot
-  - Input fuer LLM-Reflexion, aber selbst kein LLM
-- [ ] **CLI:**
-  - `veclayer id` -- Identitaets-Zusammenfassung
-  - `veclayer reflect` -- Material aufbereiten
-  - `veclayer` (kein Argument) -- Orientierung: "Wer bin ich, was beschaeftigt mich"
-- [ ] **Priming beim Connect:**
-  - Identity-Narrativ + offene Faeden + aktuelle Learnings
-  - Generiert aus Cluster + Hot + Unresolved
+- [x] **Identity-Cluster:**
+  - Salienz-gewichtete Embedding-Centroids pro Perspektive
+  - Berechnet ohne LLM: Vektor-Durchschnitt gewichtet mit Salienz-Score
+- [x] **Open Threads:**
+  - Superseded-but-visible: Entries die ersetzt wurden aber noch sichtbar sind
+  - High-relation-count: Entries mit 3+ Relationen → aktive Deliberation
+  - Deduplizierung bei mehrfachen Kriterien
+- [x] **Reflect** (read-only Material-Aufbereitung):
+  - Core Knowledge: Top-15 salienteste Entries
+  - Open Threads: Ungeloeste Widersprueche
+  - Recent Learnings: Entries aus "learnings"-Perspektive
+  - Perspective Coverage: Centroids mit Entry-Counts und Avg-Salienz
+- [x] **CLI:**
+  - `veclayer id` — Kompakte Identitaets-Zusammenfassung
+  - `veclayer reflect` — Umfassender Priming-Report
+  - `veclayer` (kein Argument) — Orientierung: Stats, Core, Threads, Hints
+- [x] **Priming beim Connect:**
+  - MCP initialize liefert dynamisches Priming (statische Instruktionen + Identity Briefing)
+  - Priming enthalt Core Knowledge, Open Threads, Recent Learnings, Perspective Coverage
 
 ### Phase 5 -- Think (optional, braucht LLM)
 

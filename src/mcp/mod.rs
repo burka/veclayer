@@ -43,12 +43,13 @@ to place it in the hierarchy.
 
 ### think — Let me reflect and curate.
 Your curation hub. Without an action, returns a reflection report: hot chunks, stale chunks, \
-and suggested actions. With an action, executes curation:
+salience scores, and suggested actions. With an action, executes curation:
 - `action: 'promote'` — Make important knowledge always visible
 - `action: 'demote'` — Archive outdated knowledge
 - `action: 'relate'` — Connect knowledge (superseded_by, summarized_by, related_to, derived_from)
 - `action: 'configure_aging'` — Set automatic degradation rules
-- `action: 'apply_aging'` — Execute aging rules now
+- `action: 'apply_aging'` — Execute aging rules now (respects salience protection)
+- `action: 'salience'` — See which entries are most/least important
 
 ### share — Here, this is for you. (Preview)
 Generates a scoped share-token payload describing what knowledge to share and with what \

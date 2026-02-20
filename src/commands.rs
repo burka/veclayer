@@ -925,6 +925,129 @@ async fn compact_archive_candidates(data_dir: &Path, options: &CompactOptions) -
     Ok(())
 }
 
+// --- Reflect command ---
+
+/// Generate a comprehensive reflection/identity report.
+pub async fn reflect(data_dir: &Path) -> Result<()> {
+    let store = LanceStore::open_metadata(data_dir).await?;
+    let snapshot = crate::identity::compute_identity(&store, data_dir).await?;
+    let priming = crate::identity::generate_priming(&snapshot);
+    println!("{}", priming);
+    Ok(())
+}
+
+// --- Identity command ---
+
+/// Show a compact identity summary.
+pub async fn identity(data_dir: &Path) -> Result<()> {
+    let store = LanceStore::open_metadata(data_dir).await?;
+    let snapshot = crate::identity::compute_identity(&store, data_dir).await?;
+
+    println!("VecLayer Identity");
+    println!("{}", "=".repeat(40));
+
+    // Perspective coverage
+    if snapshot.centroids.is_empty() {
+        println!("\nNo perspective data yet. Add entries with --perspective flags.");
+    } else {
+        println!("\nPerspectives:");
+        for c in &snapshot.centroids {
+            let bar_len = (c.avg_salience * 20.0).round() as usize;
+            let bar = "#".repeat(bar_len.min(20));
+            println!(
+                "  {:12} {:>3} entries  salience {:.2}  {}",
+                c.perspective, c.entry_count, c.avg_salience, bar
+            );
+        }
+    }
+
+    // Core knowledge
+    if !snapshot.core_entries.is_empty() {
+        println!("\nCore Knowledge (top {}):", snapshot.core_entries.len());
+        for entry in &snapshot.core_entries {
+            let heading = entry.heading.as_deref().unwrap_or("(untitled)");
+            println!(
+                "  {} [{:.2}] {}",
+                short_id(&entry.id),
+                entry.salience,
+                heading
+            );
+        }
+    }
+
+    // Open threads
+    if !snapshot.open_threads.is_empty() {
+        println!("\nOpen Threads ({}):", snapshot.open_threads.len());
+        for thread in &snapshot.open_threads {
+            let heading = thread.heading.as_deref().unwrap_or("(untitled)");
+            println!("  {} {}: {}", short_id(&thread.id), heading, thread.reason);
+        }
+    }
+
+    // Recent learnings
+    if !snapshot.recent_learnings.is_empty() {
+        println!("\nRecent Learnings:");
+        for learning in &snapshot.recent_learnings {
+            let heading = learning.heading.as_deref().unwrap_or("(untitled)");
+            println!("  {} {}", short_id(&learning.id), heading);
+        }
+    }
+
+    Ok(())
+}
+
+// --- Orientation command (default, no args) ---
+
+/// Quick orientation: "Who am I, what's on my mind?"
+pub async fn orientation(data_dir: &Path) -> Result<()> {
+    let store = LanceStore::open_metadata(data_dir).await?;
+
+    let store_stats = store.stats().await?;
+    if store_stats.total_chunks == 0 {
+        println!("VecLayer is empty. Get started:");
+        println!("  veclayer add \"Your first piece of knowledge\"");
+        println!("  veclayer add ./notes/");
+        println!("  veclayer search \"What do I know about X?\"");
+        return Ok(());
+    }
+
+    let snapshot = crate::identity::compute_identity(&store, data_dir).await?;
+
+    println!("VecLayer — {} entries from {} sources",
+        store_stats.total_chunks,
+        store_stats.source_files.len()
+    );
+
+    // Perspective summary (one line)
+    if !snapshot.centroids.is_empty() {
+        let persp_summary: Vec<String> = snapshot
+            .centroids
+            .iter()
+            .map(|c| format!("{} ({})", c.perspective, c.entry_count))
+            .collect();
+        println!("Perspectives: {}", persp_summary.join(", "));
+    }
+
+    // Top 5 core
+    if !snapshot.core_entries.is_empty() {
+        println!("\nMost important:");
+        for entry in snapshot.core_entries.iter().take(5) {
+            let heading = entry.heading.as_deref().unwrap_or("(untitled)");
+            println!("  {} {}", short_id(&entry.id), heading);
+        }
+    }
+
+    // Open threads (brief)
+    if !snapshot.open_threads.is_empty() {
+        println!("\n{} open thread(s) need attention. Run `veclayer reflect` for details.", snapshot.open_threads.len());
+    }
+
+    // Hints
+    println!("\nTry: search, reflect, compact salience, id");
+
+    Ok(())
+}
+
 /// Resolve a potentially short ID to a full entry.
 ///
 /// Tries exact match first. If the input looks like a short ID (hex, <64 chars),
