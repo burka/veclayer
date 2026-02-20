@@ -298,12 +298,10 @@ mod tests {
     #[test]
     fn test_embedder_config_default_fastembed() {
         let embedder = EmbedderConfig::default();
-        match embedder {
-            EmbedderConfig::FastEmbed { model } => {
-                assert_eq!(model, DEFAULT_FASTEMBED_MODEL);
-            }
-            _ => panic!("Expected FastEmbed variant"),
-        }
+        assert!(
+            matches!(embedder, EmbedderConfig::FastEmbed { ref model } if model == DEFAULT_FASTEMBED_MODEL),
+            "Expected FastEmbed variant with default model"
+        );
     }
 
     #[test]

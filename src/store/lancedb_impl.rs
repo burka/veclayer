@@ -157,31 +157,39 @@ impl LanceStore {
         let source_files: Vec<&str> = chunks.iter().map(|c| c.source_file.as_str()).collect();
         let headings: Vec<Option<&str>> = chunks.iter().map(|c| c.heading.as_deref()).collect();
 
-        // Serialize cluster memberships and summarizes as JSON
+        // Serialize JSON fields — propagate errors instead of silently defaulting.
         let cluster_memberships: Vec<String> = chunks
             .iter()
             .map(|c| {
-                serde_json::to_string(&c.cluster_memberships).unwrap_or_else(|_| "[]".to_string())
+                serde_json::to_string(&c.cluster_memberships)
+                    .map_err(|e| Error::store(format!("serialize cluster_memberships: {}", e)))
             })
-            .collect();
+            .collect::<Result<_>>()?;
         let entry_type: Vec<String> = chunks.iter().map(|c| c.entry_type.to_string()).collect();
         let summarizes: Vec<String> = chunks
             .iter()
-            .map(|c| serde_json::to_string(&c.summarizes).unwrap_or_else(|_| "[]".to_string()))
-            .collect();
+            .map(|c| {
+                serde_json::to_string(&c.summarizes)
+                    .map_err(|e| Error::store(format!("serialize summarizes: {}", e)))
+            })
+            .collect::<Result<_>>()?;
         let perspectives: Vec<String> = chunks
             .iter()
             .map(|c| {
-                serde_json::to_string(&c.perspectives).unwrap_or_else(|_| "[]".to_string())
+                serde_json::to_string(&c.perspectives)
+                    .map_err(|e| Error::store(format!("serialize perspectives: {}", e)))
             })
-            .collect();
+            .collect::<Result<_>>()?;
 
         // Identity & memory fields
         let visibility: Vec<String> = chunks.iter().map(|c| c.visibility.clone()).collect();
         let relations: Vec<String> = chunks
             .iter()
-            .map(|c| serde_json::to_string(&c.relations).unwrap_or_else(|_| "[]".to_string()))
-            .collect();
+            .map(|c| {
+                serde_json::to_string(&c.relations)
+                    .map_err(|e| Error::store(format!("serialize relations: {}", e)))
+            })
+            .collect::<Result<_>>()?;
         let created_at: Vec<i64> = chunks.iter().map(|c| c.access_profile.created_at).collect();
         let last_rolled: Vec<i64> = chunks
             .iter()
@@ -733,8 +741,8 @@ impl VectorStore for LanceStore {
         let mut relations = chunk.relations;
         relations.push(relation);
 
-        let relations_json =
-            serde_json::to_string(&relations).unwrap_or_else(|_| "[]".to_string());
+        let relations_json = serde_json::to_string(&relations)
+            .map_err(|e| Error::store(format!("serialize relations: {}", e)))?;
 
         let table = self.get_table().await?;
         let filter = eq_filter("id", chunk_id);

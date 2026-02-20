@@ -18,6 +18,17 @@ use crate::store::LanceStore;
 use crate::summarizer::OllamaSummarizer;
 use crate::{Config, DocumentParser, Embedder, Result, VectorStore};
 
+// --- Infrastructure helpers ---
+
+/// Create an embedder + store pair.  Centralises the 3-line init sequence
+/// that was previously repeated in every command that needs embeddings.
+async fn open_store(data_dir: &Path) -> Result<(FastEmbedder, LanceStore)> {
+    let embedder = FastEmbedder::new()?;
+    let dimension = embedder.dimension();
+    let store = LanceStore::open(data_dir, dimension).await?;
+    Ok((embedder, store))
+}
+
 // --- Output helpers ---
 
 /// Truncate content to `max` chars, replacing newlines with spaces.
@@ -240,12 +251,8 @@ pub async fn ingest(data_dir: &Path, path: &Path, options: &AddOptions) -> Resul
 
 /// Add files from a path to the store.
 async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result<AddResult> {
-    info!("Initializing embedder...");
-    let embedder = FastEmbedder::new()?;
-    let dimension = embedder.dimension();
-
-    info!("Opening vector store at {:?}...", data_dir);
-    let store = LanceStore::open(data_dir, dimension).await?;
+    info!("Opening store at {:?}...", data_dir);
+    let (embedder, store) = open_store(data_dir).await?;
 
     let parser = MarkdownParser::new();
 
@@ -351,9 +358,7 @@ async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result
 
 /// Add inline text as a single entry.
 async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<AddResult> {
-    let embedder = FastEmbedder::new()?;
-    let dimension = embedder.dimension();
-    let store = LanceStore::open(data_dir, dimension).await?;
+    let (embedder, store) = open_store(data_dir).await?;
 
     let entry_type = match options.entry_type.as_str() {
         "meta" => crate::chunk::EntryType::Meta,
@@ -471,9 +476,7 @@ pub async fn search_results(
     query_str: &str,
     options: &SearchOptions,
 ) -> Result<Vec<SearchResult>> {
-    let embedder = FastEmbedder::new()?;
-    let dimension = embedder.dimension();
-    let store = LanceStore::open(data_dir, dimension).await?;
+    let (embedder, store) = open_store(data_dir).await?;
 
     let config = SearchConfig::for_query(options.top_k, options.deep, options.recent.as_deref())
         .with_perspective(options.perspective.clone());
@@ -517,9 +520,7 @@ pub async fn query(
 
 /// Focus on an entry: show details and children.
 pub async fn focus(data_dir: &Path, id: &str, options: &FocusOptions) -> Result<()> {
-    let embedder = FastEmbedder::new()?;
-    let dimension = embedder.dimension();
-    let store = LanceStore::open(data_dir, dimension).await?;
+    let (embedder, store) = open_store(data_dir).await?;
 
     let entry = store
         .get_by_id(id)
@@ -746,9 +747,7 @@ pub async fn history(data_dir: &Path, id: &str) -> Result<()> {
 
 /// Archive entries by demoting them to deep_only visibility.
 pub async fn archive(data_dir: &Path, ids: &[String]) -> Result<()> {
-    let embedder = FastEmbedder::new()?;
-    let dimension = embedder.dimension();
-    let store = LanceStore::open(data_dir, dimension).await?;
+    let (embedder, store) = open_store(data_dir).await?;
 
     for id in ids {
         let chunk = resolve_entry(&store, id).await?;
@@ -807,9 +806,7 @@ pub async fn compact(
 
 /// Rotate: roll access-profile buckets and apply aging rules.
 async fn compact_rotate(data_dir: &Path) -> Result<()> {
-    let embedder = FastEmbedder::new()?;
-    let dimension = embedder.dimension();
-    let store = LanceStore::open(data_dir, dimension).await?;
+    let (embedder, store) = open_store(data_dir).await?;
 
     let aging_config = crate::aging::AgingConfig::load(data_dir);
     let aging_result = crate::aging::apply_aging(&store, &aging_config).await?;
