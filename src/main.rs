@@ -106,6 +106,10 @@ enum Commands {
         /// Impression strength: 0.0–1.0 (default 1.0, only for entry_type=impression)
         #[arg(long, default_value = "1.0")]
         impression_strength: f32,
+
+        /// Universal references: target_id:kind (e.g., abc123:related_to)
+        #[arg(short = 'R', long, value_name = "ID:KIND")]
+        references: Vec<String>,
     },
 
     /// Semantic search with hierarchical results
@@ -402,6 +406,7 @@ async fn main() -> Result<()> {
             derived_from,
             impression_hint,
             impression_strength,
+            references,
         } => {
             let options = AddOptions {
                 recursive: !no_recursive,
@@ -419,6 +424,7 @@ async fn main() -> Result<()> {
                 derived_from,
                 impression_hint,
                 impression_strength,
+                references,
             };
             veclayer::commands::add(&cli.data_dir, &input, &options).await?;
         }
