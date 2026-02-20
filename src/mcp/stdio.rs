@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::embedder::FastEmbedder;
 use crate::store::LanceStore;
@@ -77,7 +77,10 @@ async fn handle_mcp_message(
                         MCP_INSTRUCTIONS.to_string()
                     }
                 }
-                Err(_) => MCP_INSTRUCTIONS.to_string(),
+                Err(e) => {
+                    warn!("Identity priming failed, using static instructions: {}", e);
+                    MCP_INSTRUCTIONS.to_string()
+                }
             };
             serde_json::json!({
                 "protocolVersion": "2024-11-05",

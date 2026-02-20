@@ -166,44 +166,53 @@ fn compute_centroids(
 }
 
 /// Find open threads: entries with unresolved relations.
+///
+/// A chunk can match multiple criteria. Reasons are merged rather than
+/// discarded so no context is lost.
 fn find_open_threads(chunks: &[HierarchicalChunk]) -> Vec<OpenThread> {
-    let mut threads = Vec::new();
+    use std::collections::HashMap;
+
+    let mut by_id: HashMap<String, OpenThread> = HashMap::new();
 
     for chunk in chunks {
+        let mut reasons = Vec::new();
+        let mut related = Vec::new();
+
         // Entries that have been superseded but are still "normal" visibility
         if chunk.is_superseded() && chunk.visibility == "normal" {
-            let targets: Vec<String> = chunk
-                .relations_of_kind(crate::relation::SUPERSEDED_BY)
-                .iter()
-                .map(|r| r.target_id.clone())
-                .collect();
-            threads.push(OpenThread {
-                id: chunk.id.clone(),
-                heading: chunk.heading.clone(),
-                reason: "Superseded but still visible — review or archive".to_string(),
-                related_ids: targets,
-            });
+            reasons.push("Superseded but still visible — review or archive".to_string());
+            for r in chunk.relations_of_kind(crate::relation::SUPERSEDED_BY) {
+                related.push(r.target_id.clone());
+            }
         }
 
         // Entries with many relations suggest active deliberation
         if chunk.relations.len() >= 3 && chunk.visibility == "normal" {
-            let targets: Vec<String> = chunk.relations.iter().map(|r| r.target_id.clone()).collect();
-            threads.push(OpenThread {
+            reasons.push(format!(
+                "High relation count ({}) — active deliberation or needs consolidation",
+                chunk.relations.len()
+            ));
+            for r in &chunk.relations {
+                if !related.contains(&r.target_id) {
+                    related.push(r.target_id.clone());
+                }
+            }
+        }
+
+        if !reasons.is_empty() {
+            let entry = by_id.entry(chunk.id.clone()).or_insert_with(|| OpenThread {
                 id: chunk.id.clone(),
                 heading: chunk.heading.clone(),
-                reason: format!(
-                    "High relation count ({}) — active deliberation or needs consolidation",
-                    chunk.relations.len()
-                ),
-                related_ids: targets,
+                reason: String::new(),
+                related_ids: Vec::new(),
             });
+            entry.reason = reasons.join("; ");
+            entry.related_ids = related;
         }
     }
 
-    // Deduplicate by ID (a chunk could match both criteria)
+    let mut threads: Vec<OpenThread> = by_id.into_values().collect();
     threads.sort_by(|a, b| a.id.cmp(&b.id));
-    threads.dedup_by(|a, b| a.id == b.id);
-
     threads
 }
 
@@ -340,8 +349,8 @@ mod tests {
     }
 
     #[test]
-    fn test_find_open_threads_dedup() {
-        // Chunk that matches both criteria
+    fn test_find_open_threads_merged() {
+        // Chunk that matches both criteria: reasons should be merged
         let mut chunk = test_chunk("both criteria");
         chunk
             .relations
@@ -349,8 +358,10 @@ mod tests {
         chunk.relations.push(ChunkRelation::related_to("a"));
         chunk.relations.push(ChunkRelation::related_to("b"));
         let threads = find_open_threads(&[chunk]);
-        // Should be deduped to 1
         assert_eq!(threads.len(), 1);
+        // Both reasons should be present (merged with ";")
+        assert!(threads[0].reason.contains("Superseded"));
+        assert!(threads[0].reason.contains("High relation count"));
     }
 
     #[test]
