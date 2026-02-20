@@ -895,4 +895,161 @@ mod tests {
         assert!(err.contains("status"));
         assert!(err.contains("history"));
     }
+
+    #[test]
+    fn test_store_single_input_structure() {
+        let input = StoreSingleInput {
+            content: "test content".to_string(),
+            parent_id: None,
+            source_file: "[test]".to_string(),
+            heading: Some("Test Heading".to_string()),
+            visibility: "normal".to_string(),
+            perspectives: vec!["decisions".to_string(), "learnings".to_string()],
+            entry_type: Some("raw".to_string()),
+            relations: vec![
+                StoreRelation {
+                    kind: "supersedes".to_string(),
+                    target_id: "old-id".to_string(),
+                },
+                StoreRelation {
+                    kind: "related_to".to_string(),
+                    target_id: "related-id".to_string(),
+                },
+            ],
+        };
+
+        assert_eq!(input.content, "test content");
+        assert_eq!(input.heading, Some("Test Heading".to_string()));
+        assert_eq!(input.perspectives.len(), 2);
+        assert_eq!(input.perspectives[0], "decisions");
+        assert_eq!(input.relations.len(), 2);
+        assert_eq!(input.relations[0].kind, "supersedes");
+        assert_eq!(input.relations[0].target_id, "old-id");
+    }
+
+    #[test]
+    fn test_store_item_structure() {
+        let item = StoreItem {
+            content: "item content".to_string(),
+            parent_id: Some("parent-id".to_string()),
+            heading: None,
+            visibility: "deep_only".to_string(),
+            perspectives: vec!["intentions".to_string()],
+            source_file: Some("[file]".to_string()),
+            entry_type: Some("meta".to_string()),
+            relations: vec![StoreRelation {
+                kind: "summarizes".to_string(),
+                target_id: "target-id".to_string(),
+            }],
+        };
+
+        assert_eq!(item.content, "item content");
+        assert_eq!(item.parent_id, Some("parent-id".to_string()));
+        assert_eq!(item.visibility, "deep_only");
+        assert_eq!(item.relations.len(), 1);
+        assert_eq!(item.relations[0].kind, "summarizes");
+    }
+
+    #[test]
+    fn test_store_input_structure() {
+        let input = StoreInput {
+            content: "main content".to_string(),
+            parent_id: None,
+            source_file: "[agent]".to_string(),
+            heading: Some("Main Heading".to_string()),
+            visibility: "normal".to_string(),
+            perspectives: vec!["knowledge".to_string()],
+            relations: vec![
+                StoreRelation {
+                    kind: "derived_from".to_string(),
+                    target_id: "source-id".to_string(),
+                },
+            ],
+            entry_type: None,
+            items: vec![],
+        };
+
+        assert_eq!(input.content, "main content");
+        assert_eq!(input.relations.len(), 1);
+        assert_eq!(input.relations[0].kind, "derived_from");
+        assert!(input.items.is_empty());
+    }
+
+    #[test]
+    fn test_store_input_batch_mode() {
+        let input = StoreInput {
+            content: String::new(),
+            heading: None,
+            parent_id: None,
+            source_file: "[agent]".to_string(),
+            visibility: "normal".to_string(),
+            perspectives: vec![],
+            relations: vec![],
+            entry_type: None,
+            items: vec![
+                StoreItem {
+                    content: "item 1".to_string(),
+                    parent_id: None,
+                    heading: None,
+                    visibility: "normal".to_string(),
+                    perspectives: vec![],
+                    source_file: None,
+                    entry_type: None,
+                    relations: vec![],
+                },
+                StoreItem {
+                    content: "item 2".to_string(),
+                    parent_id: Some("parent".to_string()),
+                    heading: Some("Item 2".to_string()),
+                    visibility: "deep_only".to_string(),
+                    perspectives: vec!["decisions".to_string()],
+                    source_file: Some("[file]".to_string()),
+                    entry_type: Some("impression".to_string()),
+                    relations: vec![StoreRelation {
+                        kind: "related_to".to_string(),
+                        target_id: "other".to_string(),
+                    }],
+                },
+            ],
+        };
+
+        assert!(input.content.is_empty());
+        assert_eq!(input.items.len(), 2);
+        assert_eq!(input.items[0].content, "item 1");
+        assert_eq!(input.items[1].heading, Some("Item 2".to_string()));
+        assert_eq!(input.items[1].relations.len(), 1);
+    }
+
+    #[test]
+    fn test_store_relation_kinds() {
+        let relations = vec![
+            StoreRelation {
+                kind: "supersedes".to_string(),
+                target_id: "id1".to_string(),
+            },
+            StoreRelation {
+                kind: "summarizes".to_string(),
+                target_id: "id2".to_string(),
+            },
+            StoreRelation {
+                kind: "related_to".to_string(),
+                target_id: "id3".to_string(),
+            },
+            StoreRelation {
+                kind: "derived_from".to_string(),
+                target_id: "id4".to_string(),
+            },
+            StoreRelation {
+                kind: "version_of".to_string(),
+                target_id: "id5".to_string(),
+            },
+        ];
+
+        assert_eq!(relations.len(), 5);
+        assert_eq!(relations[0].kind, "supersedes");
+        assert_eq!(relations[1].kind, "summarizes");
+        assert_eq!(relations[2].kind, "related_to");
+        assert_eq!(relations[3].kind, "derived_from");
+        assert_eq!(relations[4].kind, "version_of");
+    }
 }
