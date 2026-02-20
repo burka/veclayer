@@ -18,6 +18,18 @@ use crate::store::LanceStore;
 use crate::summarizer::OllamaSummarizer;
 use crate::{Config, DocumentParser, Embedder, Result, VectorStore};
 
+// --- Output helpers ---
+
+/// Truncate content to `max` chars, replacing newlines with spaces.
+fn preview(s: &str, max: usize) -> String {
+    let clean = s.replace('\n', " ");
+    if clean.len() <= max {
+        clean
+    } else {
+        format!("{}...", &clean[..max])
+    }
+}
+
 // --- Option types ---
 
 /// Options for adding knowledge (files, directories, or inline text)
@@ -431,25 +443,16 @@ pub async fn search(data_dir: &Path, query_str: &str, options: &SearchOptions) -
             println!("   Heading: {}", heading);
         }
 
-        let content = if result.chunk.content.len() > 200 {
-            format!("{}...", &result.chunk.content[..200])
-        } else {
-            result.chunk.content.clone()
-        };
+        let content = preview(&result.chunk.content, 200);
         println!("   Content: {}", content.replace('\n', " "));
 
         if !result.relevant_children.is_empty() {
             println!("   Children:");
             for child in &result.relevant_children {
-                let preview = if child.chunk.content.len() > 80 {
-                    format!("{}...", &child.chunk.content[..80])
-                } else {
-                    child.chunk.content.clone()
-                };
                 println!(
                     "     - [Score: {:.3}] {}",
                     child.score,
-                    preview.replace('\n', " ")
+                    preview(&child.chunk.content, 80)
                 );
             }
         }
@@ -570,16 +573,11 @@ pub async fn focus(data_dir: &Path, id: &str, options: &FocusOptions) -> Result<
         let shown = children.iter().take(options.limit).count();
         println!("Children ({}/{}):", shown, children.len());
         for child in children.iter().take(options.limit) {
-            let preview = if child.content.len() > 100 {
-                format!("{}...", &child.content[..100])
-            } else {
-                child.content.clone()
-            };
             println!(
                 "  {} [{}] {}",
                 short_id(&child.id),
                 child.entry_type,
-                preview.replace('\n', " ")
+                preview(&child.content, 100)
             );
         }
 
@@ -723,10 +721,7 @@ pub async fn history(data_dir: &Path, id: &str) -> Result<()> {
     if let Some(ref heading) = chunk.heading {
         println!("  Heading: {}", heading);
     }
-    println!(
-        "  Content: {}...",
-        &chunk.content[..chunk.content.len().min(80)]
-    );
+    println!("  Content: {}", preview(&chunk.content, 80));
 
     if !chunk.perspectives.is_empty() {
         println!("  Perspectives: {}", chunk.perspectives.join(", "));
@@ -848,11 +843,6 @@ async fn compact_salience(data_dir: &Path, options: &CompactOptions) -> Result<(
     println!("{}", "=".repeat(60));
     for (idx, score) in &top {
         let chunk = &hot[*idx];
-        let preview = if chunk.content.len() > 60 {
-            format!("{}...", &chunk.content[..60])
-        } else {
-            chunk.content.clone()
-        };
         println!(
             "  {} [{:.3}] inter={:.2} persp={:.2} rev={:.2}  {}",
             short_id(&chunk.id),
@@ -860,7 +850,7 @@ async fn compact_salience(data_dir: &Path, options: &CompactOptions) -> Result<(
             score.interaction,
             score.perspective,
             score.revision,
-            preview.replace('\n', " ")
+            preview(&chunk.content, 60)
         );
     }
 
@@ -905,17 +895,12 @@ async fn compact_archive_candidates(data_dir: &Path, options: &CompactOptions) -
     println!("{}", "=".repeat(60));
     for chunk in &candidates {
         let score = crate::salience::compute(chunk, &weights);
-        let preview = if chunk.content.len() > 60 {
-            format!("{}...", &chunk.content[..60])
-        } else {
-            chunk.content.clone()
-        };
         println!(
             "  {} [salience={:.3}, vis={}]  {}",
             short_id(&chunk.id),
             score.composite,
             chunk.visibility,
-            preview.replace('\n', " ")
+            preview(&chunk.content, 60)
         );
     }
     println!(
