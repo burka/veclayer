@@ -248,6 +248,11 @@ pub struct HierarchicalChunk {
     #[serde(default = "default_visibility")]
     pub visibility: String,
 
+    /// Perspectives this entry belongs to (e.g. "decisions", "learnings").
+    /// An entry can belong to multiple perspectives.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub perspectives: Vec<String>,
+
     /// Relations to other chunks. Each relation has an open `kind` string
     /// and a `target_id`. Use constants from `relation::` or custom kinds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -287,6 +292,7 @@ impl HierarchicalChunk {
             cluster_memberships: Vec::new(),
             entry_type: EntryType::Raw,
             summarizes: Vec::new(),
+            perspectives: Vec::new(),
             visibility: default_visibility(),
             relations: Vec::new(),
             access_profile: AccessProfile::new(),
@@ -316,6 +322,7 @@ impl HierarchicalChunk {
             cluster_memberships: Vec::new(),
             entry_type: EntryType::Summary,
             summarizes: summarized_chunk_ids,
+            perspectives: Vec::new(),
             visibility: default_visibility(),
             relations: Vec::new(),
             access_profile: AccessProfile::new(),
@@ -331,6 +338,18 @@ impl HierarchicalChunk {
     /// Set the entry type
     pub fn with_entry_type(mut self, entry_type: EntryType) -> Self {
         self.entry_type = entry_type;
+        self
+    }
+
+    /// Set perspectives this entry belongs to
+    pub fn with_perspectives(mut self, perspectives: Vec<String>) -> Self {
+        self.perspectives = perspectives;
+        self
+    }
+
+    /// Add a single perspective
+    pub fn with_perspective(mut self, perspective: impl Into<String>) -> Self {
+        self.perspectives.push(perspective.into());
         self
     }
 

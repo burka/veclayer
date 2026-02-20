@@ -71,6 +71,15 @@ pub trait VectorStore: Send + Sync {
         relation: ChunkRelation,
     ) -> impl Future<Output = Result<()>> + Send;
 
+    /// Search with an optional perspective filter.
+    /// Returns only entries that belong to the given perspective.
+    fn search_by_perspective(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+        perspective: &str,
+    ) -> impl Future<Output = Result<Vec<SearchResult>>> + Send;
+
     /// Get chunks with highest access totals (most popular).
     fn get_hot_chunks(
         &self,
@@ -109,6 +118,7 @@ crate::arc_impl!(VectorStore {
     fn update_access_profiles(&self, updates: Vec<(String, AccessProfile)>) -> impl Future<Output = Result<()>> + Send;
     fn update_visibility(&self, chunk_id: &str, visibility: &str) -> impl Future<Output = Result<()>> + Send;
     fn add_relation(&self, chunk_id: &str, relation: ChunkRelation) -> impl Future<Output = Result<()>> + Send;
+    fn search_by_perspective(&self, query_embedding: &[f32], limit: usize, perspective: &str) -> impl Future<Output = Result<Vec<SearchResult>>> + Send;
     fn get_hot_chunks(&self, limit: usize) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
     fn get_stale_chunks(&self, stale_seconds: i64, limit: usize) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
 });

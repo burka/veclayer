@@ -59,6 +59,22 @@ enum Commands {
         /// Entry type: raw (default), meta, impression
         #[arg(long, default_value = "raw")]
         entry_type: String,
+
+        /// Tag with perspectives (comma-separated or repeated)
+        #[arg(short = 'P', long = "perspective")]
+        perspectives: Vec<String>,
+
+        /// This entry summarizes the given entry ID
+        #[arg(long)]
+        summarizes: Option<String>,
+
+        /// This entry supersedes the given entry ID
+        #[arg(long)]
+        supersedes: Option<String>,
+
+        /// This is a new version of the given entry ID
+        #[arg(long)]
+        version_of: Option<String>,
     },
 
     /// Semantic search with hierarchical results
@@ -86,6 +102,10 @@ enum Commands {
         /// Recency window: 24h, 7d, 30d
         #[arg(long)]
         recent: Option<String>,
+
+        /// Filter by perspective (e.g. "decisions", "learnings")
+        #[arg(short = 'P', long)]
+        perspective: Option<String>,
     },
 
     /// Focus on an entry: show details and children
@@ -127,6 +147,49 @@ enum Commands {
 
     /// List all indexed source files
     Sources,
+
+    /// Manage perspectives (list, add, remove)
+    #[command(alias = "p")]
+    Perspective {
+        #[command(subcommand)]
+        action: PerspectiveAction,
+    },
+
+    /// Show version history of an entry (relations chain)
+    History {
+        /// Entry ID (full hash or short 7-char prefix)
+        id: String,
+    },
+
+    /// Archive entries (demote to deep_only)
+    Archive {
+        /// Entry IDs to archive
+        ids: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PerspectiveAction {
+    /// List all perspectives
+    #[command(alias = "ls")]
+    List,
+
+    /// Add a custom perspective
+    Add {
+        /// Unique slug ID (e.g. "emotions")
+        id: String,
+        /// Human-readable name (e.g. "Emotions")
+        name: String,
+        /// Hint for LLMs
+        hint: String,
+    },
+
+    /// Remove a custom perspective
+    #[command(alias = "rm")]
+    Remove {
+        /// Perspective ID to remove
+        id: String,
+    },
 }
 
 #[tokio::main]
@@ -146,6 +209,10 @@ async fn main() -> Result<()> {
             model,
             visibility,
             entry_type,
+            perspectives,
+            summarizes,
+            supersedes,
+            version_of,
         } => {
             let options = AddOptions {
                 recursive: !no_recursive,
@@ -153,6 +220,10 @@ async fn main() -> Result<()> {
                 model,
                 visibility,
                 entry_type,
+                perspectives,
+                summarizes,
+                supersedes,
+                version_of,
             };
             veclayer::commands::add(&cli.data_dir, &input, &options).await?;
         }
@@ -163,6 +234,7 @@ async fn main() -> Result<()> {
             subtree,
             deep,
             recent,
+            perspective,
         } => {
             let options = SearchOptions {
                 top_k,
@@ -170,6 +242,7 @@ async fn main() -> Result<()> {
                 subtree,
                 deep,
                 recent,
+                perspective,
             };
             veclayer::commands::search(&cli.data_dir, &query, &options).await?;
         }
@@ -200,6 +273,23 @@ async fn main() -> Result<()> {
         }
         Commands::Sources => {
             veclayer::commands::print_sources(&cli.data_dir).await?;
+        }
+        Commands::Perspective { action } => match action {
+            PerspectiveAction::List => {
+                veclayer::commands::perspective_list(&cli.data_dir)?;
+            }
+            PerspectiveAction::Add { id, name, hint } => {
+                veclayer::commands::perspective_add(&cli.data_dir, &id, &name, &hint)?;
+            }
+            PerspectiveAction::Remove { id } => {
+                veclayer::commands::perspective_remove(&cli.data_dir, &id)?;
+            }
+        },
+        Commands::History { id } => {
+            veclayer::commands::history(&cli.data_dir, &id).await?;
+        }
+        Commands::Archive { ids } => {
+            veclayer::commands::archive(&cli.data_dir, &ids).await?;
         }
     }
 

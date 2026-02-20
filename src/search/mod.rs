@@ -39,6 +39,8 @@ pub struct SearchConfig {
     /// Blending factor: 0.0 = pure vector similarity, 1.0 = pure relevancy.
     /// Default: 0.15 (or 0.3 when recency window is active).
     pub recency_alpha: f32,
+    /// Optional perspective filter. Only return entries in this perspective.
+    pub perspective: Option<String>,
 }
 
 impl Default for SearchConfig {
@@ -51,6 +53,7 @@ impl Default for SearchConfig {
             deep: false,
             recency_window: None,
             recency_alpha: DEFAULT_RECENCY_ALPHA,
+            perspective: None,
         }
     }
 }
@@ -76,6 +79,12 @@ impl SearchConfig {
             recency_alpha: Self::alpha_for_window(recency_window),
             ..Default::default()
         }
+    }
+
+    /// Add a perspective filter to this config.
+    pub fn with_perspective(mut self, perspective: Option<String>) -> Self {
+        self.perspective = perspective;
+        self
     }
 
     /// Blend vector similarity with recency relevancy.
@@ -162,8 +171,14 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
             self.config.top_k * 2
         };
 
-        // Step 1: Find top-level matches across all levels
-        let top_results = self.store.search(&query_embedding, fetch_k, None).await?;
+        // Step 1: Find top-level matches (optionally filtered by perspective)
+        let top_results = if let Some(ref perspective) = self.config.perspective {
+            self.store
+                .search_by_perspective(&query_embedding, fetch_k, perspective)
+                .await?
+        } else {
+            self.store.search(&query_embedding, fetch_k, None).await?
+        };
 
         let mut hierarchical_results = Vec::new();
         let mut access_updates = Vec::new();
@@ -476,6 +491,22 @@ mod tests {
             _relation: crate::ChunkRelation,
         ) -> Result<()> {
             Ok(())
+        }
+
+        async fn search_by_perspective(
+            &self,
+            _query_embedding: &[f32],
+            limit: usize,
+            perspective: &str,
+        ) -> Result<Vec<SearchResult>> {
+            let results = self.search_results.lock().unwrap();
+            let filtered: Vec<_> = results
+                .iter()
+                .filter(|r| r.chunk.perspectives.iter().any(|p| p == perspective))
+                .take(limit)
+                .cloned()
+                .collect();
+            Ok(filtered)
         }
 
         async fn get_hot_chunks(&self, _limit: usize) -> Result<Vec<HierarchicalChunk>> {

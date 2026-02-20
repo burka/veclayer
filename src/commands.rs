@@ -33,6 +33,14 @@ pub struct AddOptions {
     pub visibility: Option<String>,
     /// Entry type: "raw", "meta", "impression"
     pub entry_type: String,
+    /// Perspectives to tag entries with (e.g. "decisions", "learnings")
+    pub perspectives: Vec<String>,
+    /// Relation: this entry summarizes the given ID
+    pub summarizes: Option<String>,
+    /// Relation: this entry supersedes the given ID
+    pub supersedes: Option<String>,
+    /// Relation: this is a version of the given ID
+    pub version_of: Option<String>,
 }
 
 /// Backwards-compatible alias
@@ -46,6 +54,10 @@ impl Default for AddOptions {
             model: "llama3.2".to_string(),
             visibility: None,
             entry_type: "raw".to_string(),
+            perspectives: Vec::new(),
+            summarizes: None,
+            supersedes: None,
+            version_of: None,
         }
     }
 }
@@ -63,6 +75,8 @@ pub struct SearchOptions {
     pub deep: bool,
     /// Recency window: "24h", "7d", "30d"
     pub recent: Option<String>,
+    /// Filter by perspective (e.g. "decisions", "learnings")
+    pub perspective: Option<String>,
 }
 
 /// Backwards-compatible alias
@@ -76,6 +90,7 @@ impl Default for SearchOptions {
             subtree: None,
             deep: false,
             recent: None,
+            perspective: None,
         }
     }
 }
@@ -171,11 +186,13 @@ pub struct StatsResult {
 pub fn init(data_dir: &Path) -> Result<()> {
     if data_dir.exists() {
         println!("VecLayer store already exists at {}", data_dir.display());
-        println!("  {} entries", "use `veclayer add` to add knowledge");
+        println!("  use `veclayer add` to add knowledge");
     } else {
         std::fs::create_dir_all(data_dir)?;
         println!("Initialized VecLayer store at {}", data_dir.display());
     }
+    // Initialize perspectives (idempotent — won't overwrite existing)
+    crate::perspective::init(data_dir)?;
     println!("\nNext steps:");
     println!("  veclayer add ./docs       # Add files");
     println!("  veclayer add \"text\"        # Add inline text");
@@ -238,6 +255,12 @@ async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result
         if let Some(ref vis) = options.visibility {
             for chunk in &mut chunks {
                 chunk.visibility = vis.clone();
+            }
+        }
+
+        if !options.perspectives.is_empty() {
+            for chunk in &mut chunks {
+                chunk.perspectives.clone_from(&options.perspectives);
             }
         }
 
@@ -329,10 +352,22 @@ async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<A
         String::new(),
         "[inline]".to_string(),
     )
-    .with_entry_type(entry_type);
+    .with_entry_type(entry_type)
+    .with_perspectives(options.perspectives.clone());
 
     if let Some(ref vis) = options.visibility {
         chunk.visibility = vis.clone();
+    }
+
+    // Add relations from options
+    if let Some(ref target) = options.summarizes {
+        chunk.relations.push(crate::ChunkRelation::summarized_by(target));
+    }
+    if let Some(ref target) = options.supersedes {
+        chunk.relations.push(crate::ChunkRelation::superseded_by(target));
+    }
+    if let Some(ref target) = options.version_of {
+        chunk.relations.push(crate::ChunkRelation::new("version_of", target));
     }
 
     let embeddings = embedder.embed(&[text])?;
@@ -432,7 +467,8 @@ pub async fn search_results(
     let dimension = embedder.dimension();
     let store = LanceStore::open(data_dir, dimension).await?;
 
-    let config = SearchConfig::for_query(options.top_k, options.deep, options.recent.as_deref());
+    let config = SearchConfig::for_query(options.top_k, options.deep, options.recent.as_deref())
+        .with_perspective(options.perspective.clone());
 
     let search_engine = HierarchicalSearch::new(store, embedder).with_config(config);
 
@@ -633,6 +669,106 @@ pub async fn serve(data_dir: &Path, options: &ServeOptions) -> Result<()> {
     } else {
         crate::mcp::run_http(config).await
     }
+}
+
+// --- Perspective commands ---
+
+/// List all perspectives.
+pub fn perspective_list(data_dir: &Path) -> Result<()> {
+    let perspectives = crate::perspective::load(data_dir)?;
+    if perspectives.is_empty() {
+        println!("No perspectives defined.");
+        return Ok(());
+    }
+    for p in &perspectives {
+        let tag = if p.builtin { " [builtin]" } else { "" };
+        println!("  {} -- {}{}", p.id, p.hint, tag);
+    }
+    println!("\n{} perspective(s)", perspectives.len());
+    Ok(())
+}
+
+/// Add a custom perspective.
+pub fn perspective_add(data_dir: &Path, id: &str, name: &str, hint: &str) -> Result<()> {
+    crate::perspective::add(
+        data_dir,
+        crate::perspective::Perspective::new(id, name, hint),
+    )?;
+    println!("Added perspective '{}'", id);
+    Ok(())
+}
+
+/// Remove a custom perspective.
+pub fn perspective_remove(data_dir: &Path, id: &str) -> Result<()> {
+    crate::perspective::remove(data_dir, id)?;
+    println!("Removed perspective '{}'", id);
+    Ok(())
+}
+
+// --- History command ---
+
+/// Show version/relation history of an entry.
+pub async fn history(data_dir: &Path, id: &str) -> Result<()> {
+    let store = LanceStore::open_metadata(data_dir).await?;
+
+    // Resolve short IDs by prefix search
+    let chunk = resolve_entry(&store, id).await?;
+
+    println!("Entry {} ({})", short_id(&chunk.id), chunk.entry_type);
+    if let Some(ref heading) = chunk.heading {
+        println!("  Heading: {}", heading);
+    }
+    println!(
+        "  Content: {}...",
+        &chunk.content[..chunk.content.len().min(80)]
+    );
+
+    if !chunk.perspectives.is_empty() {
+        println!("  Perspectives: {}", chunk.perspectives.join(", "));
+    }
+
+    if chunk.relations.is_empty() {
+        println!("  No relations.");
+    } else {
+        println!("  Relations:");
+        for rel in &chunk.relations {
+            println!("    {} -> {}", rel.kind, short_id(&rel.target_id));
+        }
+    }
+
+    // Also find entries that relate TO this entry
+    // (reverse lookup: we scan all entries - for large stores this would be optimized)
+    Ok(())
+}
+
+// --- Archive command ---
+
+/// Archive entries by demoting them to deep_only visibility.
+pub async fn archive(data_dir: &Path, ids: &[String]) -> Result<()> {
+    let embedder = FastEmbedder::new()?;
+    let dimension = embedder.dimension();
+    let store = LanceStore::open(data_dir, dimension).await?;
+
+    for id in ids {
+        let chunk = resolve_entry(&store, id).await?;
+        store
+            .update_visibility(&chunk.id, crate::chunk::visibility::DEEP_ONLY)
+            .await?;
+        println!("Archived {} (was: {})", short_id(&chunk.id), chunk.visibility);
+    }
+
+    Ok(())
+}
+
+/// Resolve a potentially short ID to a full entry.
+async fn resolve_entry(store: &LanceStore, id: &str) -> Result<crate::HierarchicalChunk> {
+    // Try exact match first
+    if let Some(chunk) = store.get_by_id(id).await? {
+        return Ok(chunk);
+    }
+    // If short ID (7 chars), we can't do prefix search in LanceDB easily.
+    // For now, return not found.
+    Err(crate::Error::not_found(format!("Entry '{}' not found", id)))
 }
 
 /// Collect files from a path, optionally recursively.

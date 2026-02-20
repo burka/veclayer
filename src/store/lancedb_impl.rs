@@ -90,6 +90,7 @@ impl LanceStore {
             Field::new("cluster_memberships", DataType::Utf8, false), // JSON array
             Field::new("entry_type", DataType::Utf8, false),
             Field::new("summarizes", DataType::Utf8, false), // JSON array of chunk IDs
+            Field::new("perspectives", DataType::Utf8, false), // JSON array of perspective IDs
             // Identity & memory fields
             Field::new("visibility", DataType::Utf8, false),
             Field::new("relations", DataType::Utf8, false), // JSON array
@@ -156,6 +157,12 @@ impl LanceStore {
             .iter()
             .map(|c| serde_json::to_string(&c.summarizes).unwrap_or_else(|_| "[]".to_string()))
             .collect();
+        let perspectives: Vec<String> = chunks
+            .iter()
+            .map(|c| {
+                serde_json::to_string(&c.perspectives).unwrap_or_else(|_| "[]".to_string())
+            })
+            .collect();
 
         // Identity & memory fields
         let visibility: Vec<String> = chunks.iter().map(|c| c.visibility.clone()).collect();
@@ -212,6 +219,7 @@ impl LanceStore {
                 Arc::new(StringArray::from(cluster_memberships)),
                 Arc::new(StringArray::from(entry_type)),
                 Arc::new(StringArray::from(summarizes)),
+                Arc::new(StringArray::from(perspectives)),
                 Arc::new(StringArray::from(visibility)),
                 Arc::new(StringArray::from(relations)),
                 Arc::new(Int64Array::from(created_at)),
@@ -259,6 +267,9 @@ impl LanceStore {
             .and_then(|c| c.as_any().downcast_ref::<StringArray>());
         let summarizes_col = batch
             .column_by_name("summarizes")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let perspectives_col = batch
+            .column_by_name("perspectives")
             .and_then(|c| c.as_any().downcast_ref::<StringArray>());
 
         // Identity & memory fields (optional for backwards compatibility)
@@ -354,6 +365,17 @@ impl LanceStore {
                 })
                 .unwrap_or_default();
 
+            // Parse perspectives from JSON
+            let perspectives: Vec<String> = perspectives_col
+                .and_then(|col| {
+                    if col.is_null(i) {
+                        None
+                    } else {
+                        serde_json::from_str(col.value(i)).ok()
+                    }
+                })
+                .unwrap_or_default();
+
             // Parse identity & memory fields
             let visibility: String = visibility_col
                 .and_then(|col| {
@@ -434,6 +456,7 @@ impl LanceStore {
                 cluster_memberships,
                 entry_type,
                 summarizes,
+                perspectives,
                 visibility,
                 relations,
                 access_profile,
@@ -716,6 +739,55 @@ impl VectorStore for LanceStore {
             .map_err(|e| Error::store(format!("Failed to add relation: {}", e)))?;
 
         Ok(())
+    }
+
+    async fn search_by_perspective(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+        perspective: &str,
+    ) -> Result<Vec<SearchResult>> {
+        let table = self.get_table().await?;
+        let query_vec: Vec<f32> = query_embedding.to_vec();
+
+        // Filter: perspectives JSON array contains the given perspective string.
+        // LanceDB SQL supports LIKE for substring matching in JSON arrays.
+        let filter = format!(
+            "perspectives LIKE '%\"{}%'",
+            perspective.replace('\'', "''").replace('"', "\\\"")
+        );
+
+        let query = table
+            .query()
+            .nearest_to(query_vec)
+            .map_err(|e| Error::search(format!("Failed to create perspective search: {}", e)))?
+            .only_if(filter)
+            .limit(limit);
+
+        let results = query
+            .execute()
+            .await
+            .map_err(|e| Error::search(format!("Failed to execute perspective search: {}", e)))?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| Error::search(format!("Failed to collect perspective results: {}", e)))?;
+
+        let mut search_results = Vec::new();
+        for batch in results {
+            let distances: Option<&Float32Array> = batch
+                .column_by_name("_distance")
+                .and_then(|c| c.as_any().downcast_ref());
+
+            let chunks = self.batch_to_chunks(&batch)?;
+            for (i, chunk) in chunks.into_iter().enumerate() {
+                let score = distances
+                    .map(|d| 1.0 - d.value(i))
+                    .unwrap_or(1.0);
+                search_results.push(SearchResult { chunk, score });
+            }
+        }
+
+        Ok(search_results)
     }
 
     async fn get_hot_chunks(&self, limit: usize) -> Result<Vec<HierarchicalChunk>> {
