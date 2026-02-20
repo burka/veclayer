@@ -100,6 +100,10 @@ pub struct SearchOptions {
     pub recent: Option<String>,
     /// Filter by perspective (e.g. "decisions", "learnings")
     pub perspective: Option<String>,
+    /// Minimum salience (entries below this excluded from salience boosting)
+    pub min_salience: Option<f32>,
+    /// Minimum search score (entries below this are filtered out)
+    pub min_score: Option<f32>,
 }
 
 /// Backwards-compatible alias
@@ -114,6 +118,8 @@ impl Default for SearchOptions {
             deep: false,
             recent: None,
             perspective: None,
+            min_salience: None,
+            min_score: None,
         }
     }
 }
@@ -489,8 +495,13 @@ pub async fn search_results(
 ) -> Result<Vec<SearchResult>> {
     let (embedder, store) = open_store(data_dir).await?;
 
-    let config = SearchConfig::for_query(options.top_k, options.deep, options.recent.as_deref())
-        .with_perspective(options.perspective.clone());
+    let mut config = SearchConfig::for_query(options.top_k, options.deep, options.recent.as_deref())
+        .with_perspective(options.perspective.clone())
+        .with_min_salience(options.min_salience);
+
+    if let Some(min_score) = options.min_score {
+        config.min_score = min_score;
+    }
 
     let search_engine = HierarchicalSearch::new(store, embedder).with_config(config);
 
