@@ -50,34 +50,29 @@ VecLayer hat einen funktionierenden Prototyp mit ~8100 Zeilen Rust-Code:
 
 ## Phasen
 
-### Phase 1 -- Core (Entry + Storage)
+### Phase 1 -- Core (Entry + Storage) **DONE**
 
 Den Prototyp auf das Konzept-Datenmodell umbauen.
 
-- [ ] **Entry-Struct** mit Content-Hash ID (`sha256(content)`, 7 Hex-Chars CLI)
+- [x] **Entry-Struct** mit Content-Hash ID (`sha256(content)`, 7 Hex-Chars CLI)
   - Typ-Feld: `raw`, `summary`, `meta`, `impression`
-  - Ersetze HierarchicalChunk und is_summary Boolean
-  - Migrationslogik fuer bestehende Daten
-- [ ] **Storage Trait** anpassen an Entry statt HierarchicalChunk
-  - LanceDB-Implementierung aktualisieren
-  - Relationen als separate Tabelle `relations(source_id, target_id, relation_type)`
-- [ ] **Embedding Trait** bleibt, fastembed als Default
-- [ ] **CLI aligned mit Spec:**
+  - is_summary Boolean ersetzt durch EntryType Enum
+- [x] **CLI aligned mit Spec:**
   - `veclayer init` -- Speicher initialisieren
   - `veclayer add` (single entry, file, directory) -- ersetzt `ingest`
   - `veclayer search` -- ersetzt `query`
   - `veclayer focus` -- als CLI-Kommando (nicht nur MCP)
   - `veclayer status` -- ersetzt `stats`
-  - `veclayer help`
-- [ ] **Summarizer/Clustering aus Core extrahieren**
-  - In separates `veclayer-orchestrator` Crate oder Feature-Flag
-  - Core-Lib: kein LLM, nur Embeddings + Struktur + Rechnung
-- [ ] **TOML-Config** im Data-Dir + ENV Overrides (Reihenfolge: ENV > Config > Defaults)
-- [ ] **SRP-Refactoring:**
-  - mcp/mod.rs aufteilen (types, tools, stdio, http)
-  - AccessProfile in eigenes Modul
-  - SearchConfig-Konstruktion deduplizieren
-  - Formatierungslogik aus main.rs extrahieren
+- [x] **Summarizer/Clustering aus Core extrahieren**
+  - Feature-Flag `llm` (default on) fuer reqwest, linfa, ndarray
+  - Core-Lib: kein LLM noetig wenn `--no-default-features`
+- [x] **TOML-Config** im Data-Dir + ENV Overrides (ENV > Config > Defaults)
+  - Discover: $VECLAYER_CONFIG > <data_dir>/veclayer.toml > ./veclayer.toml
+- [x] **SRP-Refactoring:**
+  - mcp/mod.rs (1076 Zeilen) aufgeteilt in types, tools, stdio, http
+  - AccessProfile in eigenes Modul (access_profile.rs)
+  - SearchConfig::for_query() + blend_score() dedupliziert
+  - Formatierungslogik aus main.rs nach commands.rs extrahiert
 
 ### Phase 2 -- Perspektiven + Relationen
 

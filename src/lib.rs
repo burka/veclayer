@@ -10,6 +10,7 @@ pub mod error;
 pub mod macros;
 pub mod mcp;
 pub mod parser;
+pub mod perspective;
 pub mod search;
 pub mod store;
 #[cfg(feature = "llm")]

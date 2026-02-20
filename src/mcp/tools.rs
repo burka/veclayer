@@ -15,7 +15,8 @@ pub async fn execute_recall(
     embedder: &Arc<FastEmbedder>,
     input: RecallInput,
 ) -> Result<Vec<SearchResultResponse>> {
-    let config = SearchConfig::for_query(input.limit, input.deep, input.recency.as_deref());
+    let config = SearchConfig::for_query(input.limit, input.deep, input.recency.as_deref())
+        .with_perspective(input.perspective);
 
     let search =
         HierarchicalSearch::new(Arc::clone(store), Arc::clone(embedder)).with_config(config);
@@ -144,6 +145,7 @@ pub async fn execute_store(
         cluster_memberships: vec![],
         entry_type: crate::chunk::EntryType::Raw,
         summarizes: vec![],
+        perspectives: input.perspectives,
         visibility: input.visibility,
         relations: vec![],
         access_profile: crate::AccessProfile::new(),

@@ -19,6 +19,9 @@ pub struct RecallInput {
     /// Recency window for relevancy boosting: "24h", "7d", "30d"
     #[serde(default)]
     pub recency: Option<String>,
+    /// Filter by perspective (e.g. "decisions", "learnings")
+    #[serde(default)]
+    pub perspective: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -56,6 +59,9 @@ pub struct StoreInput {
     /// Visibility: always, normal, deep_only (default: normal)
     #[serde(default = "default_visibility")]
     pub visibility: String,
+    /// Perspectives to tag this entry with
+    #[serde(default)]
+    pub perspectives: Vec<String>,
 }
 
 fn default_agent_source() -> String {
@@ -134,6 +140,8 @@ pub struct ChunkResponse {
     pub heading: Option<String>,
     pub parent_id: Option<String>,
     pub visibility: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub perspectives: Vec<String>,
     pub access: AccessProfileResponse,
 }
 
@@ -149,6 +157,7 @@ impl From<&crate::HierarchicalChunk> for ChunkResponse {
             heading: chunk.heading.clone(),
             parent_id: chunk.parent_id.clone(),
             visibility: chunk.visibility.clone(),
+            perspectives: chunk.perspectives.clone(),
             access: AccessProfileResponse {
                 hour: chunk.access_profile.hour,
                 day: chunk.access_profile.day,

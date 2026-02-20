@@ -207,7 +207,8 @@ fn tool_list() -> serde_json::Value {
                         "query": { "type": "string", "description": "What to search for" },
                         "limit": { "type": "integer", "default": 5 },
                         "deep": { "type": "boolean", "default": false },
-                        "recency": { "type": "string", "description": "Recency boost: 24h, 7d, 30d" }
+                        "recency": { "type": "string", "description": "Recency boost: 24h, 7d, 30d" },
+                        "perspective": { "type": "string", "description": "Filter by perspective: intentions, people, temporal, knowledge, decisions, learnings" }
                     },
                     "required": ["query"]
                 }
@@ -235,7 +236,8 @@ fn tool_list() -> serde_json::Value {
                         "parent_id": { "type": "string" },
                         "source_file": { "type": "string", "default": "[agent]" },
                         "heading": { "type": "string" },
-                        "visibility": { "type": "string", "default": "normal" }
+                        "visibility": { "type": "string", "default": "normal" },
+                        "perspectives": { "type": "array", "items": { "type": "string" }, "description": "Perspectives: intentions, people, temporal, knowledge, decisions, learnings" }
                     },
                     "required": ["content"]
                 }
