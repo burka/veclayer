@@ -135,10 +135,7 @@ pub async fn execute<L: LlmProvider>(
 
     // 3. Call LLM
     let response = llm
-        .complete(&[
-            Message::system(THINK_SYSTEM_PROMPT),
-            Message::user(prompt),
-        ])
+        .complete(&[Message::system(THINK_SYSTEM_PROMPT), Message::user(prompt)])
         .await?;
 
     // 4. Parse response
@@ -185,10 +182,8 @@ pub async fn execute<L: LlmProvider>(
             continue;
         }
 
-        let relations: Vec<ChunkRelation> = valid_ids
-            .iter()
-            .map(|id| ChunkRelation::summarized_by(id))
-            .collect();
+        let relations: Vec<ChunkRelation> =
+            valid_ids.iter().map(ChunkRelation::summarized_by).collect();
 
         let id = write_entry(
             store,

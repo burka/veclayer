@@ -97,7 +97,11 @@ impl FileConfig {
             Ok(contents) => match toml::from_str(&contents) {
                 Ok(config) => config,
                 Err(e) => {
-                    warn!("Malformed config file {}: {} — using defaults", path.display(), e);
+                    warn!(
+                        "Malformed config file {}: {} — using defaults",
+                        path.display(),
+                        e
+                    );
                     Self::default()
                 }
             },
@@ -163,11 +167,7 @@ impl Config {
                 .unwrap_or_else(|| DEFAULT_DATA_DIR.to_string()),
         );
 
-        let host = env_or(
-            "VECLAYER_HOST",
-            file.host,
-            DEFAULT_HOST.to_string(),
-        );
+        let host = env_or("VECLAYER_HOST", file.host, DEFAULT_HOST.to_string());
 
         let port = env_parse("VECLAYER_PORT")
             .or(file.port)
@@ -347,9 +347,7 @@ fn env_parse<T: std::str::FromStr>(key: &str) -> Option<T> {
 
 /// Parse env var as boolean ("true"/"1" = true, anything else = false).
 fn env_bool(key: &str) -> Option<bool> {
-    std::env::var(key)
-        .ok()
-        .map(|v| v == "true" || v == "1")
+    std::env::var(key).ok().map(|v| v == "true" || v == "1")
 }
 
 #[cfg(test)]
@@ -459,10 +457,18 @@ base_url = "http://gpu:11434"
     #[test]
     fn test_env_or_helper() {
         // With no env var set for this unique key, should use file_val or default
-        let result = env_or("VECLAYER_TEST_NONEXISTENT_KEY_12345", Some("file".to_string()), "default".to_string());
+        let result = env_or(
+            "VECLAYER_TEST_NONEXISTENT_KEY_12345",
+            Some("file".to_string()),
+            "default".to_string(),
+        );
         assert_eq!(result, "file");
 
-        let result2 = env_or("VECLAYER_TEST_NONEXISTENT_KEY_12345", None, "default".to_string());
+        let result2 = env_or(
+            "VECLAYER_TEST_NONEXISTENT_KEY_12345",
+            None,
+            "default".to_string(),
+        );
         assert_eq!(result2, "default");
     }
 

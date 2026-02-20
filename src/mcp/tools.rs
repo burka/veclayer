@@ -30,24 +30,17 @@ async fn store_single_entry(
 ) -> Result<String> {
     let parent_id = input.parent_id.as_deref().filter(|s| !s.is_empty());
 
-    let level = if let Some(pid) = parent_id {
+    let (level, path) = if let Some(pid) = parent_id {
         if let Ok(Some(parent)) = store.get_by_id(pid).await {
-            crate::chunk::ChunkLevel(parent.level.0 + 1)
+            (
+                crate::chunk::ChunkLevel(parent.level.0 + 1),
+                format!("{}/agent", parent.path),
+            )
         } else {
-            crate::chunk::ChunkLevel(7)
+            (crate::chunk::ChunkLevel(7), input.source_file.clone())
         }
     } else {
-        crate::chunk::ChunkLevel(1)
-    };
-
-    let path = if let Some(pid) = parent_id {
-        if let Ok(Some(parent)) = store.get_by_id(pid).await {
-            format!("{}/agent", parent.path)
-        } else {
-            input.source_file.clone()
-        }
-    } else {
-        input.source_file.clone()
+        (crate::chunk::ChunkLevel(1), input.source_file.clone())
     };
 
     let embeddings = embedder.embed(&[input.content.as_str()])?;
@@ -59,10 +52,16 @@ async fn store_single_entry(
     let chunk_id = crate::chunk::content_hash(&input.content);
 
     let entry_type = match input.entry_type.as_deref() {
+        None | Some("raw") => crate::chunk::EntryType::Raw,
         Some("summary") => crate::chunk::EntryType::Summary,
         Some("meta") => crate::chunk::EntryType::Meta,
         Some("impression") => crate::chunk::EntryType::Impression,
-        _ => crate::chunk::EntryType::Raw,
+        Some(unknown) => {
+            return Err(crate::Error::config(format!(
+                "Unknown entry_type: '{}'. Valid: raw, summary, meta, impression",
+                unknown
+            )))
+        }
     };
 
     let chunk = crate::HierarchicalChunk {

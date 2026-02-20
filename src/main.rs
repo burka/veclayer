@@ -239,7 +239,13 @@ enum CompactActionCmd {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let is_mcp_stdio = matches!(&cli.command, Some(Commands::Serve { mcp_stdio: true, .. }));
+    let is_mcp_stdio = matches!(
+        &cli.command,
+        Some(Commands::Serve {
+            mcp_stdio: true,
+            ..
+        })
+    );
 
     init_logging(cli.verbose, is_mcp_stdio);
 
@@ -360,7 +366,6 @@ async fn main() -> Result<()> {
                     CompactOptions {
                         limit,
                         archive_threshold: threshold,
-                        ..Default::default()
                     },
                 ),
             };
@@ -393,7 +398,9 @@ fn init_logging(verbose: bool, use_stderr: bool) {
         EnvFilter::new(Level::INFO.to_string())
     };
 
-    let builder = tracing_subscriber::fmt().with_env_filter(filter).with_target(false);
+    let builder = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false);
 
     if use_stderr {
         builder.with_writer(std::io::stderr).init();

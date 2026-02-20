@@ -3,8 +3,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{
-    Array, BooleanArray, FixedSizeListArray, Float32Array, Int64Array, RecordBatch,
-    RecordBatchIterator, StringArray, UInt16Array, UInt32Array, UInt8Array,
+    Array, FixedSizeListArray, Float32Array, Int64Array, RecordBatch, RecordBatchIterator,
+    StringArray, UInt16Array, UInt32Array, UInt8Array,
 };
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
@@ -16,27 +16,20 @@ use crate::{ChunkLevel, ClusterMembership, Error, HierarchicalChunk, Result};
 
 const TABLE_NAME: &str = "chunks";
 
-/// Escape a string for use in LanceDB DataFusion SQL filter expressions.
-/// LanceDB's `only_if()` uses DataFusion SQL syntax where single quotes
-/// are escaped by doubling them.
 fn sql_escape(s: &str) -> String {
     s.replace('\'', "''")
 }
 
-/// Build an equality filter: `column = 'escaped_value'`
 fn eq_filter(column: &str, value: &str) -> String {
     format!("{} = '{}'", column, sql_escape(value))
 }
 
-/// LanceDB-based vector store implementation.
-/// Stores all data in a local directory, no external services needed.
 pub struct LanceStore {
     connection: Connection,
     dimension: usize,
 }
 
 impl LanceStore {
-    /// Open or create a LanceDB store at the given path
     pub async fn open(path: impl AsRef<Path>, dimension: usize) -> Result<Self> {
         let path = path.as_ref();
         std::fs::create_dir_all(path)?;
@@ -52,15 +45,11 @@ impl LanceStore {
             dimension,
         };
 
-        // Ensure table exists
         store.ensure_table().await?;
 
         Ok(store)
     }
 
-    /// Open a store for metadata-only operations (stats, sources).
-    /// Does not require an embedder — uses a placeholder dimension.
-    /// The table must already exist or will be created with a placeholder schema.
     pub async fn open_metadata(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         std::fs::create_dir_all(path)?;
@@ -73,7 +62,7 @@ impl LanceStore {
 
         let store = Self {
             connection,
-            dimension: 384, // placeholder — not used for reads
+            dimension: 384,
         };
 
         store.ensure_table().await?;
@@ -98,14 +87,12 @@ impl LanceStore {
             Field::new("path", DataType::Utf8, false),
             Field::new("source_file", DataType::Utf8, false),
             Field::new("heading", DataType::Utf8, true),
-            // RAPTOR-style clustering fields
-            Field::new("cluster_memberships", DataType::Utf8, false), // JSON array
+            Field::new("cluster_memberships", DataType::Utf8, false),
             Field::new("entry_type", DataType::Utf8, false),
-            Field::new("summarizes", DataType::Utf8, false), // JSON array of chunk IDs
-            Field::new("perspectives", DataType::Utf8, false), // JSON array of perspective IDs
-            // Identity & memory fields
+            Field::new("summarizes", DataType::Utf8, false),
+            Field::new("perspectives", DataType::Utf8, false),
             Field::new("visibility", DataType::Utf8, false),
-            Field::new("relations", DataType::Utf8, false), // JSON array
+            Field::new("relations", DataType::Utf8, false),
             Field::new("created_at", DataType::Int64, false),
             Field::new("last_rolled", DataType::Int64, false),
             Field::new("access_hour", DataType::UInt16, false),
@@ -127,7 +114,6 @@ impl LanceStore {
             .map_err(|e| Error::store(format!("Failed to list tables: {}", e)))?;
 
         if !tables.contains(&TABLE_NAME.to_string()) {
-            // Create empty table with schema
             let schema = self.schema();
 
             self.connection
@@ -157,7 +143,6 @@ impl LanceStore {
         let source_files: Vec<&str> = chunks.iter().map(|c| c.source_file.as_str()).collect();
         let headings: Vec<Option<&str>> = chunks.iter().map(|c| c.heading.as_deref()).collect();
 
-        // Serialize JSON fields — propagate errors instead of silently defaulting.
         let cluster_memberships: Vec<String> = chunks
             .iter()
             .map(|c| {
@@ -181,7 +166,6 @@ impl LanceStore {
             })
             .collect::<Result<_>>()?;
 
-        // Identity & memory fields
         let visibility: Vec<String> = chunks.iter().map(|c| c.visibility.clone()).collect();
         let relations: Vec<String> = chunks
             .iter()
@@ -203,7 +187,6 @@ impl LanceStore {
         let access_total: Vec<u32> = chunks.iter().map(|c| c.access_profile.total).collect();
         let expires_at: Vec<Option<i64>> = chunks.iter().map(|c| c.expires_at).collect();
 
-        // Build embeddings as FixedSizeList
         let mut embedding_values: Vec<f32> = Vec::with_capacity(chunks.len() * self.dimension);
         for chunk in chunks {
             if let Some(ref emb) = chunk.embedding {
@@ -278,7 +261,6 @@ impl LanceStore {
         let source_files = Self::extract_column::<StringArray>(batch, 6, "source_file")?;
         let headings = Self::extract_column::<StringArray>(batch, 7, "heading")?;
 
-        // RAPTOR fields (optional for backwards compatibility)
         let cluster_memberships_col = batch
             .column_by_name("cluster_memberships")
             .and_then(|c| c.as_any().downcast_ref::<StringArray>());
@@ -292,7 +274,6 @@ impl LanceStore {
             .column_by_name("perspectives")
             .and_then(|c| c.as_any().downcast_ref::<StringArray>());
 
-        // Identity & memory fields (optional for backwards compatibility)
         let visibility_col = batch
             .column_by_name("visibility")
             .and_then(|c| c.as_any().downcast_ref::<StringArray>());
@@ -302,7 +283,6 @@ impl LanceStore {
         let created_at_col = batch
             .column_by_name("created_at")
             .and_then(|c| c.as_any().downcast_ref::<Int64Array>());
-        // New RRD bucket columns
         let last_rolled_col = batch
             .column_by_name("last_rolled")
             .and_then(|c| c.as_any().downcast_ref::<Int64Array>());
@@ -324,7 +304,6 @@ impl LanceStore {
         let access_total_col = batch
             .column_by_name("access_total")
             .and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
-        // Legacy columns for backward compatibility
         let legacy_last_accessed_col = batch
             .column_by_name("last_accessed")
             .and_then(|c| c.as_any().downcast_ref::<Int64Array>());
@@ -347,7 +326,6 @@ impl LanceStore {
                 .map(|j| embedding_values.value(j))
                 .collect();
 
-            // Parse cluster memberships from JSON
             let cluster_memberships: Vec<ClusterMembership> = cluster_memberships_col
                 .and_then(|col| {
                     if col.is_null(i) {
@@ -358,7 +336,6 @@ impl LanceStore {
                 })
                 .unwrap_or_default();
 
-            // Parse entry_type
             let entry_type = entry_type_col
                 .and_then(|col| {
                     if col.is_null(i) {
@@ -374,7 +351,6 @@ impl LanceStore {
                 })
                 .unwrap_or(crate::chunk::EntryType::Raw);
 
-            // Parse summarizes from JSON
             let summarizes: Vec<String> = summarizes_col
                 .and_then(|col| {
                     if col.is_null(i) {
@@ -385,7 +361,6 @@ impl LanceStore {
                 })
                 .unwrap_or_default();
 
-            // Parse perspectives from JSON
             let perspectives: Vec<String> = perspectives_col
                 .and_then(|col| {
                     if col.is_null(i) {
@@ -396,7 +371,6 @@ impl LanceStore {
                 })
                 .unwrap_or_default();
 
-            // Parse identity & memory fields
             let visibility: String = visibility_col
                 .and_then(|col| {
                     if col.is_null(i) {
@@ -418,7 +392,6 @@ impl LanceStore {
                 .unwrap_or_default();
 
             let access_profile = if access_hour_col.is_some() {
-                // New RRD schema
                 crate::chunk::AccessProfile {
                     created_at: created_at_col.map(|col| col.value(i)).unwrap_or(0),
                     last_rolled: last_rolled_col.map(|col| col.value(i)).unwrap_or(0),
@@ -430,7 +403,6 @@ impl LanceStore {
                     total: access_total_col.map(|col| col.value(i)).unwrap_or(0),
                 }
             } else {
-                // Legacy schema: migrate old fields
                 let created_at = created_at_col.map(|col| col.value(i)).unwrap_or(0);
                 let last_accessed = legacy_last_accessed_col
                     .map(|col| col.value(i))
@@ -540,16 +512,13 @@ impl VectorStore for LanceStore {
 
         let mut search_results = Vec::new();
         for batch in results {
-            // Get distance column if present
             let distances: Option<&Float32Array> = batch
                 .column_by_name("_distance")
                 .and_then(|c| c.as_any().downcast_ref());
 
             let chunks = self.batch_to_chunks(&batch)?;
             for (i, chunk) in chunks.into_iter().enumerate() {
-                let score = distances
-                    .map(|d| 1.0 - d.value(i)) // Convert distance to similarity
-                    .unwrap_or(1.0);
+                let score = distances.map(|d| 1.0 - d.value(i)).unwrap_or(1.0);
                 search_results.push(SearchResult { chunk, score });
             }
         }
@@ -624,7 +593,6 @@ impl VectorStore for LanceStore {
     async fn delete_by_source(&self, source_file: &str) -> Result<usize> {
         let table = self.get_table().await?;
 
-        // Get count before delete
         let before = self.get_by_source(source_file).await?.len();
 
         table
@@ -722,7 +690,6 @@ impl VectorStore for LanceStore {
     }
 
     async fn add_relation(&self, chunk_id: &str, relation: crate::ChunkRelation) -> Result<()> {
-        // Read current chunk to get existing relations
         let chunk = self
             .get_by_id(chunk_id)
             .await?
@@ -757,9 +724,6 @@ impl VectorStore for LanceStore {
         let table = self.get_table().await?;
         let query_vec: Vec<f32> = query_embedding.to_vec();
 
-        // Filter: perspectives JSON array contains the given perspective string.
-        // The JSON is stored as e.g. '["decisions","learnings"]', so we match
-        // the quoted value within the array.
         let escaped = sql_escape(perspective);
         let filter = format!("perspectives LIKE '%\"{}%'", escaped);
 
@@ -797,8 +761,6 @@ impl VectorStore for LanceStore {
     async fn get_hot_chunks(&self, limit: usize) -> Result<Vec<HierarchicalChunk>> {
         let table = self.get_table().await?;
 
-        // Query all chunks, we'll sort by access_total in memory
-        // (LanceDB doesn't support ORDER BY on non-vector columns directly)
         let results = table
             .query()
             .only_if("access_total > 0")
@@ -815,7 +777,6 @@ impl VectorStore for LanceStore {
             all_chunks.append(&mut chunks);
         }
 
-        // Sort by total desc, then by hour desc (most recently active first)
         all_chunks.sort_by(|a, b| {
             b.access_profile
                 .total
@@ -837,7 +798,6 @@ impl VectorStore for LanceStore {
 
         let table = self.get_table().await?;
 
-        // Get chunks where last_rolled is before the cutoff and all recent buckets are 0
         let filter = format!(
             "last_rolled < {} AND access_hour = 0 AND access_day = 0 AND access_week = 0 AND (visibility = 'normal' OR visibility = 'always')",
             cutoff
@@ -859,7 +819,6 @@ impl VectorStore for LanceStore {
             all_chunks.append(&mut chunks);
         }
 
-        // Sort by last_rolled ascending (stalest first)
         all_chunks.sort_by_key(|c| c.access_profile.last_rolled);
 
         all_chunks.truncate(limit);
@@ -905,7 +864,6 @@ impl VectorStore for LanceStore {
             all_chunks.extend(self.batch_to_chunks(&batch)?);
         }
 
-        // Sort by created_at desc (newest first)
         all_chunks.sort_by(|a, b| {
             b.access_profile
                 .created_at
@@ -1226,7 +1184,7 @@ mod tests {
         let (store, _temp) = create_test_store().await;
 
         let mut chunk = create_test_chunk("dim-test", "Wrong dimension", ChunkLevel::H1);
-        chunk.embedding = Some(vec![0.1; 256]); // Wrong dimension
+        chunk.embedding = Some(vec![0.1; 256]);
 
         let result = store.insert_chunks(vec![chunk]).await;
         assert!(result.is_err());
@@ -1243,8 +1201,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // --- Tests for new VectorStore methods ---
-
     #[tokio::test]
     async fn test_update_visibility() {
         let (store, _temp) = create_test_store().await;
@@ -1252,16 +1208,13 @@ mod tests {
         let chunk = create_test_chunk("vis-1", "Visibility test", ChunkLevel::H1);
         store.insert_chunks(vec![chunk]).await.unwrap();
 
-        // Default visibility should be "normal"
         let before = store.get_by_id("vis-1").await.unwrap().unwrap();
         assert_eq!(before.visibility, "normal");
 
-        // Promote to "always"
         store.update_visibility("vis-1", "always").await.unwrap();
         let after = store.get_by_id("vis-1").await.unwrap().unwrap();
         assert_eq!(after.visibility, "always");
 
-        // Demote to "deep_only"
         store.update_visibility("vis-1", "deep_only").await.unwrap();
         let after2 = store.get_by_id("vis-1").await.unwrap().unwrap();
         assert_eq!(after2.visibility, "deep_only");
@@ -1287,7 +1240,6 @@ mod tests {
         let chunk2 = create_test_chunk("rel-2", "Target chunk", ChunkLevel::H1);
         store.insert_chunks(vec![chunk1, chunk2]).await.unwrap();
 
-        // Add a relation
         let relation = crate::ChunkRelation::superseded_by("rel-2");
         store.add_relation("rel-1", relation).await.unwrap();
 
@@ -1337,7 +1289,6 @@ mod tests {
         assert_eq!(before.access_profile.total, 0);
         assert_eq!(before.access_profile.hour, 0);
 
-        // Simulate a recorded access
         let mut profile = before.access_profile.clone();
         profile.hour = 3;
         profile.total = 3;
@@ -1357,7 +1308,6 @@ mod tests {
     async fn test_update_access_profiles_empty() {
         let (store, _temp) = create_test_store().await;
 
-        // Empty updates should be a no-op
         let result = store.update_access_profiles(vec![]).await;
         assert!(result.is_ok());
     }
@@ -1420,13 +1370,11 @@ mod tests {
         let chunk = create_test_chunk("sqli-vis", "SQL injection test", ChunkLevel::H1);
         store.insert_chunks(vec![chunk]).await.unwrap();
 
-        // Attempt SQL injection via visibility value
         store
             .update_visibility("sqli-vis", "'; DROP TABLE chunks; --")
             .await
             .unwrap();
 
-        // Table should still work
         let after = store.get_by_id("sqli-vis").await.unwrap().unwrap();
         assert!(after.visibility.contains("DROP TABLE"));
     }
@@ -1460,9 +1408,8 @@ mod tests {
             .unwrap();
 
         let hot = store.get_hot_chunks(10).await.unwrap();
-        // chunk3 (total=0) should be excluded
         assert_eq!(hot.len(), 2);
-        assert_eq!(hot[0].id, "hot-2"); // highest total first
+        assert_eq!(hot[0].id, "hot-2");
         assert_eq!(hot[1].id, "hot-1");
     }
 
@@ -1502,15 +1449,13 @@ mod tests {
 
         let now = crate::chunk::now_epoch_secs();
 
-        // Active chunk: recent last_rolled, has hour accesses
         let mut active = create_test_chunk("active", "Active chunk", ChunkLevel::H1);
         active.access_profile.last_rolled = now;
         active.access_profile.hour = 3;
         active.access_profile.total = 3;
 
-        // Stale chunk: old last_rolled, no recent buckets
         let mut stale = create_test_chunk("stale", "Stale chunk", ChunkLevel::H1);
-        stale.access_profile.last_rolled = now - 90 * 86_400; // 90 days ago
+        stale.access_profile.last_rolled = now - 90 * 86_400;
         stale.access_profile.hour = 0;
         stale.access_profile.day = 0;
         stale.access_profile.week = 0;
@@ -1529,7 +1474,6 @@ mod tests {
 
         let now = crate::chunk::now_epoch_secs();
 
-        // Already deep_only — should not be returned as candidate
         let mut chunk = create_test_chunk("deep", "Already archived", ChunkLevel::H1);
         chunk.visibility = "deep_only".to_string();
         chunk.access_profile.last_rolled = now - 90 * 86_400;
@@ -1541,5 +1485,108 @@ mod tests {
 
         let result = store.get_stale_chunks(30 * 86_400, 10).await.unwrap();
         assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_entries_empty() {
+        let (store, _temp) = create_test_store().await;
+
+        let result = store.list_entries(None, None, None, 10).await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_entries_sorted_newest_first() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk1 = create_test_chunk("list-1", "First", ChunkLevel::H1);
+        chunk1.access_profile.created_at = 1000;
+
+        let mut chunk2 = create_test_chunk("list-2", "Second", ChunkLevel::H1);
+        chunk2.access_profile.created_at = 2000;
+
+        let mut chunk3 = create_test_chunk("list-3", "Third", ChunkLevel::H1);
+        chunk3.access_profile.created_at = 3000;
+
+        store
+            .insert_chunks(vec![chunk1, chunk2, chunk3])
+            .await
+            .unwrap();
+
+        let result = store.list_entries(None, None, None, 10).await.unwrap();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].id, "list-3");
+        assert_eq!(result[1].id, "list-2");
+        assert_eq!(result[2].id, "list-1");
+    }
+
+    #[tokio::test]
+    async fn test_list_entries_with_perspective_filter() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk1 = create_test_chunk("lp-1", "Decisions", ChunkLevel::H1);
+        chunk1.perspectives = vec!["decisions".to_string()];
+
+        let mut chunk2 = create_test_chunk("lp-2", "Knowledge", ChunkLevel::H1);
+        chunk2.perspectives = vec!["knowledge".to_string()];
+
+        store.insert_chunks(vec![chunk1, chunk2]).await.unwrap();
+
+        let result = store
+            .list_entries(Some("decisions"), None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "lp-1");
+    }
+
+    #[tokio::test]
+    async fn test_list_entries_with_time_range() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk1 = create_test_chunk("lt-1", "First", ChunkLevel::H1);
+        chunk1.access_profile.created_at = 1000;
+
+        let mut chunk2 = create_test_chunk("lt-2", "Second", ChunkLevel::H1);
+        chunk2.access_profile.created_at = 2000;
+
+        let mut chunk3 = create_test_chunk("lt-3", "Third", ChunkLevel::H1);
+        chunk3.access_profile.created_at = 3000;
+
+        store
+            .insert_chunks(vec![chunk1, chunk2, chunk3])
+            .await
+            .unwrap();
+
+        let result = store
+            .list_entries(None, Some(1500), Some(2500), 10)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "lt-2");
+    }
+
+    #[tokio::test]
+    async fn test_list_entries_limit() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk1 = create_test_chunk("ll-1", "First", ChunkLevel::H1);
+        chunk1.access_profile.created_at = 1000;
+
+        let mut chunk2 = create_test_chunk("ll-2", "Second", ChunkLevel::H1);
+        chunk2.access_profile.created_at = 2000;
+
+        let mut chunk3 = create_test_chunk("ll-3", "Third", ChunkLevel::H1);
+        chunk3.access_profile.created_at = 3000;
+
+        store
+            .insert_chunks(vec![chunk1, chunk2, chunk3])
+            .await
+            .unwrap();
+
+        let result = store.list_entries(None, None, None, 2).await.unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].id, "ll-3");
+        assert_eq!(result[1].id, "ll-2");
     }
 }

@@ -182,7 +182,10 @@ pub fn validate_ids(data_dir: &Path, ids: &[String]) -> crate::Result<()> {
             return Err(crate::Error::config(format!(
                 "Unknown perspective '{}'. Available: {}",
                 id,
-                all.iter().map(|p| p.id.as_str()).collect::<Vec<_>>().join(", ")
+                all.iter()
+                    .map(|p| p.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )));
         }
     }

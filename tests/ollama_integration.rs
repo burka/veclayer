@@ -217,7 +217,7 @@ async fn test_cluster_pipeline_with_ollama() {
     );
     for summary in &summary_chunks {
         println!("Summary: {}", summary.content);
-        assert!(summary.is_summary);
+        assert!(summary.is_summary());
         assert!(!summary.summarizes.is_empty());
         assert!(summary.embedding.is_some(), "Summary should have embedding");
     }
@@ -362,6 +362,11 @@ Reference counting handles most cleanup.
         summarize: true,
         model: "tinyllama".to_string(),
         visibility: None,
+        entry_type: "raw".to_string(),
+        perspectives: vec![],
+        summarizes: None,
+        supersedes: None,
+        version_of: None,
     };
 
     let result = ingest(&data_dir, &docs_dir, &options).await;
@@ -370,7 +375,7 @@ Reference counting handles most cleanup.
     let ingest_result = result.unwrap();
     println!(
         "Ingested {} chunks from {} files",
-        ingest_result.total_chunks, ingest_result.files_processed
+        ingest_result.total_entries, ingest_result.files_processed
     );
 
     // Verify store has chunks and summaries

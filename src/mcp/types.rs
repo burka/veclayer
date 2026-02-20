@@ -235,7 +235,7 @@ pub fn relevance_tier(score: f32) -> &'static str {
 pub struct SearchResultResponse {
     pub chunk: ChunkResponse,
     pub score: f32,
-    /// Relevance tier: "strong" (>0.45), "moderate" (>0.30), "weak" (>0.15), "tangential" (<=0.15)
+    /// Relevance tier: "strong" (>0.45), "moderate" (>0.30), "weak" (>0.15), "tangential" (<=0.15), "browse" (no query)
     pub relevance: String,
     pub hierarchy_path: Vec<ChunkResponse>,
     pub children: Vec<ChunkResponse>,

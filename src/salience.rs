@@ -71,7 +71,10 @@ pub fn compute(chunk: &HierarchicalChunk, weights: &SalienceWeights) -> Salience
 }
 
 /// Compute salience for a batch of chunks.
-pub fn compute_batch(chunks: &[HierarchicalChunk], weights: &SalienceWeights) -> Vec<SalienceScore> {
+pub fn compute_batch(
+    chunks: &[HierarchicalChunk],
+    weights: &SalienceWeights,
+) -> Vec<SalienceScore> {
     chunks.iter().map(|c| compute(c, weights)).collect()
 }
 
@@ -182,7 +185,9 @@ mod tests {
     fn test_salience_revision_saturates() {
         let mut chunk = test_chunk("many relations");
         for i in 0..20 {
-            chunk.relations.push(ChunkRelation::related_to(format!("r{}", i)));
+            chunk
+                .relations
+                .push(ChunkRelation::related_to(format!("r{}", i)));
         }
         let score = compute(&chunk, &SalienceWeights::default());
         // tanh(20/5) ≈ 1.0
