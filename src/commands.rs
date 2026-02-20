@@ -102,6 +102,8 @@ pub struct AddOptions {
     pub impression_hint: Option<String>,
     /// Impression strength: 0.0–1.0 (default 1.0)
     pub impression_strength: f32,
+    /// Universal references: "target_id:kind" (e.g., "abc123:related_to", "def456:summarizes")
+    pub references: Vec<String>,
 }
 
 /// Backwards-compatible alias
@@ -125,6 +127,7 @@ impl Default for AddOptions {
             derived_from: None,
             impression_hint: None,
             impression_strength: 1.0,
+            references: Vec::new(),
         }
     }
 }
@@ -510,6 +513,20 @@ async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<A
         chunk
             .relations
             .push(crate::ChunkRelation::new("derived_from", target));
+    }
+
+    // Add universal references
+    for rel in parse_references(&options.references) {
+        chunk.relations.push(rel);
+    }
+
+    for rel_str in &options.references {
+        if let Some(target) = extract_supersede_target(rel_str) {
+            info!("Auto-demoting superseded entry: {}", target);
+            store
+                .update_visibility(&target, crate::visibility::EXPIRING)
+                .await?;
+        }
     }
 
     let embeddings = embedder.embed(&[text])?;
@@ -1701,6 +1718,26 @@ async fn resolve_entry(store: &LanceStore, id: &str) -> Result<crate::Hierarchic
     crate::resolve::resolve_entry(store, id).await
 }
 
+fn parse_references(refs: &[String]) -> Vec<crate::ChunkRelation> {
+    let mut relations = Vec::new();
+    for s in refs {
+        let parts: Vec<&str> = s.split(':').collect();
+        if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+            relations.push(crate::ChunkRelation::new(parts[1], parts[0]));
+        }
+    }
+    relations
+}
+
+fn extract_supersede_target(s: &str) -> Option<String> {
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() == 3 && parts[1] == "supersedes" && !parts[2].is_empty() {
+        Some(parts[2].to_string())
+    } else {
+        None
+    }
+}
+
 /// Collect files from a path, optionally recursively.
 pub fn collect_files(
     path: &Path,
@@ -1869,6 +1906,74 @@ mod tests {
         assert_eq!(files_recursive.len(), 2);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_references_parsing() {
+        let refs = parse_references(&vec![String::from("abc123:related_to")]);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].target_id, "abc123");
+        assert_eq!(refs[0].kind, "related_to");
+    }
+
+    #[test]
+    fn test_references_parsing_multiple() {
+        let refs = parse_references(&vec![
+            String::from("abc123:related_to"),
+            String::from("def456:supersedes"),
+            String::from("ghi789:derived_from"),
+        ]);
+        assert_eq!(refs.len(), 3);
+        assert_eq!(refs[0].target_id, "abc123");
+        assert_eq!(refs[0].kind, "related_to");
+        assert_eq!(refs[1].target_id, "def456");
+        assert_eq!(refs[1].kind, "supersedes");
+        assert_eq!(refs[2].target_id, "ghi789");
+        assert_eq!(refs[2].kind, "derived_from");
+    }
+
+    #[test]
+    fn test_references_parsing_empty() {
+        let refs = parse_references(&vec![]);
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn test_references_parsing_missing_colon() {
+        let refs = parse_references(&vec![String::from("abc123")]);
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn test_references_parsing_empty_id() {
+        let refs = parse_references(&vec![String::from(":related_to")]);
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn test_references_parsing_empty_kind() {
+        let refs = parse_references(&vec![String::from("abc123:")]);
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn test_supersedes_extracts_target_from_target_supersedes_format() {
+        assert_eq!(extract_supersede_target("new-id:supersedes:old-id"), Some("old-id".to_string()));
+    }
+
+    #[test]
+    fn test_supersedes_extracts_none_when_no_colons() {
+        assert_eq!(extract_supersede_target("abc123"), None);
+    }
+
+    #[test]
+    fn test_supersedes_extracts_none_when_wrong_format() {
+        assert_eq!(extract_supersede_target("abc123:related_to"), None);
+    }
+
+    #[test]
+    fn test_supersedes_extracts_none_when_last_empty() {
+        assert_eq!(extract_supersede_target("new-id:supersedes:"), None);
     }
 
     #[test]
