@@ -27,9 +27,10 @@ access tracking. Knowledge that you use often stays prominent. Knowledge you ign
 ## Five Tools
 
 ### recall — What do I know about this?
-Find relevant knowledge using semantic search. Results come with access profiles showing how \
-often each piece was accessed. Use `deep: true` to include archived knowledge. Use `recency` \
-to boost recently accessed memories.
+Find relevant knowledge using semantic search, or browse without a query. Results include \
+a relevance tier. Use `since`/`until` for temporal filtering. Results come with access profiles \
+showing how often each piece was accessed. Use `deep: true` to include archived knowledge. \
+Use `recency` to boost recently accessed memories.
 
 ### focus — Tell me more about this specific point.
 Dive deeper into a specific memory node. Returns the node itself plus its children, optionally \
@@ -37,9 +38,10 @@ reranked by a question lens. Pass a `question` to surface the most relevant chil
 angle — 'How was this decided?' yields different details than 'Who was involved?'
 
 ### store — I want to remember this.
-Write new knowledge directly. Use this for observations, summaries, decisions, reflections — \
-anything you want to persist. The server generates embeddings automatically. Use `parent_id` \
-to place it in the hierarchy.
+Write new knowledge directly. Supports `relations` for atomic link creation (e.g. \
+`relations: [{kind: \"supersedes\", target_id: \"...\"}]`), `entry_type` for classification \
+(raw/summary/meta/impression), and `items` for batch storage. \
+The server generates embeddings automatically. Use `parent_id` to place it in the hierarchy.
 
 ### think — Let me reflect and curate.
 Your curation hub. Without an action, returns a reflection report: hot chunks, stale chunks, \
@@ -69,6 +71,20 @@ hot, what's stale, what needs promoting or archiving. Write summaries of related
 3. Synthesize a summary
 4. `store` it with `parent_id` to place in hierarchy
 5. `think(action='relate', kind='summarized_by')` to link children to the summary
+
+## Session Pattern
+
+Track work sessions using existing primitives:
+
+1. **Start:** `store(content=\"Session started: <context>\", heading=\"Session: <date>\", \
+perspectives=[\"session\"], entry_type=\"meta\")`
+2. **During:** Use the session entry's ID as `parent_id` for entries created during the session
+3. **End:** `store(content=\"Summary: ...\", parent_id=<session_id>, \
+perspectives=[\"session\", \"knowledge\"])` — then `recall(perspective=\"session\")` to \
+review session history
+
+Use `recall(since=\"<today>\")` to see everything stored today. Use `recall(perspective=\"session\")` \
+to find past sessions.
 
 You are the curator of your own memory. Use these tools to build a knowledge base that reflects \
 what matters to you.";

@@ -10,32 +10,185 @@ use crate::{Embedder, Result, VectorStore};
 
 use super::types::*;
 
+/// Internal struct carrying all fields needed to store a single entry.
+struct StoreSingleInput {
+    content: String,
+    parent_id: Option<String>,
+    source_file: String,
+    heading: Option<String>,
+    visibility: String,
+    perspectives: Vec<String>,
+    entry_type: Option<String>,
+    relations: Vec<StoreRelation>,
+}
+
+/// Store a single entry and return its chunk ID.
+async fn store_single_entry(
+    store: &Arc<LanceStore>,
+    embedder: &Arc<FastEmbedder>,
+    input: StoreSingleInput,
+) -> Result<String> {
+    let parent_id = input.parent_id.as_deref().filter(|s| !s.is_empty());
+
+    let level = if let Some(pid) = parent_id {
+        if let Ok(Some(parent)) = store.get_by_id(pid).await {
+            crate::chunk::ChunkLevel(parent.level.0 + 1)
+        } else {
+            crate::chunk::ChunkLevel(7)
+        }
+    } else {
+        crate::chunk::ChunkLevel(1)
+    };
+
+    let path = if let Some(pid) = parent_id {
+        if let Ok(Some(parent)) = store.get_by_id(pid).await {
+            format!("{}/agent", parent.path)
+        } else {
+            input.source_file.clone()
+        }
+    } else {
+        input.source_file.clone()
+    };
+
+    let embeddings = embedder.embed(&[input.content.as_str()])?;
+    let embedding = embeddings
+        .into_iter()
+        .next()
+        .ok_or_else(|| crate::Error::embedding("Failed to generate embedding"))?;
+
+    let chunk_id = crate::chunk::content_hash(&input.content);
+
+    let entry_type = match input.entry_type.as_deref() {
+        Some("summary") => crate::chunk::EntryType::Summary,
+        Some("meta") => crate::chunk::EntryType::Meta,
+        Some("impression") => crate::chunk::EntryType::Impression,
+        _ => crate::chunk::EntryType::Raw,
+    };
+
+    let chunk = crate::HierarchicalChunk {
+        id: chunk_id.clone(),
+        content: input.content,
+        embedding: Some(embedding),
+        level,
+        parent_id: parent_id.map(String::from),
+        path,
+        source_file: input.source_file,
+        heading: input.heading,
+        start_offset: 0,
+        end_offset: 0,
+        cluster_memberships: vec![],
+        entry_type,
+        summarizes: vec![],
+        perspectives: input.perspectives,
+        visibility: input.visibility,
+        relations: vec![],
+        access_profile: crate::AccessProfile::new(),
+        expires_at: None,
+    };
+
+    store.insert_chunks(vec![chunk]).await?;
+
+    // Process relations atomically after insert
+    for rel in &input.relations {
+        match rel.kind.as_str() {
+            "supersedes" | "version_of" => {
+                let inverse = crate::ChunkRelation::new("superseded_by", &chunk_id);
+                store.add_relation(&rel.target_id, inverse).await?;
+            }
+            "summarizes" => {
+                let inverse = crate::ChunkRelation::new("summarized_by", &chunk_id);
+                store.add_relation(&rel.target_id, inverse).await?;
+            }
+            "related_to" => {
+                let forward = crate::ChunkRelation::new("related_to", &rel.target_id);
+                store.add_relation(&chunk_id, forward).await?;
+                let backward = crate::ChunkRelation::new("related_to", &chunk_id);
+                store.add_relation(&rel.target_id, backward).await?;
+            }
+            "derived_from" => {
+                let forward = crate::ChunkRelation::new("derived_from", &rel.target_id);
+                store.add_relation(&chunk_id, forward).await?;
+            }
+            other => {
+                let forward = crate::ChunkRelation::new(other, &rel.target_id);
+                store.add_relation(&chunk_id, forward).await?;
+            }
+        }
+    }
+
+    Ok(chunk_id)
+}
+
 pub async fn execute_recall(
     store: &Arc<LanceStore>,
     embedder: &Arc<FastEmbedder>,
     input: RecallInput,
 ) -> Result<Vec<SearchResultResponse>> {
-    let config = SearchConfig::for_query(input.limit, input.deep, input.recency.as_deref())
-        .with_perspective(input.perspective);
+    let since_epoch = input.since.as_deref().and_then(parse_temporal);
+    let until_epoch = input.until.as_deref().and_then(parse_temporal);
 
-    let search =
-        HierarchicalSearch::new(Arc::clone(store), Arc::clone(embedder)).with_config(config);
+    match input.query {
+        Some(ref query) if !query.is_empty() => {
+            // Semantic search path
+            let fetch_limit = if since_epoch.is_some() || until_epoch.is_some() {
+                input.limit * 3
+            } else {
+                input.limit
+            };
+            let config = SearchConfig::for_query(fetch_limit, input.deep, input.recency.as_deref())
+                .with_perspective(input.perspective);
+            let search = HierarchicalSearch::new(Arc::clone(store), Arc::clone(embedder))
+                .with_config(config);
+            let results = search.search(query).await?;
 
-    let results = search.search(&input.query).await?;
+            let filtered: Vec<_> = results
+                .into_iter()
+                .filter(|r| {
+                    let created = r.chunk.access_profile.created_at;
+                    since_epoch.is_none_or(|s| created >= s)
+                        && until_epoch.is_none_or(|u| created <= u)
+                })
+                .take(input.limit)
+                .collect();
 
-    Ok(results
-        .into_iter()
-        .map(|r| SearchResultResponse {
-            chunk: ChunkResponse::from(&r.chunk),
-            score: r.score,
-            hierarchy_path: r.hierarchy_path.iter().map(ChunkResponse::from).collect(),
-            children: r
-                .relevant_children
+            Ok(filtered
+                .into_iter()
+                .map(|r| SearchResultResponse {
+                    chunk: ChunkResponse::from(&r.chunk),
+                    score: r.score,
+                    relevance: relevance_tier(r.score).to_string(),
+                    hierarchy_path: r.hierarchy_path.iter().map(ChunkResponse::from).collect(),
+                    children: r
+                        .relevant_children
+                        .iter()
+                        .map(|c| ChunkResponse::from(&c.chunk))
+                        .collect(),
+                })
+                .collect())
+        }
+        _ => {
+            // Browse mode: list entries without vector search
+            let entries = store
+                .list_entries(
+                    input.perspective.as_deref(),
+                    since_epoch,
+                    until_epoch,
+                    input.limit,
+                )
+                .await?;
+
+            Ok(entries
                 .iter()
-                .map(|c| ChunkResponse::from(&c.chunk))
-                .collect(),
-        })
-        .collect())
+                .map(|chunk| SearchResultResponse {
+                    chunk: ChunkResponse::from(chunk),
+                    score: 1.0,
+                    relevance: "browse".to_string(),
+                    hierarchy_path: vec![],
+                    children: vec![],
+                })
+                .collect())
+        }
+    }
 }
 
 pub async fn execute_focus(
@@ -100,60 +253,48 @@ pub async fn execute_store(
     store: &Arc<LanceStore>,
     embedder: &Arc<FastEmbedder>,
     input: StoreInput,
-) -> Result<String> {
-    let parent_id = input.parent_id.as_deref().filter(|s| !s.is_empty());
-
-    let level = if let Some(pid) = parent_id {
-        if let Ok(Some(parent)) = store.get_by_id(pid).await {
-            crate::chunk::ChunkLevel(parent.level.0 + 1)
-        } else {
-            crate::chunk::ChunkLevel(7)
+) -> Result<serde_json::Value> {
+    if !input.items.is_empty() {
+        // Batch mode
+        let mut ids = Vec::new();
+        for item in input.items {
+            let id = store_single_entry(
+                store,
+                embedder,
+                StoreSingleInput {
+                    content: item.content,
+                    parent_id: item.parent_id,
+                    source_file: item.source_file.unwrap_or_else(|| "[agent]".to_string()),
+                    heading: item.heading,
+                    visibility: item.visibility,
+                    perspectives: item.perspectives,
+                    entry_type: item.entry_type,
+                    relations: item.relations,
+                },
+            )
+            .await?;
+            ids.push(id);
         }
+        Ok(serde_json::json!(ids))
     } else {
-        crate::chunk::ChunkLevel(1)
-    };
-
-    let path = if let Some(pid) = parent_id {
-        if let Ok(Some(parent)) = store.get_by_id(pid).await {
-            format!("{}/agent", parent.path)
-        } else {
-            input.source_file.clone()
-        }
-    } else {
-        input.source_file.clone()
-    };
-
-    let embeddings = embedder.embed(&[input.content.as_str()])?;
-    let embedding = embeddings
-        .into_iter()
-        .next()
-        .ok_or_else(|| crate::Error::embedding("Failed to generate embedding"))?;
-
-    let chunk_id = crate::chunk::content_hash(&input.content);
-
-    let chunk = crate::HierarchicalChunk {
-        id: chunk_id.clone(),
-        content: input.content,
-        embedding: Some(embedding),
-        level,
-        parent_id: parent_id.map(String::from),
-        path,
-        source_file: input.source_file,
-        heading: input.heading,
-        start_offset: 0,
-        end_offset: 0,
-        cluster_memberships: vec![],
-        entry_type: crate::chunk::EntryType::Raw,
-        summarizes: vec![],
-        perspectives: input.perspectives,
-        visibility: input.visibility,
-        relations: vec![],
-        access_profile: crate::AccessProfile::new(),
-        expires_at: None,
-    };
-
-    store.insert_chunks(vec![chunk]).await?;
-    Ok(chunk_id)
+        // Single mode
+        let id = store_single_entry(
+            store,
+            embedder,
+            StoreSingleInput {
+                content: input.content,
+                parent_id: input.parent_id,
+                source_file: input.source_file,
+                heading: input.heading,
+                visibility: input.visibility,
+                perspectives: input.perspectives,
+                entry_type: input.entry_type,
+                relations: input.relations,
+            },
+        )
+        .await?;
+        Ok(serde_json::json!(id))
+    }
 }
 
 pub async fn execute_think(
@@ -321,11 +462,7 @@ async fn execute_reflect(
             let salience = crate::salience::compute(chunk, &weights);
             report.push_str(&format!(
                 "- **{}** (total: {}, salience: {:.2}) [{}] `{}`\n",
-                heading,
-                chunk.access_profile.total,
-                salience.composite,
-                chunk.visibility,
-                chunk.id
+                heading, chunk.access_profile.total, salience.composite, chunk.visibility, chunk.id
             ));
         }
         report.push('\n');
@@ -406,6 +543,35 @@ pub fn build_share_token(input: ShareInput) -> serde_json::Value {
     })
 }
 
+/// Parse a temporal string (ISO 8601 date "2026-02-20" or epoch seconds "1740000000") to epoch seconds.
+fn parse_temporal(s: &str) -> Option<i64> {
+    // Try epoch seconds first
+    if let Ok(epoch) = s.parse::<i64>() {
+        return Some(epoch);
+    }
+    // Try ISO 8601 date (YYYY-MM-DD)
+    if s.len() == 10 && s.as_bytes()[4] == b'-' && s.as_bytes()[7] == b'-' {
+        let year: i32 = s[0..4].parse().ok()?;
+        let month: u32 = s[5..7].parse().ok()?;
+        let day: u32 = s[8..10].parse().ok()?;
+        let days = days_since_epoch(year, month, day)?;
+        return Some(days * 86400);
+    }
+    None
+}
+
+/// Convert a calendar date to days since Unix epoch (1970-01-01).
+/// Uses the algorithm from http://howardhinnant.github.io/date_algorithms.html
+fn days_since_epoch(year: i32, month: u32, day: u32) -> Option<i64> {
+    let y = if month <= 2 { year - 1 } else { year } as i64;
+    let m = if month <= 2 { month + 9 } else { month - 3 } as i64;
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * m + 2) / 5 + day as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146097 + doe - 719468)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,5 +599,46 @@ mod tests {
             serde_json::json!(["recall", "focus", "store"])
         );
         assert_eq!(token2["expires"], "90d");
+    }
+
+    #[test]
+    fn test_relevance_tier() {
+        assert_eq!(relevance_tier(0.5), "strong");
+        assert_eq!(relevance_tier(0.46), "strong");
+        assert_eq!(relevance_tier(0.45), "moderate");
+        assert_eq!(relevance_tier(0.35), "moderate");
+        assert_eq!(relevance_tier(0.30), "weak");
+        assert_eq!(relevance_tier(0.20), "weak");
+        assert_eq!(relevance_tier(0.15), "tangential");
+        assert_eq!(relevance_tier(0.0), "tangential");
+    }
+
+    #[test]
+    fn test_parse_temporal_epoch() {
+        assert_eq!(parse_temporal("1740000000"), Some(1740000000));
+        assert_eq!(parse_temporal("0"), Some(0));
+    }
+
+    #[test]
+    fn test_parse_temporal_iso_date() {
+        // 1970-01-01 = epoch 0
+        assert_eq!(parse_temporal("1970-01-01"), Some(0));
+        // 2026-02-20 should produce a reasonable epoch
+        let result = parse_temporal("2026-02-20");
+        assert!(result.is_some());
+        let epoch = result.unwrap();
+        // Should be around 2026 (> 2025-01-01 = ~1735689600)
+        assert!(epoch > 1_735_689_600);
+    }
+
+    #[test]
+    fn test_parse_temporal_invalid() {
+        assert_eq!(parse_temporal("not-a-date"), None);
+        // Malformed date formats (not YYYY-MM-DD and not a valid integer) return None
+        assert_eq!(parse_temporal("2026/02/20"), None);
+        assert_eq!(parse_temporal("Feb 20 2026"), None);
+        assert_eq!(parse_temporal(""), None);
+        // "20260220" is a valid integer epoch, not invalid
+        assert!(parse_temporal("20260220").is_some());
     }
 }
