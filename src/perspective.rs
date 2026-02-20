@@ -4,7 +4,7 @@
 //! Entries can belong to multiple perspectives. Search can be filtered
 //! by perspective to see knowledge from a specific angle.
 //!
-//! VecLayer ships 6 defaults. Custom perspectives can be added at runtime.
+//! VecLayer ships 7 defaults. Custom perspectives can be added at runtime.
 
 use std::path::Path;
 
@@ -44,7 +44,7 @@ impl Perspective {
     }
 }
 
-/// The 6 default perspective IDs.
+/// The 7 default perspective IDs.
 pub const DEFAULT_PERSPECTIVE_IDS: &[&str] = &[
     "intentions",
     "people",
@@ -52,9 +52,10 @@ pub const DEFAULT_PERSPECTIVE_IDS: &[&str] = &[
     "knowledge",
     "decisions",
     "learnings",
+    "session",
 ];
 
-/// Create the 6 default perspectives.
+/// Create the 7 default perspectives.
 pub fn defaults() -> Vec<Perspective> {
     vec![
         Perspective::builtin(
@@ -86,6 +87,11 @@ pub fn defaults() -> Vec<Perspective> {
             "learnings",
             "Learnings",
             "Erkenntnisse, Fehler, Lessons Learned, Aha-Momente",
+        ),
+        Perspective::builtin(
+            "session",
+            "Session",
+            "Arbeitssitzungen, Kontext, Zusammenfassungen, Handoffs",
         ),
     ]
 }
@@ -199,7 +205,7 @@ mod tests {
 
     #[test]
     fn test_defaults_count() {
-        assert_eq!(defaults().len(), 6);
+        assert_eq!(defaults().len(), 7);
     }
 
     #[test]
@@ -212,6 +218,7 @@ mod tests {
         assert!(ids.contains(&"knowledge"));
         assert!(ids.contains(&"decisions"));
         assert!(ids.contains(&"learnings"));
+        assert!(ids.contains(&"session"));
     }
 
     #[test]
@@ -225,7 +232,7 @@ mod tests {
     fn test_load_returns_defaults_when_no_file() {
         let dir = TempDir::new().unwrap();
         let perspectives = load(dir.path()).unwrap();
-        assert_eq!(perspectives.len(), 6);
+        assert_eq!(perspectives.len(), 7);
     }
 
     #[test]
@@ -255,7 +262,7 @@ mod tests {
         // Init again should NOT overwrite
         init(dir.path()).unwrap();
         let all = load(dir.path()).unwrap();
-        assert_eq!(all.len(), 7); // 6 defaults + 1 custom
+        assert_eq!(all.len(), 8); // 7 defaults + 1 custom
     }
 
     #[test]
@@ -268,7 +275,7 @@ mod tests {
         )
         .unwrap();
         let all = load(dir.path()).unwrap();
-        assert_eq!(all.len(), 7);
+        assert_eq!(all.len(), 8);
         let custom = all.iter().find(|p| p.id == "emotions").unwrap();
         assert!(!custom.builtin);
     }
@@ -289,9 +296,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         init(dir.path()).unwrap();
         add(dir.path(), Perspective::new("temp", "Temp", "temporary")).unwrap();
-        assert_eq!(load(dir.path()).unwrap().len(), 7);
+        assert_eq!(load(dir.path()).unwrap().len(), 8);
         remove(dir.path(), "temp").unwrap();
-        assert_eq!(load(dir.path()).unwrap().len(), 6);
+        assert_eq!(load(dir.path()).unwrap().len(), 7);
     }
 
     #[test]
