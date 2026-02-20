@@ -766,6 +766,165 @@ pub async fn archive(data_dir: &Path, ids: &[String]) -> Result<()> {
     Ok(())
 }
 
+// --- Compact command ---
+
+/// Options for the compact command.
+#[derive(Debug, Clone)]
+pub struct CompactOptions {
+    /// Max entries to show for salience/archive-candidates reports.
+    pub limit: usize,
+    /// Salience threshold below which entries are archive candidates.
+    pub archive_threshold: f32,
+}
+
+impl Default for CompactOptions {
+    fn default() -> Self {
+        Self {
+            limit: 20,
+            archive_threshold: 0.1,
+        }
+    }
+}
+
+/// Compact sub-operations.
+#[derive(Debug, Clone, Copy)]
+pub enum CompactAction {
+    /// Roll access-profile buckets for all entries.
+    Rotate,
+    /// Compute and display salience for top entries.
+    Salience,
+    /// Show entries that are candidates for archival (low salience).
+    ArchiveCandidates,
+}
+
+/// Run a compact sub-action.
+pub async fn compact(
+    data_dir: &Path,
+    action: CompactAction,
+    options: &CompactOptions,
+) -> Result<()> {
+    match action {
+        CompactAction::Rotate => compact_rotate(data_dir).await,
+        CompactAction::Salience => compact_salience(data_dir, options).await,
+        CompactAction::ArchiveCandidates => compact_archive_candidates(data_dir, options).await,
+    }
+}
+
+/// Rotate: roll access-profile buckets and apply aging rules.
+async fn compact_rotate(data_dir: &Path) -> Result<()> {
+    let embedder = FastEmbedder::new()?;
+    let dimension = embedder.dimension();
+    let store = LanceStore::open(data_dir, dimension).await?;
+
+    let aging_config = crate::aging::AgingConfig::load(data_dir);
+    let aging_result = crate::aging::apply_aging(&store, &aging_config).await?;
+
+    println!("Compact: rotate");
+    println!("  Aging config: degrade after {} days", aging_config.degrade_after_days);
+    println!("  Degraded {} entries to '{}'", aging_result.degraded_count, aging_config.degrade_to);
+    for id in &aging_result.degraded_ids {
+        println!("    {}", short_id(id));
+    }
+
+    Ok(())
+}
+
+/// Salience: compute and display salience scores for the most/least salient entries.
+async fn compact_salience(data_dir: &Path, options: &CompactOptions) -> Result<()> {
+    let store = LanceStore::open_metadata(data_dir).await?;
+
+    // Get hot chunks (most accessed) as a proxy for "all interesting entries"
+    let hot = store.get_hot_chunks(options.limit * 2).await?;
+
+    if hot.is_empty() {
+        println!("No entries to analyze.");
+        return Ok(());
+    }
+
+    let weights = crate::salience::SalienceWeights::default();
+    let top = crate::salience::top_salient(&hot, &weights, options.limit);
+
+    println!("Salience report (top {}):", top.len());
+    println!("{}", "=".repeat(60));
+    for (idx, score) in &top {
+        let chunk = &hot[*idx];
+        let preview = if chunk.content.len() > 60 {
+            format!("{}...", &chunk.content[..60])
+        } else {
+            chunk.content.clone()
+        };
+        println!(
+            "  {} [{:.3}] inter={:.2} persp={:.2} rev={:.2}  {}",
+            short_id(&chunk.id),
+            score.composite,
+            score.interaction,
+            score.perspective,
+            score.revision,
+            preview.replace('\n', " ")
+        );
+    }
+
+    Ok(())
+}
+
+/// Archive candidates: entries with low salience that could be archived.
+async fn compact_archive_candidates(data_dir: &Path, options: &CompactOptions) -> Result<()> {
+    let store = LanceStore::open_metadata(data_dir).await?;
+    let aging_config = crate::aging::AgingConfig::load(data_dir);
+
+    // Get stale chunks as the candidate pool
+    let stale = store
+        .get_stale_chunks(aging_config.stale_seconds(), options.limit * 2)
+        .await?;
+
+    if stale.is_empty() {
+        println!("No archive candidates found.");
+        return Ok(());
+    }
+
+    let weights = crate::salience::SalienceWeights::default();
+    let candidates: Vec<_> = stale
+        .iter()
+        .filter(|c| {
+            crate::salience::is_archive_candidate(
+                c,
+                &weights,
+                options.archive_threshold,
+                &aging_config.degrade_from,
+            )
+        })
+        .take(options.limit)
+        .collect();
+
+    if candidates.is_empty() {
+        println!("No archive candidates below threshold {:.2}.", options.archive_threshold);
+        return Ok(());
+    }
+
+    println!("Archive candidates ({}, threshold {:.2}):", candidates.len(), options.archive_threshold);
+    println!("{}", "=".repeat(60));
+    for chunk in &candidates {
+        let score = crate::salience::compute(chunk, &weights);
+        let preview = if chunk.content.len() > 60 {
+            format!("{}...", &chunk.content[..60])
+        } else {
+            chunk.content.clone()
+        };
+        println!(
+            "  {} [salience={:.3}, vis={}]  {}",
+            short_id(&chunk.id),
+            score.composite,
+            chunk.visibility,
+            preview.replace('\n', " ")
+        );
+    }
+    println!(
+        "\nUse `veclayer archive <id>...` to archive selected entries."
+    );
+
+    Ok(())
+}
+
 /// Resolve a potentially short ID to a full entry.
 ///
 /// Tries exact match first. If the input looks like a short ID (hex, <64 chars),

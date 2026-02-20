@@ -4,7 +4,9 @@ use clap::{Parser, Subcommand};
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
 
-use veclayer::commands::{AddOptions, FocusOptions, SearchOptions, ServeOptions};
+use veclayer::commands::{
+    AddOptions, CompactAction, CompactOptions, FocusOptions, SearchOptions, ServeOptions,
+};
 use veclayer::Result;
 
 #[derive(Parser)]
@@ -166,6 +168,13 @@ enum Commands {
         /// Entry IDs to archive
         ids: Vec<String>,
     },
+
+    /// Compact: rotate access profiles, compute salience, suggest archival
+    #[command(alias = "c")]
+    Compact {
+        #[command(subcommand)]
+        action: CompactActionCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -189,6 +198,31 @@ enum PerspectiveAction {
     Remove {
         /// Perspective ID to remove
         id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum CompactActionCmd {
+    /// Roll access-profile time buckets and apply aging rules
+    Rotate,
+
+    /// Show salience scores for most important entries
+    Salience {
+        /// Max entries to show
+        #[arg(short = 'k', long, default_value = "20")]
+        limit: usize,
+    },
+
+    /// Show entries that are candidates for archival (low salience)
+    #[command(alias = "candidates")]
+    ArchiveCandidates {
+        /// Max entries to show
+        #[arg(short = 'k', long, default_value = "20")]
+        limit: usize,
+
+        /// Salience threshold (entries below this are candidates)
+        #[arg(short, long, default_value = "0.1")]
+        threshold: f32,
     },
 }
 
@@ -290,6 +324,27 @@ async fn main() -> Result<()> {
         }
         Commands::Archive { ids } => {
             veclayer::commands::archive(&cli.data_dir, &ids).await?;
+        }
+        Commands::Compact { action } => {
+            let (compact_action, options) = match action {
+                CompactActionCmd::Rotate => (CompactAction::Rotate, CompactOptions::default()),
+                CompactActionCmd::Salience { limit } => (
+                    CompactAction::Salience,
+                    CompactOptions {
+                        limit,
+                        ..Default::default()
+                    },
+                ),
+                CompactActionCmd::ArchiveCandidates { limit, threshold } => (
+                    CompactAction::ArchiveCandidates,
+                    CompactOptions {
+                        limit,
+                        archive_threshold: threshold,
+                        ..Default::default()
+                    },
+                ),
+            };
+            veclayer::commands::compact(&cli.data_dir, compact_action, &options).await?;
         }
     }
 

@@ -74,47 +74,47 @@ Den Prototyp auf das Konzept-Datenmodell umbauen.
   - SearchConfig::for_query() + blend_score() dedupliziert
   - Formatierungslogik aus main.rs nach commands.rs extrahiert
 
-### Phase 2 -- Perspektiven + Relationen
+### Phase 2 -- Perspektiven + Relationen **DONE**
 
 Das Kernkonzept implementieren: verschiedene Sichten auf die gleichen Daten.
 
-- [ ] **Perspektiven-Modell:**
-  - Perspektiven CRUD (create, list, remove)
-  - 6 Default-Perspektiven mit Hints:
-    - `intentions` -- "Absichten, Ziele, Vorhaben"
-    - `people` -- "Personen, Beziehungen, Rollen"
-    - `temporal` -- "Zeitverlauf, Entwicklungen, Chronologie"
-    - `knowledge` -- "Dauerhaftes Fachwissen, Definitionen"
-    - `decisions` -- "Entscheidungen, Abwaegungen, Trade-offs"
-    - `learnings` -- "Erkenntnisse, Fehler, Lessons Learned"
-- [ ] **Relationen normalisieren:**
+- [x] **Perspektiven-Modell:**
+  - Perspektiven CRUD (create, list, remove) mit JSON-Persistenz
+  - 6 Default-Perspektiven mit Hints
+  - Validierung bei `add` (fail fast am CLI-Rand)
+- [x] **Relationen normalisieren:**
   - SupersededBy, SummarizedBy, VersionOf, RelatedTo, DerivedFrom
   - `add --summarizes`, `--supersedes`, `--version-of`
-- [ ] **Facettierte Suche:**
-  - Ergebnisse gruppiert nach Perspektive
+- [x] **Facettierte Suche:**
   - `search --perspective decisions "Backend"`
-- [ ] **CLI:**
+  - VectorStore::search_by_perspective + LanceDB Impl
+- [x] **CLI:**
   - `veclayer p` (Perspektiven verwalten)
   - `veclayer history` (Versionsgeschichte eines Entries)
   - `veclayer archive` (Gezieltes Archivieren)
 
-### Phase 3 -- Memory Aging + Salienz
+### Phase 3 -- Memory Aging + Salienz **DONE**
 
 Von Zugriffsfrequenz zu echtem Bedeutungs-Ranking.
 
-- [ ] **Salienz-Berechnung** aus bestehenden Signalen:
-  - Interaktionsdichte (Access-Profile)
-  - Widersprueche (Entries die sich widersprechen)
-  - Wirkungsbreite (In wie vielen Perspektiven referenziert)
-  - Revisions-Events (Wie oft superseded/updated)
-- [ ] **Ranking:** `semantic_similarity x recency x salience`
-- [ ] **compact-Kommando:**
-  - rotate: Access-Profile rollen
-  - salience: Salienz neu berechnen
-  - archive candidates: Vorschlaege fuer Archivierung
-- [ ] **Visibility-Erweiterung:**
-  - `always`, `normal`, `deep_only`, `expiring`, `seasonal` bleiben
-  - Automatische Degradierung basiert auf Salienz, nicht nur Alter
+- [x] **Salienz-Berechnung** aus bestehenden Signalen:
+  - Interaktionsdichte (Access-Profile relevancy_score)
+  - Wirkungsbreite (Perspektiven-Spread: perspectives.len / 8)
+  - Revisions-Events (Relations-Count mit tanh-Saettigung)
+  - Gewichteter Komposit-Score (0.5 interaction + 0.25 perspective + 0.25 revision)
+- [x] **Ranking:** `semantic_similarity * (1-alpha) + (recency * (1-sw) + salience * sw) * alpha`
+  - salience_weight in SearchConfig (default: 0.3)
+  - Nahtlose Integration in blend_score()
+- [x] **compact-Kommando:**
+  - `veclayer compact rotate` — Access-Profile rollen + Aging ausfuehren
+  - `veclayer compact salience` — Top-N Salienz-Report
+  - `veclayer compact archive-candidates` — Archivierungs-Vorschlaege (low salience)
+- [x] **Visibility-Erweiterung:**
+  - Automatische Degradierung prueft Salienz: high-salience Entries ueberleben Aging
+  - `salience_protection` Schwelle in AgingConfig (default: 0.15)
+- [x] **MCP Integration:**
+  - `think(action='salience')` — Salienz-Report via MCP
+  - reflect-Report zeigt Salienz-Scores fuer Hot und Stale Chunks
 
 ### Phase 4 -- Identity + Reflect
 

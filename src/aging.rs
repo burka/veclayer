@@ -1,10 +1,14 @@
 //! Agent-configurable aging rules for automatic visibility degradation.
+//!
+//! Aging now considers salience: high-salience entries are protected
+//! from degradation even when they haven't been accessed recently.
 
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::chunk::now_epoch_secs;
+use crate::salience::{self, SalienceWeights};
 use crate::{Result, VectorStore};
 
 const AGING_CONFIG_FILE: &str = "aging_config.json";
@@ -24,6 +28,15 @@ pub struct AgingConfig {
     /// Only degrade chunks with these visibilities.
     /// Default: ["normal"]
     pub degrade_from: Vec<String>,
+    /// Minimum salience score to protect an entry from degradation.
+    /// Entries with salience >= this threshold are kept even when stale.
+    /// Default: 0.15
+    #[serde(default = "default_salience_protection")]
+    pub salience_protection: f32,
+}
+
+fn default_salience_protection() -> f32 {
+    0.15
 }
 
 impl Default for AgingConfig {
@@ -32,6 +45,7 @@ impl Default for AgingConfig {
             degrade_after_days: 30,
             degrade_to: "deep_only".to_string(),
             degrade_from: vec!["normal".to_string()],
+            salience_protection: default_salience_protection(),
         }
     }
 }
@@ -75,12 +89,16 @@ pub struct AgingResult {
 }
 
 /// Apply aging rules: find stale chunks and degrade their visibility.
+///
+/// Salience protection: entries with composite salience >= `salience_protection`
+/// are skipped even when stale, preserving high-value knowledge.
 pub async fn apply_aging<S: VectorStore>(
     store: &S,
     config: &AgingConfig,
 ) -> Result<AgingResult> {
     let now = now_epoch_secs();
     let cutoff_secs = config.stale_seconds();
+    let weights = SalienceWeights::default();
 
     let stale = store.get_stale_chunks(cutoff_secs, 500).await?;
 
@@ -88,22 +106,32 @@ pub async fn apply_aging<S: VectorStore>(
 
     for chunk in &stale {
         // Only degrade chunks whose current visibility is in the degrade_from list
-        if config.degrade_from.contains(&chunk.visibility) {
-            // Check that the chunk is truly stale (no month/year activity either)
-            let total_recent = chunk.access_profile.hour as u32
-                + chunk.access_profile.day as u32
-                + chunk.access_profile.week as u32
-                + chunk.access_profile.month as u32;
-
-            let age_since_roll = now - chunk.access_profile.last_rolled;
-
-            if total_recent == 0 && age_since_roll >= cutoff_secs {
-                store
-                    .update_visibility(&chunk.id, &config.degrade_to)
-                    .await?;
-                degraded_ids.push(chunk.id.clone());
-            }
+        if !config.degrade_from.contains(&chunk.visibility) {
+            continue;
         }
+
+        // Check that the chunk is truly stale (no recent activity)
+        let total_recent = chunk.access_profile.hour as u32
+            + chunk.access_profile.day as u32
+            + chunk.access_profile.week as u32
+            + chunk.access_profile.month as u32;
+
+        let age_since_roll = now - chunk.access_profile.last_rolled;
+
+        if total_recent > 0 || age_since_roll < cutoff_secs {
+            continue;
+        }
+
+        // Salience protection: high-salience entries survive aging
+        let score = salience::compute(chunk, &weights);
+        if score.composite >= config.salience_protection {
+            continue;
+        }
+
+        store
+            .update_visibility(&chunk.id, &config.degrade_to)
+            .await?;
+        degraded_ids.push(chunk.id.clone());
     }
 
     Ok(AgingResult {
@@ -124,6 +152,7 @@ mod tests {
         assert_eq!(config.degrade_to, "deep_only");
         assert_eq!(config.degrade_from, vec!["normal"]);
         assert_eq!(config.stale_seconds(), 30 * 86_400);
+        assert!((config.salience_protection - 0.15).abs() < 0.001);
     }
 
     #[test]
@@ -133,6 +162,7 @@ mod tests {
             degrade_after_days: 14,
             degrade_to: "archived".to_string(),
             degrade_from: vec!["normal".to_string(), "seasonal".to_string()],
+            salience_protection: 0.2,
         };
 
         config.save(temp_dir.path()).unwrap();
