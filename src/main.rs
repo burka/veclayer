@@ -239,7 +239,9 @@ enum CompactActionCmd {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    init_logging(cli.verbose);
+    let is_mcp_stdio = matches!(&cli.command, Some(Commands::Serve { mcp_stdio: true, .. }));
+
+    init_logging(cli.verbose, is_mcp_stdio);
 
     let command = match cli.command {
         Some(cmd) => cmd,
@@ -384,15 +386,18 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn init_logging(verbose: bool) {
+fn init_logging(verbose: bool, use_stderr: bool) {
     let filter = if verbose {
         EnvFilter::new(Level::DEBUG.to_string())
     } else {
         EnvFilter::new(Level::INFO.to_string())
     };
 
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .init();
+    let builder = tracing_subscriber::fmt().with_env_filter(filter).with_target(false);
+
+    if use_stderr {
+        builder.with_writer(std::io::stderr).init();
+    } else {
+        builder.init();
+    }
 }
