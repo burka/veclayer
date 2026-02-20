@@ -80,3 +80,75 @@ When multiple agents work on the same codebase:
 - Comment on the issue you're working on to signal intent
 - Reference issue numbers in commit messages (`fixes #N`, `ref #N`)
 - Do not close issues without explicit human approval
+
+## Agent Attribution
+
+Commit messages should include attribution via `Co-Authored-By`:
+
+```
+<message body>
+
+Co-Authored-By: <tool> - <model>
+```
+
+| Tool | Attribution |
+|------|-------------|
+| Claude Web - Opus 4.6 | `Co-Authored-By: Claude Web - Opus 4.6 <noreply@anthropic.com>` |
+| Claude Code - Opus 4.6 | `Co-Authored-By: Claude Code - Opus 4.6 <noreply@anthropic.com>` |
+| Claude Code - Sonnet 4.6 | `Co-Authored-By: Claude Code - Sonnet 4.6 <noreply@anthropic.com>` |
+| Claude Code - Haiku 4.5 | `Co-Authored-By: Claude Code - Haiku 4.5 <noreply@anthropic.com>` |
+| Opencode - Z.AI GLM-4.7 | `Co-Authored-By: Opencode - Z.AI GLM-4.7 <noreply@z.ai>` |
+| Florian Burka | Human author (no attribution line) |
+
+## Pull Request Workflow
+
+```bash
+# 1. Create feature branch
+git checkout -b feature-name
+
+# 2. Work and commit
+git add <files>
+git commit -m "<type>: <description>"
+# (include Co-Authored-By for attribution)
+
+# 3. Push to remote
+git push -u origin feature-name
+
+# 4. Create PR with detailed description
+gh pr create --title "feat: ..." --body "<detailed description>"
+```
+
+**PR Body Template:**
+```markdown
+## Summary
+Brief description of what this PR does.
+
+## Changes
+- Change 1: description
+- Change 2: description
+
+## Test Coverage
+- What was tested
+- Test results
+
+## Example Usage
+\`\`\`bash
+# CLI example
+veclayer <command> ...
+
+# MCP example
+{...}
+\`\`\`
+
+Fixes #<issue-number>
+
+— <tool> - <model>
+```
+
+**Commit Message Format:** `<type>: <description>`
+- `feat`: New feature
+- `fix`: Bug fix
+- `docs`: Documentation only
+- `refactor`: Code refactoring
+- `test`: Tests only
+- `chore`: Build/config changes

@@ -108,6 +108,14 @@ enum Commands {
         /// Filter by perspective (e.g. "decisions", "learnings")
         #[arg(short = 'P', long)]
         perspective: Option<String>,
+
+        /// Minimum salience (soft filter: excludes from salience boosting but not from results)
+        #[arg(long = "min-salience")]
+        min_salience: Option<f32>,
+
+        /// Minimum search score (hard filter applied to pre-blend vector score)
+        #[arg(long = "min-score")]
+        min_score: Option<f32>,
     },
 
     /// Focus on an entry: show details and children
@@ -295,6 +303,8 @@ async fn main() -> Result<()> {
             deep,
             recent,
             perspective,
+            min_salience,
+            min_score,
         } => {
             let options = SearchOptions {
                 top_k,
@@ -303,6 +313,8 @@ async fn main() -> Result<()> {
                 deep,
                 recent,
                 perspective,
+                min_salience,
+                min_score,
             };
             veclayer::commands::search(&cli.data_dir, &query, &options).await?;
         }
