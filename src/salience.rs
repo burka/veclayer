@@ -44,7 +44,7 @@ pub struct SalienceScore {
     pub composite: f32,
 }
 
-/// Maximum perspectives we normalize against (6 defaults + headroom).
+/// Maximum perspectives we normalize against (7 defaults + headroom).
 const MAX_PERSPECTIVES: f32 = 8.0;
 
 /// Relation count where the revision signal saturates.

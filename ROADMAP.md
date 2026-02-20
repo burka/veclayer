@@ -24,7 +24,7 @@
 | Trait-Architektur (austauschbare Backends) | **Vorhanden** | DocumentParser, Embedder, VectorStore, Summarizer |
 | Content-Hash IDs (SHA-256) | **Vorhanden** | 64-Char Hex, 7-Char Short-ID wie git (Phase 1) |
 | Entry-Typ (raw/summary/meta/impression) | **Vorhanden** | EntryType Enum mit vier Varianten (Phase 1) |
-| Perspektiven (6 Defaults + Custom) | **Vorhanden** | CRUD, Hints, facettierte Suche, Validierung (Phase 2) |
+| Perspektiven (7 Defaults + Custom) | **Vorhanden** | CRUD, Hints, facettierte Suche, Validierung (Phase 2) |
 | Salienz (Dichte, Spread, Revisionen) | **Vorhanden** | Komposit-Score, Ranking-Integration, Aging-Schutz (Phase 3) |
 | Identity-View + Priming | **Vorhanden** | Centroids, Open Threads, Learnings, dynamisches MCP-Priming (Phase 4) |
 | CLI-Spec (init, add, search, focus) | **Vorhanden** | 13 Kommandos, aligned mit Spec (Phase 1) |
@@ -85,7 +85,7 @@ Das Kernkonzept implementieren: verschiedene Sichten auf die gleichen Daten.
 
 - [x] **Perspektiven-Modell:**
   - Perspektiven CRUD (create, list, remove) mit JSON-Persistenz
-  - 6 Default-Perspektiven mit Hints
+  - 7 Default-Perspektiven mit Hints
   - Validierung bei `add` (fail fast am CLI-Rand)
 - [x] **Relationen normalisieren:**
   - SupersededBy, SummarizedBy, VersionOf, RelatedTo, DerivedFrom
