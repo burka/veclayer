@@ -747,7 +747,7 @@ pub async fn history(data_dir: &Path, id: &str) -> Result<()> {
 
 /// Archive entries by demoting them to deep_only visibility.
 pub async fn archive(data_dir: &Path, ids: &[String]) -> Result<()> {
-    let (embedder, store) = open_store(data_dir).await?;
+    let (_embedder, store) = open_store(data_dir).await?;
 
     for id in ids {
         let chunk = resolve_entry(&store, id).await?;
@@ -806,7 +806,7 @@ pub async fn compact(
 
 /// Rotate: roll access-profile buckets and apply aging rules.
 async fn compact_rotate(data_dir: &Path) -> Result<()> {
-    let (embedder, store) = open_store(data_dir).await?;
+    let (_embedder, store) = open_store(data_dir).await?;
 
     let aging_config = crate::aging::AgingConfig::load(data_dir);
     let aging_result = crate::aging::apply_aging(&store, &aging_config).await?;
@@ -974,6 +974,63 @@ pub async fn identity(data_dir: &Path) -> Result<()> {
             println!("  {} {}", short_id(&learning.id), heading);
         }
     }
+
+    Ok(())
+}
+
+// --- Think command (requires LLM) ---
+
+/// Run one think cycle: reflect → LLM → add → compact.
+///
+/// This is the sleep cycle: VecLayer gathers context, the LLM generates
+/// consolidations and learnings, VecLayer writes them back and cleans up.
+#[cfg(feature = "llm")]
+pub async fn think(data_dir: &Path) -> Result<()> {
+    let (embedder, store) = open_store(data_dir).await?;
+
+    let config = crate::Config::new().with_data_dir(data_dir);
+    let llm = crate::llm::LlmBackend::from_config(&config.llm);
+
+    println!("Think: starting sleep cycle (LLM: {} via {})", config.llm.model, config.llm.provider);
+
+    let result = crate::think::execute(&store, &embedder, &llm, data_dir).await?;
+
+    if result.entries_created.is_empty() {
+        println!("\nNothing to consolidate. Memory is either empty or already well-organized.");
+        return Ok(());
+    }
+
+    println!("\nThink cycle complete:");
+
+    if let Some(ref id) = result.narrative_id {
+        println!("  Narrative: {}", short_id(id));
+    }
+
+    if result.consolidations_added > 0 {
+        println!("  Consolidations: {} summaries created", result.consolidations_added);
+    }
+
+    if result.learnings_added > 0 {
+        println!("  Learnings: {} meta-entries extracted", result.learnings_added);
+    }
+
+    println!("\nEntries created:");
+    for entry in &result.entries_created {
+        let persp = if entry.perspectives.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", entry.perspectives.join(", "))
+        };
+        println!(
+            "  {} ({}{}) {}",
+            short_id(&entry.id),
+            entry.entry_type,
+            persp,
+            entry.content_preview
+        );
+    }
+
+    println!("\nAging applied. Run `veclayer reflect` to see updated identity.");
 
     Ok(())
 }

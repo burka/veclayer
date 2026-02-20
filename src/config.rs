@@ -21,6 +21,9 @@ pub struct Config {
     /// Embedder to use
     pub embedder: EmbedderConfig,
 
+    /// LLM provider for the think/sleep cycle
+    pub llm: LlmConfig,
+
     /// Whether to run in read-only mode
     pub read_only: bool,
 
@@ -55,6 +58,23 @@ struct FileConfig {
     search_top_k: Option<usize>,
     search_children_k: Option<usize>,
     embedder: Option<FileEmbedderConfig>,
+    llm: Option<FileLlmConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FileLlmConfig {
+    /// "ollama" or "openai"
+    #[serde(default = "default_llm_provider")]
+    provider: String,
+    model: Option<String>,
+    base_url: Option<String>,
+    api_key: Option<String>,
+    temperature: Option<f32>,
+    max_tokens: Option<usize>,
+}
+
+fn default_llm_provider() -> String {
+    "ollama".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,10 +186,12 @@ impl Config {
             .unwrap_or(DEFAULT_SEARCH_CHILDREN_K);
 
         let embedder = Self::resolve_embedder(file.embedder);
+        let llm = Self::resolve_llm(file.llm);
 
         Self {
             data_dir,
             embedder,
+            llm,
             read_only,
             port,
             host,
@@ -210,6 +232,42 @@ impl Config {
         }
     }
 
+    fn resolve_llm(file_llm: Option<FileLlmConfig>) -> LlmConfig {
+        let provider = env_or(
+            "VECLAYER_LLM_PROVIDER",
+            file_llm.as_ref().map(|l| l.provider.clone()),
+            "ollama".to_string(),
+        );
+        let model = env_or(
+            "VECLAYER_LLM_MODEL",
+            file_llm.as_ref().and_then(|l| l.model.clone()),
+            "llama3.2".to_string(),
+        );
+        let base_url = env_or(
+            "VECLAYER_LLM_BASE_URL",
+            file_llm.as_ref().and_then(|l| l.base_url.clone()),
+            "http://localhost:11434".to_string(),
+        );
+        let api_key = std::env::var("VECLAYER_LLM_API_KEY")
+            .ok()
+            .or_else(|| file_llm.as_ref().and_then(|l| l.api_key.clone()));
+        let temperature = env_parse("VECLAYER_LLM_TEMPERATURE")
+            .or(file_llm.as_ref().and_then(|l| l.temperature))
+            .unwrap_or(0.7);
+        let max_tokens = env_parse("VECLAYER_LLM_MAX_TOKENS")
+            .or(file_llm.as_ref().and_then(|l| l.max_tokens))
+            .unwrap_or(4096);
+
+        LlmConfig {
+            provider,
+            model,
+            base_url,
+            api_key,
+            temperature,
+            max_tokens,
+        }
+    }
+
     pub fn with_data_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.data_dir = path.into();
         self
@@ -241,6 +299,36 @@ impl Default for EmbedderConfig {
     fn default() -> Self {
         EmbedderConfig::FastEmbed {
             model: DEFAULT_FASTEMBED_MODEL.to_string(),
+        }
+    }
+}
+
+/// Configuration for the LLM provider (always available, even without the `llm` feature).
+#[derive(Debug, Clone)]
+pub struct LlmConfig {
+    /// Provider type: "ollama" or "openai"
+    pub provider: String,
+    /// Model name (e.g. "llama3.2", "gpt-4o", "claude-sonnet-4-20250514")
+    pub model: String,
+    /// Base URL for the API
+    pub base_url: String,
+    /// API key (required for OpenAI-compatible providers)
+    pub api_key: Option<String>,
+    /// Sampling temperature
+    pub temperature: f32,
+    /// Maximum tokens in the response
+    pub max_tokens: usize,
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            provider: "ollama".to_string(),
+            model: "llama3.2".to_string(),
+            base_url: "http://localhost:11434".to_string(),
+            api_key: None,
+            temperature: 0.7,
+            max_tokens: 4096,
         }
     }
 }

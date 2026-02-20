@@ -181,6 +181,9 @@ enum Commands {
 
     /// Generate a comprehensive reflection report (priming-ready)
     Reflect,
+
+    /// Run one think cycle: reflect → LLM → add → compact (requires LLM)
+    Think,
 }
 
 #[derive(Subcommand)]
@@ -366,6 +369,15 @@ async fn main() -> Result<()> {
         }
         Commands::Reflect => {
             veclayer::commands::reflect(&cli.data_dir).await?;
+        }
+        #[cfg(feature = "llm")]
+        Commands::Think => {
+            veclayer::commands::think(&cli.data_dir).await?;
+        }
+        #[cfg(not(feature = "llm"))]
+        Commands::Think => {
+            eprintln!("Error: `think` requires the 'llm' feature. Build with `cargo build` (default features) or `cargo build --features llm`.");
+            std::process::exit(1);
         }
     }
 
