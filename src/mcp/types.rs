@@ -23,6 +23,12 @@ pub struct RecallInput {
     /// Filter by perspective (e.g. "decisions", "learnings")
     #[serde(default)]
     pub perspective: Option<String>,
+    /// Minimum salience threshold (soft filter: excludes from salience boosting but not from results)
+    #[serde(default)]
+    pub min_salience: Option<f32>,
+    /// Minimum search score (hard filter applied to pre-blend vector score, not blended score)
+    #[serde(default)]
+    pub min_score: Option<f32>,
     /// Filter: only entries created after this ISO 8601 date or epoch seconds
     #[serde(default)]
     pub since: Option<String>,

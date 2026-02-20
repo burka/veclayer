@@ -134,8 +134,12 @@ pub async fn execute_recall(
             } else {
                 input.limit
             };
-            let config = SearchConfig::for_query(fetch_limit, input.deep, input.recency.as_deref())
-                .with_perspective(input.perspective);
+            let mut config = SearchConfig::for_query(fetch_limit, input.deep, input.recency.as_deref())
+                .with_perspective(input.perspective.clone())
+                .with_min_salience(input.min_salience);
+            if let Some(min_score) = input.min_score {
+                config.min_score = min_score;
+            }
             let search = HierarchicalSearch::new(Arc::clone(store), Arc::clone(embedder))
                 .with_config(config);
             let results = search.search(query).await?;
