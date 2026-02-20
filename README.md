@@ -29,6 +29,12 @@ VecLayer loest das durch drei Konzepte:
 
 Identitaet entsteht aus dem Zusammenspiel: Beim Verbinden erhaelt der Agent ein Priming -- wer bin ich, was beschaeftigt mich, worauf sollte ich achten.
 
+### Die Kernthese
+
+Zusammenfassungen sind nicht ein Feature neben anderen -- sie *sind* das Gedaechtnis selbst. Die Hierarchie, die RAG besser macht (Ueberblick vor Detail, Navigation statt flacher Liste), ist dieselbe Struktur, aus der Identitaet emergiert. Centroids pro Perspektive, gewichtet nach Salienz -- das ist kein Profil, das jemand anlegt, sondern eine Beobachtung, die aus der statistischen Form aller Erinnerungen waechst.
+
+Und die Persoenlichkeit wird nicht von dem geformt, was man oft tut, sondern von dem, was einen bewegt hat. Deshalb misst Salienz Bedeutsamkeit, nicht Haeufigkeit: Interaktionsdichte, Wirkungsbreite ueber Perspektiven, Revisionen und Widersprueche. Was den Agenten gepraegt hat, bleibt praesent -- auch wenn es selten abgerufen wird.
+
 ## Architektur-Ueberblick
 
 ### Ein Primitiv: Entry
@@ -72,15 +78,23 @@ Zugriffsmuster bestimmen Sichtbarkeit. Wichtiges bleibt praesent, Ungenutztes ve
 ### Salienz
 
 Salienz != Haeufigkeit. Gemessen an:
-- Interaktionsdichte (wie oft zugegriffen)
-- Widerspruechen (kollidiert mit anderem Wissen)
-- Wirkungsbreite (in wie vielen Perspektiven relevant)
+- **Interaktionsdichte** (Gewicht 0.5) -- Access-Profile ueber Zeitfenster
+- **Wirkungsbreite** (Gewicht 0.25) -- in wie vielen Perspektiven relevant
+- **Revisions-Aktivitaet** (Gewicht 0.25) -- Anzahl Relationen als Proxy fuer aktive Deliberation
 
-Ranking: `semantic_similarity x recency x salience`
+> Hinweis: Echte Widerspruchserkennung (semantische Spannungen zwischen Entries) ist ein offenes Forschungsthema. Aktuell dient die Revisions-Aktivitaet als Proxy -- viele Relationen deuten auf Ueberarbeitungen, Widersprueche, oder aktive Auseinandersetzung hin.
+
+Ranking: `semantic_similarity * (1-alpha) + (recency * (1-sw) + salience * sw) * alpha`
+
+Entries mit hoher Salienz werden beim Aging geschuetzt -- sie ueberleben Visibility-Degradierung.
 
 ### Identitaet
 
-Aus Embedding-Clustern gewichtet nach Salienz waechst eine Identitaet. Beim Connect erhaelt der Agent ein Priming: Identity-Narrativ, offene Faeden, aktuelle Learnings.
+Aus Embedding-Clustern gewichtet nach Salienz waechst eine Identitaet. Kein Profil, das jemand anlegt -- eine Beobachtung: Welche Themen tauchen immer wieder auf, wo liegen die Schwerpunkte, was hat den Agenten gepraegt? Beim Connect erhaelt der Agent ein Priming: Core Knowledge (die salientesten Erinnerungen), offene Faeden (ungeloeste Widersprueche, aktive Deliberation), aktuelle Learnings. Das ist der Moment, in dem ein Agent aufwacht und sich kennt.
+
+### Schlaf-Zyklus (geplant)
+
+Wie ein Mensch im Schlaf konsolidiert, soll ein Agent sein Gedaechtnis aktiv pflegen koennen. Der Zyklus: `reflect` bereitet Material auf (was braucht Aufmerksamkeit?), ein LLM generiert daraus Zusammenfassungen und Meta-Erkenntnisse, `add` schreibt sie zurueck, `compact` raeumt mechanisch auf. Das ist `think` -- der optionale Orchestrator, der alles ohne LLM Funktionierende um die Faehigkeit zur Selbstreflexion ergaenzt.
 
 ## Was VecLayer macht vs. was das LLM macht
 
@@ -152,29 +166,21 @@ Aliase: `store` = `add`, `s` = `search`, `f` = `focus`
 
 ## Aktueller Stand
 
-### Implementiert (Prototyp)
-- [x] Markdown-Parsing mit Heading-Hierarchie
-- [x] FastEmbed-Embeddings (ONNX, CPU-only)
-- [x] LanceDB-Backend (serverless)
-- [x] RAPTOR-Style Soft Clustering + LLM-Summaries (via Ollama)
-- [x] Hierarchische Suche mit Visibility-Filter
-- [x] RRD-Style Access-Tracking (hour/day/week/month/year/total)
-- [x] Agent-konfigurierbare Aging-Regeln
-- [x] 5-Tool MCP-Interface: recall, focus, store, think, share
-- [x] HTTP REST API
-- [x] Trait-basierte Architektur (DocumentParser, Embedder, VectorStore, Summarizer)
-- [x] 12-Factor-Konfiguration via ENV
+### Phase 1-4: Erledigt
 
-### Gaps zum Konzept (in Arbeit)
-- [ ] Content-Hash IDs statt UUID
-- [ ] Entry-Typ (raw/summary/meta/impression) statt is_summary bool
-- [ ] Perspektiven (6 Defaults + Custom)
-- [ ] Salienz-Berechnung (Dichte, Widersprueche, Spread)
-- [ ] Identity-View + Priming beim Connect
-- [ ] CLI aligned mit Spec (init, add, search, focus)
-- [ ] Summarizer/Clustering aus Core raus (VecLayer denkt nicht)
-- [ ] TOML-Config + ENV Overrides
-- [ ] Schlaf-Zyklus (optionaler Orchestrator)
+Das gesamte mechanische Fundament steht -- alles was VecLayer ohne LLM leisten soll, funktioniert:
+
+- [x] **Core (Phase 1):** Entry mit SHA-256 Content-Hash, EntryType-Enum (raw/summary/meta/impression), CLI aligned mit Spec, LLM aus Core extrahiert (Feature-Flag `llm`), TOML-Config + ENV Overrides, SRP-Refactoring
+- [x] **Perspektiven (Phase 2):** 6 Default-Perspektiven + Custom, typisierte Relationen (SupersededBy, SummarizedBy, VersionOf, RelatedTo, DerivedFrom), facettierte Suche, `veclayer p` fuer Perspektiven-Management
+- [x] **Aging + Salienz (Phase 3):** Salienz-Komposit aus Interaktionsdichte, Perspektiven-Spread und Revisions-Aktivitaet, Ranking-Formel mit Salienz-Gewichtung, compact-Kommando, Salienz-Schutz beim Aging
+- [x] **Identity + Reflect (Phase 4):** Salienz-gewichtete Embedding-Centroids pro Perspektive, Open Threads (ungeloeste Widersprueche, aktive Deliberation), Reflect-Report, dynamisches Priming beim MCP-Connect
+
+### Offen
+
+- [ ] **Schlaf-Zyklus (Phase 5):** LLMProvider Trait, think-Kommando (reflect -> LLM -> add -> compact), Narrativ-Generierung, automatische Konsolidierung
+- [ ] **Server + Sharing (Phase 6):** Personalisierte MCP-Tool-Descriptions, UCAN-basiertes Sharing, REST API an neues Datenmodell anpassen
+- [ ] **Polish (Phase 7):** Alias-Support, Multi-Format Parsing (PDF, HTML, Code), alternative Backends (Turso, pgvector)
+- [ ] **Widerspruchserkennung:** Aktuell misst Salienz Revisions-Aktivitaet (Anzahl Relationen) als Proxy fuer Widersprueche. Echte semantische Widerspruchserkennung -- Spannungen zwischen Entries erkennen, die sich inhaltlich widersprechen -- ist ein offenes Thema (siehe ROADMAP)
 
 ## Lizenz
 

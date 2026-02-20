@@ -2,32 +2,38 @@
 
 ## Wo wir stehen
 
-VecLayer hat einen funktionierenden Prototyp mit ~8100 Zeilen Rust-Code:
-- Hierarchisches Chunking + Summaries mit BGE-Embeddings (fastembed)
-- Vektorsuche mit Recency-Boost + Visibility-Filtern
-- RRD-Style Access-Tracking (hour/day/week/month/year Buckets)
-- 5-Tool MCP-Interface: recall, focus, store, think, share
-- Agent-konfigurierbare Aging-Regeln
-- HTTP REST API + MCP stdio
+**Phasen 1-4 sind abgeschlossen.** Das gesamte mechanische Fundament steht -- alles was VecLayer ohne LLM leisten soll, funktioniert:
+
+- Entry-Modell mit SHA-256 Content-Hash, vier Typen, typisierten Relationen
+- Sechs Default-Perspektiven + Custom, facettierte Suche, Validierung
+- Salienz-Komposit (Interaktion, Perspektiven-Spread, Revisions-Aktivitaet) mit Aging-Schutz
+- Identitaet aus salienz-gewichteten Embedding-Centroids, Open Threads, Learnings
+- Dynamisches Priming beim MCP-Connect
+- LLM aus Core extrahiert (Feature-Flag), TOML + ENV Konfiguration
+- 13 CLI-Kommandos, MCP stdio + HTTP
+
+**Naechster Schritt:** Phase 5 (Think) -- der optionale Orchestrator, der Selbstreflexion ermoeglicht. Plus eine offene Konzeptfrage: echte Widerspruchserkennung vs. der aktuelle Proxy.
 
 ## Alignment-Scorecard: Konzept vs. Code
 
 | Konzept-Element | Status | Anmerkung |
 |---|---|---|
 | Hierarchie (Zusammenfassungen ueber Zusammenfassungen) | **Vorhanden** | Heading-Hierarchie + RAPTOR-Summaries |
-| Memory Aging (RRD-Tracking, Visibility-Degradierung) | **Vorhanden** | Konfigurierbar, on-demand ausfuehrbar |
+| Memory Aging (RRD-Tracking, Visibility-Degradierung) | **Vorhanden** | Konfigurierbar, Salienz-Schutz beim Aging |
 | 5-Tool MCP (recall, focus, store, think, share) | **Vorhanden** | Vollstaendig implementiert |
 | Trait-Architektur (austauschbare Backends) | **Vorhanden** | DocumentParser, Embedder, VectorStore, Summarizer |
-| Content-Hash IDs (SHA-256) | **Fehlt** | Aktuell UUID v4 |
-| Entry-Typ (raw/summary/meta/impression) | **Fehlt** | Nur is_summary Boolean |
-| Perspektiven (6 Defaults + Custom) | **Fehlt** | Kernkonzept nicht implementiert |
-| Salienz (Dichte, Widersprueche, Spread) | **Fehlt** | Nur Zugriffsfrequenz |
-| Identity-View + Priming | **Fehlt** | Nur statische MCP-Instructions |
-| CLI-Spec (init, add, search, focus) | **Abweichend** | Aktuell: ingest, query, serve |
-| VecLayer denkt nicht (kein LLM in Core) | **Verletzt** | Summarizer/Clustering in Core-Lib |
-| TOML-Config + ENV Overrides | **Teilweise** | Nur ENV, kein TOML |
-| Relationen als separate Tabelle | **Teilweise** | JSON in Entry, nicht normalisiert |
-| Schlaf-Zyklus (optionaler Orchestrator) | **Fehlt** | |
+| Content-Hash IDs (SHA-256) | **Vorhanden** | 64-Char Hex, 7-Char Short-ID wie git (Phase 1) |
+| Entry-Typ (raw/summary/meta/impression) | **Vorhanden** | EntryType Enum mit vier Varianten (Phase 1) |
+| Perspektiven (6 Defaults + Custom) | **Vorhanden** | CRUD, Hints, facettierte Suche, Validierung (Phase 2) |
+| Salienz (Dichte, Spread, Revisionen) | **Vorhanden** | Komposit-Score, Ranking-Integration, Aging-Schutz (Phase 3) |
+| Identity-View + Priming | **Vorhanden** | Centroids, Open Threads, Learnings, dynamisches MCP-Priming (Phase 4) |
+| CLI-Spec (init, add, search, focus) | **Vorhanden** | 13 Kommandos, aligned mit Spec (Phase 1) |
+| VecLayer denkt nicht (kein LLM in Core) | **Vorhanden** | Feature-Flag `llm`, Core kompiliert ohne LLM (Phase 1) |
+| TOML-Config + ENV Overrides | **Vorhanden** | 12-Factor: ENV > TOML > Defaults, 3-Stufen-Discovery (Phase 1) |
+| Relationen typisiert | **Vorhanden** | SupersededBy, SummarizedBy, VersionOf, RelatedTo, DerivedFrom (Phase 2) |
+| Widerspruchserkennung (semantisch) | **Offen** | Revisions-Aktivitaet als Proxy; echte Erkennung noch zu konzipieren |
+| Schlaf-Zyklus (optionaler Orchestrator) | **Fehlt** | Phase 5 |
+| UCAN Auth + Sharing | **Fehlt** | Phase 6 |
 
 ## Code-Qualitaet: SRP/DRY Befund
 
@@ -38,13 +44,11 @@ VecLayer hat einen funktionierenden Prototyp mit ~8100 Zeilen Rust-Code:
 - Builder-Pattern auf HierarchicalChunk
 - Offene Strings fuer Visibility/Relations (erweiterbar ohne Code-Aenderung)
 
-### Handlungsbedarf
-- **mcp/mod.rs (1076 Zeilen)** -- God Module. Aufteilen in types, tools, stdio, http
-- **SearchConfig-Konstruktion** dupliziert zwischen commands.rs und mcp/mod.rs
-- **Score-Berechnung** (vector * (1-alpha) + relevancy * alpha) dupliziert in search/search_subtree
-- **Store/Embedder-Initialisierung** an 5+ Stellen wiederholt
-- **chunk.rs (1300 Zeilen)** -- AccessProfile in eigenes Modul extrahieren
-- **main.rs** -- Formatierungslogik gehoert in commands oder display-Modul
+### In Phase 1 behoben
+- ~~mcp/mod.rs (1076 Zeilen)~~ → aufgeteilt in types.rs, tools.rs, stdio.rs, http.rs
+- ~~SearchConfig-Konstruktion dupliziert~~ → SearchConfig::for_query() + blend_score() dedupliziert
+- ~~chunk.rs (1300 Zeilen)~~ → AccessProfile in eigenes Modul (access_profile.rs)
+- ~~main.rs Formatierungslogik~~ → nach commands.rs extrahiert
 
 ---
 
@@ -139,6 +143,26 @@ Aus dem Gedaechtnis eine Identitaet emergieren lassen.
 - [x] **Priming beim Connect:**
   - MCP initialize liefert dynamisches Priming (statische Instruktionen + Identity Briefing)
   - Priming enthalt Core Knowledge, Open Threads, Recent Learnings, Perspective Coverage
+
+### Offene Konzeptfragen
+
+Themen, die noch durchdacht werden muessen bevor sie in eine Phase muenden.
+
+#### Widerspruchserkennung: Proxy vs. echte Semantik
+
+**Status:** Revisions-Aktivitaet (Anzahl Relationen) dient aktuell als Proxy fuer Widersprueche in der Salienz-Berechnung. Das funktioniert: viele Relationen deuten auf Ueberarbeitungen, konkurrierende Versionen oder aktive Auseinandersetzung hin. Aber es ist kein echtes Erkennen von semantischen Spannungen.
+
+**Die Frage:** Soll VecLayer Widersprueche zwischen Entries erkennen koennen -- also Paare von Entries identifizieren, die inhaltlich in Spannung zueinander stehen? Und wenn ja: mechanisch (ohne LLM) oder als Input fuer den Schlaf-Zyklus (mit LLM)?
+
+**Moegliche Ansaetze (noch nicht bewertet):**
+- **Embedding-Distanz + Relationstyp:** Entries die semantisch nah sind aber via SupersededBy oder VersionOf verbunden → wahrscheinlich Widerspruch/Revision
+- **Negation-Heuristik:** Gleiche Embedding-Nachbarschaft, aber entgegengesetzte Aussagen (schwer ohne LLM)
+- **LLM-gestuetzt im Schlaf-Zyklus:** reflect liefert Kandidaten-Paare, LLM bewertet ob echter Widerspruch
+- **Manuell:** Agent oder Mensch markiert Widersprueche explizit via Relation
+
+**Designprinzip:** VecLayer denkt nicht. Wenn Widerspruchserkennung ein LLM braucht, gehoert sie in den Schlaf-Zyklus (Phase 5), nicht in Core. Mechanische Heuristiken (Embedding-Distanz + Relationstyp) koennten als Kandidaten-Filter in Core leben.
+
+---
 
 ### Phase 5 -- Think (optional, braucht LLM)
 
