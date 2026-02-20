@@ -12,7 +12,7 @@
 - LLM aus Core extrahiert (Feature-Flag), TOML + ENV Konfiguration
 - 13 CLI-Kommandos, MCP stdio + HTTP
 
-**Naechster Schritt:** Phase 5 (Think) -- der optionale Orchestrator, der Selbstreflexion ermoeglicht. Plus eine offene Konzeptfrage: echte Widerspruchserkennung vs. der aktuelle Proxy.
+**Naechster Schritt:** Phase 6 (Server + Sharing) -- UCAN Auth und Sharing.
 
 ## Alignment-Scorecard: Konzept vs. Code
 
@@ -32,7 +32,8 @@
 | TOML-Config + ENV Overrides | **Vorhanden** | 12-Factor: ENV > TOML > Defaults, 3-Stufen-Discovery (Phase 1) |
 | Relationen typisiert | **Vorhanden** | SupersededBy, SummarizedBy, VersionOf, RelatedTo, DerivedFrom (Phase 2) |
 | Widerspruchserkennung (semantisch) | **Offen** | Revisions-Aktivitaet als Proxy; echte Erkennung noch zu konzipieren |
-| Schlaf-Zyklus (optionaler Orchestrator) | **Fehlt** | Phase 5 |
+| Schlaf-Zyklus (optionaler Orchestrator) | **Vorhanden** | Phase 5 |
+| Tool Ergonomics (store relations, batch, browse, temporal) | **Vorhanden** | Phase 5.5 |
 | UCAN Auth + Sharing | **Fehlt** | Phase 6 |
 
 ## Code-Qualitaet: SRP/DRY Befund
@@ -144,41 +145,39 @@ Aus dem Gedaechtnis eine Identitaet emergieren lassen.
   - MCP initialize liefert dynamisches Priming (statische Instruktionen + Identity Briefing)
   - Priming enthalt Core Knowledge, Open Threads, Recent Learnings, Perspective Coverage
 
-### Offene Konzeptfragen
-
-Themen, die noch durchdacht werden muessen bevor sie in eine Phase muenden.
-
-#### Widerspruchserkennung: Proxy vs. echte Semantik
-
-**Status:** Revisions-Aktivitaet (Anzahl Relationen) dient aktuell als Proxy fuer Widersprueche in der Salienz-Berechnung. Das funktioniert: viele Relationen deuten auf Ueberarbeitungen, konkurrierende Versionen oder aktive Auseinandersetzung hin. Aber es ist kein echtes Erkennen von semantischen Spannungen.
-
-**Die Frage:** Soll VecLayer Widersprueche zwischen Entries erkennen koennen -- also Paare von Entries identifizieren, die inhaltlich in Spannung zueinander stehen? Und wenn ja: mechanisch (ohne LLM) oder als Input fuer den Schlaf-Zyklus (mit LLM)?
-
-**Moegliche Ansaetze (noch nicht bewertet):**
-- **Embedding-Distanz + Relationstyp:** Entries die semantisch nah sind aber via SupersededBy oder VersionOf verbunden → wahrscheinlich Widerspruch/Revision
-- **Negation-Heuristik:** Gleiche Embedding-Nachbarschaft, aber entgegengesetzte Aussagen (schwer ohne LLM)
-- **LLM-gestuetzt im Schlaf-Zyklus:** reflect liefert Kandidaten-Paare, LLM bewertet ob echter Widerspruch
-- **Manuell:** Agent oder Mensch markiert Widersprueche explizit via Relation
-
-**Designprinzip:** VecLayer denkt nicht. Wenn Widerspruchserkennung ein LLM braucht, gehoert sie in den Schlaf-Zyklus (Phase 5), nicht in Core. Mechanische Heuristiken (Embedding-Distanz + Relationstyp) koennten als Kandidaten-Filter in Core leben.
-
 ---
 
-### Phase 5 -- Think (optional, braucht LLM)
+### Phase 5 -- Think (optional, braucht LLM) **DONE**
 
 Der optionale Orchestrator.
 
-- [ ] **LLMProvider Trait** (OpenAI, Anthropic, Ollama)
-- [ ] **think-Kommando:**
+- [x] **LLMProvider Trait** (OpenAI, Anthropic, Ollama)
+- [x] **think-Kommando:**
   - reflect -> LLM -> add -> compact Zyklus
   - Narrativ-Generierung
   - Meta-Learning-Destillation
-- [ ] **Schlaf-Zyklus:**
+- [x] **Schlaf-Zyklus:**
   - Automatische Reflexion + Konsolidierung
   - Konfigurierbar (Intervall, Tiefe)
-- [ ] **CLI:**
+- [x] **CLI:**
   - `veclayer think`
   - `veclayer config llm.*`
+
+**Enhancements (offen):**
+- Sequential thinking pattern fuer Think Cycle: Kette von Beobachtungen → Hypothesen → Schlussfolgerungen, jeweils als verlinkte Entries gespeichert
+- Mechanische Widerspruchserkennung als Think-Aktion (Embedding-Distanz + Relationstyp Heuristiken)
+
+### Phase 5.5 -- Tool Ergonomics **DONE**
+
+MCP-Tool-Interface polieren fuer bessere Agent-Ergonomie.
+
+- [x] **Store with Relations:** Inline-Relationen beim Speichern (supersedes, summarizes, related_to, derived_from, version_of)
+- [x] **Batch Store:** Mehrere Entries in einem Aufruf speichern (`items` Array)
+- [x] **Recall Browse Mode:** `recall` ohne Query listet Entries nach Perspektive
+- [x] **Temporal Filter:** `since`/`until` Parameter fuer zeitliche Filterung (ISO 8601 oder Epoch)
+- [x] **Relevance Tiers:** Score-basierte Relevanz-Stufen (strong/moderate/weak/tangential)
+- [x] **Session Perspective:** Konvention fuer Session-Tracking ueber existierende Primitive
+- [x] **Entry Type im Store:** `entry_type` Parameter (raw/summary/meta/impression)
 
 ### Phase 6 -- Server + Sharing
 

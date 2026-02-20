@@ -346,7 +346,9 @@ async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result
 
     println!(
         "Added {} entries ({} summaries) from {} files",
-        total_entries, summary_entries, files.len()
+        total_entries,
+        summary_entries,
+        files.len()
     );
 
     Ok(AddResult {
@@ -383,13 +385,19 @@ async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<A
 
     // Add relations from options
     if let Some(ref target) = options.summarizes {
-        chunk.relations.push(crate::ChunkRelation::summarized_by(target));
+        chunk
+            .relations
+            .push(crate::ChunkRelation::summarized_by(target));
     }
     if let Some(ref target) = options.supersedes {
-        chunk.relations.push(crate::ChunkRelation::superseded_by(target));
+        chunk
+            .relations
+            .push(crate::ChunkRelation::superseded_by(target));
     }
     if let Some(ref target) = options.version_of {
-        chunk.relations.push(crate::ChunkRelation::new("version_of", target));
+        chunk
+            .relations
+            .push(crate::ChunkRelation::new("version_of", target));
     }
 
     let embeddings = embedder.embed(&[text])?;
@@ -465,7 +473,10 @@ pub async fn search(data_dir: &Path, query_str: &str, options: &SearchOptions) -
         println!("   ID: {}", short_id(&result.chunk.id));
     }
 
-    println!("\n{} results. Use `veclayer focus <id>` to drill in.", results.len());
+    println!(
+        "\n{} results. Use `veclayer focus <id>` to drill in.",
+        results.len()
+    );
 
     Ok(())
 }
@@ -582,9 +593,7 @@ pub async fn focus(data_dir: &Path, id: &str, options: &FocusOptions) -> Result<
             );
         }
 
-        println!(
-            "\nUse `veclayer focus <child-id>` to drill deeper."
-        );
+        println!("\nUse `veclayer focus <child-id>` to drill deeper.");
     } else {
         println!("(no children)");
     }
@@ -754,7 +763,11 @@ pub async fn archive(data_dir: &Path, ids: &[String]) -> Result<()> {
         store
             .update_visibility(&chunk.id, crate::chunk::visibility::DEEP_ONLY)
             .await?;
-        println!("Archived {} (was: {})", short_id(&chunk.id), chunk.visibility);
+        println!(
+            "Archived {} (was: {})",
+            short_id(&chunk.id),
+            chunk.visibility
+        );
     }
 
     Ok(())
@@ -812,8 +825,14 @@ async fn compact_rotate(data_dir: &Path) -> Result<()> {
     let aging_result = crate::aging::apply_aging(&store, &aging_config).await?;
 
     println!("Compact: rotate");
-    println!("  Aging config: degrade after {} days", aging_config.degrade_after_days);
-    println!("  Degraded {} entries to '{}'", aging_result.degraded_count, aging_config.degrade_to);
+    println!(
+        "  Aging config: degrade after {} days",
+        aging_config.degrade_after_days
+    );
+    println!(
+        "  Degraded {} entries to '{}'",
+        aging_result.degraded_count, aging_config.degrade_to
+    );
     for id in &aging_result.degraded_ids {
         println!("    {}", short_id(id));
     }
@@ -884,11 +903,18 @@ async fn compact_archive_candidates(data_dir: &Path, options: &CompactOptions) -
         .collect();
 
     if candidates.is_empty() {
-        println!("No archive candidates below threshold {:.2}.", options.archive_threshold);
+        println!(
+            "No archive candidates below threshold {:.2}.",
+            options.archive_threshold
+        );
         return Ok(());
     }
 
-    println!("Archive candidates ({}, threshold {:.2}):", candidates.len(), options.archive_threshold);
+    println!(
+        "Archive candidates ({}, threshold {:.2}):",
+        candidates.len(),
+        options.archive_threshold
+    );
     println!("{}", "=".repeat(60));
     for chunk in &candidates {
         let score = crate::salience::compute(chunk, &weights);
@@ -900,9 +926,7 @@ async fn compact_archive_candidates(data_dir: &Path, options: &CompactOptions) -
             preview(&chunk.content, 60)
         );
     }
-    println!(
-        "\nUse `veclayer archive <id>...` to archive selected entries."
-    );
+    println!("\nUse `veclayer archive <id>...` to archive selected entries.");
 
     Ok(())
 }
@@ -991,7 +1015,10 @@ pub async fn think(data_dir: &Path) -> Result<()> {
     let config = crate::Config::new().with_data_dir(data_dir);
     let llm = crate::llm::LlmBackend::from_config(&config.llm);
 
-    println!("Think: starting sleep cycle (LLM: {} via {})", config.llm.model, config.llm.provider);
+    println!(
+        "Think: starting sleep cycle (LLM: {} via {})",
+        config.llm.model, config.llm.provider
+    );
 
     let result = crate::think::execute(&store, &embedder, &llm, data_dir).await?;
 
@@ -1007,11 +1034,17 @@ pub async fn think(data_dir: &Path) -> Result<()> {
     }
 
     if result.consolidations_added > 0 {
-        println!("  Consolidations: {} summaries created", result.consolidations_added);
+        println!(
+            "  Consolidations: {} summaries created",
+            result.consolidations_added
+        );
     }
 
     if result.learnings_added > 0 {
-        println!("  Learnings: {} meta-entries extracted", result.learnings_added);
+        println!(
+            "  Learnings: {} meta-entries extracted",
+            result.learnings_added
+        );
     }
 
     println!("\nEntries created:");
@@ -1052,7 +1085,8 @@ pub async fn orientation(data_dir: &Path) -> Result<()> {
 
     let snapshot = crate::identity::compute_identity(&store, data_dir).await?;
 
-    println!("VecLayer — {} entries from {} sources",
+    println!(
+        "VecLayer — {} entries from {} sources",
         store_stats.total_chunks,
         store_stats.source_files.len()
     );
@@ -1078,7 +1112,10 @@ pub async fn orientation(data_dir: &Path) -> Result<()> {
 
     // Open threads (brief)
     if !snapshot.open_threads.is_empty() {
-        println!("\n{} open thread(s) need attention. Run `veclayer reflect` for details.", snapshot.open_threads.len());
+        println!(
+            "\n{} open thread(s) need attention. Run `veclayer reflect` for details.",
+            snapshot.open_threads.len()
+        );
     }
 
     // Hints

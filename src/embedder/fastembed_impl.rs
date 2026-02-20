@@ -106,9 +106,21 @@ mod tests {
 
     #[test]
     fn test_get_dimension_known_models() {
-        assert_eq!(FastEmbedder::get_dimension(&EmbeddingModel::BGESmallENV15), 384);
-        assert_eq!(FastEmbedder::get_dimension(&EmbeddingModel::BGEBaseENV15), 768);
-        assert_eq!(FastEmbedder::get_dimension(&EmbeddingModel::BGELargeENV15), 1024);
-        assert_eq!(FastEmbedder::get_dimension(&EmbeddingModel::AllMiniLML6V2), 384);
+        assert_eq!(
+            FastEmbedder::get_dimension(&EmbeddingModel::BGESmallENV15),
+            384
+        );
+        assert_eq!(
+            FastEmbedder::get_dimension(&EmbeddingModel::BGEBaseENV15),
+            768
+        );
+        assert_eq!(
+            FastEmbedder::get_dimension(&EmbeddingModel::BGELargeENV15),
+            1024
+        );
+        assert_eq!(
+            FastEmbedder::get_dimension(&EmbeddingModel::AllMiniLML6V2),
+            384
+        );
     }
 }

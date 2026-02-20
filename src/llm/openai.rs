@@ -77,9 +77,7 @@ impl LlmProvider for OpenAiLlm {
         body["choices"][0]["message"]["content"]
             .as_str()
             .map(String::from)
-            .ok_or_else(|| {
-                crate::Error::llm("OpenAI response missing choices[0].message.content")
-            })
+            .ok_or_else(|| crate::Error::llm("OpenAI response missing choices[0].message.content"))
     }
 
     fn name(&self) -> &str {

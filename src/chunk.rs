@@ -1,5 +1,5 @@
-use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 // Re-export from the dedicated access_profile module
 pub use crate::access_profile::{now_epoch_secs, AccessProfile, RecencyWindow};
@@ -27,19 +27,14 @@ pub fn short_id(id: &str) -> &str {
 /// - `summary` -- Generated summary of child entries
 /// - `meta` -- Reflection, assessment, evaluation
 /// - `impression` -- Spontaneous observation, quick note
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum EntryType {
+    #[default]
     Raw,
     Summary,
     Meta,
     Impression,
-}
-
-impl Default for EntryType {
-    fn default() -> Self {
-        Self::Raw
-    }
 }
 
 impl std::fmt::Display for EntryType {
@@ -715,7 +710,6 @@ mod tests {
 
         assert!(summary.is_summary());
         assert!(summary.embedding.is_none());
-
     }
 
     #[test]

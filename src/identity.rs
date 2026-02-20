@@ -120,9 +120,7 @@ fn compute_centroids(
         .filter_map(|p| {
             let members: Vec<_> = chunks
                 .iter()
-                .filter(|c| {
-                    c.perspectives.iter().any(|cp| cp == &p.id) && c.embedding.is_some()
-                })
+                .filter(|c| c.perspectives.iter().any(|cp| cp == &p.id) && c.embedding.is_some())
                 .collect();
 
             if members.is_empty() {
@@ -331,8 +329,8 @@ mod tests {
 
     #[test]
     fn test_find_open_threads_superseded() {
-        let chunk = test_chunk("old decision")
-            .with_relation(ChunkRelation::superseded_by("newer-id"));
+        let chunk =
+            test_chunk("old decision").with_relation(ChunkRelation::superseded_by("newer-id"));
         let threads = find_open_threads(&[chunk]);
         assert_eq!(threads.len(), 1);
         assert!(threads[0].reason.contains("Superseded"));
@@ -353,9 +351,7 @@ mod tests {
     fn test_find_open_threads_merged() {
         // Chunk that matches both criteria: reasons should be merged
         let mut chunk = test_chunk("both criteria");
-        chunk
-            .relations
-            .push(ChunkRelation::superseded_by("newer"));
+        chunk.relations.push(ChunkRelation::superseded_by("newer"));
         chunk.relations.push(ChunkRelation::related_to("a"));
         chunk.relations.push(ChunkRelation::related_to("b"));
         let threads = find_open_threads(&[chunk]);
@@ -369,9 +365,7 @@ mod tests {
     fn test_find_open_threads_archived_ignored() {
         let mut chunk = test_chunk("archived superseded");
         chunk.visibility = "deep_only".to_string();
-        chunk
-            .relations
-            .push(ChunkRelation::superseded_by("newer"));
+        chunk.relations.push(ChunkRelation::superseded_by("newer"));
         let threads = find_open_threads(&[chunk]);
         // Already archived, not an open thread
         assert_eq!(threads.len(), 0);

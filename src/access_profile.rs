@@ -190,10 +190,7 @@ impl AccessProfile {
             self.hour = 0;
             self.last_rolled = now;
         } else if elapsed >= SECS_PER_DAY {
-            self.week = self
-                .week
-                .saturating_add(self.day)
-                .saturating_add(self.hour);
+            self.week = self.week.saturating_add(self.day).saturating_add(self.hour);
             self.day = 0;
             self.hour = 0;
             self.last_rolled = now;
