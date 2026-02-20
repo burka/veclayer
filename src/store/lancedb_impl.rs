@@ -432,7 +432,9 @@ impl LanceStore {
             } else {
                 // Legacy schema: migrate old fields
                 let created_at = created_at_col.map(|col| col.value(i)).unwrap_or(0);
-                let last_accessed = legacy_last_accessed_col.map(|col| col.value(i)).unwrap_or(0);
+                let last_accessed = legacy_last_accessed_col
+                    .map(|col| col.value(i))
+                    .unwrap_or(0);
                 let access_count = legacy_access_count_col.map(|col| col.value(i)).unwrap_or(0);
                 crate::chunk::AccessProfile {
                     created_at,
@@ -603,10 +605,7 @@ impl VectorStore for LanceStore {
 
         let results = table
             .query()
-            .only_if(format!(
-                "source_file = '{}'",
-                sql_escape(source_file)
-            ))
+            .only_if(format!("source_file = '{}'", sql_escape(source_file)))
             .execute()
             .await
             .map_err(|e| Error::search(format!("Failed to query by source: {}", e)))?
@@ -629,10 +628,7 @@ impl VectorStore for LanceStore {
         let before = self.get_by_source(source_file).await?.len();
 
         table
-            .delete(&format!(
-                "source_file = '{}'",
-                sql_escape(source_file)
-            ))
+            .delete(&format!("source_file = '{}'", sql_escape(source_file)))
             .await
             .map_err(|e| Error::store(format!("Failed to delete by source: {}", e)))?;
 
@@ -704,9 +700,7 @@ impl VectorStore for LanceStore {
                 .only_if(filter)
                 .execute()
                 .await
-                .map_err(|e| {
-                    Error::store(format!("Failed to update access profile: {}", e))
-                })?;
+                .map_err(|e| Error::store(format!("Failed to update access profile: {}", e)))?;
         }
 
         Ok(())
@@ -727,11 +721,7 @@ impl VectorStore for LanceStore {
         Ok(())
     }
 
-    async fn add_relation(
-        &self,
-        chunk_id: &str,
-        relation: crate::ChunkRelation,
-    ) -> Result<()> {
+    async fn add_relation(&self, chunk_id: &str, relation: crate::ChunkRelation) -> Result<()> {
         // Read current chunk to get existing relations
         let chunk = self
             .get_by_id(chunk_id)
@@ -749,10 +739,7 @@ impl VectorStore for LanceStore {
 
         table
             .update()
-            .column(
-                "relations",
-                format!("'{}'", sql_escape(&relations_json)),
-            )
+            .column("relations", format!("'{}'", sql_escape(&relations_json)))
             .only_if(filter)
             .execute()
             .await
@@ -799,9 +786,7 @@ impl VectorStore for LanceStore {
 
             let chunks = self.batch_to_chunks(&batch)?;
             for (i, chunk) in chunks.into_iter().enumerate() {
-                let score = distances
-                    .map(|d| 1.0 - d.value(i))
-                    .unwrap_or(1.0);
+                let score = distances.map(|d| 1.0 - d.value(i)).unwrap_or(1.0);
                 search_results.push(SearchResult { chunk, score });
             }
         }
@@ -842,7 +827,11 @@ impl VectorStore for LanceStore {
         Ok(all_chunks)
     }
 
-    async fn get_stale_chunks(&self, stale_seconds: i64, limit: usize) -> Result<Vec<HierarchicalChunk>> {
+    async fn get_stale_chunks(
+        &self,
+        stale_seconds: i64,
+        limit: usize,
+    ) -> Result<Vec<HierarchicalChunk>> {
         let now = crate::chunk::now_epoch_secs();
         let cutoff = now - stale_seconds;
 
@@ -874,6 +863,56 @@ impl VectorStore for LanceStore {
         all_chunks.sort_by_key(|c| c.access_profile.last_rolled);
 
         all_chunks.truncate(limit);
+        Ok(all_chunks)
+    }
+
+    async fn list_entries(
+        &self,
+        perspective: Option<&str>,
+        since: Option<i64>,
+        until: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<HierarchicalChunk>> {
+        let table = self.get_table().await?;
+
+        let mut filters = Vec::new();
+        if let Some(p) = perspective {
+            let escaped = sql_escape(p);
+            filters.push(format!("perspectives LIKE '%\"{}%'", escaped));
+        }
+        if let Some(s) = since {
+            filters.push(format!("created_at >= {}", s));
+        }
+        if let Some(u) = until {
+            filters.push(format!("created_at <= {}", u));
+        }
+
+        let mut query = table.query();
+        if !filters.is_empty() {
+            query = query.only_if(filters.join(" AND "));
+        }
+
+        let results = query
+            .execute()
+            .await
+            .map_err(|e| Error::search(format!("Failed to list entries: {}", e)))?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| Error::search(format!("Failed to collect entries: {}", e)))?;
+
+        let mut all_chunks = Vec::new();
+        for batch in results {
+            all_chunks.extend(self.batch_to_chunks(&batch)?);
+        }
+
+        // Sort by created_at desc (newest first)
+        all_chunks.sort_by(|a, b| {
+            b.access_profile
+                .created_at
+                .cmp(&a.access_profile.created_at)
+        });
+        all_chunks.truncate(limit);
+
         Ok(all_chunks)
     }
 }

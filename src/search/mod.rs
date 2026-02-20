@@ -107,8 +107,7 @@ impl SearchConfig {
             let recency = chunk.access_profile.relevancy_score(self.recency_window);
 
             let relevancy_signal = if self.salience_weight > 0.0 {
-                let salience =
-                    salience::compute(chunk, &SalienceWeights::default()).composite;
+                let salience = salience::compute(chunk, &SalienceWeights::default()).composite;
                 recency * (1.0 - self.salience_weight) + salience * self.salience_weight
             } else {
                 recency
@@ -538,6 +537,16 @@ mod tests {
         async fn get_stale_chunks(
             &self,
             _stale_seconds: i64,
+            _limit: usize,
+        ) -> Result<Vec<HierarchicalChunk>> {
+            Ok(vec![])
+        }
+
+        async fn list_entries(
+            &self,
+            _perspective: Option<&str>,
+            _since: Option<i64>,
+            _until: Option<i64>,
             _limit: usize,
         ) -> Result<Vec<HierarchicalChunk>> {
             Ok(vec![])
@@ -1137,8 +1146,8 @@ mod tests {
 
     #[test]
     fn test_with_perspective() {
-        let config = SearchConfig::for_query(5, false, None)
-            .with_perspective(Some("decisions".to_string()));
+        let config =
+            SearchConfig::for_query(5, false, None).with_perspective(Some("decisions".to_string()));
         assert_eq!(config.perspective.as_deref(), Some("decisions"));
     }
 
@@ -1222,7 +1231,9 @@ mod tests {
         };
         let mut chunk = blend_test_chunk();
         chunk.perspectives = vec!["decisions".to_string(), "learnings".to_string()];
-        chunk.relations.push(crate::ChunkRelation::superseded_by("newer"));
+        chunk
+            .relations
+            .push(crate::ChunkRelation::superseded_by("newer"));
 
         let score = config.blend_score(0.6, &chunk);
         // Salience > 0 because of perspectives + relations
@@ -1231,10 +1242,7 @@ mod tests {
 
     #[test]
     fn test_alpha_for_window_none() {
-        assert_eq!(
-            SearchConfig::alpha_for_window(None),
-            DEFAULT_RECENCY_ALPHA
-        );
+        assert_eq!(SearchConfig::alpha_for_window(None), DEFAULT_RECENCY_ALPHA);
     }
 
     #[test]
@@ -1282,8 +1290,7 @@ mod tests {
             ]);
 
             let config = SearchConfig::for_query(10, false, None);
-            let search =
-                HierarchicalSearch::new(store, MockEmbedder::new(3)).with_config(config);
+            let search = HierarchicalSearch::new(store, MockEmbedder::new(3)).with_config(config);
             let results = search.search("test").await.unwrap();
             assert_eq!(results.len(), 2);
         }
@@ -1304,8 +1311,7 @@ mod tests {
 
             let config = SearchConfig::for_query(10, false, None)
                 .with_perspective(Some("decisions".to_string()));
-            let search =
-                HierarchicalSearch::new(store, MockEmbedder::new(3)).with_config(config);
+            let search = HierarchicalSearch::new(store, MockEmbedder::new(3)).with_config(config);
             let results = search.search("test").await.unwrap();
             assert_eq!(results.len(), 1);
             assert!(results[0]

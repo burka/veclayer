@@ -166,11 +166,26 @@ async fn handle_tool_call(
                     return format_mcp_error(id, -32602, &format!("Invalid params: {}", e));
                 }
             };
-            if input.content.is_empty() {
-                return format_mcp_error(id, -32602, "Missing required parameter: content");
+            if input.content.is_empty() && input.items.is_empty() {
+                return format_mcp_error(
+                    id,
+                    -32602,
+                    "Missing required parameter: content (or items for batch mode)",
+                );
             }
             match tools::execute_store(store, embedder, input).await {
-                Ok(chunk_id) => mcp_text_result(&format!("Stored. ID: {}", chunk_id)),
+                Ok(result) => {
+                    let text = if result.is_array() {
+                        format!(
+                            "Stored {} entries. IDs: {}",
+                            result.as_array().map(|a| a.len()).unwrap_or(0),
+                            serde_json::to_string_pretty(&result).unwrap_or_default()
+                        )
+                    } else {
+                        format!("Stored. ID: {}", result.as_str().unwrap_or_default())
+                    };
+                    mcp_text_result(&text)
+                }
                 Err(e) => mcp_error_result(&e.to_string()),
             }
         }
@@ -215,17 +230,18 @@ fn tool_list() -> serde_json::Value {
         "tools": [
             {
                 "name": "recall",
-                "description": "Find relevant knowledge using semantic vector search.",
+                "description": "Find relevant knowledge using semantic vector search. Results include a relevance tier (strong/moderate/weak/tangential). Without a query, browse entries by perspective.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "query": { "type": "string", "description": "What to search for" },
+                        "query": { "type": "string", "description": "What to search for (optional — omit to browse)" },
                         "limit": { "type": "integer", "default": 5 },
                         "deep": { "type": "boolean", "default": false },
                         "recency": { "type": "string", "description": "Recency boost: 24h, 7d, 30d" },
-                        "perspective": { "type": "string", "description": "Filter by perspective: intentions, people, temporal, knowledge, decisions, learnings" }
-                    },
-                    "required": ["query"]
+                        "perspective": { "type": "string", "description": "Filter by perspective: intentions, people, temporal, knowledge, decisions, learnings" },
+                        "since": { "type": "string", "description": "Filter: entries created after (ISO 8601 date or epoch seconds)" },
+                        "until": { "type": "string", "description": "Filter: entries created before (ISO 8601 date or epoch seconds)" }
+                    }
                 }
             },
             {
@@ -243,7 +259,7 @@ fn tool_list() -> serde_json::Value {
             },
             {
                 "name": "store",
-                "description": "Persist a new memory. Server generates embeddings automatically.",
+                "description": "Persist a new memory. Server generates embeddings automatically. Supports inline relations.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -252,9 +268,49 @@ fn tool_list() -> serde_json::Value {
                         "source_file": { "type": "string", "default": "[agent]" },
                         "heading": { "type": "string" },
                         "visibility": { "type": "string", "default": "normal" },
-                        "perspectives": { "type": "array", "items": { "type": "string" }, "description": "Perspectives: intentions, people, temporal, knowledge, decisions, learnings" }
-                    },
-                    "required": ["content"]
+                        "perspectives": { "type": "array", "items": { "type": "string" }, "description": "Perspectives: intentions, people, temporal, knowledge, decisions, learnings" },
+                        "entry_type": { "type": "string", "description": "Entry type: raw (default), summary, meta, impression" },
+                        "relations": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "kind": { "type": "string", "description": "supersedes, summarizes, related_to, derived_from, version_of" },
+                                    "target_id": { "type": "string" }
+                                },
+                                "required": ["kind", "target_id"]
+                            },
+                            "description": "Relations to establish atomically when storing"
+                        },
+                        "items": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "content": { "type": "string" },
+                                    "parent_id": { "type": "string" },
+                                    "heading": { "type": "string" },
+                                    "visibility": { "type": "string", "default": "normal" },
+                                    "perspectives": { "type": "array", "items": { "type": "string" } },
+                                    "source_file": { "type": "string" },
+                                    "entry_type": { "type": "string", "description": "raw (default), summary, meta, impression" },
+                                    "relations": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "kind": { "type": "string" },
+                                                "target_id": { "type": "string" }
+                                            },
+                                            "required": ["kind", "target_id"]
+                                        }
+                                    }
+                                },
+                                "required": ["content"]
+                            },
+                            "description": "Batch mode: array of entries. When present, top-level fields are ignored."
+                        }
+                    }
                 }
             },
             {

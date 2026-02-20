@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 /// Input for recall (semantic search)
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RecallInput {
-    /// The search query
-    pub query: String,
+    /// The search query (optional — omit to browse without vector search)
+    #[serde(default)]
+    pub query: Option<String>,
     /// Number of results (default: 5)
     #[serde(default = "default_limit")]
     pub limit: usize,
@@ -22,6 +23,12 @@ pub struct RecallInput {
     /// Filter by perspective (e.g. "decisions", "learnings")
     #[serde(default)]
     pub perspective: Option<String>,
+    /// Filter: only entries created after this ISO 8601 date or epoch seconds
+    #[serde(default)]
+    pub since: Option<String>,
+    /// Filter: only entries created before this ISO 8601 date or epoch seconds
+    #[serde(default)]
+    pub until: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -44,10 +51,40 @@ fn default_focus_limit() -> usize {
     10
 }
 
+/// A relation to establish when storing an entry.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct StoreRelation {
+    /// Relation kind (active voice): supersedes, summarizes, related_to, derived_from, version_of
+    pub kind: String,
+    /// Target entry ID
+    pub target_id: String,
+}
+
+/// A single entry in a batch store operation.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct StoreItem {
+    pub content: String,
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    #[serde(default)]
+    pub heading: Option<String>,
+    #[serde(default = "default_visibility")]
+    pub visibility: String,
+    #[serde(default)]
+    pub perspectives: Vec<String>,
+    #[serde(default)]
+    pub source_file: Option<String>,
+    #[serde(default)]
+    pub entry_type: Option<String>,
+    #[serde(default)]
+    pub relations: Vec<StoreRelation>,
+}
+
 /// Input for store (write new memory)
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct StoreInput {
-    /// The text content to store
+    /// The text content to store (required in single mode; ignored when items is present)
+    #[serde(default)]
     pub content: String,
     /// Optional parent chunk ID for hierarchy placement
     pub parent_id: Option<String>,
@@ -62,6 +99,16 @@ pub struct StoreInput {
     /// Perspectives to tag this entry with
     #[serde(default)]
     pub perspectives: Vec<String>,
+    /// Relations to establish atomically when storing.
+    /// Kinds: "supersedes", "summarizes", "related_to", "derived_from", "version_of"
+    #[serde(default)]
+    pub relations: Vec<StoreRelation>,
+    /// Batch mode: array of entries to store. When present, top-level content/heading/etc are ignored.
+    #[serde(default)]
+    pub items: Vec<StoreItem>,
+    /// Entry type: raw (default), summary, meta, impression
+    #[serde(default)]
+    pub entry_type: Option<String>,
 }
 
 fn default_agent_source() -> String {
@@ -170,11 +217,26 @@ impl From<&crate::HierarchicalChunk> for ChunkResponse {
     }
 }
 
+/// Compute relevance tier from blended score.
+pub fn relevance_tier(score: f32) -> &'static str {
+    if score > 0.45 {
+        "strong"
+    } else if score > 0.30 {
+        "moderate"
+    } else if score > 0.15 {
+        "weak"
+    } else {
+        "tangential"
+    }
+}
+
 /// Search result for API responses
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SearchResultResponse {
     pub chunk: ChunkResponse,
     pub score: f32,
+    /// Relevance tier: "strong" (>0.45), "moderate" (>0.30), "weak" (>0.15), "tangential" (<=0.15)
+    pub relevance: String,
     pub hierarchy_path: Vec<ChunkResponse>,
     pub children: Vec<ChunkResponse>,
 }

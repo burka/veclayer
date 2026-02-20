@@ -93,6 +93,15 @@ pub trait VectorStore: Send + Sync {
         stale_seconds: i64,
         limit: usize,
     ) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
+
+    /// List entries without vector search, optionally filtered by perspective and time range.
+    fn list_entries(
+        &self,
+        perspective: Option<&str>,
+        since: Option<i64>,
+        until: Option<i64>,
+        limit: usize,
+    ) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
 }
 
 /// Statistics about the vector store
@@ -121,4 +130,5 @@ crate::arc_impl!(VectorStore {
     fn search_by_perspective(&self, query_embedding: &[f32], limit: usize, perspective: &str) -> impl Future<Output = Result<Vec<SearchResult>>> + Send;
     fn get_hot_chunks(&self, limit: usize) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
     fn get_stale_chunks(&self, stale_seconds: i64, limit: usize) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
+    fn list_entries(&self, perspective: Option<&str>, since: Option<i64>, until: Option<i64>, limit: usize) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
 });
