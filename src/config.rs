@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use tracing::warn;
 
 /// Runtime configuration for VecLayer.
 #[derive(Debug, Clone)]
@@ -72,10 +73,19 @@ fn default_embedder_type() -> String {
 impl FileConfig {
     /// Try to load from a TOML file. Returns default (all-None) on any error.
     fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|contents| toml::from_str(&contents).ok())
-            .unwrap_or_default()
+        match std::fs::read_to_string(path) {
+            Ok(contents) => match toml::from_str(&contents) {
+                Ok(config) => config,
+                Err(e) => {
+                    warn!("Malformed config file {}: {} — using defaults", path.display(), e);
+                    Self::default()
+                }
+            },
+            Err(e) => {
+                warn!("Could not read config file {}: {}", path.display(), e);
+                Self::default()
+            }
+        }
     }
 
     /// Find and load the config file, if one exists.

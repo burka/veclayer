@@ -205,6 +205,11 @@ pub fn init(data_dir: &Path) -> Result<()> {
 /// If `input` is a path to a file or directory, it parses and ingests documents.
 /// Otherwise, it treats the input as inline text content.
 pub async fn add(data_dir: &Path, input: &str, options: &AddOptions) -> Result<AddResult> {
+    // Validate perspectives early (fail fast at CLI boundary)
+    if !options.perspectives.is_empty() {
+        crate::perspective::validate_ids(data_dir, &options.perspectives)?;
+    }
+
     let input_path = Path::new(input);
 
     if input_path.exists() {
@@ -260,7 +265,7 @@ async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result
 
         if !options.perspectives.is_empty() {
             for chunk in &mut chunks {
-                chunk.perspectives.clone_from(&options.perspectives);
+                chunk.perspectives = options.perspectives.clone();
             }
         }
 
@@ -736,8 +741,9 @@ pub async fn history(data_dir: &Path, id: &str) -> Result<()> {
         }
     }
 
-    // Also find entries that relate TO this entry
-    // (reverse lookup: we scan all entries - for large stores this would be optimized)
+    // Note: reverse relation lookup (entries that point TO this entry)
+    // is deferred to Phase 3 (requires index or full scan).
+
     Ok(())
 }
 
@@ -761,14 +767,23 @@ pub async fn archive(data_dir: &Path, ids: &[String]) -> Result<()> {
 }
 
 /// Resolve a potentially short ID to a full entry.
+///
+/// Tries exact match first. If the input looks like a short ID (hex, <64 chars),
+/// the error message hints the user to use the full ID.
 async fn resolve_entry(store: &LanceStore, id: &str) -> Result<crate::HierarchicalChunk> {
-    // Try exact match first
     if let Some(chunk) = store.get_by_id(id).await? {
         return Ok(chunk);
     }
-    // If short ID (7 chars), we can't do prefix search in LanceDB easily.
-    // For now, return not found.
-    Err(crate::Error::not_found(format!("Entry '{}' not found", id)))
+
+    let is_short_hex = id.len() < 64 && id.chars().all(|c| c.is_ascii_hexdigit());
+    if is_short_hex {
+        Err(crate::Error::not_found(format!(
+            "Entry '{}' not found. Short ID prefix lookup is not yet supported — use the full 64-char hash.",
+            id
+        )))
+    } else {
+        Err(crate::Error::not_found(format!("Entry '{}' not found", id)))
+    }
 }
 
 /// Collect files from a path, optionally recursively.
