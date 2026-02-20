@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "veclayer": {
+      "type": "stdio",
+      "command": "cargo",
+      "args": ["run", "--quiet", "--", "-d", ".veclayer", "serve", "--mcp-stdio"]
+    }
+  }
+}
