@@ -1,5 +1,6 @@
 use crate::chunk::now_epoch_secs;
 use crate::embedder::Embedder;
+use crate::salience::{self, SalienceWeights};
 use crate::store::{SearchResult, VectorStore};
 use crate::{ChunkLevel, HierarchicalChunk, RecencyWindow, Result};
 
@@ -20,6 +21,9 @@ pub struct HierarchicalSearchResult {
 pub const DEFAULT_RECENCY_ALPHA: f32 = 0.15;
 /// Blending factor when a recency window is explicitly requested.
 pub const ACTIVE_RECENCY_ALPHA: f32 = 0.3;
+/// Default salience weight within the relevancy portion.
+/// 0.0 = pure recency, 1.0 = pure salience.
+pub const DEFAULT_SALIENCE_WEIGHT: f32 = 0.3;
 
 /// Configuration for hierarchical search
 #[derive(Debug, Clone)]
@@ -41,6 +45,10 @@ pub struct SearchConfig {
     pub recency_alpha: f32,
     /// Optional perspective filter. Only return entries in this perspective.
     pub perspective: Option<String>,
+    /// Weight for salience within the relevancy signal [0.0, 1.0].
+    /// 0.0 = ignore salience (pure recency), 1.0 = ignore recency (pure salience).
+    /// Default: 0.3
+    pub salience_weight: f32,
 }
 
 impl Default for SearchConfig {
@@ -54,6 +62,7 @@ impl Default for SearchConfig {
             recency_window: None,
             recency_alpha: DEFAULT_RECENCY_ALPHA,
             perspective: None,
+            salience_weight: DEFAULT_SALIENCE_WEIGHT,
         }
     }
 }
@@ -87,12 +96,25 @@ impl SearchConfig {
         self
     }
 
-    /// Blend vector similarity with recency relevancy.
+    /// Blend vector similarity with recency and salience signals.
+    ///
+    /// Formula: `vector * (1 - alpha) + relevancy_signal * alpha`
+    /// where `relevancy_signal = recency * (1 - sw) + salience * sw`
+    ///
     /// Returns pure vector score when alpha is 0.
-    pub fn blend_score(&self, vector_score: f32, profile: &crate::AccessProfile) -> f32 {
+    pub fn blend_score(&self, vector_score: f32, chunk: &HierarchicalChunk) -> f32 {
         if self.recency_alpha > 0.0 {
-            let relevancy = profile.relevancy_score(self.recency_window);
-            vector_score * (1.0 - self.recency_alpha) + relevancy * self.recency_alpha
+            let recency = chunk.access_profile.relevancy_score(self.recency_window);
+
+            let relevancy_signal = if self.salience_weight > 0.0 {
+                let salience =
+                    salience::compute(chunk, &SalienceWeights::default()).composite;
+                recency * (1.0 - self.salience_weight) + salience * self.salience_weight
+            } else {
+                recency
+            };
+
+            vector_score * (1.0 - self.recency_alpha) + relevancy_signal * self.recency_alpha
         } else {
             vector_score
         }
@@ -210,7 +232,7 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
             let mut chunk = result.chunk;
             let vector_score = result.score;
             chunk.access_profile.record_access_at(now);
-            let final_score = self.config.blend_score(vector_score, &chunk.access_profile);
+            let final_score = self.config.blend_score(vector_score, &chunk);
 
             access_updates.push((chunk.id.clone(), chunk.access_profile.clone()));
 
@@ -282,7 +304,7 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
             let mut chunk = result.chunk;
             let vector_score = result.score;
             chunk.access_profile.record_access_at(now);
-            let final_score = self.config.blend_score(vector_score, &chunk.access_profile);
+            let final_score = self.config.blend_score(vector_score, &chunk);
 
             access_updates.push((chunk.id.clone(), chunk.access_profile.clone()));
 
@@ -1093,6 +1115,7 @@ mod tests {
         assert!(config.recency_window.is_none());
         assert_eq!(config.recency_alpha, DEFAULT_RECENCY_ALPHA);
         assert!(config.perspective.is_none());
+        assert_eq!(config.salience_weight, DEFAULT_SALIENCE_WEIGHT);
         // Inherited defaults
         assert_eq!(config.children_k, 3);
         assert_eq!(config.max_depth, 3);
@@ -1125,14 +1148,25 @@ mod tests {
         assert!(config.perspective.is_none());
     }
 
+    /// Helper: create a minimal chunk for blend_score tests.
+    fn blend_test_chunk() -> HierarchicalChunk {
+        HierarchicalChunk::new(
+            "blend test".to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            String::new(),
+            "test.md".to_string(),
+        )
+    }
+
     #[test]
     fn test_blend_score_zero_alpha() {
         let config = SearchConfig {
             recency_alpha: 0.0,
             ..Default::default()
         };
-        let profile = crate::AccessProfile::new();
-        assert_eq!(config.blend_score(0.8, &profile), 0.8);
+        let chunk = blend_test_chunk();
+        assert_eq!(config.blend_score(0.8, &chunk), 0.8);
     }
 
     #[test]
@@ -1140,11 +1174,12 @@ mod tests {
         let config = SearchConfig {
             recency_alpha: 0.5,
             recency_window: None,
+            salience_weight: 0.0, // pure recency for predictable test
             ..Default::default()
         };
-        let profile = crate::AccessProfile::new();
+        let chunk = blend_test_chunk();
         // No accesses → relevancy=0.0 → blended = 0.8 * 0.5 + 0.0 * 0.5 = 0.4
-        let score = config.blend_score(0.8, &profile);
+        let score = config.blend_score(0.8, &chunk);
         assert!((score - 0.4).abs() < 0.01);
     }
 
@@ -1153,11 +1188,12 @@ mod tests {
         let config = SearchConfig {
             recency_alpha: 1.0,
             recency_window: None,
+            salience_weight: 0.0,
             ..Default::default()
         };
-        let profile = crate::AccessProfile::new();
+        let chunk = blend_test_chunk();
         // Full relevancy weight → 0.8 * 0.0 + relevancy(0) * 1.0 = 0.0
-        let score = config.blend_score(0.8, &profile);
+        let score = config.blend_score(0.8, &chunk);
         assert_eq!(score, 0.0);
     }
 
@@ -1168,13 +1204,29 @@ mod tests {
             recency_window: None,
             ..Default::default()
         };
-        let mut profile = crate::AccessProfile::new();
-        profile.record_access();
-        profile.record_access();
+        let mut chunk = blend_test_chunk();
+        chunk.access_profile.record_access();
+        chunk.access_profile.record_access();
         // Has accesses → relevancy > 0 → blended > pure vector
-        let score = config.blend_score(0.5, &profile);
+        let score = config.blend_score(0.5, &chunk);
         assert!(score > 0.0);
         assert!(score <= 1.0);
+    }
+
+    #[test]
+    fn test_blend_score_with_salience() {
+        let config = SearchConfig {
+            recency_alpha: 0.5,
+            salience_weight: 1.0, // pure salience
+            ..Default::default()
+        };
+        let mut chunk = blend_test_chunk();
+        chunk.perspectives = vec!["decisions".to_string(), "learnings".to_string()];
+        chunk.relations.push(crate::ChunkRelation::superseded_by("newer"));
+
+        let score = config.blend_score(0.6, &chunk);
+        // Salience > 0 because of perspectives + relations
+        assert!(score > 0.3); // vector portion (0.6 * 0.5 = 0.3) plus salience
     }
 
     #[test]

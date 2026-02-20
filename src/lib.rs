@@ -11,6 +11,7 @@ pub mod macros;
 pub mod mcp;
 pub mod parser;
 pub mod perspective;
+pub mod salience;
 pub mod search;
 pub mod store;
 #[cfg(feature = "llm")]

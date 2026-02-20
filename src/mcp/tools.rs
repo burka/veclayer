@@ -236,8 +236,27 @@ pub async fn execute_think(
                 ))
             }
         }
+        Some("salience") => {
+            let limit = input.hot_limit.unwrap_or(10);
+            let hot = store.get_hot_chunks(limit * 2).await?;
+            if hot.is_empty() {
+                return Ok("No entries to analyze.".to_string());
+            }
+            let weights = crate::salience::SalienceWeights::default();
+            let top = crate::salience::top_salient(&hot, &weights, limit);
+            let mut report = String::from("## Salience Report\n\n");
+            for (idx, score) in &top {
+                let chunk = &hot[*idx];
+                let heading = chunk.heading.as_deref().unwrap_or("(no heading)");
+                report.push_str(&format!(
+                    "- **{}** [composite={:.3}, inter={:.2}, persp={:.2}, rev={:.2}] `{}`\n",
+                    heading, score.composite, score.interaction, score.perspective, score.revision, chunk.id
+                ));
+            }
+            Ok(report)
+        }
         Some(unknown) => Err(crate::Error::config(format!(
-            "Unknown think action: '{}'. Available: promote, demote, relate, configure_aging, apply_aging",
+            "Unknown think action: '{}'. Available: promote, demote, relate, configure_aging, apply_aging, salience",
             unknown
         ))),
     }
@@ -258,19 +277,20 @@ async fn execute_reflect(
 
     let mut report = String::new();
 
+    let weights = crate::salience::SalienceWeights::default();
+
     report.push_str("## Hot Chunks (most accessed)\n\n");
     if hot.is_empty() {
         report.push_str("No chunks have been accessed yet.\n\n");
     } else {
         for chunk in &hot {
             let heading = chunk.heading.as_deref().unwrap_or("(no heading)");
+            let salience = crate::salience::compute(chunk, &weights);
             report.push_str(&format!(
-                "- **{}** (total: {}, hour: {}, day: {}, week: {}) [{}] `{}`\n",
+                "- **{}** (total: {}, salience: {:.2}) [{}] `{}`\n",
                 heading,
                 chunk.access_profile.total,
-                chunk.access_profile.hour,
-                chunk.access_profile.day,
-                chunk.access_profile.week,
+                salience.composite,
                 chunk.visibility,
                 chunk.id
             ));
@@ -287,9 +307,10 @@ async fn execute_reflect(
     } else {
         for chunk in &stale {
             let heading = chunk.heading.as_deref().unwrap_or("(no heading)");
+            let salience = crate::salience::compute(chunk, &weights);
             report.push_str(&format!(
-                "- **{}** [{}] `{}`\n",
-                heading, chunk.visibility, chunk.id
+                "- **{}** [vis={}, salience={:.2}] `{}`\n",
+                heading, chunk.visibility, salience.composite, chunk.id
             ));
         }
         report.push('\n');
