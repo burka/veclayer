@@ -1082,4 +1082,184 @@ mod tests {
         // Child should be filtered out by high min_score
         assert_eq!(results.len(), 0);
     }
+
+    // --- SearchConfig tests ---
+
+    #[test]
+    fn test_for_query_defaults() {
+        let config = SearchConfig::for_query(10, true, None);
+        assert_eq!(config.top_k, 10);
+        assert!(config.deep);
+        assert!(config.recency_window.is_none());
+        assert_eq!(config.recency_alpha, DEFAULT_RECENCY_ALPHA);
+        assert!(config.perspective.is_none());
+        // Inherited defaults
+        assert_eq!(config.children_k, 3);
+        assert_eq!(config.max_depth, 3);
+    }
+
+    #[test]
+    fn test_for_query_with_recency() {
+        let config = SearchConfig::for_query(5, false, Some("24h"));
+        assert_eq!(config.recency_window, Some(RecencyWindow::Day));
+        assert_eq!(config.recency_alpha, ACTIVE_RECENCY_ALPHA);
+    }
+
+    #[test]
+    fn test_for_query_with_invalid_recency() {
+        let config = SearchConfig::for_query(5, false, Some("invalid"));
+        assert!(config.recency_window.is_none());
+        assert_eq!(config.recency_alpha, DEFAULT_RECENCY_ALPHA);
+    }
+
+    #[test]
+    fn test_with_perspective() {
+        let config = SearchConfig::for_query(5, false, None)
+            .with_perspective(Some("decisions".to_string()));
+        assert_eq!(config.perspective.as_deref(), Some("decisions"));
+    }
+
+    #[test]
+    fn test_with_perspective_none() {
+        let config = SearchConfig::for_query(5, false, None).with_perspective(None);
+        assert!(config.perspective.is_none());
+    }
+
+    #[test]
+    fn test_blend_score_zero_alpha() {
+        let config = SearchConfig {
+            recency_alpha: 0.0,
+            ..Default::default()
+        };
+        let profile = crate::AccessProfile::new();
+        assert_eq!(config.blend_score(0.8, &profile), 0.8);
+    }
+
+    #[test]
+    fn test_blend_score_with_alpha() {
+        let config = SearchConfig {
+            recency_alpha: 0.5,
+            recency_window: None,
+            ..Default::default()
+        };
+        let profile = crate::AccessProfile::new();
+        // No accesses → relevancy=0.0 → blended = 0.8 * 0.5 + 0.0 * 0.5 = 0.4
+        let score = config.blend_score(0.8, &profile);
+        assert!((score - 0.4).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_blend_score_full_alpha() {
+        let config = SearchConfig {
+            recency_alpha: 1.0,
+            recency_window: None,
+            ..Default::default()
+        };
+        let profile = crate::AccessProfile::new();
+        // Full relevancy weight → 0.8 * 0.0 + relevancy(0) * 1.0 = 0.0
+        let score = config.blend_score(0.8, &profile);
+        assert_eq!(score, 0.0);
+    }
+
+    #[test]
+    fn test_blend_score_with_accesses() {
+        let config = SearchConfig {
+            recency_alpha: 0.3,
+            recency_window: None,
+            ..Default::default()
+        };
+        let mut profile = crate::AccessProfile::new();
+        profile.record_access();
+        profile.record_access();
+        // Has accesses → relevancy > 0 → blended > pure vector
+        let score = config.blend_score(0.5, &profile);
+        assert!(score > 0.0);
+        assert!(score <= 1.0);
+    }
+
+    #[test]
+    fn test_alpha_for_window_none() {
+        assert_eq!(
+            SearchConfig::alpha_for_window(None),
+            DEFAULT_RECENCY_ALPHA
+        );
+    }
+
+    #[test]
+    fn test_alpha_for_window_some() {
+        assert_eq!(
+            SearchConfig::alpha_for_window(Some(RecencyWindow::Day)),
+            ACTIVE_RECENCY_ALPHA
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_with_perspective_filter() {
+        // Create chunks: one with perspective, one without
+        let mut chunk_with = HierarchicalChunk::new(
+            "decisions content".to_string(),
+            ChunkLevel::H1,
+            None,
+            "test".to_string(),
+            "test.md".to_string(),
+        );
+        chunk_with.embedding = Some(vec![1.0, 0.0, 0.0]);
+        chunk_with.perspectives = vec!["decisions".to_string()];
+
+        let mut chunk_without = HierarchicalChunk::new(
+            "general content".to_string(),
+            ChunkLevel::H1,
+            None,
+            "test".to_string(),
+            "test.md".to_string(),
+        );
+        chunk_without.embedding = Some(vec![0.0, 1.0, 0.0]);
+
+        // Test WITHOUT perspective filter: gets all results
+        {
+            let store = MockStore::new();
+            store.set_search_results(vec![
+                SearchResult {
+                    chunk: chunk_with.clone(),
+                    score: 0.9,
+                },
+                SearchResult {
+                    chunk: chunk_without.clone(),
+                    score: 0.7,
+                },
+            ]);
+
+            let config = SearchConfig::for_query(10, false, None);
+            let search =
+                HierarchicalSearch::new(store, MockEmbedder::new(3)).with_config(config);
+            let results = search.search("test").await.unwrap();
+            assert_eq!(results.len(), 2);
+        }
+
+        // Test WITH perspective filter: mock filters by perspective
+        {
+            let store = MockStore::new();
+            store.set_search_results(vec![
+                SearchResult {
+                    chunk: chunk_with.clone(),
+                    score: 0.9,
+                },
+                SearchResult {
+                    chunk: chunk_without.clone(),
+                    score: 0.7,
+                },
+            ]);
+
+            let config = SearchConfig::for_query(10, false, None)
+                .with_perspective(Some("decisions".to_string()));
+            let search =
+                HierarchicalSearch::new(store, MockEmbedder::new(3)).with_config(config);
+            let results = search.search("test").await.unwrap();
+            assert_eq!(results.len(), 1);
+            assert!(results[0]
+                .chunk
+                .perspectives
+                .contains(&"decisions".to_string()));
+        }
+    }
 }

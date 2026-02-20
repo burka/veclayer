@@ -16,6 +16,18 @@ use crate::{ChunkLevel, ClusterMembership, Error, HierarchicalChunk, Result};
 
 const TABLE_NAME: &str = "chunks";
 
+/// Escape a string for use in LanceDB DataFusion SQL filter expressions.
+/// LanceDB's `only_if()` uses DataFusion SQL syntax where single quotes
+/// are escaped by doubling them.
+fn sql_escape(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
+/// Build an equality filter: `column = 'escaped_value'`
+fn eq_filter(column: &str, value: &str) -> String {
+    format!("{} = '{}'", column, sql_escape(value))
+}
+
 /// LanceDB-based vector store implementation.
 /// Stores all data in a local directory, no external services needed.
 pub struct LanceStore {
@@ -540,7 +552,7 @@ impl VectorStore for LanceStore {
 
         let results = table
             .query()
-            .only_if(format!("parent_id = '{}'", parent_id.replace('\'', "''")))
+            .only_if(eq_filter("parent_id", parent_id))
             .execute()
             .await
             .map_err(|e| Error::search(format!("Failed to query children: {}", e)))?
@@ -561,7 +573,7 @@ impl VectorStore for LanceStore {
 
         let results = table
             .query()
-            .only_if(format!("id = '{}'", id.replace('\'', "''")))
+            .only_if(eq_filter("id", id))
             .limit(1)
             .execute()
             .await
@@ -585,7 +597,7 @@ impl VectorStore for LanceStore {
             .query()
             .only_if(format!(
                 "source_file = '{}'",
-                source_file.replace('\'', "''")
+                sql_escape(source_file)
             ))
             .execute()
             .await
@@ -611,7 +623,7 @@ impl VectorStore for LanceStore {
         table
             .delete(&format!(
                 "source_file = '{}'",
-                source_file.replace('\'', "''")
+                sql_escape(source_file)
             ))
             .await
             .map_err(|e| Error::store(format!("Failed to delete by source: {}", e)))?;
@@ -670,7 +682,7 @@ impl VectorStore for LanceStore {
         let table = self.get_table().await?;
 
         for (chunk_id, profile) in updates {
-            let filter = format!("id = '{}'", chunk_id.replace('\'', "''"));
+            let filter = eq_filter("id", chunk_id);
 
             table
                 .update()
@@ -694,11 +706,11 @@ impl VectorStore for LanceStore {
 
     async fn update_visibility(&self, chunk_id: &str, visibility: &str) -> Result<()> {
         let table = self.get_table().await?;
-        let filter = format!("id = '{}'", chunk_id.replace('\'', "''"));
+        let filter = eq_filter("id", chunk_id);
 
         table
             .update()
-            .column("visibility", format!("'{}'", visibility.replace('\'', "''")))
+            .column("visibility", format!("'{}'", sql_escape(visibility)))
             .only_if(filter)
             .execute()
             .await
@@ -725,13 +737,13 @@ impl VectorStore for LanceStore {
             serde_json::to_string(&relations).unwrap_or_else(|_| "[]".to_string());
 
         let table = self.get_table().await?;
-        let filter = format!("id = '{}'", chunk_id.replace('\'', "''"));
+        let filter = eq_filter("id", chunk_id);
 
         table
             .update()
             .column(
                 "relations",
-                format!("'{}'", relations_json.replace('\'', "''")),
+                format!("'{}'", sql_escape(&relations_json)),
             )
             .only_if(filter)
             .execute()
@@ -751,11 +763,10 @@ impl VectorStore for LanceStore {
         let query_vec: Vec<f32> = query_embedding.to_vec();
 
         // Filter: perspectives JSON array contains the given perspective string.
-        // LanceDB SQL supports LIKE for substring matching in JSON arrays.
-        let filter = format!(
-            "perspectives LIKE '%\"{}%'",
-            perspective.replace('\'', "''").replace('"', "\\\"")
-        );
+        // The JSON is stored as e.g. '["decisions","learnings"]', so we match
+        // the quoted value within the array.
+        let escaped = sql_escape(perspective);
+        let filter = format!("perspectives LIKE '%\"{}%'", escaped);
 
         let query = table
             .query()
