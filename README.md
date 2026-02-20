@@ -24,7 +24,7 @@ Aktuelle KI-Systeme haben ein Gedaechtnis-Problem:
 VecLayer loest das durch drei Konzepte:
 
 1. **Hierarchische Wissensorganisation** -- Zusammenfassungen *sind* die Hierarchie
-2. **Perspektiven** -- Sechs Default-Perspektiven strukturieren das Wissen; jederzeit erweiterbar
+2. **Perspektiven** -- Sieben Default-Perspektiven strukturieren das Wissen; jederzeit erweiterbar
 3. **Memory Aging + Salienz** -- Nicht die haeufigsten, sondern die bedeutsamsten Erinnerungen kommen nach oben
 
 Identitaet entsteht aus dem Zusammenspiel: Beim Verbinden erhaelt der Agent ein Priming -- wer bin ich, was beschaeftigt mich, worauf sollte ich achten.
@@ -52,7 +52,7 @@ ID = `sha256(content)` -- erste 7 Hex-Chars in der CLI (wie git). Identischer Co
 
 ### Perspektiven, nicht Baeume
 
-Sechs Default-Perspektiven strukturieren das Wissen:
+Sieben Default-Perspektiven strukturieren das Wissen:
 
 | Perspektive | Was sie erfasst |
 |-------------|----------------|
@@ -62,6 +62,7 @@ Sechs Default-Perspektiven strukturieren das Wissen:
 | `knowledge` | Dauerhaftes Fachwissen |
 | `decisions` | Entscheidungen, Abwaegungen |
 | `learnings` | Erkenntnisse, Lessons Learned |
+| `session` | Arbeitssitzungen, Kontext, Handoffs |
 
 Jederzeit erweiterbar mit eigenen Perspektiven. Jede Perspektive hat Hints, die dem LLM zeigen, welches Material relevant ist.
 
@@ -92,7 +93,7 @@ Entries mit hoher Salienz werden beim Aging geschuetzt -- sie ueberleben Visibil
 
 Aus Embedding-Clustern gewichtet nach Salienz waechst eine Identitaet. Kein Profil, das jemand anlegt -- eine Beobachtung: Welche Themen tauchen immer wieder auf, wo liegen die Schwerpunkte, was hat den Agenten gepraegt? Beim Connect erhaelt der Agent ein Priming: Core Knowledge (die salientesten Erinnerungen), offene Faeden (ungeloeste Widersprueche, aktive Deliberation), aktuelle Learnings. Das ist der Moment, in dem ein Agent aufwacht und sich kennt.
 
-### Schlaf-Zyklus (geplant)
+### Schlaf-Zyklus
 
 Wie ein Mensch im Schlaf konsolidiert, soll ein Agent sein Gedaechtnis aktiv pflegen koennen. Der Zyklus: `reflect` bereitet Material auf (was braucht Aufmerksamkeit?), ein LLM generiert daraus Zusammenfassungen und Meta-Erkenntnisse, `add` schreibt sie zurueck, `compact` raeumt mechanisch auf. Das ist `think` -- der optionale Orchestrator, der alles ohne LLM Funktionierende um die Faehigkeit zur Selbstreflexion ergaenzt.
 
@@ -175,12 +176,34 @@ Das gesamte mechanische Fundament steht -- alles was VecLayer ohne LLM leisten s
 - [x] **Aging + Salienz (Phase 3):** Salienz-Komposit aus Interaktionsdichte, Perspektiven-Spread und Revisions-Aktivitaet, Ranking-Formel mit Salienz-Gewichtung, compact-Kommando, Salienz-Schutz beim Aging
 - [x] **Identity + Reflect (Phase 4):** Salienz-gewichtete Embedding-Centroids pro Perspektive, Open Threads (ungeloeste Widersprueche, aktive Deliberation), Reflect-Report, dynamisches Priming beim MCP-Connect
 
+- [x] **Think/Schlaf-Zyklus (Phase 5):** LLMProvider Trait, think-Kommando (reflect → LLM → add → compact), Narrativ-Generierung, automatische Konsolidierung
+- [x] **Tool Ergonomics (Phase 5.5):** Store mit Inline-Relationen, Batch Store, Browse Mode, Temporal Filter, Relevance Tiers, Session Perspective
+
 ### Offen
 
-- [ ] **Schlaf-Zyklus (Phase 5):** LLMProvider Trait, think-Kommando (reflect -> LLM -> add -> compact), Narrativ-Generierung, automatische Konsolidierung
 - [ ] **Server + Sharing (Phase 6):** Personalisierte MCP-Tool-Descriptions, UCAN-basiertes Sharing, REST API an neues Datenmodell anpassen
 - [ ] **Polish (Phase 7):** Alias-Support, Multi-Format Parsing (PDF, HTML, Code), alternative Backends (Turso, pgvector)
-- [ ] **Widerspruchserkennung:** Aktuell misst Salienz Revisions-Aktivitaet (Anzahl Relationen) als Proxy fuer Widersprueche. Echte semantische Widerspruchserkennung -- Spannungen zwischen Entries erkennen, die sich inhaltlich widersprechen -- ist ein offenes Thema (siehe ROADMAP)
+- [ ] **Widerspruchserkennung:** Aktuell misst Salienz Revisions-Aktivitaet als Proxy. Echte semantische Widerspruchserkennung ist ein offenes Thema
+
+## Design-Entscheidungen: Was VecLayer bewusst NICHT macht
+
+Aus der Entstehungsgeschichte -- explizit verworfene Ansaetze. Diese Entscheidungen sind dokumentiert und begruendet, nicht vergessen.
+
+| Verworfen | Stattdessen | Warum |
+|-----------|-------------|-------|
+| JSON-Annotations an Entries | Content traegt die Semantik | Kein Schema-Drift durch optionale Felder |
+| Pfade als einzige Struktur | Perspektiven | Gleicher Entry, verschiedene Sichten |
+| Tags | Perspektiven mit Hints | Tags sind flach und unerklaert |
+| Separate Vektorraeume fuer Emotionen | Salienz als Komposit-Score | Ein Raum, verschiedene Gewichtungen |
+| S3-Backends | Lokale Dateien + Turso/pgvector | Einfachheit, Latenz, Offline-Faehigkeit |
+| ACLs | UCAN | Dezentral, delegierbar, offline-verifizierbar |
+| Bearer-Tokens | UCAN mit DID | Kryptographisch, attenuierbar |
+| Statische Tool-Descriptions | Dynamisches Priming | Personalisiert pro Agent und Session |
+| Leaf/Node-Trennung | Alles ist ein Entry | Ein Primitiv, vier Typen |
+| "Baeume" als Konzept | Perspektiven | Baeume sind rigide, Perspektiven sind Sichten |
+| Graph-Datenbank | Relationen auf Entries | Der Graph zeigt sich in der Visualisierung |
+| Metadata-Felder fuer Emotionen | Perspektiven + Content | Die Perspektive *ist* die Semantik |
+| Tool Call Hooks fuer Auto-Capture | Behavioral Hints im Priming | Intelligenz bleibt beim Agenten |
 
 ## Lizenz
 

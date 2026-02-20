@@ -5,7 +5,7 @@
 **Phasen 1-4 sind abgeschlossen.** Das gesamte mechanische Fundament steht -- alles was VecLayer ohne LLM leisten soll, funktioniert:
 
 - Entry-Modell mit SHA-256 Content-Hash, vier Typen, typisierten Relationen
-- Sechs Default-Perspektiven + Custom, facettierte Suche, Validierung
+- Sieben Default-Perspektiven + Custom, facettierte Suche, Validierung
 - Salienz-Komposit (Interaktion, Perspektiven-Spread, Revisions-Aktivitaet) mit Aging-Schutz
 - Identitaet aus salienz-gewichteten Embedding-Centroids, Open Threads, Learnings
 - Dynamisches Priming beim MCP-Connect
