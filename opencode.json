@@ -4,6 +4,10 @@
     "veclayer": {
       "type": "local",
       "command": ["./target/release/veclayer", "-d", ".veclayer", "serve", "--mcp-stdio"]
+    },
+    "sonote.ai": {
+      "type": "remote",
+      "url": "https://dev.sonote.ai/api/mcp/sse"
     }
   }
 }
