@@ -11,7 +11,7 @@ use futures::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::{connect, Connection, Table};
 
-use super::{SearchResult, StoreStats, VectorStore};
+use super::{FileLock, SearchResult, StoreStats, VectorStore};
 use crate::{ChunkLevel, ClusterMembership, Error, HierarchicalChunk, Result};
 
 const TABLE_NAME: &str = "chunks";
@@ -53,11 +53,14 @@ fn prefix_upper_bound(prefix: &str) -> String {
 pub struct LanceStore {
     connection: Connection,
     dimension: usize,
+    _lock: Option<FileLock>,
 }
 
 impl LanceStore {
-    pub async fn open(path: impl AsRef<Path>, dimension: usize) -> Result<Self> {
+    pub async fn open(path: impl AsRef<Path>, dimension: usize, read_only: bool) -> Result<Self> {
         let path = path.as_ref();
+        let lock = (!read_only).then(|| FileLock::acquire(path)).transpose()?;
+
         std::fs::create_dir_all(path)?;
 
         let uri = path.to_string_lossy().to_string();
@@ -69,6 +72,7 @@ impl LanceStore {
         let store = Self {
             connection,
             dimension,
+            _lock: lock,
         };
 
         store.ensure_table().await?;
@@ -76,8 +80,10 @@ impl LanceStore {
         Ok(store)
     }
 
-    pub async fn open_metadata(path: impl AsRef<Path>) -> Result<Self> {
+    pub async fn open_metadata(path: impl AsRef<Path>, read_only: bool) -> Result<Self> {
         let path = path.as_ref();
+        let lock = (!read_only).then(|| FileLock::acquire(path)).transpose()?;
+
         std::fs::create_dir_all(path)?;
 
         let uri = path.to_string_lossy().to_string();
@@ -89,6 +95,7 @@ impl LanceStore {
         let store = Self {
             connection,
             dimension: 384,
+            _lock: lock,
         };
 
         store.ensure_table().await?;
@@ -128,6 +135,8 @@ impl LanceStore {
             Field::new("access_year", DataType::UInt16, false),
             Field::new("access_total", DataType::UInt32, false),
             Field::new("expires_at", DataType::Int64, true),
+            Field::new("impression_hint", DataType::Utf8, true),
+            Field::new("impression_strength", DataType::Float32, false),
         ]))
     }
 
@@ -212,6 +221,11 @@ impl LanceStore {
         let access_year: Vec<u16> = chunks.iter().map(|c| c.access_profile.year).collect();
         let access_total: Vec<u32> = chunks.iter().map(|c| c.access_profile.total).collect();
         let expires_at: Vec<Option<i64>> = chunks.iter().map(|c| c.expires_at).collect();
+        let impression_hint: Vec<Option<&str>> = chunks
+            .iter()
+            .map(|c| c.impression_hint.as_deref())
+            .collect();
+        let impression_strength: Vec<f32> = chunks.iter().map(|c| c.impression_strength).collect();
 
         let mut embedding_values: Vec<f32> = Vec::with_capacity(chunks.len() * self.dimension);
         for chunk in chunks {
@@ -260,6 +274,8 @@ impl LanceStore {
                 Arc::new(UInt16Array::from(access_year)),
                 Arc::new(UInt32Array::from(access_total)),
                 Arc::new(Int64Array::from(expires_at)),
+                Arc::new(StringArray::from(impression_hint)),
+                Arc::new(Float32Array::from(impression_strength)),
             ],
         )
         .map_err(|e| Error::store(format!("Failed to create record batch: {}", e)))
@@ -339,6 +355,12 @@ impl LanceStore {
         let expires_at_col = batch
             .column_by_name("expires_at")
             .and_then(|c| c.as_any().downcast_ref::<Int64Array>());
+        let impression_hint_col = batch
+            .column_by_name("impression_hint")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let impression_strength_col = batch
+            .column_by_name("impression_strength")
+            .and_then(|c| c.as_any().downcast_ref::<Float32Array>());
 
         let mut chunks = Vec::with_capacity(batch.num_rows());
 
@@ -481,6 +503,16 @@ impl LanceStore {
                 relations,
                 access_profile,
                 expires_at,
+                impression_hint: impression_hint_col.and_then(|col| {
+                    if col.is_null(i) {
+                        None
+                    } else {
+                        Some(col.value(i).to_string())
+                    }
+                }),
+                impression_strength: impression_strength_col
+                    .map(|col| col.value(i))
+                    .unwrap_or(1.0),
             });
         }
 
@@ -944,7 +976,7 @@ mod tests {
 
     async fn create_test_store() -> (LanceStore, TempDir) {
         let temp_dir = TempDir::new().unwrap();
-        let store = LanceStore::open(temp_dir.path(), 384).await.unwrap();
+        let store = LanceStore::open(temp_dir.path(), 384, false).await.unwrap();
         (store, temp_dir)
     }
 
@@ -1650,5 +1682,33 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].id, "ll-3");
         assert_eq!(result[1].id, "ll-2");
+    }
+
+    #[tokio::test]
+    async fn test_impression_fields_roundtrip() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk = create_test_chunk("imp-1", "An impression", ChunkLevel::H1);
+        chunk.entry_type = crate::chunk::EntryType::Impression;
+        chunk.impression_hint = Some("uncertain".to_string());
+        chunk.impression_strength = 0.4;
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let retrieved = store.get_by_id("imp-1").await.unwrap().unwrap();
+        assert_eq!(retrieved.entry_type, crate::chunk::EntryType::Impression);
+        assert_eq!(retrieved.impression_hint.as_deref(), Some("uncertain"));
+        assert!((retrieved.impression_strength - 0.4).abs() < 0.001);
+    }
+
+    #[tokio::test]
+    async fn test_impression_fields_default() {
+        let (store, _temp) = create_test_store().await;
+
+        let chunk = create_test_chunk("imp-2", "No impression fields", ChunkLevel::H1);
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let retrieved = store.get_by_id("imp-2").await.unwrap().unwrap();
+        assert_eq!(retrieved.impression_hint, None);
+        assert!((retrieved.impression_strength - 1.0).abs() < 0.001);
     }
 }

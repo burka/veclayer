@@ -20,7 +20,7 @@ pub async fn run_stdio(config: Config) -> Result<()> {
 
     let embedder = FastEmbedder::new()?;
     let dimension = embedder.dimension();
-    let store = LanceStore::open(&config.data_dir, dimension).await?;
+    let store = LanceStore::open(&config.data_dir, dimension, config.read_only).await?;
     let store = Arc::new(store);
     let embedder = Arc::new(embedder);
 
@@ -318,7 +318,7 @@ fn tool_list() -> serde_json::Value {
             },
             {
                 "name": "think",
-                "description": "Reflect and curate memory. Without action: reflection report. With action: promote, demote, relate, configure_aging, apply_aging, salience.",
+                "description": "Reflect and curate memory. Without action: reflection report. Actions: promote, demote, relate, configure_aging, apply_aging, salience, consolidate, perspectives (list all), status (store stats), history (entry relations).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {

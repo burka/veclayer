@@ -365,6 +365,12 @@ Reference counting handles most cleanup.
         summarizes: None,
         supersedes: None,
         version_of: None,
+        parent_id: None,
+        heading: None,
+        related_to: None,
+        derived_from: None,
+        impression_hint: None,
+        impression_strength: 1.0,
     };
 
     let result = ingest(&data_dir, &docs_dir, &options).await;
@@ -378,7 +384,7 @@ Reference counting handles most cleanup.
 
     // Verify store has chunks and summaries
     let embedder = FastEmbedder::new().expect("Failed to create embedder");
-    let store = LanceStore::open(&data_dir, embedder.dimension())
+    let store = LanceStore::open(&data_dir, embedder.dimension(), false)
         .await
         .expect("Failed to open store");
 

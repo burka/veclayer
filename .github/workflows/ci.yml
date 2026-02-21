@@ -1,0 +1,46 @@
+# Ref: #52
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  ci:
+    name: CI
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install protoc (needed by lance-encoding via prost-build)
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Cache cargo registry and target dir
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy (default features)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Clippy (all features)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Build
+        run: cargo build --all-targets --all-features
+
+      - name: Run tests
+        run: cargo nextest run --all-features

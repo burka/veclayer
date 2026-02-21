@@ -260,6 +260,21 @@ pub struct HierarchicalChunk {
     /// Optional expiry timestamp for Expiring visibility (Unix epoch seconds)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
+
+    /// Impression hint: qualitative label like "uncertain", "confident", "exploratory".
+    /// Only meaningful when `entry_type == Impression`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impression_hint: Option<String>,
+
+    /// Impression strength: [0.0, 1.0] modulating salience weight.
+    /// 1.0 = full weight (default), 0.0 = negligible.
+    /// Only meaningful when `entry_type == Impression`.
+    #[serde(default = "default_impression_strength")]
+    pub impression_strength: f32,
+}
+
+fn default_impression_strength() -> f32 {
+    1.0
 }
 
 impl HierarchicalChunk {
@@ -292,6 +307,8 @@ impl HierarchicalChunk {
             relations: Vec::new(),
             access_profile: AccessProfile::new(),
             expires_at: None,
+            impression_hint: None,
+            impression_strength: 1.0,
         }
     }
 
@@ -322,6 +339,8 @@ impl HierarchicalChunk {
             relations: Vec::new(),
             access_profile: AccessProfile::new(),
             expires_at: None,
+            impression_hint: None,
+            impression_strength: 1.0,
         }
     }
 

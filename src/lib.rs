@@ -14,11 +14,14 @@ pub mod macros;
 pub mod mcp;
 pub mod parser;
 pub mod perspective;
+pub mod resolve;
 pub mod salience;
 pub mod search;
 pub mod store;
 #[cfg(feature = "llm")]
 pub mod summarizer;
+#[cfg(test)]
+pub mod test_helpers;
 #[cfg(feature = "llm")]
 pub mod think;
 

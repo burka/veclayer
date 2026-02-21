@@ -158,7 +158,7 @@ Access tracking uses RRD-style fixed buckets per entry. Finer buckets roll into 
 
 **AccessProfile buckets:** `hour`, `day`, `week`, `month`, `year`, `total` (plus `created_at` and `last_rolled`).
 
-**Visibility degradation** is applied by `apply_aging` (triggered at the end of the think cycle or manually via `compact`):
+**Visibility degradation** is applied by `apply_aging` (triggered at the end of the think cycle or manually via `think aging apply`):
 
 - Entries not accessed within `degrade_after_days` (default 30) whose visibility is in `degrade_from` (default `["normal"]`) are demoted to `degrade_to` (default `"deep_only"`).
 - Entries with salience above the `salience_protection` threshold are exempt.
