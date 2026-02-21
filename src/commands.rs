@@ -495,13 +495,10 @@ pub async fn search_results(
 ) -> Result<Vec<SearchResult>> {
     let (embedder, store) = open_store(data_dir).await?;
 
-    let mut config = SearchConfig::for_query(options.top_k, options.deep, options.recent.as_deref())
+    let config = SearchConfig::for_query(options.top_k, options.deep, options.recent.as_deref())
         .with_perspective(options.perspective.clone())
-        .with_min_salience(options.min_salience);
-
-    if let Some(min_score) = options.min_score {
-        config.min_score = min_score;
-    }
+        .with_min_salience(options.min_salience)
+        .with_min_score(options.min_score);
 
     let search_engine = HierarchicalSearch::new(store, embedder).with_config(config);
 
