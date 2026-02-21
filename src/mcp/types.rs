@@ -84,6 +84,12 @@ pub struct StoreItem {
     pub entry_type: Option<String>,
     #[serde(default)]
     pub relations: Vec<StoreRelation>,
+    /// Impression hint (only used when entry_type is "impression").
+    #[serde(default)]
+    pub impression_hint: Option<String>,
+    /// Impression strength: 0.0–1.0 (only used when entry_type is "impression").
+    #[serde(default)]
+    pub impression_strength: Option<f32>,
 }
 
 /// Input for store (write new memory)
@@ -115,6 +121,12 @@ pub struct StoreInput {
     /// Entry type: raw (default), summary, meta, impression
     #[serde(default)]
     pub entry_type: Option<String>,
+    /// Impression hint: qualitative label like "uncertain", "confident", "exploratory".
+    /// Only used when entry_type is "impression".
+    pub impression_hint: Option<String>,
+    /// Impression strength: 0.0–1.0, modulates salience weight. Default: 1.0.
+    /// Only used when entry_type is "impression".
+    pub impression_strength: Option<f32>,
 }
 
 fn default_agent_source() -> String {
