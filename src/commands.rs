@@ -1443,12 +1443,23 @@ fn print_entry_line(index: usize, chunk: &crate::HierarchicalChunk) {
 
 /// Browse entries without vector search (list by perspective/recency).
 pub async fn browse(data_dir: &Path, options: &SearchOptions) -> Result<()> {
-    let since_epoch = options.since.as_deref().and_then(crate::resolve::parse_temporal);
-    let until_epoch = options.until.as_deref().and_then(crate::resolve::parse_temporal);
+    let since_epoch = options
+        .since
+        .as_deref()
+        .and_then(crate::resolve::parse_temporal);
+    let until_epoch = options
+        .until
+        .as_deref()
+        .and_then(crate::resolve::parse_temporal);
 
     let store = LanceStore::open_metadata(data_dir).await?;
     let entries = store
-        .list_entries(options.perspective.as_deref(), since_epoch, until_epoch, options.top_k)
+        .list_entries(
+            options.perspective.as_deref(),
+            since_epoch,
+            until_epoch,
+            options.top_k,
+        )
         .await?;
 
     if entries.is_empty() {
@@ -1478,7 +1489,12 @@ async fn set_visibility(data_dir: &Path, id: &str, visibility: &str, label: &str
     let store = std::sync::Arc::new(store);
     let chunk_id = crate::resolve::resolve_id(&store, id).await?;
     store.update_visibility(&chunk_id, visibility).await?;
-    println!("{} {} to visibility '{}'", label, short_id(&chunk_id), visibility);
+    println!(
+        "{} {} to visibility '{}'",
+        label,
+        short_id(&chunk_id),
+        visibility
+    );
     Ok(())
 }
 

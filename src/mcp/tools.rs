@@ -40,7 +40,6 @@ struct StoreSingleInput {
     impression_strength: Option<f32>,
 }
 
-
 /// Store a single entry and return its chunk ID.
 async fn store_single_entry(
     store: &Arc<LanceStore>,
@@ -419,8 +418,7 @@ pub async fn execute_think(
             let embedder = crate::embedder::FastEmbedder::new()
                 .map_err(|e| crate::Error::llm(format!("Failed to init embedder: {}", e)))?;
 
-            let result =
-                crate::think::execute(store.as_ref(), &embedder, &llm, data_dir).await?;
+            let result = crate::think::execute(store.as_ref(), &embedder, &llm, data_dir).await?;
 
             if result.entries_created.is_empty() {
                 return Ok("Nothing to consolidate. Memory is well-organized.".to_string());
@@ -442,9 +440,9 @@ pub async fn execute_think(
             Ok(report)
         }
         #[cfg(not(feature = "llm"))]
-        Some("consolidate") => {
-            Err(crate::Error::config("think(consolidate) requires the 'llm' feature"))
-        }
+        Some("consolidate") => Err(crate::Error::config(
+            "think(consolidate) requires the 'llm' feature",
+        )),
         Some("salience") => {
             let limit = input.hot_limit.unwrap_or(10);
             let hot = store.get_hot_chunks(limit * 2).await?;
@@ -459,7 +457,12 @@ pub async fn execute_think(
                 let heading = chunk.heading.as_deref().unwrap_or("(no heading)");
                 report.push_str(&format!(
                     "- **{}** [composite={:.3}, inter={:.2}, persp={:.2}, rev={:.2}] `{}`\n",
-                    heading, score.composite, score.interaction, score.perspective, score.revision, chunk.id
+                    heading,
+                    score.composite,
+                    score.interaction,
+                    score.perspective,
+                    score.revision,
+                    chunk.id
                 ));
             }
             Ok(report)
@@ -472,10 +475,7 @@ pub async fn execute_think(
             let mut report = String::from("## Perspectives\n\n");
             for p in &perspectives {
                 let tag = if p.builtin { " [builtin]" } else { "" };
-                report.push_str(&format!(
-                    "- **{}** — {}{}\n",
-                    p.id, p.hint, tag
-                ));
+                report.push_str(&format!("- **{}** — {}{}\n", p.id, p.hint, tag));
             }
             report.push_str(&format!("\n{} perspective(s) total.", perspectives.len()));
             Ok(report)
@@ -484,7 +484,10 @@ pub async fn execute_think(
             let stats = store.stats().await?;
             let mut report = String::from("## Store Status\n\n");
             report.push_str(&format!("- **Total entries:** {}\n", stats.total_chunks));
-            report.push_str(&format!("- **Source files:** {}\n", stats.source_files.len()));
+            report.push_str(&format!(
+                "- **Source files:** {}\n",
+                stats.source_files.len()
+            ));
 
             if !stats.chunks_by_level.is_empty() {
                 report.push_str("\n### Entries by level\n\n");
@@ -528,10 +531,7 @@ pub async fn execute_think(
             })?;
 
             let heading = chunk.heading.as_deref().unwrap_or("(no heading)");
-            let mut report = format!(
-                "## Entry History: {} `{}`\n\n",
-                heading, chunk.id
-            );
+            let mut report = format!("## Entry History: {} `{}`\n\n", heading, chunk.id);
             report.push_str(&format!("- **Type:** {}\n", chunk.entry_type));
             report.push_str(&format!("- **Visibility:** {}\n", chunk.visibility));
             report.push_str(&format!("- **Source:** {}\n", chunk.source_file));
