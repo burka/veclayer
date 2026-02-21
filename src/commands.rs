@@ -518,11 +518,10 @@ async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<A
             .push(crate::ChunkRelation::new("derived_from", target));
     }
 
-    // Add universal references
+    // Add universal references and auto-demote superseded entries
     for rel in parse_references(&options.references) {
         chunk.relations.push(rel);
     }
-
     for rel_str in &options.references {
         if let Some(target) = extract_supersede_target(rel_str) {
             info!("Auto-demoting superseded entry: {}", target);
@@ -1744,8 +1743,16 @@ fn parse_references(refs: &[String]) -> Vec<crate::ChunkRelation> {
     let mut relations = Vec::new();
     for s in refs {
         let parts: Vec<&str> = s.split(':').collect();
-        if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-            relations.push(crate::ChunkRelation::new(parts[1], parts[0]));
+        match parts.len() {
+            2 if !parts[0].is_empty() && !parts[1].is_empty() => {
+                // "target_id:kind" format
+                relations.push(crate::ChunkRelation::new(parts[1], parts[0]));
+            }
+            3 if !parts[0].is_empty() && !parts[1].is_empty() && !parts[2].is_empty() => {
+                // "new_id:kind:target_id" format (e.g. "new-id:supersedes:old-id")
+                relations.push(crate::ChunkRelation::new(parts[1], parts[2]));
+            }
+            _ => {}
         }
     }
     relations
@@ -1976,6 +1983,14 @@ mod tests {
     fn test_references_parsing_empty_kind() {
         let refs = parse_references(&[String::from("abc123:")]);
         assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn test_references_parsing_three_part_supersedes() {
+        let refs = parse_references(&[String::from("new-id:supersedes:old-id")]);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].kind, "supersedes");
+        assert_eq!(refs[0].target_id, "old-id");
     }
 
     #[test]
