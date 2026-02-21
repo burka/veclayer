@@ -262,11 +262,11 @@ fn discover_clusters(
     // Group by primary (highest probability) cluster
     let mut groups: HashMap<String, Vec<(usize, f32)>> = HashMap::new();
     for assignment in &assignments {
-        if let Some(best) = assignment
-            .memberships
-            .iter()
-            .max_by(|a, b| a.probability.partial_cmp(&b.probability).unwrap_or(std::cmp::Ordering::Equal))
-        {
+        if let Some(best) = assignment.memberships.iter().max_by(|a, b| {
+            a.probability
+                .partial_cmp(&b.probability)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) {
             groups
                 .entry(best.cluster_id.clone())
                 .or_default()
