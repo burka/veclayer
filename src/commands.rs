@@ -1031,66 +1031,6 @@ pub async fn reflect(data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-// --- Identity command ---
-
-/// Show a compact identity summary.
-pub async fn identity(data_dir: &Path) -> Result<()> {
-    let store = LanceStore::open_metadata(data_dir).await?;
-    let snapshot = crate::identity::compute_identity(&store, data_dir).await?;
-
-    println!("VecLayer Identity");
-    println!("{}", "=".repeat(40));
-
-    // Perspective coverage
-    if snapshot.centroids.is_empty() {
-        println!("\nNo perspective data yet. Add entries with --perspective flags.");
-    } else {
-        println!("\nPerspectives:");
-        for c in &snapshot.centroids {
-            let bar_len = (c.avg_salience * 20.0).round() as usize;
-            let bar = "#".repeat(bar_len.min(20));
-            println!(
-                "  {:12} {:>3} entries  salience {:.2}  {}",
-                c.perspective, c.entry_count, c.avg_salience, bar
-            );
-        }
-    }
-
-    // Core knowledge
-    if !snapshot.core_entries.is_empty() {
-        println!("\nCore Knowledge (top {}):", snapshot.core_entries.len());
-        for entry in &snapshot.core_entries {
-            let heading = entry.heading.as_deref().unwrap_or("(untitled)");
-            println!(
-                "  {} [{:.2}] {}",
-                short_id(&entry.id),
-                entry.salience,
-                heading
-            );
-        }
-    }
-
-    // Open threads
-    if !snapshot.open_threads.is_empty() {
-        println!("\nOpen Threads ({}):", snapshot.open_threads.len());
-        for thread in &snapshot.open_threads {
-            let heading = thread.heading.as_deref().unwrap_or("(untitled)");
-            println!("  {} {}: {}", short_id(&thread.id), heading, thread.reason);
-        }
-    }
-
-    // Recent learnings
-    if !snapshot.recent_learnings.is_empty() {
-        println!("\nRecent Learnings:");
-        for learning in &snapshot.recent_learnings {
-            let heading = learning.heading.as_deref().unwrap_or("(untitled)");
-            println!("  {} {}", short_id(&learning.id), heading);
-        }
-    }
-
-    Ok(())
-}
-
 // --- Think command (requires LLM) ---
 
 /// Run one think cycle: reflect → LLM → add → compact.
