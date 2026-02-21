@@ -15,7 +15,7 @@ Every agent interaction that produces a GitHub artifact (issue, comment, PR) **m
 | `Claude Code - Sonnet 4.6` | Claude Code CLI with Sonnet model |
 | `Claude Code - Haiku 4.5` | Claude Code CLI subagents using Haiku |
 | `Opencode - Z.AI GLM-4.7` | Opencode CLI sessions |
-| `Florian Schmidt` | Human author |
+| `Florian Burka` | Human author |
 
 This allows us to trace which model and tool produced each decision, design, or code change.
 
