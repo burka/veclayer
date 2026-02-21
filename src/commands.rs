@@ -1157,25 +1157,34 @@ pub async fn orientation(data_dir: &Path) -> Result<()> {
 
 // --- Browse command (#29) ---
 
+/// Print one entry line: number + heading, compact metadata, content preview.
+fn print_entry_line(index: usize, chunk: &crate::HierarchicalChunk) {
+    let heading = chunk
+        .heading
+        .as_deref()
+        .unwrap_or_else(|| chunk.content.lines().next().unwrap_or("(untitled)"));
+    println!("{}. {}", index + 1, heading);
+
+    let mut meta = vec![short_id(&chunk.id).to_string()];
+    if chunk.entry_type != EntryType::Raw {
+        meta.push(chunk.entry_type.to_string());
+    }
+    if !chunk.perspectives.is_empty() {
+        meta.push(chunk.perspectives.join(", "));
+    }
+    meta.push(chunk.visibility.clone());
+    println!("   {}", meta.join(" | "));
+    println!("   {}", preview(&chunk.content, 200));
+}
+
 /// Browse entries without vector search (list by perspective/recency).
 pub async fn browse(data_dir: &Path, options: &SearchOptions) -> Result<()> {
-    let since_epoch = options
-        .since
-        .as_deref()
-        .and_then(crate::resolve::parse_temporal);
-    let until_epoch = options
-        .until
-        .as_deref()
-        .and_then(crate::resolve::parse_temporal);
+    let since_epoch = options.since.as_deref().and_then(crate::resolve::parse_temporal);
+    let until_epoch = options.until.as_deref().and_then(crate::resolve::parse_temporal);
 
     let store = LanceStore::open_metadata(data_dir).await?;
     let entries = store
-        .list_entries(
-            options.perspective.as_deref(),
-            since_epoch,
-            until_epoch,
-            options.top_k,
-        )
+        .list_entries(options.perspective.as_deref(), since_epoch, until_epoch, options.top_k)
         .await?;
 
     if entries.is_empty() {
@@ -1187,22 +1196,7 @@ pub async fn browse(data_dir: &Path, options: &SearchOptions) -> Result<()> {
         if i > 0 {
             println!();
         }
-        let heading = chunk
-            .heading
-            .as_deref()
-            .unwrap_or_else(|| chunk.content.lines().next().unwrap_or("(untitled)"));
-        println!("{}. {}", i + 1, heading);
-
-        let mut meta = vec![short_id(&chunk.id).to_string()];
-        if chunk.entry_type != EntryType::Raw {
-            meta.push(chunk.entry_type.to_string());
-        }
-        if !chunk.perspectives.is_empty() {
-            meta.push(chunk.perspectives.join(", "));
-        }
-        meta.push(chunk.visibility.clone());
-        println!("   {}", meta.join(" | "));
-        println!("   {}", preview(&chunk.content, 200));
+        print_entry_line(i, chunk);
     }
 
     println!(
@@ -1236,7 +1230,7 @@ pub async fn think_demote(data_dir: &Path, id: &str, visibility: &str) -> Result
 
 /// Add a relation between two entries (CLI for MCP think(relate)).
 pub async fn think_relate(data_dir: &Path, source: &str, target: &str, kind: &str) -> Result<()> {
-    let (_embedder, store) = open_store(data_dir).await?;
+    let store = LanceStore::open_metadata(data_dir).await?;
     let store = std::sync::Arc::new(store);
     let source_id = crate::resolve::resolve_id(&store, source).await?;
     let target_id = crate::resolve::resolve_id(&store, target).await?;
@@ -1261,7 +1255,7 @@ pub async fn think_relate(data_dir: &Path, source: &str, target: &str, kind: &st
 
 /// Apply aging rules (CLI for MCP think(apply_aging)).
 pub async fn think_aging_apply(data_dir: &Path) -> Result<()> {
-    let (_embedder, store) = open_store(data_dir).await?;
+    let store = LanceStore::open_metadata(data_dir).await?;
     let config = crate::aging::AgingConfig::load(data_dir);
     let result = crate::aging::apply_aging(&store, &config).await?;
 
@@ -1510,5 +1504,204 @@ mod tests {
         assert!(result.is_empty());
 
         Ok(())
+    }
+
+    // --- Test infrastructure ---
+
+    use crate::test_helpers::make_test_chunk;
+
+    async fn seed_store(dir: &Path) -> LanceStore {
+        let store = LanceStore::open(dir, 384).await.unwrap();
+        store
+            .insert_chunks(vec![
+                make_test_chunk("aaa111", "First entry about architecture"),
+                make_test_chunk("bbb222", "Second entry about testing"),
+            ])
+            .await
+            .unwrap();
+        store
+    }
+
+    // --- think_promote tests ---
+
+    #[tokio::test]
+    async fn test_think_promote_changes_visibility() -> Result<()> {
+        let dir = TempDir::new()?;
+        seed_store(dir.path()).await;
+
+        think_promote(dir.path(), "aaa111", "always").await?;
+
+        let store = LanceStore::open_metadata(dir.path()).await?;
+        let entry = store.get_by_id("aaa111").await?.unwrap();
+        assert_eq!(entry.visibility, "always");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_think_promote_resolves_prefix() -> Result<()> {
+        let dir = TempDir::new()?;
+        seed_store(dir.path()).await;
+
+        think_promote(dir.path(), "aaa", "always").await?;
+
+        let store = LanceStore::open_metadata(dir.path()).await?;
+        let entry = store.get_by_id("aaa111").await?.unwrap();
+        assert_eq!(entry.visibility, "always");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_think_promote_not_found() {
+        let dir = TempDir::new().unwrap();
+        seed_store(dir.path()).await;
+
+        let result = think_promote(dir.path(), "zzz999", "always").await;
+        assert!(result.is_err());
+    }
+
+    // --- think_demote tests ---
+
+    #[tokio::test]
+    async fn test_think_demote_changes_visibility() -> Result<()> {
+        let dir = TempDir::new()?;
+        seed_store(dir.path()).await;
+
+        think_demote(dir.path(), "aaa111", "deep_only").await?;
+
+        let store = LanceStore::open_metadata(dir.path()).await?;
+        let entry = store.get_by_id("aaa111").await?.unwrap();
+        assert_eq!(entry.visibility, "deep_only");
+        Ok(())
+    }
+
+    // --- think_relate tests ---
+
+    #[tokio::test]
+    async fn test_think_relate_adds_forward_relation() -> Result<()> {
+        let dir = TempDir::new()?;
+        seed_store(dir.path()).await;
+
+        think_relate(dir.path(), "aaa111", "bbb222", "derived_from").await?;
+
+        let store = LanceStore::open_metadata(dir.path()).await?;
+        let source = store.get_by_id("aaa111").await?.unwrap();
+        assert_eq!(source.relations.len(), 1);
+        assert_eq!(source.relations[0].kind, "derived_from");
+        assert_eq!(source.relations[0].target_id, "bbb222");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_think_relate_bidirectional_for_related_to() -> Result<()> {
+        let dir = TempDir::new()?;
+        seed_store(dir.path()).await;
+
+        think_relate(dir.path(), "aaa111", "bbb222", "related_to").await?;
+
+        let store = LanceStore::open_metadata(dir.path()).await?;
+        let source = store.get_by_id("aaa111").await?.unwrap();
+        assert_eq!(source.relations.len(), 1);
+        assert_eq!(source.relations[0].kind, "related_to");
+        assert_eq!(source.relations[0].target_id, "bbb222");
+
+        // Backward link
+        let target = store.get_by_id("bbb222").await?.unwrap();
+        assert_eq!(target.relations.len(), 1);
+        assert_eq!(target.relations[0].kind, "related_to");
+        assert_eq!(target.relations[0].target_id, "aaa111");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_think_relate_no_backward_for_derived_from() -> Result<()> {
+        let dir = TempDir::new()?;
+        seed_store(dir.path()).await;
+
+        think_relate(dir.path(), "aaa111", "bbb222", "derived_from").await?;
+
+        let store = LanceStore::open_metadata(dir.path()).await?;
+        let target = store.get_by_id("bbb222").await?.unwrap();
+        assert!(
+            target.relations.is_empty(),
+            "non-related_to should not add backward link"
+        );
+        Ok(())
+    }
+
+    // --- think_aging tests ---
+
+    #[tokio::test]
+    async fn test_think_aging_apply_empty_store() -> Result<()> {
+        let dir = TempDir::new()?;
+        // No seeding — empty store
+        LanceStore::open_metadata(dir.path()).await?;
+        think_aging_apply(dir.path()).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_think_aging_configure_saves() -> Result<()> {
+        let dir = TempDir::new()?;
+        std::fs::create_dir_all(dir.path())?;
+
+        think_aging_configure(dir.path(), Some(7), Some("archived")).await?;
+
+        let config = crate::aging::AgingConfig::load(dir.path());
+        assert_eq!(config.degrade_after_days, 7);
+        assert_eq!(config.degrade_to, "archived");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_think_aging_configure_partial_update() -> Result<()> {
+        let dir = TempDir::new()?;
+        std::fs::create_dir_all(dir.path())?;
+
+        // Set initial
+        think_aging_configure(dir.path(), Some(14), Some("deep_only")).await?;
+        // Update only days
+        think_aging_configure(dir.path(), Some(3), None).await?;
+
+        let config = crate::aging::AgingConfig::load(dir.path());
+        assert_eq!(config.degrade_after_days, 3);
+        assert_eq!(config.degrade_to, "deep_only"); // unchanged
+        Ok(())
+    }
+
+    // --- browse tests ---
+
+    #[tokio::test]
+    async fn test_browse_empty_store() -> Result<()> {
+        let dir = TempDir::new()?;
+        LanceStore::open_metadata(dir.path()).await?;
+        browse(dir.path(), &SearchOptions::default()).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_browse_returns_entries() -> Result<()> {
+        let dir = TempDir::new()?;
+        seed_store(dir.path()).await;
+
+        // browse prints to stdout — verify it doesn't error
+        browse(dir.path(), &SearchOptions::default()).await?;
+        Ok(())
+    }
+
+    // --- preview tests ---
+
+    #[test]
+    fn test_preview_short_content() {
+        assert_eq!(preview("hello world", 50), "hello world");
+    }
+
+    #[test]
+    fn test_preview_truncates() {
+        assert_eq!(preview("hello world", 5), "hello...");
+    }
+
+    #[test]
+    fn test_preview_replaces_newlines() {
+        assert_eq!(preview("line1\nline2\nline3", 50), "line1 line2 line3");
     }
 }
