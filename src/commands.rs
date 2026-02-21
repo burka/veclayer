@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use owo_colors::{OwoColorize, Stream};
 use tracing::{debug, info};
 
 use crate::chunk::{short_id, EntryType};
@@ -34,13 +35,34 @@ async fn open_store(data_dir: &Path) -> Result<(FastEmbedder, LanceStore)> {
 
 // --- Output helpers ---
 
+/// Color a visibility string for CLI display.
+fn vis_color(vis: &str) -> String {
+    match vis {
+        "always" => vis
+            .if_supports_color(Stream::Stdout, |s| s.green())
+            .to_string(),
+        "normal" => vis.to_string(),
+        "deep_only" => vis
+            .if_supports_color(Stream::Stdout, |s| s.dimmed())
+            .to_string(),
+        "expiring" => vis
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
+            .to_string(),
+        _ => vis
+            .if_supports_color(Stream::Stdout, |s| s.red())
+            .to_string(),
+    }
+}
+
 /// Truncate content to `max` chars, replacing newlines with spaces.
 fn preview(s: &str, max: usize) -> String {
     let clean = s.replace('\n', " ");
     if clean.len() <= max {
         clean
     } else {
-        format!("{}...", &clean[..max])
+        // Find a char boundary at or before `max` to avoid panicking on multi-byte UTF-8
+        let end = clean.floor_char_boundary(max);
+        format!("{}...", &clean[..end])
     }
 }
 
@@ -515,12 +537,47 @@ pub async fn search(data_dir: &Path, query_str: &str, options: &SearchOptions) -
             .as_deref()
             .unwrap_or_else(|| result.chunk.content.lines().next().unwrap_or("(untitled)"));
         let tier = crate::mcp::types::relevance_tier(result.score);
-        println!("{}. {} ({}, {:.2})", i + 1, heading, tier, result.score,);
+        println!(
+            "{}  {} {:.2}",
+            format!("{}. {}", i + 1, heading).if_supports_color(Stream::Stdout, |s| s.bold()),
+            tier.if_supports_color(Stream::Stdout, |s| s.dimmed()),
+            result
+                .score
+                .if_supports_color(Stream::Stdout, |s| s.dimmed()),
+        );
 
         // Compact metadata
-        let mut meta = vec![short_id(&result.chunk.id).to_string()];
+        let mut meta = vec![short_id(&result.chunk.id)
+            .if_supports_color(Stream::Stdout, |s| s.cyan())
+            .to_string()];
         if result.chunk.entry_type != EntryType::Raw {
-            meta.push(result.chunk.entry_type.to_string());
+            meta.push(
+                result
+                    .chunk
+                    .entry_type
+                    .to_string()
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
+                    .to_string(),
+            );
+        }
+        if !result.chunk.perspectives.is_empty() {
+            meta.push(
+                result
+                    .chunk
+                    .perspectives
+                    .join(", ")
+                    .if_supports_color(Stream::Stdout, |s| s.magenta())
+                    .to_string(),
+            );
+        }
+        if result.chunk.visibility != "normal" {
+            meta.push(
+                result
+                    .chunk
+                    .visibility
+                    .if_supports_color(Stream::Stdout, |s| s.red())
+                    .to_string(),
+            );
         }
         if options.show_path && !result.hierarchy_path.is_empty() {
             let path: Vec<&str> = result
@@ -533,7 +590,10 @@ pub async fn search(data_dir: &Path, query_str: &str, options: &SearchOptions) -
         println!("   {}", meta.join(" | "));
 
         // Content preview
-        println!("   {}", preview(&result.chunk.content, 200));
+        println!(
+            "   {}",
+            preview(&result.chunk.content, 200).if_supports_color(Stream::Stdout, |s| s.dimmed())
+        );
 
         if !result.relevant_children.is_empty() {
             for child in &result.relevant_children {
@@ -543,17 +603,18 @@ pub async fn search(data_dir: &Path, query_str: &str, options: &SearchOptions) -
                     .as_deref()
                     .unwrap_or_else(|| child.chunk.content.lines().next().unwrap_or("..."));
                 println!(
-                    "     > {} [{}]",
+                    "     {} {} [{}]",
+                    ">".if_supports_color(Stream::Stdout, |s| s.dimmed()),
                     preview(child_heading, 60),
-                    short_id(&child.chunk.id)
+                    short_id(&child.chunk.id).if_supports_color(Stream::Stdout, |s| s.cyan())
                 );
             }
         }
     }
 
     println!(
-        "\n{} result(s). `veclayer focus <id>` to drill in.",
-        results.len()
+        "\n{} `veclayer focus <id>` to drill in.",
+        format!("{} result(s).", results.len()).if_supports_color(Stream::Stdout, |s| s.bold())
     );
 
     Ok(())
@@ -642,19 +703,67 @@ pub async fn focus(data_dir: &Path, id: &str, options: &FocusOptions) -> Result<
         .ok_or_else(|| crate::Error::not_found(format!("Entry {} not found", id)))?;
 
     // Display entry details
-    println!("Entry {}", short_id(&entry.id));
-    println!("{}", "=".repeat(50));
-    println!("  Type: {}", entry.entry_type);
-    println!("  Level: {}", entry.level);
-    println!("  Visibility: {}", entry.visibility);
-    println!("  Source: {}", entry.source_file);
+    println!(
+        "{}",
+        format!("Entry {}", short_id(&entry.id)).if_supports_color(Stream::Stdout, |s| s.bold())
+    );
+    println!(
+        "{}",
+        "=".repeat(50)
+            .if_supports_color(Stream::Stdout, |s| s.dimmed())
+    );
+    println!(
+        "  {}  {}",
+        "Type:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+        entry
+            .entry_type
+            .to_string()
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
+    );
+    println!(
+        "  {}  {}",
+        "Level:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+        entry.level
+    );
+    println!(
+        "  {}  {}",
+        "Vis:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+        vis_color(&entry.visibility)
+    );
+    println!(
+        "  {}  {}",
+        "Source:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+        entry.source_file
+    );
     if let Some(ref heading) = entry.heading {
-        println!("  Heading: {}", heading);
+        println!(
+            "  {}  {}",
+            "Heading:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+            heading
+        );
+    }
+    if !entry.perspectives.is_empty() {
+        println!(
+            "  {}  {}",
+            "Perspectives:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+            entry
+                .perspectives
+                .join(", ")
+                .if_supports_color(Stream::Stdout, |s| s.magenta())
+        );
     }
     if !entry.relations.is_empty() {
-        println!("  Relations:");
+        println!(
+            "  {}",
+            "Relations:".if_supports_color(Stream::Stdout, |s| s.dimmed())
+        );
         for rel in &entry.relations {
-            println!("    {} -> {}", rel.kind, short_id(&rel.target_id));
+            println!(
+                "    {} {} {}",
+                rel.kind.if_supports_color(Stream::Stdout, |s| s.yellow()),
+                "->".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+                short_id(&rel.target_id).if_supports_color(Stream::Stdout, |s| s.cyan())
+            );
         }
     }
     println!("\n{}\n", entry.content);
@@ -686,19 +795,29 @@ pub async fn focus(data_dir: &Path, id: &str, options: &FocusOptions) -> Result<
         }
 
         let shown = children.iter().take(options.limit).count();
-        println!("Children ({}/{}):", shown, children.len());
+        println!(
+            "{}",
+            format!("Children ({}/{}):", shown, children.len())
+                .if_supports_color(Stream::Stdout, |s| s.bold())
+        );
         for child in children.iter().take(options.limit) {
             println!(
                 "  {} [{}] {}",
-                short_id(&child.id),
-                child.entry_type,
-                preview(&child.content, 100)
+                short_id(&child.id).if_supports_color(Stream::Stdout, |s| s.cyan()),
+                child
+                    .entry_type
+                    .to_string()
+                    .if_supports_color(Stream::Stdout, |s| s.yellow()),
+                preview(&child.content, 100).if_supports_color(Stream::Stdout, |s| s.dimmed())
             );
         }
 
         println!("\nUse `veclayer focus <child-id>` to drill deeper.");
     } else {
-        println!("(no children)");
+        println!(
+            "{}",
+            "(no children)".if_supports_color(Stream::Stdout, |s| s.dimmed())
+        );
     }
 
     Ok(())
@@ -708,11 +827,31 @@ pub async fn focus(data_dir: &Path, id: &str, options: &FocusOptions) -> Result<
 pub async fn status(data_dir: &Path) -> Result<()> {
     let result = stats(data_dir).await?;
 
-    println!("VecLayer Status");
-    println!("{}", "=".repeat(40));
-    println!("Store: {}", data_dir.display());
-    println!("Total entries: {}", result.total_chunks);
-    println!("\nEntries by level:");
+    println!(
+        "{}",
+        "VecLayer Status".if_supports_color(Stream::Stdout, |s| s.bold())
+    );
+    println!(
+        "{}",
+        "=".repeat(40)
+            .if_supports_color(Stream::Stdout, |s| s.dimmed())
+    );
+    println!(
+        "{}  {}",
+        "Store:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+        data_dir.display()
+    );
+    println!(
+        "{}  {}",
+        "Total entries:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+        result
+            .total_chunks
+            .if_supports_color(Stream::Stdout, |s| s.bold())
+    );
+    println!(
+        "\n{}",
+        "Entries by level:".if_supports_color(Stream::Stdout, |s| s.dimmed())
+    );
     for level in 1..=7 {
         if let Some(count) = result.chunks_by_level.get(&level) {
             let level_name = if level <= 6 {
@@ -720,7 +859,11 @@ pub async fn status(data_dir: &Path) -> Result<()> {
             } else {
                 "Content".to_string()
             };
-            println!("  {}: {}", level_name, count);
+            println!(
+                "  {}  {}",
+                level_name.if_supports_color(Stream::Stdout, |s| s.cyan()),
+                count
+            );
         }
     }
     println!("\nSource files: {}", result.source_files.len());
@@ -830,22 +973,55 @@ pub async fn history(data_dir: &Path, id: &str) -> Result<()> {
     // Resolve short IDs by prefix search
     let chunk = resolve_entry(&store, id).await?;
 
-    println!("Entry {} ({})", short_id(&chunk.id), chunk.entry_type);
+    println!(
+        "{} ({})",
+        format!("Entry {}", short_id(&chunk.id)).if_supports_color(Stream::Stdout, |s| s.bold()),
+        chunk
+            .entry_type
+            .to_string()
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
+    );
     if let Some(ref heading) = chunk.heading {
-        println!("  Heading: {}", heading);
+        println!(
+            "  {}  {}",
+            "Heading:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+            heading
+        );
     }
-    println!("  Content: {}", preview(&chunk.content, 80));
+    println!(
+        "  {}  {}",
+        "Content:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+        preview(&chunk.content, 80).if_supports_color(Stream::Stdout, |s| s.dimmed())
+    );
 
     if !chunk.perspectives.is_empty() {
-        println!("  Perspectives: {}", chunk.perspectives.join(", "));
+        println!(
+            "  {}  {}",
+            "Perspectives:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+            chunk
+                .perspectives
+                .join(", ")
+                .if_supports_color(Stream::Stdout, |s| s.magenta())
+        );
     }
 
     if chunk.relations.is_empty() {
-        println!("  No relations.");
+        println!(
+            "  {}",
+            "No relations.".if_supports_color(Stream::Stdout, |s| s.dimmed())
+        );
     } else {
-        println!("  Relations:");
+        println!(
+            "  {}",
+            "Relations:".if_supports_color(Stream::Stdout, |s| s.dimmed())
+        );
         for rel in &chunk.relations {
-            println!("    {} -> {}", rel.kind, short_id(&rel.target_id));
+            println!(
+                "    {} {} {}",
+                rel.kind.if_supports_color(Stream::Stdout, |s| s.yellow()),
+                "->".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+                short_id(&rel.target_id).if_supports_color(Stream::Stdout, |s| s.cyan())
+            );
         }
     }
 
@@ -958,18 +1134,26 @@ async fn compact_salience(data_dir: &Path, options: &CompactOptions) -> Result<(
     let weights = crate::salience::SalienceWeights::default();
     let top = crate::salience::top_salient(&hot, &weights, options.limit);
 
-    println!("Salience report (top {}):", top.len());
-    println!("{}", "=".repeat(60));
+    println!(
+        "{}",
+        format!("Salience report (top {}):", top.len())
+            .if_supports_color(Stream::Stdout, |s| s.bold())
+    );
+    println!(
+        "{}",
+        "=".repeat(60)
+            .if_supports_color(Stream::Stdout, |s| s.dimmed())
+    );
     for (idx, score) in &top {
         let chunk = &hot[*idx];
         println!(
-            "  {} [{:.3}] inter={:.2} persp={:.2} rev={:.2}  {}",
-            short_id(&chunk.id),
-            score.composite,
+            "  {} [{}] inter={:.2} persp={:.2} rev={:.2}  {}",
+            short_id(&chunk.id).if_supports_color(Stream::Stdout, |s| s.cyan()),
+            format!("{:.3}", score.composite).if_supports_color(Stream::Stdout, |s| s.green()),
             score.interaction,
             score.perspective,
             score.revision,
-            preview(&chunk.content, 60)
+            preview(&chunk.content, 60).if_supports_color(Stream::Stdout, |s| s.dimmed())
         );
     }
 
@@ -1014,19 +1198,27 @@ async fn compact_archive_candidates(data_dir: &Path, options: &CompactOptions) -
     }
 
     println!(
-        "Archive candidates ({}, threshold {:.2}):",
-        candidates.len(),
-        options.archive_threshold
+        "{}",
+        format!(
+            "Archive candidates ({}, threshold {:.2}):",
+            candidates.len(),
+            options.archive_threshold
+        )
+        .if_supports_color(Stream::Stdout, |s| s.bold())
     );
-    println!("{}", "=".repeat(60));
+    println!(
+        "{}",
+        "=".repeat(60)
+            .if_supports_color(Stream::Stdout, |s| s.dimmed())
+    );
     for chunk in &candidates {
         let score = crate::salience::compute(chunk, &weights);
         println!(
-            "  {} [salience={:.3}, vis={}]  {}",
-            short_id(&chunk.id),
-            score.composite,
-            chunk.visibility,
-            preview(&chunk.content, 60)
+            "  {} [salience={}, vis={}]  {}",
+            short_id(&chunk.id).if_supports_color(Stream::Stdout, |s| s.cyan()),
+            format!("{:.3}", score.composite).if_supports_color(Stream::Stdout, |s| s.red()),
+            vis_color(&chunk.visibility),
+            preview(&chunk.content, 60).if_supports_color(Stream::Stdout, |s| s.dimmed())
         );
     }
     println!("\nUse `veclayer archive <id>...` to archive selected entries.");
@@ -1129,8 +1321,11 @@ pub async fn orientation(data_dir: &Path) -> Result<()> {
     let snapshot = crate::identity::compute_identity(&store, data_dir).await?;
 
     println!(
-        "VecLayer — {} entries from {} sources",
-        store_stats.total_chunks,
+        "{} {} entries from {} sources",
+        "VecLayer".if_supports_color(Stream::Stdout, |s| s.bold()),
+        store_stats
+            .total_chunks
+            .if_supports_color(Stream::Stdout, |s| s.bold()),
         store_stats.source_files.len()
     );
 
@@ -1139,25 +1334,47 @@ pub async fn orientation(data_dir: &Path) -> Result<()> {
         let persp_summary: Vec<String> = snapshot
             .centroids
             .iter()
-            .map(|c| format!("{} ({})", c.perspective, c.entry_count))
+            .map(|c| {
+                format!(
+                    "{} ({})",
+                    c.perspective
+                        .if_supports_color(Stream::Stdout, |s| s.magenta()),
+                    c.entry_count
+                )
+            })
             .collect();
-        println!("Perspectives: {}", persp_summary.join(", "));
+        println!(
+            "{} {}",
+            "Perspectives:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+            persp_summary.join(", ")
+        );
     }
 
     // Top 5 core
     if !snapshot.core_entries.is_empty() {
-        println!("\nMost important:");
+        println!(
+            "\n{}",
+            "Most important:".if_supports_color(Stream::Stdout, |s| s.bold())
+        );
         for entry in snapshot.core_entries.iter().take(5) {
             let heading = entry.heading.as_deref().unwrap_or("(untitled)");
-            println!("  {} {}", short_id(&entry.id), heading);
+            println!(
+                "  {} {}",
+                short_id(&entry.id).if_supports_color(Stream::Stdout, |s| s.cyan()),
+                heading
+            );
         }
     }
 
     // Open threads (brief)
     if !snapshot.open_threads.is_empty() {
         println!(
-            "\n{} open thread(s) need attention. Run `veclayer reflect` for details.",
-            snapshot.open_threads.len()
+            "\n{} Run `veclayer reflect` for details.",
+            format!(
+                "{} open thread(s) need attention.",
+                snapshot.open_threads.len()
+            )
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
         );
     }
 
@@ -1175,18 +1392,40 @@ fn print_entry_line(index: usize, chunk: &crate::HierarchicalChunk) {
         .heading
         .as_deref()
         .unwrap_or_else(|| chunk.content.lines().next().unwrap_or("(untitled)"));
-    println!("{}. {}", index + 1, heading);
+    println!(
+        "{}",
+        format!("{}. {}", index + 1, heading).if_supports_color(Stream::Stdout, |s| s.bold())
+    );
 
-    let mut meta = vec![short_id(&chunk.id).to_string()];
+    let mut meta = vec![short_id(&chunk.id)
+        .if_supports_color(Stream::Stdout, |s| s.cyan())
+        .to_string()];
     if chunk.entry_type != EntryType::Raw {
-        meta.push(chunk.entry_type.to_string());
+        meta.push(
+            chunk
+                .entry_type
+                .to_string()
+                .if_supports_color(Stream::Stdout, |s| s.yellow())
+                .to_string(),
+        );
     }
     if !chunk.perspectives.is_empty() {
-        meta.push(chunk.perspectives.join(", "));
+        meta.push(
+            chunk
+                .perspectives
+                .join(", ")
+                .if_supports_color(Stream::Stdout, |s| s.magenta())
+                .to_string(),
+        );
     }
-    meta.push(chunk.visibility.clone());
+    if chunk.visibility != "normal" {
+        meta.push(vis_color(&chunk.visibility));
+    }
     println!("   {}", meta.join(" | "));
-    println!("   {}", preview(&chunk.content, 200));
+    println!(
+        "   {}",
+        preview(&chunk.content, 200).if_supports_color(Stream::Stdout, |s| s.dimmed())
+    );
 }
 
 /// Browse entries without vector search (list by perspective/recency).
@@ -1212,8 +1451,8 @@ pub async fn browse(data_dir: &Path, options: &SearchOptions) -> Result<()> {
     }
 
     println!(
-        "\n{} entry(ies). `veclayer focus <id>` to drill in.",
-        entries.len()
+        "\n{} `veclayer focus <id>` to drill in.",
+        format!("{} entry(ies).", entries.len()).if_supports_color(Stream::Stdout, |s| s.bold())
     );
     Ok(())
 }
@@ -1717,5 +1956,25 @@ mod tests {
     #[test]
     fn test_preview_replaces_newlines() {
         assert_eq!(preview("line1\nline2\nline3", 50), "line1 line2 line3");
+    }
+
+    #[test]
+    fn test_preview_multibyte_utf8() {
+        // "日本語" is 9 bytes (3 bytes per char); truncating at 5 should not panic
+        let result = preview("日本語テスト", 5);
+        assert!(result.ends_with("..."));
+        // Should cut at a valid char boundary (either 3 or 6 bytes, not 5)
+        assert!(result.len() <= 9); // at most 3 bytes + "..."
+    }
+
+    #[test]
+    fn test_preview_empty() {
+        assert_eq!(preview("", 10), "");
+    }
+
+    #[test]
+    fn test_preview_exact_boundary() {
+        assert_eq!(preview("abcde", 5), "abcde");
+        assert_eq!(preview("abcdef", 5), "abcde...");
     }
 }

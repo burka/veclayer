@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
@@ -336,6 +337,11 @@ enum AgingAction {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Disable ANSI escape codes when stdout is not a TTY (e.g. piped output)
+    if !std::io::stdout().is_terminal() {
+        owo_colors::set_override(false);
+    }
+
     let cli = Cli::parse();
 
     let is_mcp_stdio = matches!(
