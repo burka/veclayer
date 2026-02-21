@@ -24,7 +24,7 @@ struct Cli {
     )]
     data_dir: PathBuf,
 
-    /// Enable verbose output (INFO level; default is WARN)
+    /// Enable verbose output (DEBUG for veclayer, INFO for dependencies; default is WARN)
     #[arg(short, long)]
     verbose: bool,
 
@@ -579,7 +579,7 @@ async fn main() -> Result<()> {
 
 fn init_logging(verbose: bool, quiet: bool, use_stderr: bool) {
     // Respect RUST_LOG env if set; otherwise use flag-based defaults.
-    // Default: only show warnings. --verbose enables veclayer INFO.
+    // Default: only show warnings. --verbose enables veclayer DEBUG.
     // --quiet suppresses everything except errors.
     // Dependency crates (lancedb, lance, ort, etc.) stay at WARN unless --verbose.
     let filter = if std::env::var("RUST_LOG").is_ok() {
