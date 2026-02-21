@@ -6,6 +6,7 @@
 //! - `stdio` -- MCP stdio transport
 //! - `http` -- HTTP REST API
 
+pub mod format;
 pub mod http;
 pub mod stdio;
 pub mod tools;
