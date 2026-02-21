@@ -916,7 +916,7 @@ pub async fn status(data_dir: &Path) -> Result<()> {
 
 /// Show statistics about the store (returns structured data).
 pub async fn stats(data_dir: &Path) -> Result<StatsResult> {
-    let store = LanceStore::open_metadata(data_dir, false).await?;
+    let store = LanceStore::open_metadata(data_dir, true).await?;
 
     let store_stats = store.stats().await?;
 
@@ -945,7 +945,7 @@ pub async fn print_sources(data_dir: &Path) -> Result<()> {
 
 /// List all indexed source files (returns data).
 pub async fn sources(data_dir: &Path) -> Result<Vec<String>> {
-    let store = LanceStore::open_metadata(data_dir, false).await?;
+    let store = LanceStore::open_metadata(data_dir, true).await?;
 
     let store_stats = store.stats().await?;
 
@@ -1005,7 +1005,7 @@ pub fn perspective_remove(data_dir: &Path, id: &str) -> Result<()> {
 
 /// Show version/relation history of an entry.
 pub async fn history(data_dir: &Path, id: &str) -> Result<()> {
-    let store = LanceStore::open_metadata(data_dir, false).await?;
+    let store = LanceStore::open_metadata(data_dir, true).await?;
 
     // Resolve short IDs by prefix search
     let chunk = resolve_entry(&store, id).await?;
@@ -1158,7 +1158,7 @@ async fn compact_rotate(data_dir: &Path) -> Result<()> {
 
 /// Salience: compute and display salience scores for the most/least salient entries.
 async fn compact_salience(data_dir: &Path, options: &CompactOptions) -> Result<()> {
-    let store = LanceStore::open_metadata(data_dir, false).await?;
+    let store = LanceStore::open_metadata(data_dir, true).await?;
 
     // Get hot chunks (most accessed) as a proxy for "all interesting entries"
     let hot = store.get_hot_chunks(options.limit * 2).await?;
@@ -1199,7 +1199,7 @@ async fn compact_salience(data_dir: &Path, options: &CompactOptions) -> Result<(
 
 /// Archive candidates: entries with low salience that could be archived.
 async fn compact_archive_candidates(data_dir: &Path, options: &CompactOptions) -> Result<()> {
-    let store = LanceStore::open_metadata(data_dir, false).await?;
+    let store = LanceStore::open_metadata(data_dir, true).await?;
     let aging_config = crate::aging::AgingConfig::load(data_dir);
 
     // Get stale chunks as the candidate pool
@@ -1267,7 +1267,7 @@ async fn compact_archive_candidates(data_dir: &Path, options: &CompactOptions) -
 
 /// Generate a comprehensive reflection/identity report.
 pub async fn reflect(data_dir: &Path) -> Result<()> {
-    let store = LanceStore::open_metadata(data_dir, false).await?;
+    let store = LanceStore::open_metadata(data_dir, true).await?;
     let snapshot = crate::identity::compute_identity(&store, data_dir).await?;
     let priming = crate::identity::generate_priming(&snapshot);
     println!("{}", priming);
@@ -1344,7 +1344,7 @@ pub async fn think(data_dir: &Path) -> Result<()> {
 
 /// Quick orientation: "Who am I, what's on my mind?"
 pub async fn orientation(data_dir: &Path) -> Result<()> {
-    let store = LanceStore::open_metadata(data_dir, false).await?;
+    let store = LanceStore::open_metadata(data_dir, true).await?;
 
     let store_stats = store.stats().await?;
     if store_stats.total_chunks == 0 {
@@ -1476,7 +1476,7 @@ pub async fn browse(data_dir: &Path, options: &SearchOptions) -> Result<()> {
         .as_deref()
         .and_then(crate::resolve::parse_temporal);
 
-    let store = LanceStore::open_metadata(data_dir, false).await?;
+    let store = LanceStore::open_metadata(data_dir, true).await?;
     let entries = store
         .list_entries(
             options.perspective.as_deref(),
@@ -1512,7 +1512,7 @@ pub async fn browse(data_dir: &Path, options: &SearchOptions) -> Result<()> {
 /// Each line is a JSON-serialized `HierarchicalChunk` with the `embedding`
 /// field stripped.  Output is sorted by `id` for deterministic, diffable output.
 pub async fn export_entries(data_dir: &Path, options: &ExportOptions) -> Result<()> {
-    let store = LanceStore::open(data_dir, FastEmbedder::new()?.dimension(), true).await?;
+    let store = LanceStore::open_metadata(data_dir, true).await?;
     let mut entries = store
         .list_entries(options.perspective.as_deref(), None, None, usize::MAX)
         .await?;
@@ -1556,7 +1556,7 @@ pub async fn import_entries(data_dir: &Path, options: &ImportOptions) -> Result<
         }
     }
 
-    println!(
+    eprintln!(
         "Imported {} entries, {} skipped (already exist).",
         imported, skipped
     );
@@ -1587,7 +1587,11 @@ fn collect_non_empty_lines(reader: impl BufRead) -> Result<Vec<String>> {
 
 /// Attempt to import one JSONL line.  Returns `Ok(true)` if inserted,
 /// `Ok(false)` if the entry already exists.
-async fn import_one_entry(embedder: &FastEmbedder, store: &LanceStore, line: &str) -> Result<bool> {
+async fn import_one_entry(
+    embedder: &impl crate::Embedder,
+    store: &impl crate::store::VectorStore,
+    line: &str,
+) -> Result<bool> {
     let mut chunk: crate::HierarchicalChunk = serde_json::from_str(line)?;
 
     if store.get_by_id(&chunk.id).await?.is_some() {

@@ -1,8 +1,8 @@
 mod lancedb_impl;
-pub mod lock;
+pub(crate) mod lock;
 
 pub use lancedb_impl::LanceStore;
-pub use lock::FileLock;
+pub(crate) use lock::FileLock;
 
 use crate::{AccessProfile, ChunkLevel, ChunkRelation, HierarchicalChunk, Result};
 use std::future::Future;
