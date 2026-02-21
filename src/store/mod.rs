@@ -39,6 +39,13 @@ pub trait VectorStore: Send + Sync {
     fn get_by_id(&self, id: &str)
         -> impl Future<Output = Result<Option<HierarchicalChunk>>> + Send;
 
+    /// Get a chunk by ID prefix (short ID). Tries exact match first,
+    /// then falls back to prefix scan. Returns error if prefix is ambiguous.
+    fn get_by_id_prefix(
+        &self,
+        prefix: &str,
+    ) -> impl Future<Output = Result<Option<HierarchicalChunk>>> + Send;
+
     /// Get all chunks from a source file.
     fn get_by_source(
         &self,
@@ -121,6 +128,7 @@ crate::arc_impl!(VectorStore {
     fn search(&self, query_embedding: &[f32], limit: usize, level_filter: Option<ChunkLevel>) -> impl Future<Output = Result<Vec<SearchResult>>> + Send;
     fn get_children(&self, parent_id: &str) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
     fn get_by_id(&self, id: &str) -> impl Future<Output = Result<Option<HierarchicalChunk>>> + Send;
+    fn get_by_id_prefix(&self, prefix: &str) -> impl Future<Output = Result<Option<HierarchicalChunk>>> + Send;
     fn get_by_source(&self, source_file: &str) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
     fn delete_by_source(&self, source_file: &str) -> impl Future<Output = Result<usize>> + Send;
     fn stats(&self) -> impl Future<Output = Result<StoreStats>> + Send;

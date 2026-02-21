@@ -509,6 +509,26 @@ mod tests {
             Ok(chunks.get(id).cloned())
         }
 
+        async fn get_by_id_prefix(&self, prefix: &str) -> Result<Option<HierarchicalChunk>> {
+            let chunks = self.chunks.lock().unwrap();
+            if let Some(chunk) = chunks.get(prefix) {
+                return Ok(Some(chunk.clone()));
+            }
+            let matches: Vec<_> = chunks
+                .iter()
+                .filter(|(k, _)| k.starts_with(prefix))
+                .collect();
+            match matches.len() {
+                0 => Ok(None),
+                1 => Ok(Some(matches[0].1.clone())),
+                _ => Err(crate::Error::config(format!(
+                    "Ambiguous prefix '{}': {} matches",
+                    prefix,
+                    matches.len()
+                ))),
+            }
+        }
+
         async fn get_by_source(&self, _source_file: &str) -> Result<Vec<HierarchicalChunk>> {
             Ok(vec![])
         }
