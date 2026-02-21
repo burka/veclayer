@@ -241,7 +241,7 @@ fn tool_list() -> serde_json::Value {
                         "limit": { "type": "integer", "default": 5 },
                         "deep": { "type": "boolean", "default": false },
                         "recency": { "type": "string", "description": "Recency boost: 24h, 7d, 30d" },
-                        "perspective": { "type": "string", "description": "Filter by perspective: intentions, people, temporal, knowledge, decisions, learnings" },
+                        "perspective": { "type": "string", "description": "Filter by perspective: intentions, people, temporal, knowledge, decisions, learnings, session" },
                         "since": { "type": "string", "description": "Filter: entries created after (ISO 8601 date or epoch seconds)" },
                         "until": { "type": "string", "description": "Filter: entries created before (ISO 8601 date or epoch seconds)" }
                     }
@@ -271,7 +271,7 @@ fn tool_list() -> serde_json::Value {
                         "source_file": { "type": "string", "default": "[agent]" },
                         "heading": { "type": "string" },
                         "visibility": { "type": "string", "default": "normal" },
-                        "perspectives": { "type": "array", "items": { "type": "string" }, "description": "Perspectives: intentions, people, temporal, knowledge, decisions, learnings" },
+                        "perspectives": { "type": "array", "items": { "type": "string" }, "description": "Perspectives: intentions, people, temporal, knowledge, decisions, learnings, session" },
                         "entry_type": { "type": "string", "description": "Entry type: raw (default), summary, meta, impression" },
                         "relations": {
                             "type": "array",
