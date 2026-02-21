@@ -24,11 +24,7 @@ struct StoreSingleInput {
 
 /// Resolve a short or full entry ID to its canonical full ID using prefix matching.
 async fn resolve_id(store: &Arc<LanceStore>, id: &str) -> Result<String> {
-    store
-        .get_by_id_prefix(id)
-        .await?
-        .map(|chunk| chunk.id)
-        .ok_or_else(|| crate::Error::not_found(format!("Entry '{}' not found", id)))
+    crate::helpers::resolve_id(store, id).await
 }
 
 /// Store a single entry and return its chunk ID.
@@ -557,102 +553,17 @@ pub fn build_share_token(input: ShareInput) -> serde_json::Value {
     })
 }
 
-/// Parse a temporal string (ISO 8601 date "2026-02-20" or epoch seconds "1740000000") to epoch seconds.
+/// Parse a temporal string — delegates to `helpers::parse_temporal`.
 fn parse_temporal(s: &str) -> Option<i64> {
-    // Try epoch seconds first
-    if let Ok(epoch) = s.parse::<i64>() {
-        return Some(epoch);
-    }
-    // Try ISO 8601 date (YYYY-MM-DD)
-    if s.len() == 10 && s.as_bytes()[4] == b'-' && s.as_bytes()[7] == b'-' {
-        let year: i32 = s[0..4].parse().ok()?;
-        let month: u32 = s[5..7].parse().ok()?;
-        let day: u32 = s[8..10].parse().ok()?;
-        let days = days_since_epoch(year, month, day)?;
-        return Some(days * 86400);
-    }
-    None
-}
-
-/// Convert a calendar date to days since Unix epoch (1970-01-01).
-/// Uses the algorithm from http://howardhinnant.github.io/date_algorithms.html
-fn days_since_epoch(year: i32, month: u32, day: u32) -> Option<i64> {
-    let y = if month <= 2 { year - 1 } else { year } as i64;
-    let m = if month <= 2 { month + 9 } else { month - 3 } as i64;
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * m + 2) / 5 + day as i64 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some(era * 146097 + doe - 719468)
+    crate::helpers::parse_temporal(s)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_test_chunk(id: &str, content: &str) -> crate::HierarchicalChunk {
-        crate::HierarchicalChunk {
-            id: id.to_string(),
-            content: content.to_string(),
-            embedding: Some(vec![0.0f32; 384]),
-            level: crate::chunk::ChunkLevel(1),
-            parent_id: None,
-            path: "test".to_string(),
-            source_file: "test".to_string(),
-            heading: None,
-            start_offset: 0,
-            end_offset: 0,
-            cluster_memberships: vec![],
-            entry_type: crate::chunk::EntryType::Raw,
-            summarizes: vec![],
-            perspectives: vec![],
-            visibility: "normal".to_string(),
-            relations: vec![],
-            access_profile: crate::AccessProfile::new(),
-            expires_at: None,
-        }
-    }
-
-    async fn make_test_store() -> (Arc<crate::store::LanceStore>, tempfile::TempDir) {
-        let dir = tempfile::tempdir().unwrap();
-        let store = crate::store::LanceStore::open(dir.path(), 384).await.unwrap();
-        (Arc::new(store), dir)
-    }
-
-    #[tokio::test]
-    async fn test_resolve_id_exact_match() {
-        let (store, _dir) = make_test_store().await;
-        store
-            .insert_chunks(vec![make_test_chunk("abcdef1234567890", "content")])
-            .await
-            .unwrap();
-
-        let result = resolve_id(&store, "abcdef1234567890").await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "abcdef1234567890");
-    }
-
-    #[tokio::test]
-    async fn test_resolve_id_prefix_match() {
-        let (store, _dir) = make_test_store().await;
-        store
-            .insert_chunks(vec![make_test_chunk("abcdef1234567890", "content")])
-            .await
-            .unwrap();
-
-        let result = resolve_id(&store, "abcdef1").await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "abcdef1234567890");
-    }
-
-    #[tokio::test]
-    async fn test_resolve_id_not_found() {
-        let (store, _dir) = make_test_store().await;
-
-        let result = resolve_id(&store, "nonexistent").await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("nonexistent"));
-    }
+    // resolve_id and parse_temporal tests are in helpers::tests.
+    // These tests cover tool-specific logic that remains in this module.
 
     #[test]
     fn share_token_defaults_and_custom() {
@@ -689,34 +600,5 @@ mod tests {
         assert_eq!(relevance_tier(0.20), "weak");
         assert_eq!(relevance_tier(0.15), "tangential");
         assert_eq!(relevance_tier(0.0), "tangential");
-    }
-
-    #[test]
-    fn test_parse_temporal_epoch() {
-        assert_eq!(parse_temporal("1740000000"), Some(1740000000));
-        assert_eq!(parse_temporal("0"), Some(0));
-    }
-
-    #[test]
-    fn test_parse_temporal_iso_date() {
-        // 1970-01-01 = epoch 0
-        assert_eq!(parse_temporal("1970-01-01"), Some(0));
-        // 2026-02-20 should produce a reasonable epoch
-        let result = parse_temporal("2026-02-20");
-        assert!(result.is_some());
-        let epoch = result.unwrap();
-        // Should be around 2026 (> 2025-01-01 = ~1735689600)
-        assert!(epoch > 1_735_689_600);
-    }
-
-    #[test]
-    fn test_parse_temporal_invalid() {
-        assert_eq!(parse_temporal("not-a-date"), None);
-        // Malformed date formats (not YYYY-MM-DD and not a valid integer) return None
-        assert_eq!(parse_temporal("2026/02/20"), None);
-        assert_eq!(parse_temporal("Feb 20 2026"), None);
-        assert_eq!(parse_temporal(""), None);
-        // "20260220" is a valid integer epoch, not invalid
-        assert!(parse_temporal("20260220").is_some());
     }
 }
