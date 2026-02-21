@@ -461,6 +461,13 @@ impl HierarchicalChunk {
         })
     }
 
+    /// Return a clone of this chunk with the embedding cleared.
+    /// Used for JSONL export: embeddings are large and regenerated on import.
+    pub fn without_embedding(mut self) -> Self {
+        self.embedding = None;
+        self
+    }
+
     /// Check if this chunk has an embedding
     pub fn has_embedding(&self) -> bool {
         self.embedding.is_some()
