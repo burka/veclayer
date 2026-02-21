@@ -1137,12 +1137,9 @@ pub async fn orientation(data_dir: &Path) -> Result<()> {
 
 /// Resolve a potentially short ID to a full entry.
 ///
-/// Tries exact match first, then falls back to prefix scan (like git short hashes).
+/// Delegates to `helpers::resolve_entry`.
 async fn resolve_entry(store: &LanceStore, id: &str) -> Result<crate::HierarchicalChunk> {
-    store
-        .get_by_id_prefix(id)
-        .await?
-        .ok_or_else(|| crate::Error::not_found(format!("Entry '{}' not found", id)))
+    crate::helpers::resolve_entry(store, id).await
 }
 
 /// Collect files from a path, optionally recursively.

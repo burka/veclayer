@@ -7,6 +7,7 @@ pub mod commands;
 pub mod config;
 pub mod embedder;
 pub mod error;
+pub mod helpers;
 pub mod identity;
 #[cfg(feature = "llm")]
 pub mod llm;
@@ -19,6 +20,8 @@ pub mod search;
 pub mod store;
 #[cfg(feature = "llm")]
 pub mod summarizer;
+#[cfg(test)]
+pub mod test_helpers;
 #[cfg(feature = "llm")]
 pub mod think;
 
