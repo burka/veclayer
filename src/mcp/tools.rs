@@ -2,6 +2,9 @@
 
 use std::sync::Arc;
 
+// Over-fetch when temporal filters are active, then filter client-side
+const TEMPORAL_PREFETCH_FACTOR: usize = 3;
+
 use crate::aging::{self, AgingConfig};
 use crate::embedder::FastEmbedder;
 use crate::search::{HierarchicalSearch, SearchConfig};
@@ -136,7 +139,7 @@ pub async fn execute_recall(
         Some(ref query) if !query.is_empty() => {
             // Semantic search path
             let fetch_limit = if since_epoch.is_some() || until_epoch.is_some() {
-                input.limit * 3
+                input.limit * TEMPORAL_PREFETCH_FACTOR
             } else {
                 input.limit
             };
