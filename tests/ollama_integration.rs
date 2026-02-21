@@ -371,6 +371,7 @@ Reference counting handles most cleanup.
         derived_from: None,
         impression_hint: None,
         impression_strength: 1.0,
+        references: Vec::new(),
     };
 
     let result = ingest(&data_dir, &docs_dir, &options).await;
