@@ -362,16 +362,16 @@ Reference counting handles most cleanup.
         visibility: None,
         entry_type: "raw".to_string(),
         perspectives: vec![],
-        summarizes: None,
-        supersedes: None,
-        version_of: None,
         parent_id: None,
         heading: None,
-        related_to: None,
-        derived_from: None,
         impression_hint: None,
         impression_strength: 1.0,
-        references: Vec::new(),
+        rel_supersedes: Vec::new(),
+        rel_summarizes: Vec::new(),
+        rel_to: Vec::new(),
+        rel_derived_from: Vec::new(),
+        rel_version_of: Vec::new(),
+        rel_custom: Vec::new(),
     };
 
     let result = ingest(&data_dir, &docs_dir, &options).await;

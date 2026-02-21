@@ -84,26 +84,26 @@ pub struct AddOptions {
     pub entry_type: String,
     /// Perspectives to tag entries with (e.g. "decisions", "learnings")
     pub perspectives: Vec<String>,
-    /// Relation: this entry summarizes the given ID
-    pub summarizes: Option<String>,
-    /// Relation: this entry supersedes the given ID
-    pub supersedes: Option<String>,
-    /// Relation: this is a version of the given ID
-    pub version_of: Option<String>,
     /// Parent entry ID for hierarchy placement
     pub parent_id: Option<String>,
     /// Heading/title for the entry
     pub heading: Option<String>,
-    /// Relation: this entry is related to the given ID (bidirectional)
-    pub related_to: Option<String>,
-    /// Relation: this entry is derived from the given ID
-    pub derived_from: Option<String>,
     /// Impression hint: qualitative label (e.g. "uncertain", "confident")
     pub impression_hint: Option<String>,
     /// Impression strength: 0.0–1.0 (default 1.0)
     pub impression_strength: f32,
-    /// Universal references: "target_id:kind" (e.g., "abc123:related_to", "def456:summarizes")
-    pub references: Vec<String>,
+    /// --rel-supersedes targets (auto-demotes, inverse superseded_by)
+    pub rel_supersedes: Vec<String>,
+    /// --rel-summarizes targets (inverse summarized_by)
+    pub rel_summarizes: Vec<String>,
+    /// --rel-to targets (bidirectional related_to)
+    pub rel_to: Vec<String>,
+    /// --rel-derived-from targets (forward only)
+    pub rel_derived_from: Vec<String>,
+    /// --rel-version-of targets (auto-demotes, inverse superseded_by)
+    pub rel_version_of: Vec<String>,
+    /// -R / --rel KIND:ID (custom forward on self)
+    pub rel_custom: Vec<String>,
 }
 
 /// Backwards-compatible alias
@@ -118,16 +118,16 @@ impl Default for AddOptions {
             visibility: None,
             entry_type: "raw".to_string(),
             perspectives: Vec::new(),
-            summarizes: None,
-            supersedes: None,
-            version_of: None,
             parent_id: None,
             heading: None,
-            related_to: None,
-            derived_from: None,
             impression_hint: None,
             impression_strength: 1.0,
-            references: Vec::new(),
+            rel_supersedes: Vec::new(),
+            rel_summarizes: Vec::new(),
+            rel_to: Vec::new(),
+            rel_derived_from: Vec::new(),
+            rel_version_of: Vec::new(),
+            rel_custom: Vec::new(),
         }
     }
 }
@@ -491,46 +491,6 @@ async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<A
     }
     chunk.impression_strength = options.impression_strength;
 
-    // Add relations from options
-    if let Some(ref target) = options.summarizes {
-        chunk
-            .relations
-            .push(crate::ChunkRelation::summarized_by(target));
-    }
-    if let Some(ref target) = options.supersedes {
-        chunk
-            .relations
-            .push(crate::ChunkRelation::superseded_by(target));
-    }
-    if let Some(ref target) = options.version_of {
-        chunk
-            .relations
-            .push(crate::ChunkRelation::new("version_of", target));
-    }
-    if let Some(ref target) = options.related_to {
-        chunk
-            .relations
-            .push(crate::ChunkRelation::related_to(target));
-    }
-    if let Some(ref target) = options.derived_from {
-        chunk
-            .relations
-            .push(crate::ChunkRelation::new("derived_from", target));
-    }
-
-    // Add universal references and auto-demote superseded entries
-    for rel in parse_references(&options.references) {
-        chunk.relations.push(rel);
-    }
-    for rel_str in &options.references {
-        if let Some(target) = extract_supersede_target(rel_str) {
-            info!("Auto-demoting superseded entry: {}", target);
-            store
-                .update_visibility(&target, crate::visibility::EXPIRING)
-                .await?;
-        }
-    }
-
     let embeddings = embedder.embed(&[text])?;
     chunk.embedding = Some(
         embeddings
@@ -540,16 +500,64 @@ async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<A
     );
 
     let id = chunk.id.clone();
+    let store = std::sync::Arc::new(store);
     store.insert_chunks(vec![chunk]).await?;
 
-    // Bidirectional: forward relation is already embedded in chunk.relations above;
-    // here we add only the backward link. Note: MCP path (store_single_entry) adds
-    // both directions as post-insert steps instead — same final state, different path.
-    if let Some(ref target) = options.related_to {
-        let target_id = crate::resolve::resolve_entry(&store, target).await?.id;
-        let backward = crate::ChunkRelation::related_to(&id);
-        store.add_relation(&target_id, backward).await?;
+    // Collect all raw relations from --rel-* flags
+    let mut raw_relations = Vec::new();
+    for target in &options.rel_supersedes {
+        raw_relations.push(crate::relations::RawRelation {
+            kind: "supersedes".to_string(),
+            target_id: target.clone(),
+        });
     }
+    for target in &options.rel_summarizes {
+        raw_relations.push(crate::relations::RawRelation {
+            kind: "summarizes".to_string(),
+            target_id: target.clone(),
+        });
+    }
+    for target in &options.rel_to {
+        raw_relations.push(crate::relations::RawRelation {
+            kind: "related_to".to_string(),
+            target_id: target.clone(),
+        });
+    }
+    for target in &options.rel_derived_from {
+        raw_relations.push(crate::relations::RawRelation {
+            kind: "derived_from".to_string(),
+            target_id: target.clone(),
+        });
+    }
+    for target in &options.rel_version_of {
+        raw_relations.push(crate::relations::RawRelation {
+            kind: "version_of".to_string(),
+            target_id: target.clone(),
+        });
+    }
+    // Parse --rel / -R KIND:ID custom relations
+    for spec in &options.rel_custom {
+        if let Some((kind, target_id)) = spec.split_once(':') {
+            if kind.is_empty() || target_id.is_empty() {
+                return Err(crate::Error::parse(format!(
+                    "Invalid --rel format '{}': expected KIND:ID",
+                    spec
+                )));
+            }
+            crate::relations::validate_relation_kind(kind)?;
+            raw_relations.push(crate::relations::RawRelation {
+                kind: kind.to_string(),
+                target_id: target_id.to_string(),
+            });
+        } else {
+            return Err(crate::Error::parse(format!(
+                "Invalid --rel format '{}': expected KIND:ID",
+                spec
+            )));
+        }
+    }
+
+    crate::relations::process_relations(&store, &id, raw_relations).await?;
 
     println!("Added entry {} ({})", short_id(&id), entry_type);
 
@@ -1739,34 +1747,6 @@ async fn resolve_entry(store: &LanceStore, id: &str) -> Result<crate::Hierarchic
     crate::resolve::resolve_entry(store, id).await
 }
 
-fn parse_references(refs: &[String]) -> Vec<crate::ChunkRelation> {
-    let mut relations = Vec::new();
-    for s in refs {
-        let parts: Vec<&str> = s.split(':').collect();
-        match parts.len() {
-            2 if !parts[0].is_empty() && !parts[1].is_empty() => {
-                // "target_id:kind" format
-                relations.push(crate::ChunkRelation::new(parts[1], parts[0]));
-            }
-            3 if !parts[0].is_empty() && !parts[1].is_empty() && !parts[2].is_empty() => {
-                // "new_id:kind:target_id" format (e.g. "new-id:supersedes:old-id")
-                relations.push(crate::ChunkRelation::new(parts[1], parts[2]));
-            }
-            _ => {}
-        }
-    }
-    relations
-}
-
-fn extract_supersede_target(s: &str) -> Option<String> {
-    let parts: Vec<&str> = s.split(':').collect();
-    if parts.len() == 3 && parts[1] == "supersedes" && !parts[2].is_empty() {
-        Some(parts[2].to_string())
-    } else {
-        None
-    }
-}
-
 /// Collect files from a path, optionally recursively.
 pub fn collect_files(
     path: &Path,
@@ -1820,8 +1800,12 @@ mod tests {
         assert_eq!(opts.entry_type, "raw");
         assert!(opts.parent_id.is_none());
         assert!(opts.heading.is_none());
-        assert!(opts.related_to.is_none());
-        assert!(opts.derived_from.is_none());
+        assert!(opts.rel_supersedes.is_empty());
+        assert!(opts.rel_summarizes.is_empty());
+        assert!(opts.rel_to.is_empty());
+        assert!(opts.rel_derived_from.is_empty());
+        assert!(opts.rel_version_of.is_empty());
+        assert!(opts.rel_custom.is_empty());
         assert!(opts.impression_hint.is_none());
         assert!((opts.impression_strength - 1.0).abs() < f32::EPSILON);
     }
@@ -1935,85 +1919,6 @@ mod tests {
         assert_eq!(files_recursive.len(), 2);
 
         Ok(())
-    }
-
-    #[test]
-    fn test_references_parsing() {
-        let refs = parse_references(&[String::from("abc123:related_to")]);
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].target_id, "abc123");
-        assert_eq!(refs[0].kind, "related_to");
-    }
-
-    #[test]
-    fn test_references_parsing_multiple() {
-        let refs = parse_references(&[
-            String::from("abc123:related_to"),
-            String::from("def456:supersedes"),
-            String::from("ghi789:derived_from"),
-        ]);
-        assert_eq!(refs.len(), 3);
-        assert_eq!(refs[0].target_id, "abc123");
-        assert_eq!(refs[0].kind, "related_to");
-        assert_eq!(refs[1].target_id, "def456");
-        assert_eq!(refs[1].kind, "supersedes");
-        assert_eq!(refs[2].target_id, "ghi789");
-        assert_eq!(refs[2].kind, "derived_from");
-    }
-
-    #[test]
-    fn test_references_parsing_empty() {
-        let refs = parse_references(&[]);
-        assert!(refs.is_empty());
-    }
-
-    #[test]
-    fn test_references_parsing_missing_colon() {
-        let refs = parse_references(&[String::from("abc123")]);
-        assert!(refs.is_empty());
-    }
-
-    #[test]
-    fn test_references_parsing_empty_id() {
-        let refs = parse_references(&[String::from(":related_to")]);
-        assert!(refs.is_empty());
-    }
-
-    #[test]
-    fn test_references_parsing_empty_kind() {
-        let refs = parse_references(&[String::from("abc123:")]);
-        assert!(refs.is_empty());
-    }
-
-    #[test]
-    fn test_references_parsing_three_part_supersedes() {
-        let refs = parse_references(&[String::from("new-id:supersedes:old-id")]);
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].kind, "supersedes");
-        assert_eq!(refs[0].target_id, "old-id");
-    }
-
-    #[test]
-    fn test_supersedes_extracts_target_from_target_supersedes_format() {
-        assert_eq!(
-            extract_supersede_target("new-id:supersedes:old-id"),
-            Some("old-id".to_string())
-        );
-    }
-
-    #[test]
-    fn test_supersedes_extracts_none_when_no_colons() {
-        assert_eq!(extract_supersede_target("abc123"), None);
-    }
-
-    #[test]
-    fn test_supersedes_extracts_none_when_wrong_format() {
-        assert_eq!(extract_supersede_target("abc123:related_to"), None);
-    }
-
-    #[test]
-    fn test_supersedes_extracts_none_when_last_empty() {
-        assert_eq!(extract_supersede_target("new-id:supersedes:"), None);
     }
 
     #[test]

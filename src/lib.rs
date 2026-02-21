@@ -14,6 +14,7 @@ pub mod macros;
 pub mod mcp;
 pub mod parser;
 pub mod perspective;
+pub mod relations;
 pub mod resolve;
 pub mod salience;
 pub mod search;
