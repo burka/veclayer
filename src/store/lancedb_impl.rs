@@ -24,6 +24,32 @@ fn eq_filter(column: &str, value: &str) -> String {
     format!("{} = '{}'", column, sql_escape(value))
 }
 
+fn starts_with_filter(column: &str, prefix: &str) -> String {
+    format!(
+        "{} >= '{}' AND {} < '{}'",
+        column,
+        sql_escape(prefix),
+        column,
+        sql_escape(&prefix_upper_bound(prefix))
+    )
+}
+
+/// Compute the exclusive upper bound for a prefix scan.
+/// E.g. "abc" -> "abd", "ff" -> next impossible (empty = scan all).
+fn prefix_upper_bound(prefix: &str) -> String {
+    let mut chars: Vec<char> = prefix.chars().collect();
+    // Increment the last character
+    while let Some(last) = chars.pop() {
+        if let Some(next) = char::from_u32(last as u32 + 1) {
+            chars.push(next);
+            return chars.into_iter().collect();
+        }
+        // Overflow (e.g. 'f' in hex is fine, but handle edge cases) — pop and try parent
+    }
+    // All chars overflowed — return a string that's definitely beyond any sha256 hex
+    "\u{ffff}".to_string()
+}
+
 pub struct LanceStore {
     connection: Connection,
     dimension: usize,
@@ -566,6 +592,42 @@ impl VectorStore for LanceStore {
             Ok(chunks.into_iter().next())
         } else {
             Ok(None)
+        }
+    }
+
+    async fn get_by_id_prefix(&self, prefix: &str) -> Result<Option<HierarchicalChunk>> {
+        // Try exact match first
+        if let Some(chunk) = self.get_by_id(prefix).await? {
+            return Ok(Some(chunk));
+        }
+
+        // Fall back to prefix scan
+        let table = self.get_table().await?;
+
+        let results = table
+            .query()
+            .only_if(starts_with_filter("id", prefix))
+            .limit(2) // fetch 2 to detect ambiguity
+            .execute()
+            .await
+            .map_err(|e| Error::search(format!("Failed to query by id prefix: {}", e)))?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| Error::search(format!("Failed to collect prefix results: {}", e)))?;
+
+        let mut chunks = Vec::new();
+        for batch in &results {
+            chunks.extend(self.batch_to_chunks(batch)?);
+        }
+
+        match chunks.len() {
+            0 => Ok(None),
+            1 => Ok(Some(chunks.into_iter().next().unwrap())),
+            _ => Err(Error::config(format!(
+                "Ambiguous prefix '{}': matches {} entries. Use a longer prefix.",
+                prefix,
+                chunks.len()
+            ))),
         }
     }
 

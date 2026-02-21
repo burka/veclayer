@@ -198,11 +198,11 @@ pub async fn execute_focus(
     input: FocusInput,
 ) -> Result<FocusResponse> {
     let node = store
-        .get_by_id(&input.id)
+        .get_by_id_prefix(&input.id)
         .await?
         .ok_or_else(|| crate::Error::not_found(format!("Chunk not found: {}", input.id)))?;
 
-    let children = store.get_children(&input.id).await?;
+    let children = store.get_children(&node.id).await?;
 
     let focus_children = if let Some(ref question) = input.question {
         let question_embedding = embedder.embed(&[question.as_str()])?;

@@ -54,18 +54,59 @@ veclayer serve
 |---------|-------------|
 | `init` | Initialize a new VecLayer store |
 | `add` | Add knowledge (text, file, directory) |
-| `search` / `s` | Semantic search with perspective filter |
-| `focus` / `f` | Drill into an entry, show children |
+| `search` | Semantic search with perspective filter |
+| `focus` | Drill into an entry, show children |
 | `status` | Store statistics |
+| `sources` | List all indexed source files |
 | `serve` | Start MCP/HTTP server |
-| `compact` | Run aging, compute salience |
+| `compact` | Run aging, compute salience, suggest archival |
 | `id` | Show identity summary |
-| `reflect` | Read-only material preparation |
+| `reflect` | Read-only material preparation (priming) |
 | `think` | LLM-powered reflection + consolidation |
-| `p` | Manage perspectives (list, create, remove) |
-| `config` | View/change configuration |
+| `perspective` | Manage perspectives (list, add, remove) |
+| `history` | Show version/relation history of an entry |
+| `archive` | Demote entries to deep_only visibility |
 
 Aliases: `store` = `add`, `s` = `search`, `f` = `focus`
+
+## Building from Source
+
+### Prerequisites
+
+- **Rust** toolchain (stable, edition 2021+)
+- **protoc** (Protocol Buffers compiler) — required by LanceDB
+  - Debian/Ubuntu: `apt-get install protobuf-compiler`
+  - macOS: `brew install protobuf`
+- **Internet access** during first build — `ort-sys` downloads ONNX Runtime (~19 MB)
+
+### Build
+
+```bash
+cargo build              # debug build
+cargo build --release    # optimized build
+```
+
+### First Run
+
+On first use, VecLayer downloads the embedding model (`BAAI/bge-small-en-v1.5`, ~130 MB via HuggingFace) to a local cache (`.fastembed_cache/` relative to the working directory). This requires internet access.
+
+```bash
+veclayer init
+veclayer add "test"   # triggers model download on first run
+```
+
+### Troubleshooting
+
+**`Failed to initialize FastEmbed: Failed to retrieve onnx/model.onnx`**
+The embedding model couldn't be downloaded. Common causes:
+- No internet access or corporate TLS proxy intercepting HTTPS
+- Fix: manually download the model files from `Xenova/bge-small-en-v1.5` on HuggingFace and place them in `.fastembed_cache/models--Xenova--bge-small-en-v1.5/snapshots/<commit_hash>/`
+
+**`Could not find protoc`**
+Install the Protocol Buffers compiler (see prerequisites above).
+
+**`Failed to connect to Ollama`**
+The think cycle and cluster summarization require a running Ollama instance. These features are optional — `add`, `search`, `focus`, and all non-LLM commands work without it.
 
 ## Tech Stack
 
