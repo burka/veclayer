@@ -99,6 +99,20 @@ pub mod relation {
     pub const SUMMARIZED_BY: &str = "summarized_by";
     pub const RELATED_TO: &str = "related_to";
     pub const DERIVED_FROM: &str = "derived_from";
+    pub const SUPERSEDES: &str = "supersedes";
+    pub const SUMMARIZES: &str = "summarizes";
+    pub const VERSION_OF: &str = "version_of";
+
+    /// All well-known relation kinds (for typo detection / validation).
+    pub const KNOWN_KINDS: &[&str] = &[
+        SUPERSEDED_BY,
+        SUMMARIZED_BY,
+        RELATED_TO,
+        DERIVED_FROM,
+        SUPERSEDES,
+        SUMMARIZES,
+        VERSION_OF,
+    ];
 }
 
 /// A directed relation from one chunk to another.
@@ -137,6 +151,18 @@ impl ChunkRelation {
 
     pub fn derived_from(target_id: impl Into<String>) -> Self {
         Self::new(relation::DERIVED_FROM, target_id)
+    }
+
+    pub fn supersedes(target_id: impl Into<String>) -> Self {
+        Self::new(relation::SUPERSEDES, target_id)
+    }
+
+    pub fn summarizes(target_id: impl Into<String>) -> Self {
+        Self::new(relation::SUMMARIZES, target_id)
+    }
+
+    pub fn version_of(target_id: impl Into<String>) -> Self {
+        Self::new(relation::VERSION_OF, target_id)
     }
 }
 

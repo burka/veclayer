@@ -107,34 +107,16 @@ async fn store_single_entry(
 
     store.insert_chunks(vec![chunk]).await?;
 
-    // Process relations atomically after insert
-    for rel in &input.relations {
-        let target = crate::resolve::resolve_id(store, &rel.target_id).await?;
-        match rel.kind.as_str() {
-            "supersedes" | "version_of" => {
-                let inverse = crate::ChunkRelation::new("superseded_by", &chunk_id);
-                store.add_relation(&target, inverse).await?;
-            }
-            "summarizes" => {
-                let inverse = crate::ChunkRelation::new("summarized_by", &chunk_id);
-                store.add_relation(&target, inverse).await?;
-            }
-            "related_to" => {
-                let forward = crate::ChunkRelation::new("related_to", &target);
-                store.add_relation(&chunk_id, forward).await?;
-                let backward = crate::ChunkRelation::new("related_to", &chunk_id);
-                store.add_relation(&target, backward).await?;
-            }
-            "derived_from" => {
-                let forward = crate::ChunkRelation::new("derived_from", &target);
-                store.add_relation(&chunk_id, forward).await?;
-            }
-            other => {
-                let forward = crate::ChunkRelation::new(other, &target);
-                store.add_relation(&chunk_id, forward).await?;
-            }
-        }
-    }
+    // Process relations via shared module (resolves IDs, writes inverses, auto-demotes)
+    let raw_relations: Vec<crate::relations::RawRelation> = input
+        .relations
+        .iter()
+        .map(|r| crate::relations::RawRelation {
+            kind: r.kind.clone(),
+            target_id: r.target_id.clone(),
+        })
+        .collect();
+    crate::relations::process_relations(store, &chunk_id, raw_relations).await?;
 
     Ok(chunk_id)
 }
