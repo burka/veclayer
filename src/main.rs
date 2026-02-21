@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use tracing::Level;
 use tracing_subscriber::EnvFilter;
 
 use veclayer::commands::{
@@ -23,9 +22,13 @@ struct Cli {
     )]
     data_dir: PathBuf,
 
-    /// Enable verbose output
+    /// Enable verbose output (INFO level; default is WARN)
     #[arg(short, long)]
     verbose: bool,
+
+    /// Suppress all output except errors
+    #[arg(short, long, conflicts_with = "verbose")]
+    quiet: bool,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -255,7 +258,7 @@ async fn main() -> Result<()> {
         })
     );
 
-    init_logging(cli.verbose, is_mcp_stdio);
+    init_logging(cli.verbose, cli.quiet, is_mcp_stdio);
 
     let command = match cli.command {
         Some(cmd) => cmd,
@@ -403,11 +406,19 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn init_logging(verbose: bool, use_stderr: bool) {
-    let filter = if verbose {
-        EnvFilter::new(Level::DEBUG.to_string())
+fn init_logging(verbose: bool, quiet: bool, use_stderr: bool) {
+    // Respect RUST_LOG env if set; otherwise use flag-based defaults.
+    // Default: only show warnings. --verbose enables veclayer INFO.
+    // --quiet suppresses everything except errors.
+    // Dependency crates (lancedb, lance, ort, etc.) stay at WARN unless --verbose.
+    let filter = if std::env::var("RUST_LOG").is_ok() {
+        EnvFilter::from_default_env()
+    } else if quiet {
+        EnvFilter::new("error")
+    } else if verbose {
+        EnvFilter::new("veclayer=debug,info")
     } else {
-        EnvFilter::new(Level::INFO.to_string())
+        EnvFilter::new("warn")
     };
 
     let builder = tracing_subscriber::fmt()

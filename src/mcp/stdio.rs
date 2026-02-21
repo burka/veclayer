@@ -138,9 +138,11 @@ async fn handle_tool_call(
                     return format_mcp_error(id, -32602, &format!("Invalid params: {}", e));
                 }
             };
+            let query = input.query.clone();
             match tools::execute_recall(store, embedder, input).await {
                 Ok(results) => {
-                    mcp_text_result(&serde_json::to_string_pretty(&results).unwrap_or_default())
+                    let text = super::format::format_recall(query.as_deref(), &results);
+                    mcp_text_result(&text)
                 }
                 Err(e) => mcp_error_result(&e.to_string()),
             }
@@ -154,7 +156,8 @@ async fn handle_tool_call(
             };
             match tools::execute_focus(store, embedder, input).await {
                 Ok(response) => {
-                    mcp_text_result(&serde_json::to_string_pretty(&response).unwrap_or_default())
+                    let text = super::format::format_focus(&response);
+                    mcp_text_result(&text)
                 }
                 Err(e) => mcp_error_result(&e.to_string()),
             }

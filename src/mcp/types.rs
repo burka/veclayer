@@ -190,7 +190,9 @@ pub struct ChunkResponse {
     pub entry_type: String,
     pub path: String,
     pub source_file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub heading: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
     pub visibility: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -243,7 +245,9 @@ pub struct SearchResultResponse {
     pub score: f32,
     /// Relevance tier: "strong" (>0.45), "moderate" (>0.30), "weak" (>0.15), "tangential" (<=0.15), "browse" (no query)
     pub relevance: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub hierarchy_path: Vec<ChunkResponse>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<ChunkResponse>,
 }
 

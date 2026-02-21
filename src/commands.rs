@@ -5,9 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
-use tracing::info;
+use tracing::{debug, info};
 
-use crate::chunk::short_id;
+use crate::chunk::{short_id, EntryType};
 #[cfg(feature = "llm")]
 use crate::cluster::ClusterPipeline;
 use crate::embedder::FastEmbedder;
@@ -257,26 +257,26 @@ pub async fn ingest(data_dir: &Path, path: &Path, options: &AddOptions) -> Resul
 
 /// Add files from a path to the store.
 async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result<AddResult> {
-    info!("Opening store at {:?}...", data_dir);
+    debug!("Opening store at {:?}...", data_dir);
     let (embedder, store) = open_store(data_dir).await?;
 
     let parser = MarkdownParser::new();
 
     let files = collect_files(path, options.recursive, &parser)?;
-    info!("Found {} files to process", files.len());
+    debug!("Found {} files to process", files.len());
 
     let mut all_chunks = Vec::new();
 
     for file in &files {
-        info!("Processing {:?}...", file);
+        debug!("Processing {:?}...", file);
 
         let deleted = store.delete_by_source(&file.to_string_lossy()).await?;
         if deleted > 0 {
-            info!("  Removed {} existing entries", deleted);
+            debug!("  Removed {} existing entries", deleted);
         }
 
         let mut chunks = parser.parse_file(file)?;
-        info!("  Parsed {} entries", chunks.len());
+        debug!("  Parsed {} entries", chunks.len());
 
         if chunks.is_empty() {
             continue;
@@ -302,7 +302,7 @@ async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result
         }
 
         store.insert_chunks(chunks.clone()).await?;
-        info!("  Indexed successfully");
+        debug!("  Indexed successfully");
 
         all_chunks.extend(chunks);
     }
@@ -435,52 +435,55 @@ pub async fn search(data_dir: &Path, query_str: &str, options: &SearchOptions) -
         return Ok(());
     }
 
-    println!("\nSearch results for: \"{}\"\n", query_str);
-    println!("{}", "=".repeat(60));
-
     for (i, result) in results.iter().enumerate() {
-        println!(
-            "\n{}. [Score: {:.3}] {} ({})",
-            i + 1,
-            result.score,
-            result.chunk.level,
-            result.chunk.entry_type,
-        );
+        if i > 0 {
+            println!();
+        }
 
+        let heading = result
+            .chunk
+            .heading
+            .as_deref()
+            .unwrap_or_else(|| result.chunk.content.lines().next().unwrap_or("(untitled)"));
+        let tier = crate::mcp::types::relevance_tier(result.score);
+        println!("{}. {} ({}, {:.2})", i + 1, heading, tier, result.score,);
+
+        // Compact metadata
+        let mut meta = vec![short_id(&result.chunk.id).to_string()];
+        if result.chunk.entry_type != EntryType::Raw {
+            meta.push(result.chunk.entry_type.to_string());
+        }
         if options.show_path && !result.hierarchy_path.is_empty() {
             let path: Vec<&str> = result
                 .hierarchy_path
                 .iter()
                 .filter_map(|c| c.heading.as_deref())
                 .collect();
-            println!("   Path: {}", path.join(" > "));
+            meta.push(path.join(" > "));
         }
+        println!("   {}", meta.join(" | "));
 
-        println!("   Source: {}", result.chunk.source_file);
-
-        if let Some(ref heading) = result.chunk.heading {
-            println!("   Heading: {}", heading);
-        }
-
-        let content = preview(&result.chunk.content, 200);
-        println!("   Content: {}", content.replace('\n', " "));
+        // Content preview
+        println!("   {}", preview(&result.chunk.content, 200));
 
         if !result.relevant_children.is_empty() {
-            println!("   Children:");
             for child in &result.relevant_children {
+                let child_heading = child
+                    .chunk
+                    .heading
+                    .as_deref()
+                    .unwrap_or_else(|| child.chunk.content.lines().next().unwrap_or("..."));
                 println!(
-                    "     - [Score: {:.3}] {}",
-                    child.score,
-                    preview(&child.chunk.content, 80)
+                    "     > {} [{}]",
+                    preview(child_heading, 60),
+                    short_id(&child.chunk.id)
                 );
             }
         }
-
-        println!("   ID: {}", short_id(&result.chunk.id));
     }
 
     println!(
-        "\n{} results. Use `veclayer focus <id>` to drill in.",
+        "\n{} result(s). `veclayer focus <id>` to drill in.",
         results.len()
     );
 
@@ -542,7 +545,7 @@ pub async fn focus(data_dir: &Path, id: &str, options: &FocusOptions) -> Result<
     let (embedder, store) = open_store(data_dir).await?;
 
     let entry = store
-        .get_by_id(id)
+        .get_by_id_prefix(id)
         .await?
         .ok_or_else(|| crate::Error::not_found(format!("Entry {} not found", id)))?;
 
@@ -1134,22 +1137,12 @@ pub async fn orientation(data_dir: &Path) -> Result<()> {
 
 /// Resolve a potentially short ID to a full entry.
 ///
-/// Tries exact match first. If the input looks like a short ID (hex, <64 chars),
-/// the error message hints the user to use the full ID.
+/// Tries exact match first, then falls back to prefix scan (like git short hashes).
 async fn resolve_entry(store: &LanceStore, id: &str) -> Result<crate::HierarchicalChunk> {
-    if let Some(chunk) = store.get_by_id(id).await? {
-        return Ok(chunk);
-    }
-
-    let is_short_hex = id.len() < 64 && id.chars().all(|c| c.is_ascii_hexdigit());
-    if is_short_hex {
-        Err(crate::Error::not_found(format!(
-            "Entry '{}' not found. Short ID prefix lookup is not yet supported — use the full 64-char hash.",
-            id
-        )))
-    } else {
-        Err(crate::Error::not_found(format!("Entry '{}' not found", id)))
-    }
+    store
+        .get_by_id_prefix(id)
+        .await?
+        .ok_or_else(|| crate::Error::not_found(format!("Entry '{}' not found", id)))
 }
 
 /// Collect files from a path, optionally recursively.
