@@ -11,7 +11,7 @@ use futures::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::{connect, Connection, Table};
 
-use super::{SearchResult, StoreStats, VectorStore};
+use super::{FileLock, SearchResult, StoreStats, VectorStore};
 use crate::{ChunkLevel, ClusterMembership, Error, HierarchicalChunk, Result};
 
 const TABLE_NAME: &str = "chunks";
@@ -53,11 +53,14 @@ fn prefix_upper_bound(prefix: &str) -> String {
 pub struct LanceStore {
     connection: Connection,
     dimension: usize,
+    _lock: Option<FileLock>,
 }
 
 impl LanceStore {
-    pub async fn open(path: impl AsRef<Path>, dimension: usize) -> Result<Self> {
+    pub async fn open(path: impl AsRef<Path>, dimension: usize, read_only: bool) -> Result<Self> {
         let path = path.as_ref();
+        let lock = (!read_only).then(|| FileLock::acquire(path)).transpose()?;
+
         std::fs::create_dir_all(path)?;
 
         let uri = path.to_string_lossy().to_string();
@@ -69,6 +72,7 @@ impl LanceStore {
         let store = Self {
             connection,
             dimension,
+            _lock: lock,
         };
 
         store.ensure_table().await?;
@@ -76,8 +80,10 @@ impl LanceStore {
         Ok(store)
     }
 
-    pub async fn open_metadata(path: impl AsRef<Path>) -> Result<Self> {
+    pub async fn open_metadata(path: impl AsRef<Path>, read_only: bool) -> Result<Self> {
         let path = path.as_ref();
+        let lock = (!read_only).then(|| FileLock::acquire(path)).transpose()?;
+
         std::fs::create_dir_all(path)?;
 
         let uri = path.to_string_lossy().to_string();
@@ -89,6 +95,7 @@ impl LanceStore {
         let store = Self {
             connection,
             dimension: 384,
+            _lock: lock,
         };
 
         store.ensure_table().await?;
@@ -969,7 +976,7 @@ mod tests {
 
     async fn create_test_store() -> (LanceStore, TempDir) {
         let temp_dir = TempDir::new().unwrap();
-        let store = LanceStore::open(temp_dir.path(), 384).await.unwrap();
+        let store = LanceStore::open(temp_dir.path(), 384, false).await.unwrap();
         (store, temp_dir)
     }
 

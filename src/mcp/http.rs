@@ -27,7 +27,7 @@ struct AppState {
 pub async fn run_http(config: Config) -> Result<()> {
     let embedder = FastEmbedder::new()?;
     let dimension = embedder.dimension();
-    let store = LanceStore::open(&config.data_dir, dimension).await?;
+    let store = LanceStore::open(&config.data_dir, dimension, config.read_only).await?;
 
     let state = AppState {
         store: Arc::new(store),

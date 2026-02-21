@@ -702,7 +702,7 @@ mod tests {
 
     async fn make_test_store_with_dir() -> (Arc<LanceStore>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let store = LanceStore::open(dir.path(), 384).await.unwrap();
+        let store = LanceStore::open(dir.path(), 384, false).await.unwrap();
         (Arc::new(store), dir)
     }
 
