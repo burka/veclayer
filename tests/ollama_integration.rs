@@ -365,6 +365,10 @@ Reference counting handles most cleanup.
         summarizes: None,
         supersedes: None,
         version_of: None,
+        parent_id: None,
+        heading: None,
+        related_to: None,
+        derived_from: None,
     };
 
     let result = ingest(&data_dir, &docs_dir, &options).await;

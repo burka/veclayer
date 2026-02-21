@@ -80,13 +80,29 @@ enum Commands {
         /// This is a new version of the given entry ID
         #[arg(long)]
         version_of: Option<String>,
+
+        /// Parent entry ID for hierarchy placement
+        #[arg(long)]
+        parent_id: Option<String>,
+
+        /// Heading/title for the entry
+        #[arg(long)]
+        heading: Option<String>,
+
+        /// This entry is related to the given entry ID (bidirectional)
+        #[arg(long)]
+        related_to: Option<String>,
+
+        /// This entry is derived from the given entry ID
+        #[arg(long)]
+        derived_from: Option<String>,
     },
 
     /// Semantic search with hierarchical results
     #[command(alias = "s")]
     Search {
-        /// The search query
-        query: String,
+        /// The search query (omit to browse all entries)
+        query: Option<String>,
 
         /// Number of top results to return
         #[arg(short = 'k', long, default_value = "5")]
@@ -119,6 +135,14 @@ enum Commands {
         /// Minimum search score (hard filter applied to pre-blend vector score)
         #[arg(long = "min-score")]
         min_score: Option<f32>,
+
+        /// Only entries created after this ISO 8601 date or epoch seconds
+        #[arg(long)]
+        since: Option<String>,
+
+        /// Only entries created before this ISO 8601 date or epoch seconds
+        #[arg(long)]
+        until: Option<String>,
     },
 
     /// Focus on an entry: show details and children
@@ -180,21 +204,18 @@ enum Commands {
         ids: Vec<String>,
     },
 
-    /// Compact: rotate access profiles, compute salience, suggest archival
-    #[command(alias = "c")]
-    Compact {
+    /// Read-only identity operations: reflection, salience, candidates
+    #[command(alias = "id")]
+    Reflect {
         #[command(subcommand)]
-        action: CompactActionCmd,
+        action: Option<ReflectAction>,
     },
 
-    /// Show identity summary (perspectives, core knowledge, open threads)
-    Id,
-
-    /// Generate a comprehensive reflection report (priming-ready)
-    Reflect,
-
-    /// Run one think cycle: reflect → LLM → add → compact (requires LLM)
-    Think,
+    /// Curate memory: promote, demote, relate, aging, LLM consolidation
+    Think {
+        #[command(subcommand)]
+        action: Option<ThinkAction>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -222,10 +243,7 @@ enum PerspectiveAction {
 }
 
 #[derive(Subcommand)]
-enum CompactActionCmd {
-    /// Roll access-profile time buckets and apply aging rules
-    Rotate,
-
+enum ReflectAction {
     /// Show salience scores for most important entries
     Salience {
         /// Max entries to show
@@ -244,6 +262,68 @@ enum CompactActionCmd {
         #[arg(short, long, default_value = "0.1")]
         threshold: f32,
     },
+}
+
+#[derive(Subcommand)]
+enum ThinkAction {
+    /// Promote an entry (set visibility to 'always')
+    Promote {
+        /// Entry ID (full or short prefix)
+        id: String,
+
+        /// Target visibility (default: always)
+        #[arg(long, default_value = "always")]
+        visibility: String,
+    },
+
+    /// Demote an entry (set visibility to 'deep_only')
+    Demote {
+        /// Entry ID (full or short prefix)
+        id: String,
+
+        /// Target visibility (default: deep_only)
+        #[arg(long, default_value = "deep_only")]
+        visibility: String,
+    },
+
+    /// Add a relation between two entries
+    Relate {
+        /// Source entry ID (full or short prefix)
+        source: String,
+
+        /// Target entry ID (full or short prefix)
+        target: String,
+
+        /// Relation kind: supersedes, summarizes, related_to, derived_from, version_of
+        #[arg(long, default_value = "related_to")]
+        kind: String,
+    },
+
+    /// Manage aging rules
+    Aging {
+        #[command(subcommand)]
+        action: AgingAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgingAction {
+    /// Apply aging rules: degrade stale entries
+    Apply,
+
+    /// Configure aging parameters
+    Configure {
+        /// Days without access before degradation
+        #[arg(long)]
+        days: Option<u32>,
+
+        /// Target visibility after degradation (default: deep_only)
+        #[arg(long)]
+        to: Option<String>,
+    },
+
+    /// Rotate: roll access-profile buckets and apply aging
+    Rotate,
 }
 
 #[tokio::main]
@@ -284,6 +364,10 @@ async fn main() -> Result<()> {
             summarizes,
             supersedes,
             version_of,
+            parent_id,
+            heading,
+            related_to,
+            derived_from,
         } => {
             let options = AddOptions {
                 recursive: !no_recursive,
@@ -295,6 +379,10 @@ async fn main() -> Result<()> {
                 summarizes,
                 supersedes,
                 version_of,
+                parent_id,
+                heading,
+                related_to,
+                derived_from,
             };
             veclayer::commands::add(&cli.data_dir, &input, &options).await?;
         }
@@ -308,6 +396,8 @@ async fn main() -> Result<()> {
             perspective,
             min_salience,
             min_score,
+            since,
+            until,
         } => {
             let options = SearchOptions {
                 top_k,
@@ -318,8 +408,13 @@ async fn main() -> Result<()> {
                 perspective,
                 min_salience,
                 min_score,
+                since,
+                until,
             };
-            veclayer::commands::search(&cli.data_dir, &query, &options).await?;
+            match query {
+                Some(q) => veclayer::commands::search(&cli.data_dir, &q, &options).await?,
+                None => veclayer::commands::browse(&cli.data_dir, &options).await?,
+            }
         }
         Commands::Focus {
             id,
@@ -366,41 +461,77 @@ async fn main() -> Result<()> {
         Commands::Archive { ids } => {
             veclayer::commands::archive(&cli.data_dir, &ids).await?;
         }
-        Commands::Compact { action } => {
-            let (compact_action, options) = match action {
-                CompactActionCmd::Rotate => (CompactAction::Rotate, CompactOptions::default()),
-                CompactActionCmd::Salience { limit } => (
-                    CompactAction::Salience,
-                    CompactOptions {
-                        limit,
-                        ..Default::default()
-                    },
-                ),
-                CompactActionCmd::ArchiveCandidates { limit, threshold } => (
+        Commands::Reflect { action } => match action {
+            None => {
+                // Full identity + reflection report (merged reflect + id)
+                veclayer::commands::reflect(&cli.data_dir).await?;
+            }
+            Some(ReflectAction::Salience { limit }) => {
+                let options = CompactOptions {
+                    limit,
+                    ..Default::default()
+                };
+                veclayer::commands::compact(&cli.data_dir, CompactAction::Salience, &options)
+                    .await?;
+            }
+            Some(ReflectAction::ArchiveCandidates { limit, threshold }) => {
+                let options = CompactOptions {
+                    limit,
+                    archive_threshold: threshold,
+                };
+                veclayer::commands::compact(
+                    &cli.data_dir,
                     CompactAction::ArchiveCandidates,
-                    CompactOptions {
-                        limit,
-                        archive_threshold: threshold,
-                    },
-                ),
-            };
-            veclayer::commands::compact(&cli.data_dir, compact_action, &options).await?;
-        }
-        Commands::Id => {
-            veclayer::commands::identity(&cli.data_dir).await?;
-        }
-        Commands::Reflect => {
-            veclayer::commands::reflect(&cli.data_dir).await?;
-        }
-        #[cfg(feature = "llm")]
-        Commands::Think => {
-            veclayer::commands::think(&cli.data_dir).await?;
-        }
-        #[cfg(not(feature = "llm"))]
-        Commands::Think => {
-            eprintln!("Error: `think` requires the 'llm' feature. Build with `cargo build` (default features) or `cargo build --features llm`.");
-            std::process::exit(1);
-        }
+                    &options,
+                )
+                .await?;
+            }
+        },
+        Commands::Think { action } => match action {
+            None => {
+                // Full LLM sleep cycle
+                #[cfg(feature = "llm")]
+                {
+                    veclayer::commands::think(&cli.data_dir).await?;
+                }
+                #[cfg(not(feature = "llm"))]
+                {
+                    eprintln!("Error: `think` (without subcommand) requires the 'llm' feature.");
+                    eprintln!("Build with `cargo build` (default features) or `cargo build --features llm`.");
+                    std::process::exit(1);
+                }
+            }
+            Some(ThinkAction::Promote { id, visibility }) => {
+                veclayer::commands::think_promote(&cli.data_dir, &id, &visibility).await?;
+            }
+            Some(ThinkAction::Demote { id, visibility }) => {
+                veclayer::commands::think_demote(&cli.data_dir, &id, &visibility).await?;
+            }
+            Some(ThinkAction::Relate {
+                source,
+                target,
+                kind,
+            }) => {
+                veclayer::commands::think_relate(&cli.data_dir, &source, &target, &kind).await?;
+            }
+            Some(ThinkAction::Aging { action }) => match action {
+                AgingAction::Apply => {
+                    veclayer::commands::think_aging_apply(&cli.data_dir).await?;
+                }
+                AgingAction::Configure { days, to } => {
+                    veclayer::commands::think_aging_configure(&cli.data_dir, days, to.as_deref())
+                        .await?;
+                }
+                AgingAction::Rotate => {
+                    veclayer::commands::compact(
+                        &cli.data_dir,
+                        CompactAction::Rotate,
+                        &CompactOptions::default(),
+                    )
+                    .await?;
+                }
+            },
+        },
     }
 
     Ok(())

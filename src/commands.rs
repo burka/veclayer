@@ -18,6 +18,9 @@ use crate::store::LanceStore;
 use crate::summarizer::OllamaSummarizer;
 use crate::{Config, DocumentParser, Embedder, Result, VectorStore};
 
+// Over-fetch when temporal filters are active, then filter client-side
+const TEMPORAL_PREFETCH_FACTOR: usize = 3;
+
 // --- Infrastructure helpers ---
 
 /// Create an embedder + store pair.  Centralises the 3-line init sequence
@@ -64,6 +67,14 @@ pub struct AddOptions {
     pub supersedes: Option<String>,
     /// Relation: this is a version of the given ID
     pub version_of: Option<String>,
+    /// Parent entry ID for hierarchy placement
+    pub parent_id: Option<String>,
+    /// Heading/title for the entry
+    pub heading: Option<String>,
+    /// Relation: this entry is related to the given ID (bidirectional)
+    pub related_to: Option<String>,
+    /// Relation: this entry is derived from the given ID
+    pub derived_from: Option<String>,
 }
 
 /// Backwards-compatible alias
@@ -81,6 +92,10 @@ impl Default for AddOptions {
             summarizes: None,
             supersedes: None,
             version_of: None,
+            parent_id: None,
+            heading: None,
+            related_to: None,
+            derived_from: None,
         }
     }
 }
@@ -104,6 +119,10 @@ pub struct SearchOptions {
     pub min_salience: Option<f32>,
     /// Minimum search score (entries below this are filtered out)
     pub min_score: Option<f32>,
+    /// Only entries created after this ISO 8601 date or epoch seconds
+    pub since: Option<String>,
+    /// Only entries created before this ISO 8601 date or epoch seconds
+    pub until: Option<String>,
 }
 
 /// Backwards-compatible alias
@@ -120,6 +139,8 @@ impl Default for SearchOptions {
             perspective: None,
             min_salience: None,
             min_score: None,
+            since: None,
+            until: None,
         }
     }
 }
@@ -375,15 +396,32 @@ async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<A
         _ => crate::chunk::EntryType::Raw,
     };
 
+    // Resolve parent ID and compute level/path from parent
+    let (level, path, resolved_parent_id) = if let Some(ref pid) = options.parent_id {
+        let parent = resolve_entry(&store, pid).await?;
+        (
+            crate::chunk::ChunkLevel(parent.level.0 + 1),
+            format!("{}/agent", parent.path),
+            Some(parent.id),
+        )
+    } else {
+        (crate::ChunkLevel::CONTENT, String::new(), None)
+    };
+
     let mut chunk = crate::HierarchicalChunk::new(
         text.to_string(),
-        crate::ChunkLevel::CONTENT,
-        None,
-        String::new(),
+        level,
+        resolved_parent_id,
+        path,
         "[inline]".to_string(),
     )
     .with_entry_type(entry_type)
     .with_perspectives(options.perspectives.clone());
+
+    // Set heading if provided
+    if let Some(ref heading) = options.heading {
+        chunk.heading = Some(heading.clone());
+    }
 
     if let Some(ref vis) = options.visibility {
         chunk.visibility = vis.clone();
@@ -405,6 +443,16 @@ async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<A
             .relations
             .push(crate::ChunkRelation::new("version_of", target));
     }
+    if let Some(ref target) = options.related_to {
+        chunk
+            .relations
+            .push(crate::ChunkRelation::related_to(target));
+    }
+    if let Some(ref target) = options.derived_from {
+        chunk
+            .relations
+            .push(crate::ChunkRelation::new("derived_from", target));
+    }
 
     let embeddings = embedder.embed(&[text])?;
     chunk.embedding = Some(
@@ -416,6 +464,13 @@ async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<A
 
     let id = chunk.id.clone();
     store.insert_chunks(vec![chunk]).await?;
+
+    // Process bidirectional relation for related_to (mirror MCP logic)
+    if let Some(ref target) = options.related_to {
+        let target_id = crate::helpers::resolve_entry(&store, target).await?.id;
+        let backward = crate::ChunkRelation::related_to(&id);
+        store.add_relation(&target_id, backward).await?;
+    }
 
     println!("Added entry {} ({})", short_id(&id), entry_type);
 
@@ -496,9 +551,25 @@ pub async fn search_results(
     query_str: &str,
     options: &SearchOptions,
 ) -> Result<Vec<SearchResult>> {
+    let since_epoch = options
+        .since
+        .as_deref()
+        .and_then(crate::helpers::parse_temporal);
+    let until_epoch = options
+        .until
+        .as_deref()
+        .and_then(crate::helpers::parse_temporal);
+
     let (embedder, store) = open_store(data_dir).await?;
 
-    let config = SearchConfig::for_query(options.top_k, options.deep, options.recent.as_deref())
+    // Fetch more results when temporal filtering will reduce the set
+    let fetch_limit = if since_epoch.is_some() || until_epoch.is_some() {
+        options.top_k * TEMPORAL_PREFETCH_FACTOR
+    } else {
+        options.top_k
+    };
+
+    let config = SearchConfig::for_query(fetch_limit, options.deep, options.recent.as_deref())
         .with_perspective(options.perspective.clone())
         .with_min_salience(options.min_salience)
         .with_min_score(options.min_score);
@@ -511,8 +582,15 @@ pub async fn search_results(
         search_engine.search(query_str).await?
     };
 
-    Ok(results
+    let filtered = results
         .into_iter()
+        .filter(|r| {
+            let created = r.chunk.access_profile.created_at;
+            since_epoch.is_none_or(|s| created >= s) && until_epoch.is_none_or(|u| created <= u)
+        })
+        .take(options.top_k);
+
+    Ok(filtered
         .map(|r| SearchResult {
             chunk: r.chunk,
             score: r.score,
@@ -1130,8 +1208,155 @@ pub async fn orientation(data_dir: &Path) -> Result<()> {
     }
 
     // Hints
-    println!("\nTry: search, reflect, compact salience, id");
+    println!("\nTry: search, reflect, think, reflect salience");
 
+    Ok(())
+}
+
+// --- Browse command (#29) ---
+
+/// Browse entries without vector search (list by perspective/recency).
+pub async fn browse(data_dir: &Path, options: &SearchOptions) -> Result<()> {
+    let since_epoch = options
+        .since
+        .as_deref()
+        .and_then(crate::helpers::parse_temporal);
+    let until_epoch = options
+        .until
+        .as_deref()
+        .and_then(crate::helpers::parse_temporal);
+
+    let store = LanceStore::open_metadata(data_dir).await?;
+    let entries = store
+        .list_entries(
+            options.perspective.as_deref(),
+            since_epoch,
+            until_epoch,
+            options.top_k,
+        )
+        .await?;
+
+    if entries.is_empty() {
+        println!("No entries found.");
+        return Ok(());
+    }
+
+    for (i, chunk) in entries.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        let heading = chunk
+            .heading
+            .as_deref()
+            .unwrap_or_else(|| chunk.content.lines().next().unwrap_or("(untitled)"));
+        println!("{}. {}", i + 1, heading);
+
+        let mut meta = vec![short_id(&chunk.id).to_string()];
+        if chunk.entry_type != EntryType::Raw {
+            meta.push(chunk.entry_type.to_string());
+        }
+        if !chunk.perspectives.is_empty() {
+            meta.push(chunk.perspectives.join(", "));
+        }
+        meta.push(chunk.visibility.clone());
+        println!("   {}", meta.join(" | "));
+        println!("   {}", preview(&chunk.content, 200));
+    }
+
+    println!(
+        "\n{} entry(ies). `veclayer focus <id>` to drill in.",
+        entries.len()
+    );
+    Ok(())
+}
+
+// --- Think subcommands (CLI parity with MCP) ---
+
+/// Set an entry's visibility and print a labeled confirmation.
+async fn set_visibility(data_dir: &Path, id: &str, visibility: &str, label: &str) -> Result<()> {
+    let store = LanceStore::open_metadata(data_dir).await?;
+    let store = std::sync::Arc::new(store);
+    let chunk_id = crate::helpers::resolve_id(&store, id).await?;
+    store.update_visibility(&chunk_id, visibility).await?;
+    println!("{} {} to visibility '{}'", label, short_id(&chunk_id), visibility);
+    Ok(())
+}
+
+/// Promote an entry's visibility (CLI for MCP think(promote)).
+pub async fn think_promote(data_dir: &Path, id: &str, visibility: &str) -> Result<()> {
+    set_visibility(data_dir, id, visibility, "Promoted").await
+}
+
+/// Demote an entry's visibility (CLI for MCP think(demote)).
+pub async fn think_demote(data_dir: &Path, id: &str, visibility: &str) -> Result<()> {
+    set_visibility(data_dir, id, visibility, "Demoted").await
+}
+
+/// Add a relation between two entries (CLI for MCP think(relate)).
+pub async fn think_relate(data_dir: &Path, source: &str, target: &str, kind: &str) -> Result<()> {
+    let (_embedder, store) = open_store(data_dir).await?;
+    let store = std::sync::Arc::new(store);
+    let source_id = crate::helpers::resolve_id(&store, source).await?;
+    let target_id = crate::helpers::resolve_id(&store, target).await?;
+
+    let relation = crate::ChunkRelation::new(kind, &target_id);
+    store.add_relation(&source_id, relation).await?;
+
+    // For bidirectional relations, add the reverse
+    if kind == "related_to" {
+        let backward = crate::ChunkRelation::new("related_to", &source_id);
+        store.add_relation(&target_id, backward).await?;
+    }
+
+    println!(
+        "Added relation '{}' from {} to {}",
+        kind,
+        short_id(&source_id),
+        short_id(&target_id)
+    );
+    Ok(())
+}
+
+/// Apply aging rules (CLI for MCP think(apply_aging)).
+pub async fn think_aging_apply(data_dir: &Path) -> Result<()> {
+    let (_embedder, store) = open_store(data_dir).await?;
+    let config = crate::aging::AgingConfig::load(data_dir);
+    let result = crate::aging::apply_aging(&store, &config).await?;
+
+    if result.degraded_count == 0 {
+        println!("No entries needed aging. All knowledge is fresh.");
+    } else {
+        println!(
+            "Aged {} entries (degraded to '{}'):",
+            result.degraded_count, config.degrade_to
+        );
+        for id in &result.degraded_ids {
+            println!("  {}", short_id(id));
+        }
+    }
+    Ok(())
+}
+
+/// Configure aging parameters (CLI for MCP think(configure_aging)).
+pub async fn think_aging_configure(
+    data_dir: &Path,
+    days: Option<u32>,
+    to: Option<&str>,
+) -> Result<()> {
+    let mut config = crate::aging::AgingConfig::load(data_dir);
+    if let Some(days) = days {
+        config.degrade_after_days = days;
+    }
+    if let Some(to) = to {
+        config.degrade_to = to.to_string();
+    }
+    config.save(data_dir)?;
+    println!(
+        "Aging configured: degrade {} -> '{}' after {} days without access",
+        config.degrade_from.join(", "),
+        config.degrade_to,
+        config.degrade_after_days
+    );
     Ok(())
 }
 
@@ -1193,6 +1418,10 @@ mod tests {
         assert!(opts.summarize);
         assert_eq!(opts.model, "llama3.2");
         assert_eq!(opts.entry_type, "raw");
+        assert!(opts.parent_id.is_none());
+        assert!(opts.heading.is_none());
+        assert!(opts.related_to.is_none());
+        assert!(opts.derived_from.is_none());
     }
 
     #[test]
@@ -1201,6 +1430,8 @@ mod tests {
         assert_eq!(opts.top_k, 5);
         assert!(!opts.show_path);
         assert!(opts.subtree.is_none());
+        assert!(opts.since.is_none());
+        assert!(opts.until.is_none());
     }
 
     #[test]
