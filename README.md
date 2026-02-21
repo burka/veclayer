@@ -3,7 +3,7 @@
 **Long-term memory for AI agents. Hierarchical, perspectival, aging knowledge.**
 
 > Status: In Development — prototype, APIs may change
-> Author: Florian Schmidt, developed in dialogue with Claude
+> Author: Florian Burka, developed in dialogue with Claude
 
 ## What is VecLayer?
 
