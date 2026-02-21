@@ -5,7 +5,8 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use veclayer::commands::{
-    AddOptions, CompactAction, CompactOptions, FocusOptions, SearchOptions, ServeOptions,
+    AddOptions, CompactAction, CompactOptions, ExportOptions, FocusOptions, ImportOptions,
+    SearchOptions, ServeOptions,
 };
 use veclayer::Result;
 
@@ -211,6 +212,19 @@ enum Commands {
     Archive {
         /// Entry IDs to archive
         ids: Vec<String>,
+    },
+
+    /// Export all entries to JSONL (stdout), sorted by id
+    Export {
+        /// Filter by perspective (e.g. "decisions", "learnings")
+        #[arg(short = 'P', long)]
+        perspective: Option<String>,
+    },
+
+    /// Import entries from a JSONL file (or stdin with "-")
+    Import {
+        /// Path to JSONL file, or "-" to read from stdin
+        path: String,
     },
 
     /// Read-only identity operations: reflection, salience, candidates
@@ -478,6 +492,14 @@ async fn main() -> Result<()> {
         }
         Commands::Archive { ids } => {
             veclayer::commands::archive(&cli.data_dir, &ids).await?;
+        }
+        Commands::Export { perspective } => {
+            let options = ExportOptions { perspective };
+            veclayer::commands::export_entries(&cli.data_dir, &options).await?;
+        }
+        Commands::Import { path } => {
+            let options = ImportOptions { path };
+            veclayer::commands::import_entries(&cli.data_dir, &options).await?;
         }
         Commands::Reflect { action } => match action {
             None => {

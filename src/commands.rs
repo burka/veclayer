@@ -3,10 +3,11 @@
 //! This module provides clean, testable command implementations that can be used
 //! both from the CLI and programmatically as a library.
 
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use owo_colors::{OwoColorize, Stream};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::chunk::{short_id, EntryType};
 #[cfg(feature = "llm")]
@@ -213,6 +214,29 @@ impl Default for ServeOptions {
             mcp_stdio: false,
         }
     }
+}
+
+/// Options for exporting entries to JSONL
+#[derive(Debug, Clone, Default)]
+pub struct ExportOptions {
+    /// Filter by perspective (e.g. "decisions", "learnings")
+    pub perspective: Option<String>,
+}
+
+/// Options for importing entries from JSONL
+#[derive(Debug, Clone, Default)]
+pub struct ImportOptions {
+    /// Path to JSONL file, or "-" for stdin
+    pub path: String,
+}
+
+/// Result of an import operation
+#[derive(Debug)]
+pub struct ImportResult {
+    /// Number of entries successfully imported
+    pub imported: usize,
+    /// Number of entries skipped (already exist)
+    pub skipped: usize,
 }
 
 // --- Result types ---
@@ -1481,6 +1505,102 @@ pub async fn browse(data_dir: &Path, options: &SearchOptions) -> Result<()> {
     Ok(())
 }
 
+// --- Export / Import ---
+
+/// Export all entries (or filtered by perspective) to JSONL on stdout.
+///
+/// Each line is a JSON-serialized `HierarchicalChunk` with the `embedding`
+/// field stripped.  Output is sorted by `id` for deterministic, diffable output.
+pub async fn export_entries(data_dir: &Path, options: &ExportOptions) -> Result<()> {
+    let store = LanceStore::open(data_dir, FastEmbedder::new()?.dimension(), true).await?;
+    let mut entries = store
+        .list_entries(options.perspective.as_deref(), None, None, usize::MAX)
+        .await?;
+
+    entries.sort_by(|a, b| a.id.cmp(&b.id));
+
+    let stdout = io::stdout();
+    let mut out = io::BufWriter::new(stdout.lock());
+
+    for chunk in &entries {
+        let serializable = chunk.clone().without_embedding();
+        let line = serde_json::to_string(&serializable)?;
+        writeln!(out, "{}", line)?;
+    }
+
+    eprintln!("Exported {} entries.", entries.len());
+    Ok(())
+}
+
+/// Import entries from a JSONL file (or stdin when path is "-").
+///
+/// Each line is deserialized to a `HierarchicalChunk`, re-embedded, and
+/// inserted.  Entries whose `id` already exists in the store are skipped.
+/// A single bad line is logged and skipped without aborting the whole import.
+pub async fn import_entries(data_dir: &Path, options: &ImportOptions) -> Result<ImportResult> {
+    let (embedder, store) = open_store(data_dir).await?;
+
+    let lines = read_jsonl_lines(&options.path)?;
+
+    let mut imported = 0usize;
+    let mut skipped = 0usize;
+
+    for (line_number, line) in lines.into_iter().enumerate() {
+        match import_one_entry(&embedder, &store, &line).await {
+            Ok(true) => imported += 1,
+            Ok(false) => skipped += 1,
+            Err(e) => {
+                warn!("Skipping line {}: {}", line_number + 1, e);
+                skipped += 1;
+            }
+        }
+    }
+
+    println!(
+        "Imported {} entries, {} skipped (already exist).",
+        imported, skipped
+    );
+    Ok(ImportResult { imported, skipped })
+}
+
+/// Read all non-empty lines from a JSONL file path or stdin ("-").
+fn read_jsonl_lines(path: &str) -> Result<Vec<String>> {
+    if path == "-" {
+        let reader = BufReader::new(io::stdin());
+        collect_non_empty_lines(reader)
+    } else {
+        let file = std::fs::File::open(path)?;
+        let reader = BufReader::new(file);
+        collect_non_empty_lines(reader)
+    }
+}
+
+fn collect_non_empty_lines(reader: impl BufRead) -> Result<Vec<String>> {
+    let lines = reader
+        .lines()
+        .collect::<std::io::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    Ok(lines)
+}
+
+/// Attempt to import one JSONL line.  Returns `Ok(true)` if inserted,
+/// `Ok(false)` if the entry already exists.
+async fn import_one_entry(embedder: &FastEmbedder, store: &LanceStore, line: &str) -> Result<bool> {
+    let mut chunk: crate::HierarchicalChunk = serde_json::from_str(line)?;
+
+    if store.get_by_id(&chunk.id).await?.is_some() {
+        return Ok(false);
+    }
+
+    let embeddings = embedder.embed(&[chunk.content.as_str()])?;
+    chunk.embedding = embeddings.into_iter().next();
+
+    store.insert_chunks(vec![chunk]).await?;
+    Ok(true)
+}
+
 // --- Think subcommands (CLI parity with MCP) ---
 
 /// Set an entry's visibility and print a labeled confirmation.
@@ -2005,5 +2125,156 @@ mod tests {
     fn test_preview_exact_boundary() {
         assert_eq!(preview("abcde", 5), "abcde");
         assert_eq!(preview("abcdef", 5), "abcde...");
+    }
+
+    // --- export / import tests ---
+
+    #[test]
+    fn test_export_options_default() {
+        let opts = ExportOptions::default();
+        assert!(opts.perspective.is_none());
+    }
+
+    #[test]
+    fn test_import_options_default() {
+        let opts = ImportOptions::default();
+        assert_eq!(opts.path, "");
+    }
+
+    #[tokio::test]
+    async fn test_export_empty_store() -> Result<()> {
+        let dir = TempDir::new()?;
+        LanceStore::open_metadata(dir.path(), false).await?;
+
+        // export should succeed with an empty store without error
+        let opts = ExportOptions::default();
+        export_entries(dir.path(), &opts).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_import_skips_existing_entries() -> Result<()> {
+        let dir = TempDir::new()?;
+        seed_store(dir.path()).await;
+
+        // Build JSONL from existing entries (open read-only to avoid lock conflict)
+        let jsonl_file = dir.path().join("export.jsonl");
+        let entry_count = {
+            let store = LanceStore::open_metadata(dir.path(), true).await?;
+            let entries = store.list_entries(None, None, None, usize::MAX).await?;
+            let jsonl: String = entries
+                .iter()
+                .map(|c| serde_json::to_string(&c.clone().without_embedding()).unwrap() + "\n")
+                .collect();
+            fs::write(&jsonl_file, &jsonl)?;
+            entries.len()
+        }; // store dropped here, releasing its (read-only) handle
+
+        let opts = ImportOptions {
+            path: jsonl_file.to_string_lossy().to_string(),
+        };
+        let result = import_entries(dir.path(), &opts).await?;
+
+        assert_eq!(result.imported, 0, "all entries already exist");
+        assert_eq!(result.skipped, entry_count);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_export_import_roundtrip() -> Result<()> {
+        let source_dir = TempDir::new()?;
+        let target_dir = TempDir::new()?;
+        let jsonl_file = source_dir.path().join("roundtrip.jsonl");
+
+        // Insert two entries and build JSONL in a scoped block so the lock is released
+        {
+            let store = LanceStore::open(source_dir.path(), 384, false).await?;
+            store
+                .insert_chunks(vec![
+                    make_test_chunk("export001", "Export roundtrip entry one"),
+                    make_test_chunk("export002", "Export roundtrip entry two"),
+                ])
+                .await?;
+
+            let entries = store.list_entries(None, None, None, usize::MAX).await?;
+            let mut sorted = entries.clone();
+            sorted.sort_by(|a, b| a.id.cmp(&b.id));
+            let jsonl: String = sorted
+                .iter()
+                .map(|c| serde_json::to_string(&c.clone().without_embedding()).unwrap() + "\n")
+                .collect();
+            fs::write(&jsonl_file, &jsonl)?;
+        } // store + lock dropped here
+
+        // Import into fresh store
+        let opts = ImportOptions {
+            path: jsonl_file.to_string_lossy().to_string(),
+        };
+        let result = import_entries(target_dir.path(), &opts).await?;
+
+        assert_eq!(result.imported, 2);
+        assert_eq!(result.skipped, 0);
+
+        // Verify entries are present in target store
+        {
+            let target_store = LanceStore::open_metadata(target_dir.path(), true).await?;
+            let imported_entries = target_store
+                .list_entries(None, None, None, usize::MAX)
+                .await?;
+            assert_eq!(imported_entries.len(), 2);
+        } // target_store dropped here
+
+        // Verify idempotency: importing again should skip all
+        let result2 = import_entries(target_dir.path(), &opts).await?;
+        assert_eq!(result2.imported, 0);
+        assert_eq!(result2.skipped, 2);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_import_skips_bad_lines() -> Result<()> {
+        let dir = TempDir::new()?;
+
+        // Write JSONL with one valid and one invalid line
+        let valid_chunk = make_test_chunk("badline001", "Valid entry for bad line test");
+        let valid_json = serde_json::to_string(&valid_chunk.clone().without_embedding()).unwrap();
+        let jsonl_content = format!("{}\n{{invalid json}}\n", valid_json);
+
+        let jsonl_file = dir.path().join("bad_lines.jsonl");
+        fs::write(&jsonl_file, &jsonl_content)?;
+
+        let opts = ImportOptions {
+            path: jsonl_file.to_string_lossy().to_string(),
+        };
+        let result = import_entries(dir.path(), &opts).await?;
+
+        // The valid line should import, the bad line should be skipped
+        assert_eq!(result.imported, 1);
+        assert_eq!(result.skipped, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_export_perspective_filter() -> Result<()> {
+        let dir = TempDir::new()?;
+        crate::perspective::init(dir.path())?;
+
+        // Insert entries with and without a perspective
+        let store = LanceStore::open(dir.path(), 384, false).await?;
+        let mut chunk_with_perspective =
+            make_test_chunk("persp001", "Entry with decisions perspective");
+        chunk_with_perspective.perspectives = vec!["decisions".to_string()];
+        let chunk_no_perspective = make_test_chunk("persp002", "Entry without perspective");
+        store
+            .insert_chunks(vec![chunk_with_perspective, chunk_no_perspective])
+            .await?;
+
+        // Export with perspective filter — should not error
+        let opts = ExportOptions {
+            perspective: Some("decisions".to_string()),
+        };
+        export_entries(dir.path(), &opts).await?;
+        Ok(())
     }
 }
