@@ -579,6 +579,12 @@ pub async fn search(data_dir: &Path, query_str: &str, options: &SearchOptions) -
                     .to_string(),
             );
         }
+        if !result.chunk.perspectives.is_empty() {
+            meta.push(result.chunk.perspectives.join(", ").magenta().to_string());
+        }
+        if result.chunk.visibility != "normal" {
+            meta.push(result.chunk.visibility.red().to_string());
+        }
         if options.show_path && !result.hierarchy_path.is_empty() {
             let path: Vec<&str> = result
                 .hierarchy_path
@@ -750,6 +756,13 @@ pub async fn focus(data_dir: &Path, id: &str, options: &FocusOptions) -> Result<
                 .perspectives
                 .join(", ")
                 .if_supports_color(Stream::Stdout, |s| s.magenta())
+        );
+    }
+    if !entry.perspectives.is_empty() {
+        println!(
+            "  {}  {}",
+            "Perspectives:".dimmed(),
+            entry.perspectives.join(", ").magenta()
         );
     }
     if !entry.relations.is_empty() {
