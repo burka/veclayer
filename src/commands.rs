@@ -21,7 +21,7 @@ use crate::summarizer::OllamaSummarizer;
 use crate::{Config, DocumentParser, Embedder, Result, VectorStore};
 
 // Over-fetch when temporal filters are active, then filter client-side
-const TEMPORAL_PREFETCH_FACTOR: usize = 3;
+use crate::search::TEMPORAL_PREFETCH_FACTOR;
 
 // --- Infrastructure helpers ---
 
@@ -144,6 +144,8 @@ pub struct SearchOptions {
     pub recent: Option<String>,
     /// Filter by perspective (e.g. "decisions", "learnings")
     pub perspective: Option<String>,
+    /// Search for entries similar to this entry ID (uses its embedding as query)
+    pub similar_to: Option<String>,
     /// Minimum salience (entries below this excluded from salience boosting)
     pub min_salience: Option<f32>,
     /// Minimum search score (entries below this are filtered out)
@@ -166,6 +168,7 @@ impl Default for SearchOptions {
             deep: false,
             recent: None,
             perspective: None,
+            similar_to: None,
             min_salience: None,
             min_score: None,
             since: None,
@@ -543,12 +546,27 @@ async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<A
 
 /// Semantic search with hierarchical results (prints output).
 pub async fn search(data_dir: &Path, query_str: &str, options: &SearchOptions) -> Result<()> {
+    if options.similar_to.is_some() && !query_str.is_empty() {
+        eprintln!("Warning: query argument is ignored when --similar-to is specified.");
+    }
+
     let results = search_results(data_dir, query_str, options).await?;
 
     if results.is_empty() {
-        println!("No results found.");
+        if let Some(ref target_id) = options.similar_to {
+            println!("No similar entries found for: {}", short_id(target_id));
+        } else {
+            println!("No results found.");
+        }
         return Ok(());
     }
+
+    if let Some(ref target_id) = options.similar_to {
+        println!("\nSimilar entries to: {}\n", short_id(target_id));
+    } else {
+        println!("\nSearch results for: \"{}\"\n", query_str);
+    }
+    println!("{}", "=".repeat(60));
 
     for (i, result) in results.iter().enumerate() {
         if i > 0 {
@@ -675,7 +693,11 @@ pub async fn search_results(
 
     let search_engine = HierarchicalSearch::new(store, embedder).with_config(config);
 
-    let results = if let Some(ref parent_id) = options.subtree {
+    let results = if let Some(ref target_id) = options.similar_to {
+        search_engine
+            .search_by_embedding(target_id, fetch_limit)
+            .await?
+    } else if let Some(ref parent_id) = options.subtree {
         search_engine.search_subtree(query_str, parent_id).await?
     } else {
         search_engine.search(query_str).await?

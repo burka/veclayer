@@ -23,6 +23,9 @@ pub struct RecallInput {
     /// Filter by perspective (e.g. "decisions", "learnings")
     #[serde(default)]
     pub perspective: Option<String>,
+    /// Find entries similar to this entry ID (uses entry's embedding for search)
+    #[serde(default)]
+    pub similar_to: Option<String>,
     /// Minimum salience threshold (soft filter: excludes from salience boosting but not from results)
     #[serde(default)]
     pub min_salience: Option<f32>,
