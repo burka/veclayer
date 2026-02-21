@@ -19,6 +19,12 @@ Every agent interaction that produces a GitHub artifact (issue, comment, PR) **m
 
 This allows us to trace which model and tool produced each decision, design, or code change.
 
+## Code Quality
+
+See [CODE_QUALITY.md](CODE_QUALITY.md) for full standards.
+
+**The essentials:** 0 errors, 0 warnings, 0 test failures. Run `cargo fmt`, `cargo clippy`, `cargo nextest run` before every PR. Tests must assert real outcomes and fail on wrong results — "doesn't panic" is not a test. Cover green path, edge cases, and error path.
+
 ## Roadmap
 
 The roadmap is tracked as GitHub Issues:
