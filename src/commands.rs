@@ -465,9 +465,11 @@ async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<A
     let id = chunk.id.clone();
     store.insert_chunks(vec![chunk]).await?;
 
-    // Process bidirectional relation for related_to (mirror MCP logic)
+    // Bidirectional: forward relation is already embedded in chunk.relations above;
+    // here we add only the backward link. Note: MCP path (store_single_entry) adds
+    // both directions as post-insert steps instead — same final state, different path.
     if let Some(ref target) = options.related_to {
-        let target_id = crate::helpers::resolve_entry(&store, target).await?.id;
+        let target_id = crate::resolve::resolve_entry(&store, target).await?.id;
         let backward = crate::ChunkRelation::related_to(&id);
         store.add_relation(&target_id, backward).await?;
     }
@@ -554,11 +556,11 @@ pub async fn search_results(
     let since_epoch = options
         .since
         .as_deref()
-        .and_then(crate::helpers::parse_temporal);
+        .and_then(crate::resolve::parse_temporal);
     let until_epoch = options
         .until
         .as_deref()
-        .and_then(crate::helpers::parse_temporal);
+        .and_then(crate::resolve::parse_temporal);
 
     let (embedder, store) = open_store(data_dir).await?;
 
@@ -1160,11 +1162,11 @@ pub async fn browse(data_dir: &Path, options: &SearchOptions) -> Result<()> {
     let since_epoch = options
         .since
         .as_deref()
-        .and_then(crate::helpers::parse_temporal);
+        .and_then(crate::resolve::parse_temporal);
     let until_epoch = options
         .until
         .as_deref()
-        .and_then(crate::helpers::parse_temporal);
+        .and_then(crate::resolve::parse_temporal);
 
     let store = LanceStore::open_metadata(data_dir).await?;
     let entries = store
@@ -1216,7 +1218,7 @@ pub async fn browse(data_dir: &Path, options: &SearchOptions) -> Result<()> {
 async fn set_visibility(data_dir: &Path, id: &str, visibility: &str, label: &str) -> Result<()> {
     let store = LanceStore::open_metadata(data_dir).await?;
     let store = std::sync::Arc::new(store);
-    let chunk_id = crate::helpers::resolve_id(&store, id).await?;
+    let chunk_id = crate::resolve::resolve_id(&store, id).await?;
     store.update_visibility(&chunk_id, visibility).await?;
     println!("{} {} to visibility '{}'", label, short_id(&chunk_id), visibility);
     Ok(())
@@ -1236,8 +1238,8 @@ pub async fn think_demote(data_dir: &Path, id: &str, visibility: &str) -> Result
 pub async fn think_relate(data_dir: &Path, source: &str, target: &str, kind: &str) -> Result<()> {
     let (_embedder, store) = open_store(data_dir).await?;
     let store = std::sync::Arc::new(store);
-    let source_id = crate::helpers::resolve_id(&store, source).await?;
-    let target_id = crate::helpers::resolve_id(&store, target).await?;
+    let source_id = crate::resolve::resolve_id(&store, source).await?;
+    let target_id = crate::resolve::resolve_id(&store, target).await?;
 
     let relation = crate::ChunkRelation::new(kind, &target_id);
     store.add_relation(&source_id, relation).await?;
@@ -1302,9 +1304,9 @@ pub async fn think_aging_configure(
 
 /// Resolve a potentially short ID to a full entry.
 ///
-/// Delegates to `helpers::resolve_entry`.
+/// Delegates to `resolve::resolve_entry`.
 async fn resolve_entry(store: &LanceStore, id: &str) -> Result<crate::HierarchicalChunk> {
-    crate::helpers::resolve_entry(store, id).await
+    crate::resolve::resolve_entry(store, id).await
 }
 
 /// Collect files from a path, optionally recursively.

@@ -71,7 +71,7 @@ gh issue comment <number> --body "..."
   - `decisions`: Architectural choices, configuration decisions
   - `learnings`: What worked/didn't, insights gained
   - `intentions`: Goals, upcoming work, ongoing threads
-- Priming: Use `veclayer id` and `veclayer reflect` on session start
+- Priming: Use `veclayer reflect` on session start (alias: `veclayer id`)
 - Store significant moments automatically during work
 
 ## MCP Servers
