@@ -22,6 +22,15 @@ struct StoreSingleInput {
     relations: Vec<StoreRelation>,
 }
 
+/// Resolve a short or full entry ID to its canonical full ID using prefix matching.
+async fn resolve_id(store: &Arc<LanceStore>, id: &str) -> Result<String> {
+    store
+        .get_by_id_prefix(id)
+        .await?
+        .map(|chunk| chunk.id)
+        .ok_or_else(|| crate::Error::not_found(format!("Entry '{}' not found", id)))
+}
+
 /// Store a single entry and return its chunk ID.
 async fn store_single_entry(
     store: &Arc<LanceStore>,
@@ -31,7 +40,7 @@ async fn store_single_entry(
     let parent_id = input.parent_id.as_deref().filter(|s| !s.is_empty());
 
     let (level, path) = if let Some(pid) = parent_id {
-        if let Ok(Some(parent)) = store.get_by_id(pid).await {
+        if let Ok(Some(parent)) = store.get_by_id_prefix(pid).await {
             (
                 crate::chunk::ChunkLevel(parent.level.0 + 1),
                 format!("{}/agent", parent.path),
@@ -89,27 +98,28 @@ async fn store_single_entry(
 
     // Process relations atomically after insert
     for rel in &input.relations {
+        let target = resolve_id(store, &rel.target_id).await?;
         match rel.kind.as_str() {
             "supersedes" | "version_of" => {
                 let inverse = crate::ChunkRelation::new("superseded_by", &chunk_id);
-                store.add_relation(&rel.target_id, inverse).await?;
+                store.add_relation(&target, inverse).await?;
             }
             "summarizes" => {
                 let inverse = crate::ChunkRelation::new("summarized_by", &chunk_id);
-                store.add_relation(&rel.target_id, inverse).await?;
+                store.add_relation(&target, inverse).await?;
             }
             "related_to" => {
-                let forward = crate::ChunkRelation::new("related_to", &rel.target_id);
+                let forward = crate::ChunkRelation::new("related_to", &target);
                 store.add_relation(&chunk_id, forward).await?;
                 let backward = crate::ChunkRelation::new("related_to", &chunk_id);
-                store.add_relation(&rel.target_id, backward).await?;
+                store.add_relation(&target, backward).await?;
             }
             "derived_from" => {
-                let forward = crate::ChunkRelation::new("derived_from", &rel.target_id);
+                let forward = crate::ChunkRelation::new("derived_from", &target);
                 store.add_relation(&chunk_id, forward).await?;
             }
             other => {
-                let forward = crate::ChunkRelation::new(other, &rel.target_id);
+                let forward = crate::ChunkRelation::new(other, &target);
                 store.add_relation(&chunk_id, forward).await?;
             }
         }
@@ -310,36 +320,39 @@ pub async fn execute_think(
             execute_reflect(store, data_dir, hot_limit, stale_limit).await
         }
         Some("promote") => {
-            let chunk_id = input
+            let raw_id = input
                 .id
                 .as_deref()
                 .ok_or_else(|| crate::Error::config("think(promote) requires 'id'"))?;
+            let chunk_id = resolve_id(store, raw_id).await?;
             let vis = input.visibility.as_deref().unwrap_or("always");
-            store.update_visibility(chunk_id, vis).await?;
+            store.update_visibility(&chunk_id, vis).await?;
             Ok(format!("Promoted `{}` to visibility '{}'", chunk_id, vis))
         }
         Some("demote") => {
-            let chunk_id = input
+            let raw_id = input
                 .id
                 .as_deref()
                 .ok_or_else(|| crate::Error::config("think(demote) requires 'id'"))?;
+            let chunk_id = resolve_id(store, raw_id).await?;
             let vis = input.visibility.as_deref().unwrap_or("deep_only");
-            store.update_visibility(chunk_id, vis).await?;
+            store.update_visibility(&chunk_id, vis).await?;
             Ok(format!("Demoted `{}` to visibility '{}'", chunk_id, vis))
         }
         Some("relate") => {
-            let source_id = input
+            let raw_source = input
                 .source_id
                 .as_deref()
                 .ok_or_else(|| crate::Error::config("think(relate) requires 'source_id'"))?;
-            let target_id = input
+            let raw_target = input
                 .target_id
                 .as_deref()
                 .ok_or_else(|| crate::Error::config("think(relate) requires 'target_id'"))?;
             let kind = input.kind.as_deref().unwrap_or("related_to");
-
-            let relation = crate::ChunkRelation::new(kind, target_id);
-            store.add_relation(source_id, relation).await?;
+            let source_id = resolve_id(store, raw_source).await?;
+            let target_id = resolve_id(store, raw_target).await?;
+            let relation = crate::ChunkRelation::new(kind, &target_id);
+            store.add_relation(&source_id, relation).await?;
             Ok(format!(
                 "Added relation '{}' from `{}` to `{}`",
                 kind, source_id, target_id
@@ -576,6 +589,70 @@ fn days_since_epoch(year: i32, month: u32, day: u32) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn make_test_chunk(id: &str, content: &str) -> crate::HierarchicalChunk {
+        crate::HierarchicalChunk {
+            id: id.to_string(),
+            content: content.to_string(),
+            embedding: Some(vec![0.0f32; 384]),
+            level: crate::chunk::ChunkLevel(1),
+            parent_id: None,
+            path: "test".to_string(),
+            source_file: "test".to_string(),
+            heading: None,
+            start_offset: 0,
+            end_offset: 0,
+            cluster_memberships: vec![],
+            entry_type: crate::chunk::EntryType::Raw,
+            summarizes: vec![],
+            perspectives: vec![],
+            visibility: "normal".to_string(),
+            relations: vec![],
+            access_profile: crate::AccessProfile::new(),
+            expires_at: None,
+        }
+    }
+
+    async fn make_test_store() -> (Arc<crate::store::LanceStore>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::LanceStore::open(dir.path(), 384).await.unwrap();
+        (Arc::new(store), dir)
+    }
+
+    #[tokio::test]
+    async fn test_resolve_id_exact_match() {
+        let (store, _dir) = make_test_store().await;
+        store
+            .insert_chunks(vec![make_test_chunk("abcdef1234567890", "content")])
+            .await
+            .unwrap();
+
+        let result = resolve_id(&store, "abcdef1234567890").await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "abcdef1234567890");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_id_prefix_match() {
+        let (store, _dir) = make_test_store().await;
+        store
+            .insert_chunks(vec![make_test_chunk("abcdef1234567890", "content")])
+            .await
+            .unwrap();
+
+        let result = resolve_id(&store, "abcdef1").await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "abcdef1234567890");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_id_not_found() {
+        let (store, _dir) = make_test_store().await;
+
+        let result = resolve_id(&store, "nonexistent").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("nonexistent"));
+    }
 
     #[test]
     fn share_token_defaults_and_custom() {
