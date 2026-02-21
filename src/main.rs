@@ -71,18 +71,6 @@ enum Commands {
         #[arg(short = 'P', long = "perspective")]
         perspectives: Vec<String>,
 
-        /// This entry summarizes the given entry ID
-        #[arg(long)]
-        summarizes: Option<String>,
-
-        /// This entry supersedes the given entry ID
-        #[arg(long)]
-        supersedes: Option<String>,
-
-        /// This is a new version of the given entry ID
-        #[arg(long)]
-        version_of: Option<String>,
-
         /// Parent entry ID for hierarchy placement
         #[arg(long)]
         parent_id: Option<String>,
@@ -90,14 +78,6 @@ enum Commands {
         /// Heading/title for the entry
         #[arg(long)]
         heading: Option<String>,
-
-        /// This entry is related to the given entry ID (bidirectional)
-        #[arg(long)]
-        related_to: Option<String>,
-
-        /// This entry is derived from the given entry ID
-        #[arg(long)]
-        derived_from: Option<String>,
 
         /// Impression hint (e.g. "uncertain", "confident", "exploratory")
         #[arg(long)]
@@ -107,9 +87,29 @@ enum Commands {
         #[arg(long, default_value = "1.0")]
         impression_strength: f32,
 
-        /// Universal references: target_id:kind (e.g., abc123:related_to)
-        #[arg(short = 'R', long, value_name = "ID:KIND")]
-        references: Vec<String>,
+        /// This entry supersedes the target (auto-demotes target)
+        #[arg(long, value_name = "ID")]
+        rel_supersedes: Vec<String>,
+
+        /// This entry summarizes the target
+        #[arg(long, value_name = "ID")]
+        rel_summarizes: Vec<String>,
+
+        /// Bidirectional related_to link
+        #[arg(long, value_name = "ID")]
+        rel_to: Vec<String>,
+
+        /// This entry is derived from the target (forward only)
+        #[arg(long, value_name = "ID")]
+        rel_derived_from: Vec<String>,
+
+        /// This is a new version of the target (auto-demotes target)
+        #[arg(long, value_name = "ID")]
+        rel_version_of: Vec<String>,
+
+        /// Custom relation: KIND:ID (forward on self only)
+        #[arg(short = 'R', long = "rel", value_name = "KIND:ID")]
+        rel_custom: Vec<String>,
     },
 
     /// Semantic search with hierarchical results
@@ -397,16 +397,16 @@ async fn main() -> Result<()> {
             visibility,
             entry_type,
             perspectives,
-            summarizes,
-            supersedes,
-            version_of,
             parent_id,
             heading,
-            related_to,
-            derived_from,
             impression_hint,
             impression_strength,
-            references,
+            rel_supersedes,
+            rel_summarizes,
+            rel_to,
+            rel_derived_from,
+            rel_version_of,
+            rel_custom,
         } => {
             let options = AddOptions {
                 recursive: !no_recursive,
@@ -415,16 +415,16 @@ async fn main() -> Result<()> {
                 visibility,
                 entry_type,
                 perspectives,
-                summarizes,
-                supersedes,
-                version_of,
                 parent_id,
                 heading,
-                related_to,
-                derived_from,
                 impression_hint,
                 impression_strength,
-                references,
+                rel_supersedes,
+                rel_summarizes,
+                rel_to,
+                rel_derived_from,
+                rel_version_of,
+                rel_custom,
             };
             veclayer::commands::add(&cli.data_dir, &input, &options).await?;
         }
