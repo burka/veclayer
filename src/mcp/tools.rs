@@ -5,6 +5,19 @@ use std::sync::Arc;
 // Over-fetch when temporal filters are active, then filter client-side
 const TEMPORAL_PREFETCH_FACTOR: usize = 3;
 
+const THINK_ACTIONS: &[&str] = &[
+    "promote",
+    "demote",
+    "relate",
+    "configure_aging",
+    "apply_aging",
+    "salience",
+    "consolidate",
+    "perspectives",
+    "status",
+    "history",
+];
+
 use crate::aging::{self, AgingConfig};
 use crate::embedder::FastEmbedder;
 use crate::search::{HierarchicalSearch, SearchConfig};
@@ -442,9 +455,114 @@ pub async fn execute_think(
             }
             Ok(report)
         }
+        Some("perspectives") => {
+            let perspectives = crate::perspective::load(data_dir)?;
+            if perspectives.is_empty() {
+                return Ok("No perspectives defined.".to_string());
+            }
+            let mut report = String::from("## Perspectives\n\n");
+            for p in &perspectives {
+                let tag = if p.builtin { " [builtin]" } else { "" };
+                report.push_str(&format!(
+                    "- **{}** — {}{}\n",
+                    p.id, p.hint, tag
+                ));
+            }
+            report.push_str(&format!("\n{} perspective(s) total.", perspectives.len()));
+            Ok(report)
+        }
+        Some("status") => {
+            let stats = store.stats().await?;
+            let mut report = String::from("## Store Status\n\n");
+            report.push_str(&format!("- **Total entries:** {}\n", stats.total_chunks));
+            report.push_str(&format!("- **Source files:** {}\n", stats.source_files.len()));
+
+            if !stats.chunks_by_level.is_empty() {
+                report.push_str("\n### Entries by level\n\n");
+                for level in 1..=7 {
+                    if let Some(count) = stats.chunks_by_level.get(&level) {
+                        let level_name = if level <= 6 {
+                            format!("H{}", level)
+                        } else {
+                            "Content".to_string()
+                        };
+                        report.push_str(&format!("- {}: {}\n", level_name, count));
+                    }
+                }
+            }
+
+            if !stats.source_files.is_empty() {
+                report.push_str("\n### Source files\n\n");
+                for file in &stats.source_files {
+                    report.push_str(&format!("- {}\n", file));
+                }
+            }
+
+            let aging_config = AgingConfig::load(data_dir);
+            report.push_str(&format!(
+                "\n### Aging policy\n\n- Degrade {} → '{}' after {} days\n",
+                aging_config.degrade_from.join("/"),
+                aging_config.degrade_to,
+                aging_config.degrade_after_days,
+            ));
+
+            Ok(report)
+        }
+        Some("history") => {
+            let raw_id = input
+                .id
+                .as_deref()
+                .ok_or_else(|| crate::Error::config("think(history) requires 'id'"))?;
+            let chunk_id = resolve_id(store, raw_id).await?;
+            let chunk = store
+                .get_by_id(&chunk_id)
+                .await?
+                .ok_or_else(|| crate::Error::not_found(format!("Entry '{}' not found", chunk_id)))?;
+
+            let heading = chunk.heading.as_deref().unwrap_or("(no heading)");
+            let mut report = format!(
+                "## Entry History: {} `{}`\n\n",
+                heading, chunk.id
+            );
+            report.push_str(&format!("- **Type:** {}\n", chunk.entry_type));
+            report.push_str(&format!("- **Visibility:** {}\n", chunk.visibility));
+            report.push_str(&format!("- **Source:** {}\n", chunk.source_file));
+            if !chunk.perspectives.is_empty() {
+                report.push_str(&format!(
+                    "- **Perspectives:** {}\n",
+                    chunk.perspectives.join(", ")
+                ));
+            }
+
+            if chunk.relations.is_empty() {
+                report.push_str("\nNo relations.\n");
+            } else {
+                report.push_str(&format!("\n### Relations ({})\n\n", chunk.relations.len()));
+                for rel in &chunk.relations {
+                    report.push_str(&format!(
+                        "- {} → `{}`\n",
+                        rel.kind,
+                        crate::chunk::short_id(&rel.target_id)
+                    ));
+                }
+            }
+
+            report.push_str(&format!(
+                "\n### Content\n\n{}\n",
+                if chunk.content.len() > 500 {
+                    let end = chunk.content.floor_char_boundary(500);
+                    format!("{}...", &chunk.content[..end])
+                } else {
+                    chunk.content.clone()
+                }
+            ));
+
+            Ok(report)
+        }
         Some(unknown) => Err(crate::Error::config(format!(
-            "Unknown think action: '{}'. Available: promote, demote, relate, configure_aging, apply_aging, salience, consolidate",
-            unknown
+            "Unknown think action: '{}'. Available: {}",
+            unknown,
+            THINK_ACTIONS.join(", ")
         ))),
     }
 }
@@ -568,6 +686,35 @@ mod tests {
     // resolve_id and parse_temporal tests are in helpers::tests.
     // These tests cover tool-specific logic that remains in this module.
 
+    fn make_test_chunk(id: &str, content: &str) -> crate::HierarchicalChunk {
+        crate::HierarchicalChunk {
+            id: id.to_string(),
+            content: content.to_string(),
+            embedding: Some(vec![0.0f32; 384]),
+            level: crate::chunk::ChunkLevel(1),
+            parent_id: None,
+            path: "test".to_string(),
+            source_file: "test".to_string(),
+            heading: Some(format!("Heading for {}", id)),
+            start_offset: 0,
+            end_offset: 0,
+            cluster_memberships: vec![],
+            entry_type: crate::chunk::EntryType::Raw,
+            summarizes: vec![],
+            perspectives: vec![],
+            visibility: "normal".to_string(),
+            relations: vec![],
+            access_profile: crate::AccessProfile::new(),
+            expires_at: None,
+        }
+    }
+
+    async fn make_test_store_with_dir() -> (Arc<LanceStore>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LanceStore::open(dir.path(), 384).await.unwrap();
+        (Arc::new(store), dir)
+    }
+
     #[test]
     fn share_token_defaults_and_custom() {
         let token = build_share_token(ShareInput {
@@ -603,5 +750,158 @@ mod tests {
         assert_eq!(relevance_tier(0.20), "weak");
         assert_eq!(relevance_tier(0.15), "tangential");
         assert_eq!(relevance_tier(0.0), "tangential");
+    }
+
+    #[tokio::test]
+    async fn test_think_perspectives_action() {
+        let (store, dir) = make_test_store_with_dir().await;
+        // Initialize perspectives so there's something to list
+        crate::perspective::init(dir.path()).unwrap();
+
+        let input = ThinkInput {
+            action: Some("perspectives".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+        };
+        let result = execute_think(&store, dir.path(), input).await.unwrap();
+        assert!(result.contains("Perspectives"));
+        // Should contain the built-in perspectives
+        assert!(result.contains("decisions"));
+        assert!(result.contains("knowledge"));
+    }
+
+    #[tokio::test]
+    async fn test_think_status_action() {
+        let (store, dir) = make_test_store_with_dir().await;
+        // Insert a test chunk so stats are non-zero
+        store
+            .insert_chunks(vec![make_test_chunk("abc123", "test content")])
+            .await
+            .unwrap();
+
+        let input = ThinkInput {
+            action: Some("status".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+        };
+        let result = execute_think(&store, dir.path(), input).await.unwrap();
+        assert!(result.contains("Store Status"));
+        assert!(result.contains("Total entries"));
+        assert!(result.contains("1")); // 1 entry
+    }
+
+    #[tokio::test]
+    async fn test_think_history_action() {
+        let (store, dir) = make_test_store_with_dir().await;
+        let mut chunk = make_test_chunk("abcdef1234567890", "historical content");
+        chunk
+            .relations
+            .push(crate::ChunkRelation::new("supersedes", "older_entry"));
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let input = ThinkInput {
+            action: Some("history".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: Some("abcdef1".to_string()), // short ID
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+        };
+        let result = execute_think(&store, dir.path(), input).await.unwrap();
+        assert!(result.contains("Entry History"));
+        assert!(result.contains("Relations"));
+        assert!(result.contains("supersedes"));
+        assert!(result.contains("historical content"));
+    }
+
+    #[tokio::test]
+    async fn test_think_history_requires_id() {
+        let (store, dir) = make_test_store_with_dir().await;
+
+        let input = ThinkInput {
+            action: Some("history".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None, // Missing required ID
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+        };
+        let result = execute_think(&store, dir.path(), input).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("requires 'id'"));
+    }
+
+    #[tokio::test]
+    async fn test_think_status_empty_store() {
+        let (store, dir) = make_test_store_with_dir().await;
+
+        let input = ThinkInput {
+            action: Some("status".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+        };
+        let result = execute_think(&store, dir.path(), input).await.unwrap();
+        assert!(result.contains("Total entries"));
+        assert!(result.contains("0"));
+    }
+
+    #[tokio::test]
+    async fn test_think_unknown_action() {
+        let (store, dir) = make_test_store_with_dir().await;
+
+        let input = ThinkInput {
+            action: Some("nonexistent".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+        };
+        let result = execute_think(&store, dir.path(), input).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Unknown think action"));
+        assert!(err.contains("perspectives"));
+        assert!(err.contains("status"));
+        assert!(err.contains("history"));
     }
 }
