@@ -238,6 +238,7 @@ fn tool_list() -> serde_json::Value {
                     "type": "object",
                     "properties": {
                         "query": { "type": "string", "description": "What to search for (optional — omit to browse)" },
+                        "similar_to": { "type": "string", "description": "Search for entries similar to this entry ID (uses its embedding as query vector). When set, 'query' is ignored." },
                         "limit": { "type": "integer", "default": 5 },
                         "deep": { "type": "boolean", "default": false },
                         "recency": { "type": "string", "description": "Recency boost: 24h, 7d, 30d" },

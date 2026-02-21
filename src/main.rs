@@ -109,7 +109,7 @@ enum Commands {
     },
 
     /// Semantic search with hierarchical results
-    #[command(alias = "s")]
+    #[command(alias = "s", alias = "recall")]
     Search {
         /// The search query (omit to browse all entries)
         query: Option<String>,
@@ -137,6 +137,10 @@ enum Commands {
         /// Filter by perspective (e.g. "decisions", "learnings")
         #[arg(short = 'P', long)]
         perspective: Option<String>,
+
+        /// Search for entries similar to this entry ID (uses its embedding as query)
+        #[arg(long)]
+        similar_to: Option<String>,
 
         /// Minimum salience (soft filter: excludes from salience boosting but not from results)
         #[arg(long = "min-salience")]
@@ -426,6 +430,7 @@ async fn main() -> Result<()> {
             deep,
             recent,
             perspective,
+            similar_to,
             min_salience,
             min_score,
             since,
@@ -438,14 +443,20 @@ async fn main() -> Result<()> {
                 deep,
                 recent,
                 perspective,
+                similar_to,
                 min_salience,
                 min_score,
                 since,
                 until,
             };
-            match query {
-                Some(q) => veclayer::commands::search(&cli.data_dir, &q, &options).await?,
-                None => veclayer::commands::browse(&cli.data_dir, &options).await?,
+            if options.similar_to.is_some() {
+                veclayer::commands::search(&cli.data_dir, query.as_deref().unwrap_or(""), &options)
+                    .await?
+            } else {
+                match query {
+                    Some(q) => veclayer::commands::search(&cli.data_dir, &q, &options).await?,
+                    None => veclayer::commands::browse(&cli.data_dir, &options).await?,
+                }
             }
         }
         Commands::Focus {
