@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use owo_colors::{OwoColorize, Stream};
 use tracing::{debug, info};
 
 use crate::chunk::{short_id, EntryType};
@@ -18,6 +19,9 @@ use crate::store::LanceStore;
 use crate::summarizer::OllamaSummarizer;
 use crate::{Config, DocumentParser, Embedder, Result, VectorStore};
 
+// Over-fetch when temporal filters are active, then filter client-side
+const TEMPORAL_PREFETCH_FACTOR: usize = 3;
+
 // --- Infrastructure helpers ---
 
 /// Create an embedder + store pair.  Centralises the 3-line init sequence
@@ -25,11 +29,30 @@ use crate::{Config, DocumentParser, Embedder, Result, VectorStore};
 async fn open_store(data_dir: &Path) -> Result<(FastEmbedder, LanceStore)> {
     let embedder = FastEmbedder::new()?;
     let dimension = embedder.dimension();
-    let store = LanceStore::open(data_dir, dimension).await?;
+    let store = LanceStore::open(data_dir, dimension, false).await?;
     Ok((embedder, store))
 }
 
 // --- Output helpers ---
+
+/// Color a visibility string for CLI display.
+fn vis_color(vis: &str) -> String {
+    match vis {
+        "always" => vis
+            .if_supports_color(Stream::Stdout, |s| s.green())
+            .to_string(),
+        "normal" => vis.to_string(),
+        "deep_only" => vis
+            .if_supports_color(Stream::Stdout, |s| s.dimmed())
+            .to_string(),
+        "expiring" => vis
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
+            .to_string(),
+        _ => vis
+            .if_supports_color(Stream::Stdout, |s| s.red())
+            .to_string(),
+    }
+}
 
 /// Truncate content to `max` chars, replacing newlines with spaces.
 fn preview(s: &str, max: usize) -> String {
@@ -37,7 +60,9 @@ fn preview(s: &str, max: usize) -> String {
     if clean.len() <= max {
         clean
     } else {
-        format!("{}...", &clean[..max])
+        // Find a char boundary at or before `max` to avoid panicking on multi-byte UTF-8
+        let end = clean.floor_char_boundary(max);
+        format!("{}...", &clean[..end])
     }
 }
 
@@ -64,6 +89,18 @@ pub struct AddOptions {
     pub supersedes: Option<String>,
     /// Relation: this is a version of the given ID
     pub version_of: Option<String>,
+    /// Parent entry ID for hierarchy placement
+    pub parent_id: Option<String>,
+    /// Heading/title for the entry
+    pub heading: Option<String>,
+    /// Relation: this entry is related to the given ID (bidirectional)
+    pub related_to: Option<String>,
+    /// Relation: this entry is derived from the given ID
+    pub derived_from: Option<String>,
+    /// Impression hint: qualitative label (e.g. "uncertain", "confident")
+    pub impression_hint: Option<String>,
+    /// Impression strength: 0.0–1.0 (default 1.0)
+    pub impression_strength: f32,
 }
 
 /// Backwards-compatible alias
@@ -81,6 +118,12 @@ impl Default for AddOptions {
             summarizes: None,
             supersedes: None,
             version_of: None,
+            parent_id: None,
+            heading: None,
+            related_to: None,
+            derived_from: None,
+            impression_hint: None,
+            impression_strength: 1.0,
         }
     }
 }
@@ -104,6 +147,10 @@ pub struct SearchOptions {
     pub min_salience: Option<f32>,
     /// Minimum search score (entries below this are filtered out)
     pub min_score: Option<f32>,
+    /// Only entries created after this ISO 8601 date or epoch seconds
+    pub since: Option<String>,
+    /// Only entries created before this ISO 8601 date or epoch seconds
+    pub until: Option<String>,
 }
 
 /// Backwards-compatible alias
@@ -120,6 +167,8 @@ impl Default for SearchOptions {
             perspective: None,
             min_salience: None,
             min_score: None,
+            since: None,
+            until: None,
         }
     }
 }
@@ -375,19 +424,42 @@ async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<A
         _ => crate::chunk::EntryType::Raw,
     };
 
+    // Resolve parent ID and compute level/path from parent
+    let (level, path, resolved_parent_id) = if let Some(ref pid) = options.parent_id {
+        let parent = resolve_entry(&store, pid).await?;
+        (
+            crate::chunk::ChunkLevel(parent.level.0 + 1),
+            format!("{}/agent", parent.path),
+            Some(parent.id),
+        )
+    } else {
+        (crate::ChunkLevel::CONTENT, String::new(), None)
+    };
+
     let mut chunk = crate::HierarchicalChunk::new(
         text.to_string(),
-        crate::ChunkLevel::CONTENT,
-        None,
-        String::new(),
+        level,
+        resolved_parent_id,
+        path,
         "[inline]".to_string(),
     )
     .with_entry_type(entry_type)
     .with_perspectives(options.perspectives.clone());
 
+    // Set heading if provided
+    if let Some(ref heading) = options.heading {
+        chunk.heading = Some(heading.clone());
+    }
+
     if let Some(ref vis) = options.visibility {
         chunk.visibility = vis.clone();
     }
+
+    // Impression metadata
+    if let Some(ref hint) = options.impression_hint {
+        chunk.impression_hint = Some(hint.clone());
+    }
+    chunk.impression_strength = options.impression_strength;
 
     // Add relations from options
     if let Some(ref target) = options.summarizes {
@@ -405,6 +477,16 @@ async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<A
             .relations
             .push(crate::ChunkRelation::new("version_of", target));
     }
+    if let Some(ref target) = options.related_to {
+        chunk
+            .relations
+            .push(crate::ChunkRelation::related_to(target));
+    }
+    if let Some(ref target) = options.derived_from {
+        chunk
+            .relations
+            .push(crate::ChunkRelation::new("derived_from", target));
+    }
 
     let embeddings = embedder.embed(&[text])?;
     chunk.embedding = Some(
@@ -416,6 +498,15 @@ async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<A
 
     let id = chunk.id.clone();
     store.insert_chunks(vec![chunk]).await?;
+
+    // Bidirectional: forward relation is already embedded in chunk.relations above;
+    // here we add only the backward link. Note: MCP path (store_single_entry) adds
+    // both directions as post-insert steps instead — same final state, different path.
+    if let Some(ref target) = options.related_to {
+        let target_id = crate::resolve::resolve_entry(&store, target).await?.id;
+        let backward = crate::ChunkRelation::related_to(&id);
+        store.add_relation(&target_id, backward).await?;
+    }
 
     println!("Added entry {} ({})", short_id(&id), entry_type);
 
@@ -446,12 +537,53 @@ pub async fn search(data_dir: &Path, query_str: &str, options: &SearchOptions) -
             .as_deref()
             .unwrap_or_else(|| result.chunk.content.lines().next().unwrap_or("(untitled)"));
         let tier = crate::mcp::types::relevance_tier(result.score);
-        println!("{}. {} ({}, {:.2})", i + 1, heading, tier, result.score,);
+        println!(
+            "{}  {} {:.2}",
+            format!("{}. {}", i + 1, heading).if_supports_color(Stream::Stdout, |s| s.bold()),
+            tier.if_supports_color(Stream::Stdout, |s| s.dimmed()),
+            result
+                .score
+                .if_supports_color(Stream::Stdout, |s| s.dimmed()),
+        );
 
         // Compact metadata
-        let mut meta = vec![short_id(&result.chunk.id).to_string()];
+        let mut meta = vec![short_id(&result.chunk.id)
+            .if_supports_color(Stream::Stdout, |s| s.cyan())
+            .to_string()];
         if result.chunk.entry_type != EntryType::Raw {
-            meta.push(result.chunk.entry_type.to_string());
+            meta.push(
+                result
+                    .chunk
+                    .entry_type
+                    .to_string()
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
+                    .to_string(),
+            );
+        }
+        if !result.chunk.perspectives.is_empty() {
+            meta.push(
+                result
+                    .chunk
+                    .perspectives
+                    .join(", ")
+                    .if_supports_color(Stream::Stdout, |s| s.magenta())
+                    .to_string(),
+            );
+        }
+        if result.chunk.visibility != "normal" {
+            meta.push(
+                result
+                    .chunk
+                    .visibility
+                    .if_supports_color(Stream::Stdout, |s| s.red())
+                    .to_string(),
+            );
+        }
+        if !result.chunk.perspectives.is_empty() {
+            meta.push(result.chunk.perspectives.join(", ").magenta().to_string());
+        }
+        if result.chunk.visibility != "normal" {
+            meta.push(result.chunk.visibility.red().to_string());
         }
         if options.show_path && !result.hierarchy_path.is_empty() {
             let path: Vec<&str> = result
@@ -464,7 +596,10 @@ pub async fn search(data_dir: &Path, query_str: &str, options: &SearchOptions) -
         println!("   {}", meta.join(" | "));
 
         // Content preview
-        println!("   {}", preview(&result.chunk.content, 200));
+        println!(
+            "   {}",
+            preview(&result.chunk.content, 200).if_supports_color(Stream::Stdout, |s| s.dimmed())
+        );
 
         if !result.relevant_children.is_empty() {
             for child in &result.relevant_children {
@@ -474,17 +609,18 @@ pub async fn search(data_dir: &Path, query_str: &str, options: &SearchOptions) -
                     .as_deref()
                     .unwrap_or_else(|| child.chunk.content.lines().next().unwrap_or("..."));
                 println!(
-                    "     > {} [{}]",
+                    "     {} {} [{}]",
+                    ">".if_supports_color(Stream::Stdout, |s| s.dimmed()),
                     preview(child_heading, 60),
-                    short_id(&child.chunk.id)
+                    short_id(&child.chunk.id).if_supports_color(Stream::Stdout, |s| s.cyan())
                 );
             }
         }
     }
 
     println!(
-        "\n{} result(s). `veclayer focus <id>` to drill in.",
-        results.len()
+        "\n{} `veclayer focus <id>` to drill in.",
+        format!("{} result(s).", results.len()).if_supports_color(Stream::Stdout, |s| s.bold())
     );
 
     Ok(())
@@ -496,9 +632,25 @@ pub async fn search_results(
     query_str: &str,
     options: &SearchOptions,
 ) -> Result<Vec<SearchResult>> {
+    let since_epoch = options
+        .since
+        .as_deref()
+        .and_then(crate::resolve::parse_temporal);
+    let until_epoch = options
+        .until
+        .as_deref()
+        .and_then(crate::resolve::parse_temporal);
+
     let (embedder, store) = open_store(data_dir).await?;
 
-    let config = SearchConfig::for_query(options.top_k, options.deep, options.recent.as_deref())
+    // Fetch more results when temporal filtering will reduce the set
+    let fetch_limit = if since_epoch.is_some() || until_epoch.is_some() {
+        options.top_k * TEMPORAL_PREFETCH_FACTOR
+    } else {
+        options.top_k
+    };
+
+    let config = SearchConfig::for_query(fetch_limit, options.deep, options.recent.as_deref())
         .with_perspective(options.perspective.clone())
         .with_min_salience(options.min_salience)
         .with_min_score(options.min_score);
@@ -511,8 +663,15 @@ pub async fn search_results(
         search_engine.search(query_str).await?
     };
 
-    Ok(results
+    let filtered = results
         .into_iter()
+        .filter(|r| {
+            let created = r.chunk.access_profile.created_at;
+            since_epoch.is_none_or(|s| created >= s) && until_epoch.is_none_or(|u| created <= u)
+        })
+        .take(options.top_k);
+
+    Ok(filtered
         .map(|r| SearchResult {
             chunk: r.chunk,
             score: r.score,
@@ -550,19 +709,74 @@ pub async fn focus(data_dir: &Path, id: &str, options: &FocusOptions) -> Result<
         .ok_or_else(|| crate::Error::not_found(format!("Entry {} not found", id)))?;
 
     // Display entry details
-    println!("Entry {}", short_id(&entry.id));
-    println!("{}", "=".repeat(50));
-    println!("  Type: {}", entry.entry_type);
-    println!("  Level: {}", entry.level);
-    println!("  Visibility: {}", entry.visibility);
-    println!("  Source: {}", entry.source_file);
+    println!(
+        "{}",
+        format!("Entry {}", short_id(&entry.id)).if_supports_color(Stream::Stdout, |s| s.bold())
+    );
+    println!(
+        "{}",
+        "=".repeat(50)
+            .if_supports_color(Stream::Stdout, |s| s.dimmed())
+    );
+    println!(
+        "  {}  {}",
+        "Type:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+        entry
+            .entry_type
+            .to_string()
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
+    );
+    println!(
+        "  {}  {}",
+        "Level:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+        entry.level
+    );
+    println!(
+        "  {}  {}",
+        "Vis:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+        vis_color(&entry.visibility)
+    );
+    println!(
+        "  {}  {}",
+        "Source:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+        entry.source_file
+    );
     if let Some(ref heading) = entry.heading {
-        println!("  Heading: {}", heading);
+        println!(
+            "  {}  {}",
+            "Heading:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+            heading
+        );
+    }
+    if !entry.perspectives.is_empty() {
+        println!(
+            "  {}  {}",
+            "Perspectives:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+            entry
+                .perspectives
+                .join(", ")
+                .if_supports_color(Stream::Stdout, |s| s.magenta())
+        );
+    }
+    if !entry.perspectives.is_empty() {
+        println!(
+            "  {}  {}",
+            "Perspectives:".dimmed(),
+            entry.perspectives.join(", ").magenta()
+        );
     }
     if !entry.relations.is_empty() {
-        println!("  Relations:");
+        println!(
+            "  {}",
+            "Relations:".if_supports_color(Stream::Stdout, |s| s.dimmed())
+        );
         for rel in &entry.relations {
-            println!("    {} -> {}", rel.kind, short_id(&rel.target_id));
+            println!(
+                "    {} {} {}",
+                rel.kind.if_supports_color(Stream::Stdout, |s| s.yellow()),
+                "->".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+                short_id(&rel.target_id).if_supports_color(Stream::Stdout, |s| s.cyan())
+            );
         }
     }
     println!("\n{}\n", entry.content);
@@ -594,19 +808,29 @@ pub async fn focus(data_dir: &Path, id: &str, options: &FocusOptions) -> Result<
         }
 
         let shown = children.iter().take(options.limit).count();
-        println!("Children ({}/{}):", shown, children.len());
+        println!(
+            "{}",
+            format!("Children ({}/{}):", shown, children.len())
+                .if_supports_color(Stream::Stdout, |s| s.bold())
+        );
         for child in children.iter().take(options.limit) {
             println!(
                 "  {} [{}] {}",
-                short_id(&child.id),
-                child.entry_type,
-                preview(&child.content, 100)
+                short_id(&child.id).if_supports_color(Stream::Stdout, |s| s.cyan()),
+                child
+                    .entry_type
+                    .to_string()
+                    .if_supports_color(Stream::Stdout, |s| s.yellow()),
+                preview(&child.content, 100).if_supports_color(Stream::Stdout, |s| s.dimmed())
             );
         }
 
         println!("\nUse `veclayer focus <child-id>` to drill deeper.");
     } else {
-        println!("(no children)");
+        println!(
+            "{}",
+            "(no children)".if_supports_color(Stream::Stdout, |s| s.dimmed())
+        );
     }
 
     Ok(())
@@ -616,11 +840,31 @@ pub async fn focus(data_dir: &Path, id: &str, options: &FocusOptions) -> Result<
 pub async fn status(data_dir: &Path) -> Result<()> {
     let result = stats(data_dir).await?;
 
-    println!("VecLayer Status");
-    println!("{}", "=".repeat(40));
-    println!("Store: {}", data_dir.display());
-    println!("Total entries: {}", result.total_chunks);
-    println!("\nEntries by level:");
+    println!(
+        "{}",
+        "VecLayer Status".if_supports_color(Stream::Stdout, |s| s.bold())
+    );
+    println!(
+        "{}",
+        "=".repeat(40)
+            .if_supports_color(Stream::Stdout, |s| s.dimmed())
+    );
+    println!(
+        "{}  {}",
+        "Store:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+        data_dir.display()
+    );
+    println!(
+        "{}  {}",
+        "Total entries:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+        result
+            .total_chunks
+            .if_supports_color(Stream::Stdout, |s| s.bold())
+    );
+    println!(
+        "\n{}",
+        "Entries by level:".if_supports_color(Stream::Stdout, |s| s.dimmed())
+    );
     for level in 1..=7 {
         if let Some(count) = result.chunks_by_level.get(&level) {
             let level_name = if level <= 6 {
@@ -628,7 +872,11 @@ pub async fn status(data_dir: &Path) -> Result<()> {
             } else {
                 "Content".to_string()
             };
-            println!("  {}: {}", level_name, count);
+            println!(
+                "  {}  {}",
+                level_name.if_supports_color(Stream::Stdout, |s| s.cyan()),
+                count
+            );
         }
     }
     println!("\nSource files: {}", result.source_files.len());
@@ -644,7 +892,7 @@ pub async fn status(data_dir: &Path) -> Result<()> {
 
 /// Show statistics about the store (returns structured data).
 pub async fn stats(data_dir: &Path) -> Result<StatsResult> {
-    let store = LanceStore::open_metadata(data_dir).await?;
+    let store = LanceStore::open_metadata(data_dir, false).await?;
 
     let store_stats = store.stats().await?;
 
@@ -673,7 +921,7 @@ pub async fn print_sources(data_dir: &Path) -> Result<()> {
 
 /// List all indexed source files (returns data).
 pub async fn sources(data_dir: &Path) -> Result<Vec<String>> {
-    let store = LanceStore::open_metadata(data_dir).await?;
+    let store = LanceStore::open_metadata(data_dir, false).await?;
 
     let store_stats = store.stats().await?;
 
@@ -733,27 +981,60 @@ pub fn perspective_remove(data_dir: &Path, id: &str) -> Result<()> {
 
 /// Show version/relation history of an entry.
 pub async fn history(data_dir: &Path, id: &str) -> Result<()> {
-    let store = LanceStore::open_metadata(data_dir).await?;
+    let store = LanceStore::open_metadata(data_dir, false).await?;
 
     // Resolve short IDs by prefix search
     let chunk = resolve_entry(&store, id).await?;
 
-    println!("Entry {} ({})", short_id(&chunk.id), chunk.entry_type);
+    println!(
+        "{} ({})",
+        format!("Entry {}", short_id(&chunk.id)).if_supports_color(Stream::Stdout, |s| s.bold()),
+        chunk
+            .entry_type
+            .to_string()
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
+    );
     if let Some(ref heading) = chunk.heading {
-        println!("  Heading: {}", heading);
+        println!(
+            "  {}  {}",
+            "Heading:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+            heading
+        );
     }
-    println!("  Content: {}", preview(&chunk.content, 80));
+    println!(
+        "  {}  {}",
+        "Content:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+        preview(&chunk.content, 80).if_supports_color(Stream::Stdout, |s| s.dimmed())
+    );
 
     if !chunk.perspectives.is_empty() {
-        println!("  Perspectives: {}", chunk.perspectives.join(", "));
+        println!(
+            "  {}  {}",
+            "Perspectives:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+            chunk
+                .perspectives
+                .join(", ")
+                .if_supports_color(Stream::Stdout, |s| s.magenta())
+        );
     }
 
     if chunk.relations.is_empty() {
-        println!("  No relations.");
+        println!(
+            "  {}",
+            "No relations.".if_supports_color(Stream::Stdout, |s| s.dimmed())
+        );
     } else {
-        println!("  Relations:");
+        println!(
+            "  {}",
+            "Relations:".if_supports_color(Stream::Stdout, |s| s.dimmed())
+        );
         for rel in &chunk.relations {
-            println!("    {} -> {}", rel.kind, short_id(&rel.target_id));
+            println!(
+                "    {} {} {}",
+                rel.kind.if_supports_color(Stream::Stdout, |s| s.yellow()),
+                "->".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+                short_id(&rel.target_id).if_supports_color(Stream::Stdout, |s| s.cyan())
+            );
         }
     }
 
@@ -853,7 +1134,7 @@ async fn compact_rotate(data_dir: &Path) -> Result<()> {
 
 /// Salience: compute and display salience scores for the most/least salient entries.
 async fn compact_salience(data_dir: &Path, options: &CompactOptions) -> Result<()> {
-    let store = LanceStore::open_metadata(data_dir).await?;
+    let store = LanceStore::open_metadata(data_dir, false).await?;
 
     // Get hot chunks (most accessed) as a proxy for "all interesting entries"
     let hot = store.get_hot_chunks(options.limit * 2).await?;
@@ -866,18 +1147,26 @@ async fn compact_salience(data_dir: &Path, options: &CompactOptions) -> Result<(
     let weights = crate::salience::SalienceWeights::default();
     let top = crate::salience::top_salient(&hot, &weights, options.limit);
 
-    println!("Salience report (top {}):", top.len());
-    println!("{}", "=".repeat(60));
+    println!(
+        "{}",
+        format!("Salience report (top {}):", top.len())
+            .if_supports_color(Stream::Stdout, |s| s.bold())
+    );
+    println!(
+        "{}",
+        "=".repeat(60)
+            .if_supports_color(Stream::Stdout, |s| s.dimmed())
+    );
     for (idx, score) in &top {
         let chunk = &hot[*idx];
         println!(
-            "  {} [{:.3}] inter={:.2} persp={:.2} rev={:.2}  {}",
-            short_id(&chunk.id),
-            score.composite,
+            "  {} [{}] inter={:.2} persp={:.2} rev={:.2}  {}",
+            short_id(&chunk.id).if_supports_color(Stream::Stdout, |s| s.cyan()),
+            format!("{:.3}", score.composite).if_supports_color(Stream::Stdout, |s| s.green()),
             score.interaction,
             score.perspective,
             score.revision,
-            preview(&chunk.content, 60)
+            preview(&chunk.content, 60).if_supports_color(Stream::Stdout, |s| s.dimmed())
         );
     }
 
@@ -886,7 +1175,7 @@ async fn compact_salience(data_dir: &Path, options: &CompactOptions) -> Result<(
 
 /// Archive candidates: entries with low salience that could be archived.
 async fn compact_archive_candidates(data_dir: &Path, options: &CompactOptions) -> Result<()> {
-    let store = LanceStore::open_metadata(data_dir).await?;
+    let store = LanceStore::open_metadata(data_dir, false).await?;
     let aging_config = crate::aging::AgingConfig::load(data_dir);
 
     // Get stale chunks as the candidate pool
@@ -922,19 +1211,27 @@ async fn compact_archive_candidates(data_dir: &Path, options: &CompactOptions) -
     }
 
     println!(
-        "Archive candidates ({}, threshold {:.2}):",
-        candidates.len(),
-        options.archive_threshold
+        "{}",
+        format!(
+            "Archive candidates ({}, threshold {:.2}):",
+            candidates.len(),
+            options.archive_threshold
+        )
+        .if_supports_color(Stream::Stdout, |s| s.bold())
     );
-    println!("{}", "=".repeat(60));
+    println!(
+        "{}",
+        "=".repeat(60)
+            .if_supports_color(Stream::Stdout, |s| s.dimmed())
+    );
     for chunk in &candidates {
         let score = crate::salience::compute(chunk, &weights);
         println!(
-            "  {} [salience={:.3}, vis={}]  {}",
-            short_id(&chunk.id),
-            score.composite,
-            chunk.visibility,
-            preview(&chunk.content, 60)
+            "  {} [salience={}, vis={}]  {}",
+            short_id(&chunk.id).if_supports_color(Stream::Stdout, |s| s.cyan()),
+            format!("{:.3}", score.composite).if_supports_color(Stream::Stdout, |s| s.red()),
+            vis_color(&chunk.visibility),
+            preview(&chunk.content, 60).if_supports_color(Stream::Stdout, |s| s.dimmed())
         );
     }
     println!("\nUse `veclayer archive <id>...` to archive selected entries.");
@@ -946,70 +1243,10 @@ async fn compact_archive_candidates(data_dir: &Path, options: &CompactOptions) -
 
 /// Generate a comprehensive reflection/identity report.
 pub async fn reflect(data_dir: &Path) -> Result<()> {
-    let store = LanceStore::open_metadata(data_dir).await?;
+    let store = LanceStore::open_metadata(data_dir, false).await?;
     let snapshot = crate::identity::compute_identity(&store, data_dir).await?;
     let priming = crate::identity::generate_priming(&snapshot);
     println!("{}", priming);
-    Ok(())
-}
-
-// --- Identity command ---
-
-/// Show a compact identity summary.
-pub async fn identity(data_dir: &Path) -> Result<()> {
-    let store = LanceStore::open_metadata(data_dir).await?;
-    let snapshot = crate::identity::compute_identity(&store, data_dir).await?;
-
-    println!("VecLayer Identity");
-    println!("{}", "=".repeat(40));
-
-    // Perspective coverage
-    if snapshot.centroids.is_empty() {
-        println!("\nNo perspective data yet. Add entries with --perspective flags.");
-    } else {
-        println!("\nPerspectives:");
-        for c in &snapshot.centroids {
-            let bar_len = (c.avg_salience * 20.0).round() as usize;
-            let bar = "#".repeat(bar_len.min(20));
-            println!(
-                "  {:12} {:>3} entries  salience {:.2}  {}",
-                c.perspective, c.entry_count, c.avg_salience, bar
-            );
-        }
-    }
-
-    // Core knowledge
-    if !snapshot.core_entries.is_empty() {
-        println!("\nCore Knowledge (top {}):", snapshot.core_entries.len());
-        for entry in &snapshot.core_entries {
-            let heading = entry.heading.as_deref().unwrap_or("(untitled)");
-            println!(
-                "  {} [{:.2}] {}",
-                short_id(&entry.id),
-                entry.salience,
-                heading
-            );
-        }
-    }
-
-    // Open threads
-    if !snapshot.open_threads.is_empty() {
-        println!("\nOpen Threads ({}):", snapshot.open_threads.len());
-        for thread in &snapshot.open_threads {
-            let heading = thread.heading.as_deref().unwrap_or("(untitled)");
-            println!("  {} {}: {}", short_id(&thread.id), heading, thread.reason);
-        }
-    }
-
-    // Recent learnings
-    if !snapshot.recent_learnings.is_empty() {
-        println!("\nRecent Learnings:");
-        for learning in &snapshot.recent_learnings {
-            let heading = learning.heading.as_deref().unwrap_or("(untitled)");
-            println!("  {} {}", short_id(&learning.id), heading);
-        }
-    }
-
     Ok(())
 }
 
@@ -1083,7 +1320,7 @@ pub async fn think(data_dir: &Path) -> Result<()> {
 
 /// Quick orientation: "Who am I, what's on my mind?"
 pub async fn orientation(data_dir: &Path) -> Result<()> {
-    let store = LanceStore::open_metadata(data_dir).await?;
+    let store = LanceStore::open_metadata(data_dir, false).await?;
 
     let store_stats = store.stats().await?;
     if store_stats.total_chunks == 0 {
@@ -1097,8 +1334,11 @@ pub async fn orientation(data_dir: &Path) -> Result<()> {
     let snapshot = crate::identity::compute_identity(&store, data_dir).await?;
 
     println!(
-        "VecLayer — {} entries from {} sources",
-        store_stats.total_chunks,
+        "{} {} entries from {} sources",
+        "VecLayer".if_supports_color(Stream::Stdout, |s| s.bold()),
+        store_stats
+            .total_chunks
+            .if_supports_color(Stream::Stdout, |s| s.bold()),
         store_stats.source_files.len()
     );
 
@@ -1107,42 +1347,240 @@ pub async fn orientation(data_dir: &Path) -> Result<()> {
         let persp_summary: Vec<String> = snapshot
             .centroids
             .iter()
-            .map(|c| format!("{} ({})", c.perspective, c.entry_count))
+            .map(|c| {
+                format!(
+                    "{} ({})",
+                    c.perspective
+                        .if_supports_color(Stream::Stdout, |s| s.magenta()),
+                    c.entry_count
+                )
+            })
             .collect();
-        println!("Perspectives: {}", persp_summary.join(", "));
+        println!(
+            "{} {}",
+            "Perspectives:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+            persp_summary.join(", ")
+        );
     }
 
     // Top 5 core
     if !snapshot.core_entries.is_empty() {
-        println!("\nMost important:");
+        println!(
+            "\n{}",
+            "Most important:".if_supports_color(Stream::Stdout, |s| s.bold())
+        );
         for entry in snapshot.core_entries.iter().take(5) {
             let heading = entry.heading.as_deref().unwrap_or("(untitled)");
-            println!("  {} {}", short_id(&entry.id), heading);
+            println!(
+                "  {} {}",
+                short_id(&entry.id).if_supports_color(Stream::Stdout, |s| s.cyan()),
+                heading
+            );
         }
     }
 
     // Open threads (brief)
     if !snapshot.open_threads.is_empty() {
         println!(
-            "\n{} open thread(s) need attention. Run `veclayer reflect` for details.",
-            snapshot.open_threads.len()
+            "\n{} Run `veclayer reflect` for details.",
+            format!(
+                "{} open thread(s) need attention.",
+                snapshot.open_threads.len()
+            )
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
         );
     }
 
     // Hints
-    println!("\nTry: search, reflect, compact salience, id");
+    println!("\nTry: search, reflect, think, reflect salience");
 
+    Ok(())
+}
+
+// --- Browse command (#29) ---
+
+/// Print one entry line: number + heading, compact metadata, content preview.
+fn print_entry_line(index: usize, chunk: &crate::HierarchicalChunk) {
+    let heading = chunk
+        .heading
+        .as_deref()
+        .unwrap_or_else(|| chunk.content.lines().next().unwrap_or("(untitled)"));
+    println!(
+        "{}",
+        format!("{}. {}", index + 1, heading).if_supports_color(Stream::Stdout, |s| s.bold())
+    );
+
+    let mut meta = vec![short_id(&chunk.id)
+        .if_supports_color(Stream::Stdout, |s| s.cyan())
+        .to_string()];
+    if chunk.entry_type != EntryType::Raw {
+        meta.push(
+            chunk
+                .entry_type
+                .to_string()
+                .if_supports_color(Stream::Stdout, |s| s.yellow())
+                .to_string(),
+        );
+    }
+    if !chunk.perspectives.is_empty() {
+        meta.push(
+            chunk
+                .perspectives
+                .join(", ")
+                .if_supports_color(Stream::Stdout, |s| s.magenta())
+                .to_string(),
+        );
+    }
+    if chunk.visibility != "normal" {
+        meta.push(vis_color(&chunk.visibility));
+    }
+    println!("   {}", meta.join(" | "));
+    println!(
+        "   {}",
+        preview(&chunk.content, 200).if_supports_color(Stream::Stdout, |s| s.dimmed())
+    );
+}
+
+/// Browse entries without vector search (list by perspective/recency).
+pub async fn browse(data_dir: &Path, options: &SearchOptions) -> Result<()> {
+    let since_epoch = options
+        .since
+        .as_deref()
+        .and_then(crate::resolve::parse_temporal);
+    let until_epoch = options
+        .until
+        .as_deref()
+        .and_then(crate::resolve::parse_temporal);
+
+    let store = LanceStore::open_metadata(data_dir, false).await?;
+    let entries = store
+        .list_entries(
+            options.perspective.as_deref(),
+            since_epoch,
+            until_epoch,
+            options.top_k,
+        )
+        .await?;
+
+    if entries.is_empty() {
+        println!("No entries found.");
+        return Ok(());
+    }
+
+    for (i, chunk) in entries.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        print_entry_line(i, chunk);
+    }
+
+    println!(
+        "\n{} `veclayer focus <id>` to drill in.",
+        format!("{} entry(ies).", entries.len()).if_supports_color(Stream::Stdout, |s| s.bold())
+    );
+    Ok(())
+}
+
+// --- Think subcommands (CLI parity with MCP) ---
+
+/// Set an entry's visibility and print a labeled confirmation.
+async fn set_visibility(data_dir: &Path, id: &str, visibility: &str, label: &str) -> Result<()> {
+    let store = LanceStore::open_metadata(data_dir, false).await?;
+    let store = std::sync::Arc::new(store);
+    let chunk_id = crate::resolve::resolve_id(&store, id).await?;
+    store.update_visibility(&chunk_id, visibility).await?;
+    println!(
+        "{} {} to visibility '{}'",
+        label,
+        short_id(&chunk_id),
+        visibility
+    );
+    Ok(())
+}
+
+/// Promote an entry's visibility (CLI for MCP think(promote)).
+pub async fn think_promote(data_dir: &Path, id: &str, visibility: &str) -> Result<()> {
+    set_visibility(data_dir, id, visibility, "Promoted").await
+}
+
+/// Demote an entry's visibility (CLI for MCP think(demote)).
+pub async fn think_demote(data_dir: &Path, id: &str, visibility: &str) -> Result<()> {
+    set_visibility(data_dir, id, visibility, "Demoted").await
+}
+
+/// Add a relation between two entries (CLI for MCP think(relate)).
+pub async fn think_relate(data_dir: &Path, source: &str, target: &str, kind: &str) -> Result<()> {
+    let store = LanceStore::open_metadata(data_dir, false).await?;
+    let store = std::sync::Arc::new(store);
+    let source_id = crate::resolve::resolve_id(&store, source).await?;
+    let target_id = crate::resolve::resolve_id(&store, target).await?;
+
+    let relation = crate::ChunkRelation::new(kind, &target_id);
+    store.add_relation(&source_id, relation).await?;
+
+    // For bidirectional relations, add the reverse
+    if kind == "related_to" {
+        let backward = crate::ChunkRelation::new("related_to", &source_id);
+        store.add_relation(&target_id, backward).await?;
+    }
+
+    println!(
+        "Added relation '{}' from {} to {}",
+        kind,
+        short_id(&source_id),
+        short_id(&target_id)
+    );
+    Ok(())
+}
+
+/// Apply aging rules (CLI for MCP think(apply_aging)).
+pub async fn think_aging_apply(data_dir: &Path) -> Result<()> {
+    let store = LanceStore::open_metadata(data_dir, false).await?;
+    let config = crate::aging::AgingConfig::load(data_dir);
+    let result = crate::aging::apply_aging(&store, &config).await?;
+
+    if result.degraded_count == 0 {
+        println!("No entries needed aging. All knowledge is fresh.");
+    } else {
+        println!(
+            "Aged {} entries (degraded to '{}'):",
+            result.degraded_count, config.degrade_to
+        );
+        for id in &result.degraded_ids {
+            println!("  {}", short_id(id));
+        }
+    }
+    Ok(())
+}
+
+/// Configure aging parameters (CLI for MCP think(configure_aging)).
+pub async fn think_aging_configure(
+    data_dir: &Path,
+    days: Option<u32>,
+    to: Option<&str>,
+) -> Result<()> {
+    let mut config = crate::aging::AgingConfig::load(data_dir);
+    if let Some(days) = days {
+        config.degrade_after_days = days;
+    }
+    if let Some(to) = to {
+        config.degrade_to = to.to_string();
+    }
+    config.save(data_dir)?;
+    println!(
+        "Aging configured: degrade {} -> '{}' after {} days without access",
+        config.degrade_from.join(", "),
+        config.degrade_to,
+        config.degrade_after_days
+    );
     Ok(())
 }
 
 /// Resolve a potentially short ID to a full entry.
 ///
-/// Tries exact match first, then falls back to prefix scan (like git short hashes).
+/// Delegates to `resolve::resolve_entry`.
 async fn resolve_entry(store: &LanceStore, id: &str) -> Result<crate::HierarchicalChunk> {
-    store
-        .get_by_id_prefix(id)
-        .await?
-        .ok_or_else(|| crate::Error::not_found(format!("Entry '{}' not found", id)))
+    crate::resolve::resolve_entry(store, id).await
 }
 
 /// Collect files from a path, optionally recursively.
@@ -1196,6 +1634,12 @@ mod tests {
         assert!(opts.summarize);
         assert_eq!(opts.model, "llama3.2");
         assert_eq!(opts.entry_type, "raw");
+        assert!(opts.parent_id.is_none());
+        assert!(opts.heading.is_none());
+        assert!(opts.related_to.is_none());
+        assert!(opts.derived_from.is_none());
+        assert!(opts.impression_hint.is_none());
+        assert!((opts.impression_strength - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1204,6 +1648,8 @@ mod tests {
         assert_eq!(opts.top_k, 5);
         assert!(!opts.show_path);
         assert!(opts.subtree.is_none());
+        assert!(opts.since.is_none());
+        assert!(opts.until.is_none());
     }
 
     #[test]
@@ -1340,5 +1786,224 @@ mod tests {
         assert!(result.is_empty());
 
         Ok(())
+    }
+
+    // --- Test infrastructure ---
+
+    use crate::test_helpers::make_test_chunk;
+
+    async fn seed_store(dir: &Path) -> LanceStore {
+        let store = LanceStore::open(dir, 384, false).await.unwrap();
+        store
+            .insert_chunks(vec![
+                make_test_chunk("aaa111", "First entry about architecture"),
+                make_test_chunk("bbb222", "Second entry about testing"),
+            ])
+            .await
+            .unwrap();
+        store
+    }
+
+    // --- think_promote tests ---
+
+    #[tokio::test]
+    async fn test_think_promote_changes_visibility() -> Result<()> {
+        let dir = TempDir::new()?;
+        seed_store(dir.path()).await;
+
+        think_promote(dir.path(), "aaa111", "always").await?;
+
+        let store = LanceStore::open_metadata(dir.path(), false).await?;
+        let entry = store.get_by_id("aaa111").await?.unwrap();
+        assert_eq!(entry.visibility, "always");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_think_promote_resolves_prefix() -> Result<()> {
+        let dir = TempDir::new()?;
+        seed_store(dir.path()).await;
+
+        think_promote(dir.path(), "aaa", "always").await?;
+
+        let store = LanceStore::open_metadata(dir.path(), false).await?;
+        let entry = store.get_by_id("aaa111").await?.unwrap();
+        assert_eq!(entry.visibility, "always");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_think_promote_not_found() {
+        let dir = TempDir::new().unwrap();
+        seed_store(dir.path()).await;
+
+        let result = think_promote(dir.path(), "zzz999", "always").await;
+        assert!(result.is_err());
+    }
+
+    // --- think_demote tests ---
+
+    #[tokio::test]
+    async fn test_think_demote_changes_visibility() -> Result<()> {
+        let dir = TempDir::new()?;
+        seed_store(dir.path()).await;
+
+        think_demote(dir.path(), "aaa111", "deep_only").await?;
+
+        let store = LanceStore::open_metadata(dir.path(), false).await?;
+        let entry = store.get_by_id("aaa111").await?.unwrap();
+        assert_eq!(entry.visibility, "deep_only");
+        Ok(())
+    }
+
+    // --- think_relate tests ---
+
+    #[tokio::test]
+    async fn test_think_relate_adds_forward_relation() -> Result<()> {
+        let dir = TempDir::new()?;
+        seed_store(dir.path()).await;
+
+        think_relate(dir.path(), "aaa111", "bbb222", "derived_from").await?;
+
+        let store = LanceStore::open_metadata(dir.path(), false).await?;
+        let source = store.get_by_id("aaa111").await?.unwrap();
+        assert_eq!(source.relations.len(), 1);
+        assert_eq!(source.relations[0].kind, "derived_from");
+        assert_eq!(source.relations[0].target_id, "bbb222");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_think_relate_bidirectional_for_related_to() -> Result<()> {
+        let dir = TempDir::new()?;
+        seed_store(dir.path()).await;
+
+        think_relate(dir.path(), "aaa111", "bbb222", "related_to").await?;
+
+        let store = LanceStore::open_metadata(dir.path(), false).await?;
+        let source = store.get_by_id("aaa111").await?.unwrap();
+        assert_eq!(source.relations.len(), 1);
+        assert_eq!(source.relations[0].kind, "related_to");
+        assert_eq!(source.relations[0].target_id, "bbb222");
+
+        // Backward link
+        let target = store.get_by_id("bbb222").await?.unwrap();
+        assert_eq!(target.relations.len(), 1);
+        assert_eq!(target.relations[0].kind, "related_to");
+        assert_eq!(target.relations[0].target_id, "aaa111");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_think_relate_no_backward_for_derived_from() -> Result<()> {
+        let dir = TempDir::new()?;
+        seed_store(dir.path()).await;
+
+        think_relate(dir.path(), "aaa111", "bbb222", "derived_from").await?;
+
+        let store = LanceStore::open_metadata(dir.path(), false).await?;
+        let target = store.get_by_id("bbb222").await?.unwrap();
+        assert!(
+            target.relations.is_empty(),
+            "non-related_to should not add backward link"
+        );
+        Ok(())
+    }
+
+    // --- think_aging tests ---
+
+    #[tokio::test]
+    async fn test_think_aging_apply_empty_store() -> Result<()> {
+        let dir = TempDir::new()?;
+        // No seeding — empty store
+        LanceStore::open_metadata(dir.path(), false).await?;
+        think_aging_apply(dir.path()).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_think_aging_configure_saves() -> Result<()> {
+        let dir = TempDir::new()?;
+        std::fs::create_dir_all(dir.path())?;
+
+        think_aging_configure(dir.path(), Some(7), Some("archived")).await?;
+
+        let config = crate::aging::AgingConfig::load(dir.path());
+        assert_eq!(config.degrade_after_days, 7);
+        assert_eq!(config.degrade_to, "archived");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_think_aging_configure_partial_update() -> Result<()> {
+        let dir = TempDir::new()?;
+        std::fs::create_dir_all(dir.path())?;
+
+        // Set initial
+        think_aging_configure(dir.path(), Some(14), Some("deep_only")).await?;
+        // Update only days
+        think_aging_configure(dir.path(), Some(3), None).await?;
+
+        let config = crate::aging::AgingConfig::load(dir.path());
+        assert_eq!(config.degrade_after_days, 3);
+        assert_eq!(config.degrade_to, "deep_only"); // unchanged
+        Ok(())
+    }
+
+    // --- browse tests ---
+
+    #[tokio::test]
+    async fn test_browse_empty_store() -> Result<()> {
+        let dir = TempDir::new()?;
+        LanceStore::open_metadata(dir.path(), false).await?;
+        browse(dir.path(), &SearchOptions::default()).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_browse_returns_entries() -> Result<()> {
+        let dir = TempDir::new()?;
+        seed_store(dir.path()).await;
+
+        // browse prints to stdout — verify it doesn't error
+        browse(dir.path(), &SearchOptions::default()).await?;
+        Ok(())
+    }
+
+    // --- preview tests ---
+
+    #[test]
+    fn test_preview_short_content() {
+        assert_eq!(preview("hello world", 50), "hello world");
+    }
+
+    #[test]
+    fn test_preview_truncates() {
+        assert_eq!(preview("hello world", 5), "hello...");
+    }
+
+    #[test]
+    fn test_preview_replaces_newlines() {
+        assert_eq!(preview("line1\nline2\nline3", 50), "line1 line2 line3");
+    }
+
+    #[test]
+    fn test_preview_multibyte_utf8() {
+        // "日本語" is 9 bytes (3 bytes per char); truncating at 5 should not panic
+        let result = preview("日本語テスト", 5);
+        assert!(result.ends_with("..."));
+        // Should cut at a valid char boundary (either 3 or 6 bytes, not 5)
+        assert!(result.len() <= 9); // at most 3 bytes + "..."
+    }
+
+    #[test]
+    fn test_preview_empty() {
+        assert_eq!(preview("", 10), "");
+    }
+
+    #[test]
+    fn test_preview_exact_boundary() {
+        assert_eq!(preview("abcde", 5), "abcde");
+        assert_eq!(preview("abcdef", 5), "abcde...");
     }
 }

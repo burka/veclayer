@@ -443,6 +443,7 @@ mod tests {
             }],
             open_threads: vec![],
             recent_learnings: vec![],
+            emergent_clusters: vec![],
         };
         let prompt = build_prompt("# Briefing\n", &snapshot);
         assert!(prompt.contains("Entry ID Reference"));

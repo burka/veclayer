@@ -53,6 +53,9 @@ salience scores, and suggested actions. With an action, executes curation:
 - `action: 'configure_aging'` — Set automatic degradation rules
 - `action: 'apply_aging'` — Execute aging rules now (respects salience protection)
 - `action: 'salience'` — See which entries are most/least important
+- `action: 'perspectives'` — List all available perspectives
+- `action: 'status'` — Show store statistics (entry count, source files, aging policy)
+- `action: 'history'` — Show an entry's relations and metadata (requires `id`)
 
 ### share — Here, this is for you. (Preview)
 Generates a scoped share-token payload describing what knowledge to share and with what \

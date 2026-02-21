@@ -2,6 +2,22 @@
 
 use std::sync::Arc;
 
+// Over-fetch when temporal filters are active, then filter client-side
+const TEMPORAL_PREFETCH_FACTOR: usize = 3;
+
+const THINK_ACTIONS: &[&str] = &[
+    "promote",
+    "demote",
+    "relate",
+    "configure_aging",
+    "apply_aging",
+    "salience",
+    "consolidate",
+    "perspectives",
+    "status",
+    "history",
+];
+
 use crate::aging::{self, AgingConfig};
 use crate::embedder::FastEmbedder;
 use crate::search::{HierarchicalSearch, SearchConfig};
@@ -20,15 +36,8 @@ struct StoreSingleInput {
     perspectives: Vec<String>,
     entry_type: Option<String>,
     relations: Vec<StoreRelation>,
-}
-
-/// Resolve a short or full entry ID to its canonical full ID using prefix matching.
-async fn resolve_id(store: &Arc<LanceStore>, id: &str) -> Result<String> {
-    store
-        .get_by_id_prefix(id)
-        .await?
-        .map(|chunk| chunk.id)
-        .ok_or_else(|| crate::Error::not_found(format!("Entry '{}' not found", id)))
+    impression_hint: Option<String>,
+    impression_strength: Option<f32>,
 }
 
 /// Store a single entry and return its chunk ID.
@@ -92,13 +101,15 @@ async fn store_single_entry(
         relations: vec![],
         access_profile: crate::AccessProfile::new(),
         expires_at: None,
+        impression_hint: input.impression_hint,
+        impression_strength: input.impression_strength.unwrap_or(1.0),
     };
 
     store.insert_chunks(vec![chunk]).await?;
 
     // Process relations atomically after insert
     for rel in &input.relations {
-        let target = resolve_id(store, &rel.target_id).await?;
+        let target = crate::resolve::resolve_id(store, &rel.target_id).await?;
         match rel.kind.as_str() {
             "supersedes" | "version_of" => {
                 let inverse = crate::ChunkRelation::new("superseded_by", &chunk_id);
@@ -140,7 +151,7 @@ pub async fn execute_recall(
         Some(ref query) if !query.is_empty() => {
             // Semantic search path
             let fetch_limit = if since_epoch.is_some() || until_epoch.is_some() {
-                input.limit * 3
+                input.limit * TEMPORAL_PREFETCH_FACTOR
             } else {
                 input.limit
             };
@@ -281,12 +292,15 @@ pub async fn execute_store(
                     perspectives: item.perspectives,
                     entry_type: item.entry_type,
                     relations: item.relations,
+                    impression_hint: item.impression_hint,
+                    impression_strength: item.impression_strength,
                 },
             )
             .await?;
-            ids.push(id);
+            ids.push(crate::short_id(&id).to_string());
         }
-        Ok(serde_json::json!(ids))
+        let msg = format!("Stored {} entries. IDs: {}", ids.len(), ids.join(", "));
+        Ok(serde_json::json!(msg))
     } else {
         // Single mode
         let id = store_single_entry(
@@ -301,10 +315,15 @@ pub async fn execute_store(
                 perspectives: input.perspectives,
                 entry_type: input.entry_type,
                 relations: input.relations,
+                impression_hint: input.impression_hint,
+                impression_strength: input.impression_strength,
             },
         )
         .await?;
-        Ok(serde_json::json!(id))
+        Ok(serde_json::json!(format!(
+            "Stored. ID: {}",
+            crate::short_id(&id)
+        )))
     }
 }
 
@@ -324,7 +343,7 @@ pub async fn execute_think(
                 .id
                 .as_deref()
                 .ok_or_else(|| crate::Error::config("think(promote) requires 'id'"))?;
-            let chunk_id = resolve_id(store, raw_id).await?;
+            let chunk_id = crate::resolve::resolve_id(store, raw_id).await?;
             let vis = input.visibility.as_deref().unwrap_or("always");
             store.update_visibility(&chunk_id, vis).await?;
             Ok(format!("Promoted `{}` to visibility '{}'", chunk_id, vis))
@@ -334,7 +353,7 @@ pub async fn execute_think(
                 .id
                 .as_deref()
                 .ok_or_else(|| crate::Error::config("think(demote) requires 'id'"))?;
-            let chunk_id = resolve_id(store, raw_id).await?;
+            let chunk_id = crate::resolve::resolve_id(store, raw_id).await?;
             let vis = input.visibility.as_deref().unwrap_or("deep_only");
             store.update_visibility(&chunk_id, vis).await?;
             Ok(format!("Demoted `{}` to visibility '{}'", chunk_id, vis))
@@ -349,10 +368,15 @@ pub async fn execute_think(
                 .as_deref()
                 .ok_or_else(|| crate::Error::config("think(relate) requires 'target_id'"))?;
             let kind = input.kind.as_deref().unwrap_or("related_to");
-            let source_id = resolve_id(store, raw_source).await?;
-            let target_id = resolve_id(store, raw_target).await?;
+            let source_id = crate::resolve::resolve_id(store, raw_source).await?;
+            let target_id = crate::resolve::resolve_id(store, raw_target).await?;
             let relation = crate::ChunkRelation::new(kind, &target_id);
             store.add_relation(&source_id, relation).await?;
+            // Bidirectional: related_to gets a backward link (mirrors CLI think_relate)
+            if kind == "related_to" {
+                let backward = crate::ChunkRelation::new("related_to", &source_id);
+                store.add_relation(&target_id, backward).await?;
+            }
             Ok(format!(
                 "Added relation '{}' from `{}` to `{}`",
                 kind, source_id, target_id
@@ -398,8 +422,7 @@ pub async fn execute_think(
             let embedder = crate::embedder::FastEmbedder::new()
                 .map_err(|e| crate::Error::llm(format!("Failed to init embedder: {}", e)))?;
 
-            let result =
-                crate::think::execute(store.as_ref(), &embedder, &llm, data_dir).await?;
+            let result = crate::think::execute(store.as_ref(), &embedder, &llm, data_dir).await?;
 
             if result.entries_created.is_empty() {
                 return Ok("Nothing to consolidate. Memory is well-organized.".to_string());
@@ -421,9 +444,9 @@ pub async fn execute_think(
             Ok(report)
         }
         #[cfg(not(feature = "llm"))]
-        Some("consolidate") => {
-            Err(crate::Error::config("think(consolidate) requires the 'llm' feature"))
-        }
+        Some("consolidate") => Err(crate::Error::config(
+            "think(consolidate) requires the 'llm' feature",
+        )),
         Some("salience") => {
             let limit = input.hot_limit.unwrap_or(10);
             let hot = store.get_hot_chunks(limit * 2).await?;
@@ -438,14 +461,120 @@ pub async fn execute_think(
                 let heading = chunk.heading.as_deref().unwrap_or("(no heading)");
                 report.push_str(&format!(
                     "- **{}** [composite={:.3}, inter={:.2}, persp={:.2}, rev={:.2}] `{}`\n",
-                    heading, score.composite, score.interaction, score.perspective, score.revision, chunk.id
+                    heading,
+                    score.composite,
+                    score.interaction,
+                    score.perspective,
+                    score.revision,
+                    chunk.id
                 ));
             }
             Ok(report)
         }
+        Some("perspectives") => {
+            let perspectives = crate::perspective::load(data_dir)?;
+            if perspectives.is_empty() {
+                return Ok("No perspectives defined.".to_string());
+            }
+            let mut report = String::from("## Perspectives\n\n");
+            for p in &perspectives {
+                let tag = if p.builtin { " [builtin]" } else { "" };
+                report.push_str(&format!("- **{}** — {}{}\n", p.id, p.hint, tag));
+            }
+            report.push_str(&format!("\n{} perspective(s) total.", perspectives.len()));
+            Ok(report)
+        }
+        Some("status") => {
+            let stats = store.stats().await?;
+            let mut report = String::from("## Store Status\n\n");
+            report.push_str(&format!("- **Total entries:** {}\n", stats.total_chunks));
+            report.push_str(&format!(
+                "- **Source files:** {}\n",
+                stats.source_files.len()
+            ));
+
+            if !stats.chunks_by_level.is_empty() {
+                report.push_str("\n### Entries by level\n\n");
+                for level in 1..=7 {
+                    if let Some(count) = stats.chunks_by_level.get(&level) {
+                        let level_name = if level <= 6 {
+                            format!("H{}", level)
+                        } else {
+                            "Content".to_string()
+                        };
+                        report.push_str(&format!("- {}: {}\n", level_name, count));
+                    }
+                }
+            }
+
+            if !stats.source_files.is_empty() {
+                report.push_str("\n### Source files\n\n");
+                for file in &stats.source_files {
+                    report.push_str(&format!("- {}\n", file));
+                }
+            }
+
+            let aging_config = AgingConfig::load(data_dir);
+            report.push_str(&format!(
+                "\n### Aging policy\n\n- Degrade {} → '{}' after {} days\n",
+                aging_config.degrade_from.join("/"),
+                aging_config.degrade_to,
+                aging_config.degrade_after_days,
+            ));
+
+            Ok(report)
+        }
+        Some("history") => {
+            let raw_id = input
+                .id
+                .as_deref()
+                .ok_or_else(|| crate::Error::config("think(history) requires 'id'"))?;
+            let chunk_id = crate::resolve::resolve_id(store, raw_id).await?;
+            let chunk = store.get_by_id(&chunk_id).await?.ok_or_else(|| {
+                crate::Error::not_found(format!("Entry '{}' not found", chunk_id))
+            })?;
+
+            let heading = chunk.heading.as_deref().unwrap_or("(no heading)");
+            let mut report = format!("## Entry History: {} `{}`\n\n", heading, chunk.id);
+            report.push_str(&format!("- **Type:** {}\n", chunk.entry_type));
+            report.push_str(&format!("- **Visibility:** {}\n", chunk.visibility));
+            report.push_str(&format!("- **Source:** {}\n", chunk.source_file));
+            if !chunk.perspectives.is_empty() {
+                report.push_str(&format!(
+                    "- **Perspectives:** {}\n",
+                    chunk.perspectives.join(", ")
+                ));
+            }
+
+            if chunk.relations.is_empty() {
+                report.push_str("\nNo relations.\n");
+            } else {
+                report.push_str(&format!("\n### Relations ({})\n\n", chunk.relations.len()));
+                for rel in &chunk.relations {
+                    report.push_str(&format!(
+                        "- {} → `{}`\n",
+                        rel.kind,
+                        crate::chunk::short_id(&rel.target_id)
+                    ));
+                }
+            }
+
+            report.push_str(&format!(
+                "\n### Content\n\n{}\n",
+                if chunk.content.len() > 500 {
+                    let end = chunk.content.floor_char_boundary(500);
+                    format!("{}...", &chunk.content[..end])
+                } else {
+                    chunk.content.clone()
+                }
+            ));
+
+            Ok(report)
+        }
         Some(unknown) => Err(crate::Error::config(format!(
-            "Unknown think action: '{}'. Available: promote, demote, relate, configure_aging, apply_aging, salience, consolidate",
-            unknown
+            "Unknown think action: '{}'. Available: {}",
+            unknown,
+            THINK_ACTIONS.join(", ")
         ))),
     }
 }
@@ -557,101 +686,24 @@ pub fn build_share_token(input: ShareInput) -> serde_json::Value {
     })
 }
 
-/// Parse a temporal string (ISO 8601 date "2026-02-20" or epoch seconds "1740000000") to epoch seconds.
+/// Parse a temporal string — delegates to `resolve::parse_temporal`.
 fn parse_temporal(s: &str) -> Option<i64> {
-    // Try epoch seconds first
-    if let Ok(epoch) = s.parse::<i64>() {
-        return Some(epoch);
-    }
-    // Try ISO 8601 date (YYYY-MM-DD)
-    if s.len() == 10 && s.as_bytes()[4] == b'-' && s.as_bytes()[7] == b'-' {
-        let year: i32 = s[0..4].parse().ok()?;
-        let month: u32 = s[5..7].parse().ok()?;
-        let day: u32 = s[8..10].parse().ok()?;
-        let days = days_since_epoch(year, month, day)?;
-        return Some(days * 86400);
-    }
-    None
-}
-
-/// Convert a calendar date to days since Unix epoch (1970-01-01).
-/// Uses the algorithm from http://howardhinnant.github.io/date_algorithms.html
-fn days_since_epoch(year: i32, month: u32, day: u32) -> Option<i64> {
-    let y = if month <= 2 { year - 1 } else { year } as i64;
-    let m = if month <= 2 { month + 9 } else { month - 3 } as i64;
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * m + 2) / 5 + day as i64 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some(era * 146097 + doe - 719468)
+    crate::resolve::parse_temporal(s)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_test_chunk(id: &str, content: &str) -> crate::HierarchicalChunk {
-        crate::HierarchicalChunk {
-            id: id.to_string(),
-            content: content.to_string(),
-            embedding: Some(vec![0.0f32; 384]),
-            level: crate::chunk::ChunkLevel(1),
-            parent_id: None,
-            path: "test".to_string(),
-            source_file: "test".to_string(),
-            heading: None,
-            start_offset: 0,
-            end_offset: 0,
-            cluster_memberships: vec![],
-            entry_type: crate::chunk::EntryType::Raw,
-            summarizes: vec![],
-            perspectives: vec![],
-            visibility: "normal".to_string(),
-            relations: vec![],
-            access_profile: crate::AccessProfile::new(),
-            expires_at: None,
-        }
-    }
+    // resolve_id and parse_temporal tests are in resolve::tests.
+    // These tests cover tool-specific logic that remains in this module.
 
-    async fn make_test_store() -> (Arc<crate::store::LanceStore>, tempfile::TempDir) {
+    use crate::test_helpers::make_test_chunk;
+
+    async fn make_test_store_with_dir() -> (Arc<LanceStore>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let store = crate::store::LanceStore::open(dir.path(), 384).await.unwrap();
+        let store = LanceStore::open(dir.path(), 384, false).await.unwrap();
         (Arc::new(store), dir)
-    }
-
-    #[tokio::test]
-    async fn test_resolve_id_exact_match() {
-        let (store, _dir) = make_test_store().await;
-        store
-            .insert_chunks(vec![make_test_chunk("abcdef1234567890", "content")])
-            .await
-            .unwrap();
-
-        let result = resolve_id(&store, "abcdef1234567890").await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "abcdef1234567890");
-    }
-
-    #[tokio::test]
-    async fn test_resolve_id_prefix_match() {
-        let (store, _dir) = make_test_store().await;
-        store
-            .insert_chunks(vec![make_test_chunk("abcdef1234567890", "content")])
-            .await
-            .unwrap();
-
-        let result = resolve_id(&store, "abcdef1").await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "abcdef1234567890");
-    }
-
-    #[tokio::test]
-    async fn test_resolve_id_not_found() {
-        let (store, _dir) = make_test_store().await;
-
-        let result = resolve_id(&store, "nonexistent").await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("nonexistent"));
     }
 
     #[test]
@@ -691,32 +743,156 @@ mod tests {
         assert_eq!(relevance_tier(0.0), "tangential");
     }
 
-    #[test]
-    fn test_parse_temporal_epoch() {
-        assert_eq!(parse_temporal("1740000000"), Some(1740000000));
-        assert_eq!(parse_temporal("0"), Some(0));
+    #[tokio::test]
+    async fn test_think_perspectives_action() {
+        let (store, dir) = make_test_store_with_dir().await;
+        // Initialize perspectives so there's something to list
+        crate::perspective::init(dir.path()).unwrap();
+
+        let input = ThinkInput {
+            action: Some("perspectives".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+        };
+        let result = execute_think(&store, dir.path(), input).await.unwrap();
+        assert!(result.contains("Perspectives"));
+        // Should contain the built-in perspectives
+        assert!(result.contains("decisions"));
+        assert!(result.contains("knowledge"));
     }
 
-    #[test]
-    fn test_parse_temporal_iso_date() {
-        // 1970-01-01 = epoch 0
-        assert_eq!(parse_temporal("1970-01-01"), Some(0));
-        // 2026-02-20 should produce a reasonable epoch
-        let result = parse_temporal("2026-02-20");
-        assert!(result.is_some());
-        let epoch = result.unwrap();
-        // Should be around 2026 (> 2025-01-01 = ~1735689600)
-        assert!(epoch > 1_735_689_600);
+    #[tokio::test]
+    async fn test_think_status_action() {
+        let (store, dir) = make_test_store_with_dir().await;
+        // Insert a test chunk so stats are non-zero
+        store
+            .insert_chunks(vec![make_test_chunk("abc123", "test content")])
+            .await
+            .unwrap();
+
+        let input = ThinkInput {
+            action: Some("status".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+        };
+        let result = execute_think(&store, dir.path(), input).await.unwrap();
+        assert!(result.contains("Store Status"));
+        assert!(result.contains("Total entries"));
+        assert!(result.contains("1")); // 1 entry
     }
 
-    #[test]
-    fn test_parse_temporal_invalid() {
-        assert_eq!(parse_temporal("not-a-date"), None);
-        // Malformed date formats (not YYYY-MM-DD and not a valid integer) return None
-        assert_eq!(parse_temporal("2026/02/20"), None);
-        assert_eq!(parse_temporal("Feb 20 2026"), None);
-        assert_eq!(parse_temporal(""), None);
-        // "20260220" is a valid integer epoch, not invalid
-        assert!(parse_temporal("20260220").is_some());
+    #[tokio::test]
+    async fn test_think_history_action() {
+        let (store, dir) = make_test_store_with_dir().await;
+        let mut chunk = make_test_chunk("abcdef1234567890", "historical content");
+        chunk
+            .relations
+            .push(crate::ChunkRelation::new("supersedes", "older_entry"));
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let input = ThinkInput {
+            action: Some("history".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: Some("abcdef1".to_string()), // short ID
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+        };
+        let result = execute_think(&store, dir.path(), input).await.unwrap();
+        assert!(result.contains("Entry History"));
+        assert!(result.contains("Relations"));
+        assert!(result.contains("supersedes"));
+        assert!(result.contains("historical content"));
+    }
+
+    #[tokio::test]
+    async fn test_think_history_requires_id() {
+        let (store, dir) = make_test_store_with_dir().await;
+
+        let input = ThinkInput {
+            action: Some("history".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None, // Missing required ID
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+        };
+        let result = execute_think(&store, dir.path(), input).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("requires 'id'"));
+    }
+
+    #[tokio::test]
+    async fn test_think_status_empty_store() {
+        let (store, dir) = make_test_store_with_dir().await;
+
+        let input = ThinkInput {
+            action: Some("status".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+        };
+        let result = execute_think(&store, dir.path(), input).await.unwrap();
+        assert!(result.contains("Total entries"));
+        assert!(result.contains("0"));
+    }
+
+    #[tokio::test]
+    async fn test_think_unknown_action() {
+        let (store, dir) = make_test_store_with_dir().await;
+
+        let input = ThinkInput {
+            action: Some("nonexistent".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+        };
+        let result = execute_think(&store, dir.path(), input).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Unknown think action"));
+        assert!(err.contains("perspectives"));
+        assert!(err.contains("status"));
+        assert!(err.contains("history"));
     }
 }

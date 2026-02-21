@@ -27,7 +27,7 @@ struct AppState {
 pub async fn run_http(config: Config) -> Result<()> {
     let embedder = FastEmbedder::new()?;
     let dimension = embedder.dimension();
-    let store = LanceStore::open(&config.data_dir, dimension).await?;
+    let store = LanceStore::open(&config.data_dir, dimension, config.read_only).await?;
 
     let state = AppState {
         store: Arc::new(store),
@@ -48,6 +48,7 @@ pub async fn run_http(config: Config) -> Result<()> {
         .route("/api/think", post(api_think))
         .route("/api/share", post(api_share))
         .route("/api/stats", get(api_stats))
+        .route("/api/identity", get(api_identity))
         .layer(cors)
         .with_state(state);
 
@@ -132,6 +133,34 @@ async fn api_stats(State(state): State<AppState>) -> Json<ApiResponse<serde_json
             "chunks_by_level": stats.chunks_by_level,
             "source_files": stats.source_files,
         }))),
+        Err(e) => Json(ApiResponse::Error {
+            error: e.to_string(),
+        }),
+    }
+}
+
+/// Identity endpoint — mirrors stdio auto-priming on MCP initialize.
+async fn api_identity(State(state): State<AppState>) -> Json<ApiResponse<serde_json::Value>> {
+    match crate::identity::compute_identity(state.store.as_ref(), &state.data_dir).await {
+        Ok(snapshot) => {
+            let priming = crate::identity::generate_priming(&snapshot);
+            let instructions = if priming.len() > 50 {
+                format!("{}\n\n---\n\n{}", super::MCP_INSTRUCTIONS, priming)
+            } else {
+                super::MCP_INSTRUCTIONS.to_string()
+            };
+            Json(ApiResponse::Success(serde_json::json!({
+                "instructions": instructions,
+                "core_entries": snapshot.core_entries.len(),
+                "open_threads": snapshot.open_threads.len(),
+                "perspectives": snapshot.centroids.iter()
+                    .map(|c| serde_json::json!({
+                        "perspective": c.perspective,
+                        "entry_count": c.entry_count,
+                    }))
+                    .collect::<Vec<_>>(),
+            })))
+        }
         Err(e) => Json(ApiResponse::Error {
             error: e.to_string(),
         }),
