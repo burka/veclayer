@@ -20,7 +20,7 @@ pub async fn run_stdio(config: Config) -> Result<()> {
 
     let embedder = FastEmbedder::new()?;
     let dimension = embedder.dimension();
-    let store = LanceStore::open(&config.data_dir, dimension).await?;
+    let store = LanceStore::open(&config.data_dir, dimension, config.read_only).await?;
     let store = Arc::new(store);
     let embedder = Arc::new(embedder);
 

@@ -98,7 +98,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_id_exact_match() {
         let dir = tempfile::tempdir().unwrap();
-        let store = crate::store::LanceStore::open(dir.path(), 384)
+        let store = crate::store::LanceStore::open(dir.path(), 384, false)
             .await
             .unwrap();
         let store = Arc::new(store);
@@ -116,7 +116,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_id_prefix_match() {
         let dir = tempfile::tempdir().unwrap();
-        let store = crate::store::LanceStore::open(dir.path(), 384)
+        let store = crate::store::LanceStore::open(dir.path(), 384, false)
             .await
             .unwrap();
         let store = Arc::new(store);
@@ -134,7 +134,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_id_not_found() {
         let dir = tempfile::tempdir().unwrap();
-        let store = crate::store::LanceStore::open(dir.path(), 384)
+        let store = crate::store::LanceStore::open(dir.path(), 384, false)
             .await
             .unwrap();
         let store = Arc::new(store);
@@ -147,7 +147,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_entry_returns_full_chunk() {
         let dir = tempfile::tempdir().unwrap();
-        let store = crate::store::LanceStore::open(dir.path(), 384)
+        let store = crate::store::LanceStore::open(dir.path(), 384, false)
             .await
             .unwrap();
 

@@ -384,7 +384,7 @@ Reference counting handles most cleanup.
 
     // Verify store has chunks and summaries
     let embedder = FastEmbedder::new().expect("Failed to create embedder");
-    let store = LanceStore::open(&data_dir, embedder.dimension())
+    let store = LanceStore::open(&data_dir, embedder.dimension(), false)
         .await
         .expect("Failed to open store");
 

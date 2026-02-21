@@ -29,7 +29,7 @@ const TEMPORAL_PREFETCH_FACTOR: usize = 3;
 async fn open_store(data_dir: &Path) -> Result<(FastEmbedder, LanceStore)> {
     let embedder = FastEmbedder::new()?;
     let dimension = embedder.dimension();
-    let store = LanceStore::open(data_dir, dimension).await?;
+    let store = LanceStore::open(data_dir, dimension, false).await?;
     Ok((embedder, store))
 }
 
@@ -892,7 +892,7 @@ pub async fn status(data_dir: &Path) -> Result<()> {
 
 /// Show statistics about the store (returns structured data).
 pub async fn stats(data_dir: &Path) -> Result<StatsResult> {
-    let store = LanceStore::open_metadata(data_dir).await?;
+    let store = LanceStore::open_metadata(data_dir, false).await?;
 
     let store_stats = store.stats().await?;
 
@@ -921,7 +921,7 @@ pub async fn print_sources(data_dir: &Path) -> Result<()> {
 
 /// List all indexed source files (returns data).
 pub async fn sources(data_dir: &Path) -> Result<Vec<String>> {
-    let store = LanceStore::open_metadata(data_dir).await?;
+    let store = LanceStore::open_metadata(data_dir, false).await?;
 
     let store_stats = store.stats().await?;
 
@@ -981,7 +981,7 @@ pub fn perspective_remove(data_dir: &Path, id: &str) -> Result<()> {
 
 /// Show version/relation history of an entry.
 pub async fn history(data_dir: &Path, id: &str) -> Result<()> {
-    let store = LanceStore::open_metadata(data_dir).await?;
+    let store = LanceStore::open_metadata(data_dir, false).await?;
 
     // Resolve short IDs by prefix search
     let chunk = resolve_entry(&store, id).await?;
@@ -1134,7 +1134,7 @@ async fn compact_rotate(data_dir: &Path) -> Result<()> {
 
 /// Salience: compute and display salience scores for the most/least salient entries.
 async fn compact_salience(data_dir: &Path, options: &CompactOptions) -> Result<()> {
-    let store = LanceStore::open_metadata(data_dir).await?;
+    let store = LanceStore::open_metadata(data_dir, false).await?;
 
     // Get hot chunks (most accessed) as a proxy for "all interesting entries"
     let hot = store.get_hot_chunks(options.limit * 2).await?;
@@ -1175,7 +1175,7 @@ async fn compact_salience(data_dir: &Path, options: &CompactOptions) -> Result<(
 
 /// Archive candidates: entries with low salience that could be archived.
 async fn compact_archive_candidates(data_dir: &Path, options: &CompactOptions) -> Result<()> {
-    let store = LanceStore::open_metadata(data_dir).await?;
+    let store = LanceStore::open_metadata(data_dir, false).await?;
     let aging_config = crate::aging::AgingConfig::load(data_dir);
 
     // Get stale chunks as the candidate pool
@@ -1243,7 +1243,7 @@ async fn compact_archive_candidates(data_dir: &Path, options: &CompactOptions) -
 
 /// Generate a comprehensive reflection/identity report.
 pub async fn reflect(data_dir: &Path) -> Result<()> {
-    let store = LanceStore::open_metadata(data_dir).await?;
+    let store = LanceStore::open_metadata(data_dir, false).await?;
     let snapshot = crate::identity::compute_identity(&store, data_dir).await?;
     let priming = crate::identity::generate_priming(&snapshot);
     println!("{}", priming);
@@ -1320,7 +1320,7 @@ pub async fn think(data_dir: &Path) -> Result<()> {
 
 /// Quick orientation: "Who am I, what's on my mind?"
 pub async fn orientation(data_dir: &Path) -> Result<()> {
-    let store = LanceStore::open_metadata(data_dir).await?;
+    let store = LanceStore::open_metadata(data_dir, false).await?;
 
     let store_stats = store.stats().await?;
     if store_stats.total_chunks == 0 {
@@ -1452,7 +1452,7 @@ pub async fn browse(data_dir: &Path, options: &SearchOptions) -> Result<()> {
         .as_deref()
         .and_then(crate::resolve::parse_temporal);
 
-    let store = LanceStore::open_metadata(data_dir).await?;
+    let store = LanceStore::open_metadata(data_dir, false).await?;
     let entries = store
         .list_entries(
             options.perspective.as_deref(),
@@ -1485,7 +1485,7 @@ pub async fn browse(data_dir: &Path, options: &SearchOptions) -> Result<()> {
 
 /// Set an entry's visibility and print a labeled confirmation.
 async fn set_visibility(data_dir: &Path, id: &str, visibility: &str, label: &str) -> Result<()> {
-    let store = LanceStore::open_metadata(data_dir).await?;
+    let store = LanceStore::open_metadata(data_dir, false).await?;
     let store = std::sync::Arc::new(store);
     let chunk_id = crate::resolve::resolve_id(&store, id).await?;
     store.update_visibility(&chunk_id, visibility).await?;
@@ -1510,7 +1510,7 @@ pub async fn think_demote(data_dir: &Path, id: &str, visibility: &str) -> Result
 
 /// Add a relation between two entries (CLI for MCP think(relate)).
 pub async fn think_relate(data_dir: &Path, source: &str, target: &str, kind: &str) -> Result<()> {
-    let store = LanceStore::open_metadata(data_dir).await?;
+    let store = LanceStore::open_metadata(data_dir, false).await?;
     let store = std::sync::Arc::new(store);
     let source_id = crate::resolve::resolve_id(&store, source).await?;
     let target_id = crate::resolve::resolve_id(&store, target).await?;
@@ -1535,7 +1535,7 @@ pub async fn think_relate(data_dir: &Path, source: &str, target: &str, kind: &st
 
 /// Apply aging rules (CLI for MCP think(apply_aging)).
 pub async fn think_aging_apply(data_dir: &Path) -> Result<()> {
-    let store = LanceStore::open_metadata(data_dir).await?;
+    let store = LanceStore::open_metadata(data_dir, false).await?;
     let config = crate::aging::AgingConfig::load(data_dir);
     let result = crate::aging::apply_aging(&store, &config).await?;
 
@@ -1793,7 +1793,7 @@ mod tests {
     use crate::test_helpers::make_test_chunk;
 
     async fn seed_store(dir: &Path) -> LanceStore {
-        let store = LanceStore::open(dir, 384).await.unwrap();
+        let store = LanceStore::open(dir, 384, false).await.unwrap();
         store
             .insert_chunks(vec![
                 make_test_chunk("aaa111", "First entry about architecture"),
@@ -1813,7 +1813,7 @@ mod tests {
 
         think_promote(dir.path(), "aaa111", "always").await?;
 
-        let store = LanceStore::open_metadata(dir.path()).await?;
+        let store = LanceStore::open_metadata(dir.path(), false).await?;
         let entry = store.get_by_id("aaa111").await?.unwrap();
         assert_eq!(entry.visibility, "always");
         Ok(())
@@ -1826,7 +1826,7 @@ mod tests {
 
         think_promote(dir.path(), "aaa", "always").await?;
 
-        let store = LanceStore::open_metadata(dir.path()).await?;
+        let store = LanceStore::open_metadata(dir.path(), false).await?;
         let entry = store.get_by_id("aaa111").await?.unwrap();
         assert_eq!(entry.visibility, "always");
         Ok(())
@@ -1850,7 +1850,7 @@ mod tests {
 
         think_demote(dir.path(), "aaa111", "deep_only").await?;
 
-        let store = LanceStore::open_metadata(dir.path()).await?;
+        let store = LanceStore::open_metadata(dir.path(), false).await?;
         let entry = store.get_by_id("aaa111").await?.unwrap();
         assert_eq!(entry.visibility, "deep_only");
         Ok(())
@@ -1865,7 +1865,7 @@ mod tests {
 
         think_relate(dir.path(), "aaa111", "bbb222", "derived_from").await?;
 
-        let store = LanceStore::open_metadata(dir.path()).await?;
+        let store = LanceStore::open_metadata(dir.path(), false).await?;
         let source = store.get_by_id("aaa111").await?.unwrap();
         assert_eq!(source.relations.len(), 1);
         assert_eq!(source.relations[0].kind, "derived_from");
@@ -1880,7 +1880,7 @@ mod tests {
 
         think_relate(dir.path(), "aaa111", "bbb222", "related_to").await?;
 
-        let store = LanceStore::open_metadata(dir.path()).await?;
+        let store = LanceStore::open_metadata(dir.path(), false).await?;
         let source = store.get_by_id("aaa111").await?.unwrap();
         assert_eq!(source.relations.len(), 1);
         assert_eq!(source.relations[0].kind, "related_to");
@@ -1901,7 +1901,7 @@ mod tests {
 
         think_relate(dir.path(), "aaa111", "bbb222", "derived_from").await?;
 
-        let store = LanceStore::open_metadata(dir.path()).await?;
+        let store = LanceStore::open_metadata(dir.path(), false).await?;
         let target = store.get_by_id("bbb222").await?.unwrap();
         assert!(
             target.relations.is_empty(),
@@ -1916,7 +1916,7 @@ mod tests {
     async fn test_think_aging_apply_empty_store() -> Result<()> {
         let dir = TempDir::new()?;
         // No seeding — empty store
-        LanceStore::open_metadata(dir.path()).await?;
+        LanceStore::open_metadata(dir.path(), false).await?;
         think_aging_apply(dir.path()).await?;
         Ok(())
     }
@@ -1955,7 +1955,7 @@ mod tests {
     #[tokio::test]
     async fn test_browse_empty_store() -> Result<()> {
         let dir = TempDir::new()?;
-        LanceStore::open_metadata(dir.path()).await?;
+        LanceStore::open_metadata(dir.path(), false).await?;
         browse(dir.path(), &SearchOptions::default()).await?;
         Ok(())
     }

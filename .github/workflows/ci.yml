@@ -21,6 +21,9 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Install protoc (needed by lance-encoding via prost-build)
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Cache cargo registry and target dir
         uses: Swatinem/rust-cache@v2
 
