@@ -34,7 +34,7 @@ pub struct SearchConfig {
     pub children_k: usize,
     /// Maximum depth to search
     pub max_depth: usize,
-    /// /// Minimum score threshold for search relevance (applied to pre-blend vector score, not blended score)
+    /// Minimum score threshold for search relevance (applied to pre-blend vector score, not blended score)
     pub min_score: f32,
     /// Deep search: include all visibilities (DeepOnly, expired, custom)
     pub deep: bool,
@@ -105,6 +105,12 @@ impl SearchConfig {
         self
     }
 
+    /// Add a minimum score threshold to this config.
+    pub fn with_min_score(mut self, min_score: Option<f32>) -> Self {
+        self.min_score = min_score.unwrap_or(0.0);
+        self
+    }
+
     /// Blend vector similarity with recency and salience signals.
     ///
     /// Formula: `vector * (1 - alpha) + relevancy_signal * alpha`
@@ -120,12 +126,14 @@ impl SearchConfig {
                 let salience = salience::compute(chunk, &SalienceWeights::default());
                 if let Some(threshold) = self.min_salience {
                     if salience.composite >= threshold {
-                        recency * (1.0 - self.salience_weight) + salience.composite * self.salience_weight
+                        recency * (1.0 - self.salience_weight)
+                            + salience.composite * self.salience_weight
                     } else {
                         recency
                     }
                 } else {
-                    recency * (1.0 - self.salience_weight) + salience.composite * self.salience_weight
+                    recency * (1.0 - self.salience_weight)
+                        + salience.composite * self.salience_weight
                 }
             } else {
                 recency
@@ -134,15 +142,6 @@ impl SearchConfig {
             vector_score * (1.0 - self.recency_alpha) + relevancy_signal * self.recency_alpha
         } else {
             vector_score
-        }
-    }
-
-    fn should_apply_salience_boost(&self, chunk: &HierarchicalChunk) -> bool {
-        if let Some(threshold) = self.min_salience {
-            let salience = salience::compute(chunk, &SalienceWeights::default()).composite;
-            salience >= threshold
-        } else {
-            true
         }
     }
 }
@@ -1280,6 +1279,18 @@ mod tests {
     }
 
     #[test]
+    fn test_with_min_score() {
+        let config = SearchConfig::for_query(5, false, None).with_min_score(Some(0.7));
+        assert_eq!(config.min_score, 0.7);
+    }
+
+    #[test]
+    fn test_with_min_score_none() {
+        let config = SearchConfig::for_query(5, false, None).with_min_score(None);
+        assert_eq!(config.min_score, 0.0);
+    }
+
+    #[test]
     fn test_blend_score_no_salience_boost_below_min() {
         let config = SearchConfig {
             recency_alpha: 0.5,
@@ -1387,8 +1398,8 @@ mod tests {
         let vec_score = 0.7;
         let score = config.blend_score(vec_score, &chunk);
         let salience = salience::compute(&chunk, &salience::SalienceWeights::default());
-        let expected =
-            vec_score * 0.5 + (chunk.access_profile.relevancy_score(None) * 0.0 + salience.composite) * 0.5;
+        let expected = vec_score * 0.5
+            + (chunk.access_profile.relevancy_score(None) * 0.0 + salience.composite) * 0.5;
         assert!(
             (score - expected).abs() < 0.01,
             "Min_salience 0.0 with alpha should still blend"
@@ -1523,7 +1534,11 @@ mod tests {
         let search_results = search.search("test query").await.unwrap();
 
         // Only chunk1 should pass the min_score filter
-        assert_eq!(search_results.len(), 1, "Should filter out low-score entries");
+        assert_eq!(
+            search_results.len(),
+            1,
+            "Should filter out low-score entries"
+        );
         assert_eq!(
             search_results[0].chunk.content, "high score",
             "Should retain high-score entry"
@@ -1544,7 +1559,10 @@ mod tests {
                     "test.md".to_string(),
                 );
                 chunk.embedding = Some(vec![1.0; 3]);
-                SearchResult { chunk, score: 0.6 + (i as f32 * 0.05) }
+                SearchResult {
+                    chunk,
+                    score: 0.6 + (i as f32 * 0.05),
+                }
             })
             .collect();
 
@@ -1558,7 +1576,11 @@ mod tests {
         let search = HierarchicalSearch::new(store, embedder).with_config(config);
 
         let results = search.search("test").await.unwrap();
-        assert_eq!(results.len(), 5, "All entries should pass when min_score is low");
+        assert_eq!(
+            results.len(),
+            5,
+            "All entries should pass when min_score is low"
+        );
     }
 
     #[tokio::test]
@@ -1575,7 +1597,10 @@ mod tests {
                     "test.md".to_string(),
                 );
                 chunk.embedding = Some(vec![1.0; 3]);
-                SearchResult { chunk, score: 0.1 + (i as f32 * 0.05) }
+                SearchResult {
+                    chunk,
+                    score: 0.1 + (i as f32 * 0.05),
+                }
             })
             .collect();
 
@@ -1590,7 +1615,11 @@ mod tests {
         let search = HierarchicalSearch::new(store, embedder).with_config(config);
 
         let results = search.search("test").await.unwrap();
-        assert_eq!(results.len(), 0, "All entries should be filtered out by high min_score");
+        assert_eq!(
+            results.len(),
+            0,
+            "All entries should be filtered out by high min_score"
+        );
     }
 
     #[tokio::test]
@@ -1607,7 +1636,10 @@ mod tests {
                     "test.md".to_string(),
                 );
                 chunk.embedding = Some(vec![1.0; 3]);
-                SearchResult { chunk, score: i as f32 * 0.1 }
+                SearchResult {
+                    chunk,
+                    score: i as f32 * 0.1,
+                }
             })
             .collect();
 
@@ -1667,8 +1699,14 @@ mod tests {
         let score = config.blend_score(vec_score, &chunk);
         let salience = salience::compute(&chunk, &salience::SalienceWeights::default());
         // Salience is always >= 0, so -0.5 threshold means everything passes
-        assert!(salience.composite >= -0.5, "Salience should be >= negative threshold");
-        assert_eq!(score, vec_score, "Negative threshold should allow all entries");
+        assert!(
+            salience.composite >= -0.5,
+            "Salience should be >= negative threshold"
+        );
+        assert_eq!(
+            score, vec_score,
+            "Negative threshold should allow all entries"
+        );
     }
 
     #[test]
@@ -1684,7 +1722,10 @@ mod tests {
         let salience = salience::compute(&chunk, &salience::SalienceWeights::default());
         // Salience max is 1.0, so threshold 1.5 means nothing passes
         assert!(salience.composite < 1.5, "Salience should be < 1.5");
-        assert_eq!(score, vec_score, "Threshold > 1.0 should block all salience boosting");
+        assert_eq!(
+            score, vec_score,
+            "Threshold > 1.0 should block all salience boosting"
+        );
     }
 
     #[test]
@@ -1709,7 +1750,10 @@ mod tests {
         let score = config.blend_score(vec_score, &chunk);
         // Exact or above threshold should pass (>=)
         assert!(salience.composite >= 0.5, "Should be at threshold");
-        assert_eq!(score, vec_score, "Exact threshold should allow salience boost");
+        assert_eq!(
+            score, vec_score,
+            "Exact threshold should allow salience boost"
+        );
     }
 
     #[tokio::test]
@@ -1725,10 +1769,7 @@ mod tests {
         );
         chunk.embedding = Some(vec![1.0; 3]);
 
-        store.set_search_results(vec![SearchResult {
-            chunk,
-            score: 0.5,
-        }]);
+        store.set_search_results(vec![SearchResult { chunk, score: 0.5 }]);
 
         let embedder = MockEmbedder::new(3);
         let config = SearchConfig {
