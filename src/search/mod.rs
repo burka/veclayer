@@ -1,4 +1,7 @@
 use crate::chunk::now_epoch_secs;
+
+/// Over-fetch factor when temporal filters will reduce the result set.
+pub const TEMPORAL_PREFETCH_FACTOR: usize = 3;
 use crate::embedder::Embedder;
 use crate::salience::{self, SalienceWeights};
 use crate::store::{SearchResult, VectorStore};
@@ -270,6 +273,92 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
         }
 
         // Persist access tracking (best effort — don't fail search)
+        if !access_updates.is_empty() {
+            let _ = self.store.update_access_profiles(access_updates).await;
+        }
+
+        Ok(hierarchical_results)
+    }
+
+    /// Search for entries similar to a given entry ID.
+    /// Uses the entry's embedding as the query vector instead of text.
+    pub async fn search_by_embedding(
+        &self,
+        entry_id: &str,
+        limit: usize,
+    ) -> Result<Vec<HierarchicalSearchResult>> {
+        let target = self
+            .store
+            .get_by_id_prefix(entry_id)
+            .await?
+            .ok_or_else(|| {
+                crate::Error::not_found(format!(
+                    "Entry '{}' not found for similarity search",
+                    entry_id
+                ))
+            })?;
+
+        let target_full_id = target.id.clone();
+
+        let query_embedding = target.embedding.ok_or_else(|| {
+            crate::Error::search(format!(
+                "Entry '{}' exists but has no embedding for similarity search",
+                entry_id
+            ))
+        })?;
+
+        let now = now_epoch_secs();
+
+        let fetch_k = (limit + 1) * 2;
+
+        let top_results = if let Some(ref perspective) = self.config.perspective {
+            self.store
+                .search_by_perspective(&query_embedding, fetch_k, perspective)
+                .await?
+        } else {
+            self.store.search(&query_embedding, fetch_k, None).await?
+        };
+
+        let mut hierarchical_results = Vec::new();
+        let mut access_updates = Vec::new();
+
+        for result in top_results {
+            if result.chunk.id == target_full_id {
+                continue;
+            }
+
+            if result.score < self.config.min_score {
+                continue;
+            }
+
+            if !self.config.deep && !result.chunk.is_visible_standard() {
+                continue;
+            }
+
+            if hierarchical_results.len() >= limit {
+                break;
+            }
+
+            let hierarchy_path = self.build_hierarchy_path(&result.chunk).await?;
+            let relevant_children = self
+                .search_children(&query_embedding, &result.chunk)
+                .await?;
+
+            let mut chunk = result.chunk;
+            let vector_score = result.score;
+            chunk.access_profile.record_access_at(now);
+            let final_score = self.config.blend_score(vector_score, &chunk);
+
+            access_updates.push((chunk.id.clone(), chunk.access_profile.clone()));
+
+            hierarchical_results.push(HierarchicalSearchResult {
+                chunk,
+                score: final_score,
+                hierarchy_path,
+                relevant_children,
+            });
+        }
+
         if !access_updates.is_empty() {
             let _ = self.store.update_access_profiles(access_updates).await;
         }
@@ -1870,6 +1959,293 @@ mod tests {
         assert!(
             (score - expected).abs() < 0.01,
             "Combined thresholds should work correctly"
+        );
+    }
+
+    // --- search_by_embedding tests ---
+
+    #[tokio::test]
+    async fn test_search_by_embedding_entry_not_found() {
+        let store = MockStore::new();
+        let embedder = MockEmbedder::new(3);
+        let config = SearchConfig::default();
+        let search = HierarchicalSearch::new(store, embedder).with_config(config);
+
+        let result = search.search_by_embedding("nonexistent-id", 5).await;
+        assert!(result.is_err(), "Should return error for nonexistent entry");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not found"),
+            "Error should mention 'not found'"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_by_embedding_no_embedding() {
+        let store = MockStore::new();
+
+        let mut chunk = HierarchicalChunk::new(
+            "target without embedding".to_string(),
+            ChunkLevel::H1,
+            None,
+            "target".to_string(),
+            "test.md".to_string(),
+        );
+        chunk.embedding = None;
+
+        store.add_chunk(chunk);
+        let embedder = MockEmbedder::new(3);
+        let config = SearchConfig::default();
+        let search = HierarchicalSearch::new(store, embedder).with_config(config);
+
+        let result = search.search_by_embedding("target", 5).await;
+        assert!(
+            result.is_err(),
+            "Should return error for entry without embedding"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("search"), "Error should be of search type");
+    }
+
+    #[tokio::test]
+    async fn test_search_by_embedding_excludes_target() {
+        let store = MockStore::new();
+
+        let mut target = HierarchicalChunk::new(
+            "target entry".to_string(),
+            ChunkLevel::H1,
+            None,
+            "target".to_string(),
+            "test.md".to_string(),
+        );
+        target.embedding = Some(vec![1.0; 3]);
+        target.id = "target-id".to_string();
+
+        let mut other = HierarchicalChunk::new(
+            "other entry".to_string(),
+            ChunkLevel::H1,
+            None,
+            "other".to_string(),
+            "test.md".to_string(),
+        );
+        other.embedding = Some(vec![1.0; 3]);
+        other.id = "other-id".to_string();
+
+        store.add_chunk(target);
+        store.add_chunk(other.clone());
+
+        store.set_search_results(vec![
+            SearchResult {
+                chunk: HierarchicalChunk {
+                    id: "target-id".to_string(),
+                    ..other.clone()
+                },
+                score: 0.9,
+            },
+            SearchResult {
+                chunk: other,
+                score: 0.8,
+            },
+        ]);
+
+        let embedder = MockEmbedder::new(3);
+        let config = SearchConfig::default();
+        let search = HierarchicalSearch::new(store, embedder).with_config(config);
+
+        let results = search.search_by_embedding("target-id", 5).await.unwrap();
+
+        assert!(
+            results.iter().all(|r| r.chunk.id != "target-id"),
+            "Target entry should be excluded from results"
+        );
+        assert_eq!(results.len(), 1, "Should return only the non-target entry");
+    }
+
+    #[tokio::test]
+    async fn test_search_by_embedding_respects_min_score() {
+        let store = MockStore::new();
+
+        let mut target = HierarchicalChunk::new(
+            "target".to_string(),
+            ChunkLevel::H1,
+            None,
+            "target".to_string(),
+            "test.md".to_string(),
+        );
+        target.embedding = Some(vec![1.0; 3]);
+        target.id = "target-id".to_string();
+        store.add_chunk(target);
+
+        let mut low = HierarchicalChunk::new(
+            "low score".to_string(),
+            ChunkLevel::H1,
+            None,
+            "low".to_string(),
+            "test.md".to_string(),
+        );
+        low.embedding = Some(vec![1.0; 3]);
+        low.id = "low".to_string();
+
+        let mut high = HierarchicalChunk::new(
+            "high score".to_string(),
+            ChunkLevel::H1,
+            None,
+            "high".to_string(),
+            "test.md".to_string(),
+        );
+        high.embedding = Some(vec![1.0; 3]);
+        high.id = "high".to_string();
+
+        let results_with_scores: Vec<SearchResult> = vec![
+            SearchResult {
+                chunk: low,
+                score: 0.3,
+            },
+            SearchResult {
+                chunk: high,
+                score: 0.7,
+            },
+        ];
+
+        store.set_search_results(results_with_scores);
+
+        let embedder = MockEmbedder::new(3);
+        let config = SearchConfig {
+            min_score: 0.5,
+            ..Default::default()
+        };
+        let search = HierarchicalSearch::new(store, embedder).with_config(config);
+
+        let results = search.search_by_embedding("target-id", 5).await.unwrap();
+
+        assert_eq!(results.len(), 1, "Should return only high-score entry");
+        assert_eq!(
+            results[0].chunk.id, "high",
+            "Should return the entry that passes min_score"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_by_embedding_respects_visibility_filter() {
+        let store = MockStore::new();
+
+        let mut target = HierarchicalChunk::new(
+            "target".to_string(),
+            ChunkLevel::H1,
+            None,
+            "target".to_string(),
+            "test.md".to_string(),
+        );
+        target.embedding = Some(vec![1.0; 3]);
+        target.id = "target-id".to_string();
+        store.add_chunk(target);
+
+        let mut normal = HierarchicalChunk::new(
+            "normal visibility".to_string(),
+            ChunkLevel::H1,
+            None,
+            "normal".to_string(),
+            "test.md".to_string(),
+        );
+        normal.embedding = Some(vec![1.0; 3]);
+        normal.visibility = "normal".to_string();
+
+        let mut deep_only = HierarchicalChunk::new(
+            "deep only".to_string(),
+            ChunkLevel::H1,
+            None,
+            "deep-only".to_string(),
+            "test.md".to_string(),
+        );
+        deep_only.embedding = Some(vec![1.0; 3]);
+        deep_only.visibility = "deep_only".to_string();
+
+        store.set_search_results(vec![
+            SearchResult {
+                chunk: normal,
+                score: 0.8,
+            },
+            SearchResult {
+                chunk: deep_only,
+                score: 0.7,
+            },
+        ]);
+
+        let embedder = MockEmbedder::new(3);
+        let config = SearchConfig {
+            deep: false,
+            ..Default::default()
+        };
+        let search = HierarchicalSearch::new(store, embedder).with_config(config);
+
+        let results = search.search_by_embedding("target-id", 5).await.unwrap();
+
+        assert_eq!(results.len(), 1, "Should return only visible entry");
+        assert_eq!(
+            results[0].chunk.visibility, "normal",
+            "Should return only 'normal' visibility entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_by_embedding_deep_mode_includes_hidden() {
+        let store = MockStore::new();
+
+        let mut target = HierarchicalChunk::new(
+            "target".to_string(),
+            ChunkLevel::H1,
+            None,
+            "target".to_string(),
+            "test.md".to_string(),
+        );
+        target.embedding = Some(vec![1.0; 3]);
+        target.id = "target-id".to_string();
+        store.add_chunk(target);
+
+        let mut normal = HierarchicalChunk::new(
+            "normal visibility".to_string(),
+            ChunkLevel::H1,
+            None,
+            "normal".to_string(),
+            "test.md".to_string(),
+        );
+        normal.embedding = Some(vec![1.0; 3]);
+        normal.visibility = "normal".to_string();
+
+        let mut deep_only = HierarchicalChunk::new(
+            "deep only".to_string(),
+            ChunkLevel::H1,
+            None,
+            "deep-only".to_string(),
+            "test.md".to_string(),
+        );
+        deep_only.embedding = Some(vec![1.0; 3]);
+        deep_only.visibility = "deep_only".to_string();
+
+        store.set_search_results(vec![
+            SearchResult {
+                chunk: normal,
+                score: 0.8,
+            },
+            SearchResult {
+                chunk: deep_only,
+                score: 0.7,
+            },
+        ]);
+
+        let embedder = MockEmbedder::new(3);
+        let config = SearchConfig {
+            deep: true,
+            ..Default::default()
+        };
+        let search = HierarchicalSearch::new(store, embedder).with_config(config);
+
+        let results = search.search_by_embedding("target-id", 5).await.unwrap();
+
+        assert_eq!(results.len(), 2, "Should return all entries in deep mode");
+        assert!(
+            results.iter().any(|r| r.chunk.visibility == "deep_only"),
+            "Should include deep_only visibility entries"
         );
     }
 }

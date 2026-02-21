@@ -26,6 +26,26 @@ use crate::{Embedder, Result, VectorStore};
 
 use super::types::*;
 
+/// Helper: map HierarchicalSearchResult to SearchResultResponse
+fn map_search_results(
+    results: Vec<crate::search::HierarchicalSearchResult>,
+) -> Vec<SearchResultResponse> {
+    results
+        .into_iter()
+        .map(|r| SearchResultResponse {
+            chunk: ChunkResponse::from(&r.chunk),
+            score: r.score,
+            relevance: relevance_tier(r.score).to_string(),
+            hierarchy_path: r.hierarchy_path.iter().map(ChunkResponse::from).collect(),
+            children: r
+                .relevant_children
+                .iter()
+                .map(|c| ChunkResponse::from(&c.chunk))
+                .collect(),
+        })
+        .collect()
+}
+
 /// Internal struct carrying all fields needed to store a single entry.
 struct StoreSingleInput {
     content: String,
@@ -147,6 +167,32 @@ pub async fn execute_recall(
     let since_epoch = input.since.as_deref().and_then(parse_temporal);
     let until_epoch = input.until.as_deref().and_then(parse_temporal);
 
+    if let Some(ref target_id) = input.similar_to {
+        let fetch_limit = if since_epoch.is_some() || until_epoch.is_some() {
+            input.limit * crate::search::TEMPORAL_PREFETCH_FACTOR
+        } else {
+            input.limit
+        };
+        let config = SearchConfig::for_query(fetch_limit, input.deep, input.recency.as_deref())
+            .with_perspective(input.perspective.clone())
+            .with_min_salience(input.min_salience)
+            .with_min_score(input.min_score);
+        let search =
+            HierarchicalSearch::new(Arc::clone(store), Arc::clone(embedder)).with_config(config);
+        let results = search.search_by_embedding(target_id, fetch_limit).await?;
+
+        let filtered: Vec<_> = results
+            .into_iter()
+            .filter(|r| {
+                let created = r.chunk.access_profile.created_at;
+                since_epoch.is_none_or(|s| created >= s) && until_epoch.is_none_or(|u| created <= u)
+            })
+            .take(input.limit)
+            .collect();
+
+        return Ok(map_search_results(filtered));
+    }
+
     match input.query {
         Some(ref query) if !query.is_empty() => {
             // Semantic search path
@@ -173,20 +219,7 @@ pub async fn execute_recall(
                 .take(input.limit)
                 .collect();
 
-            Ok(filtered
-                .into_iter()
-                .map(|r| SearchResultResponse {
-                    chunk: ChunkResponse::from(&r.chunk),
-                    score: r.score,
-                    relevance: relevance_tier(r.score).to_string(),
-                    hierarchy_path: r.hierarchy_path.iter().map(ChunkResponse::from).collect(),
-                    children: r
-                        .relevant_children
-                        .iter()
-                        .map(|c| ChunkResponse::from(&c.chunk))
-                        .collect(),
-                })
-                .collect())
+            Ok(map_search_results(filtered))
         }
         _ => {
             // Browse mode: list entries without vector search
