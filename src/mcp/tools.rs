@@ -36,6 +36,8 @@ struct StoreSingleInput {
     perspectives: Vec<String>,
     entry_type: Option<String>,
     relations: Vec<StoreRelation>,
+    impression_hint: Option<String>,
+    impression_strength: Option<f32>,
 }
 
 
@@ -100,6 +102,8 @@ async fn store_single_entry(
         relations: vec![],
         access_profile: crate::AccessProfile::new(),
         expires_at: None,
+        impression_hint: input.impression_hint,
+        impression_strength: input.impression_strength.unwrap_or(1.0),
     };
 
     store.insert_chunks(vec![chunk]).await?;
@@ -289,6 +293,8 @@ pub async fn execute_store(
                     perspectives: item.perspectives,
                     entry_type: item.entry_type,
                     relations: item.relations,
+                    impression_hint: item.impression_hint,
+                    impression_strength: item.impression_strength,
                 },
             )
             .await?;
@@ -309,6 +315,8 @@ pub async fn execute_store(
                 perspectives: input.perspectives,
                 entry_type: input.entry_type,
                 relations: input.relations,
+                impression_hint: input.impression_hint,
+                impression_strength: input.impression_strength,
             },
         )
         .await?;
@@ -686,28 +694,7 @@ mod tests {
     // resolve_id and parse_temporal tests are in resolve::tests.
     // These tests cover tool-specific logic that remains in this module.
 
-    fn make_test_chunk(id: &str, content: &str) -> crate::HierarchicalChunk {
-        crate::HierarchicalChunk {
-            id: id.to_string(),
-            content: content.to_string(),
-            embedding: Some(vec![0.0f32; 384]),
-            level: crate::chunk::ChunkLevel(1),
-            parent_id: None,
-            path: "test".to_string(),
-            source_file: "test".to_string(),
-            heading: Some(format!("Heading for {}", id)),
-            start_offset: 0,
-            end_offset: 0,
-            cluster_memberships: vec![],
-            entry_type: crate::chunk::EntryType::Raw,
-            summarizes: vec![],
-            perspectives: vec![],
-            visibility: "normal".to_string(),
-            relations: vec![],
-            access_profile: crate::AccessProfile::new(),
-            expires_at: None,
-        }
-    }
+    use crate::test_helpers::make_test_chunk;
 
     async fn make_test_store_with_dir() -> (Arc<LanceStore>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();

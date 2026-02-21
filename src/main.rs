@@ -96,6 +96,14 @@ enum Commands {
         /// This entry is derived from the given entry ID
         #[arg(long)]
         derived_from: Option<String>,
+
+        /// Impression hint (e.g. "uncertain", "confident", "exploratory")
+        #[arg(long)]
+        impression_hint: Option<String>,
+
+        /// Impression strength: 0.0–1.0 (default 1.0, only for entry_type=impression)
+        #[arg(long, default_value = "1.0")]
+        impression_strength: f32,
     },
 
     /// Semantic search with hierarchical results
@@ -368,6 +376,8 @@ async fn main() -> Result<()> {
             heading,
             related_to,
             derived_from,
+            impression_hint,
+            impression_strength,
         } => {
             let options = AddOptions {
                 recursive: !no_recursive,
@@ -383,6 +393,8 @@ async fn main() -> Result<()> {
                 heading,
                 related_to,
                 derived_from,
+                impression_hint,
+                impression_strength,
             };
             veclayer::commands::add(&cli.data_dir, &input, &options).await?;
         }

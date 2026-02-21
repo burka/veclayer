@@ -75,6 +75,10 @@ pub struct AddOptions {
     pub related_to: Option<String>,
     /// Relation: this entry is derived from the given ID
     pub derived_from: Option<String>,
+    /// Impression hint: qualitative label (e.g. "uncertain", "confident")
+    pub impression_hint: Option<String>,
+    /// Impression strength: 0.0–1.0 (default 1.0)
+    pub impression_strength: f32,
 }
 
 /// Backwards-compatible alias
@@ -96,6 +100,8 @@ impl Default for AddOptions {
             heading: None,
             related_to: None,
             derived_from: None,
+            impression_hint: None,
+            impression_strength: 1.0,
         }
     }
 }
@@ -426,6 +432,12 @@ async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<A
     if let Some(ref vis) = options.visibility {
         chunk.visibility = vis.clone();
     }
+
+    // Impression metadata
+    if let Some(ref hint) = options.impression_hint {
+        chunk.impression_hint = Some(hint.clone());
+    }
+    chunk.impression_strength = options.impression_strength;
 
     // Add relations from options
     if let Some(ref target) = options.summarizes {
@@ -1358,6 +1370,8 @@ mod tests {
         assert!(opts.heading.is_none());
         assert!(opts.related_to.is_none());
         assert!(opts.derived_from.is_none());
+        assert!(opts.impression_hint.is_none());
+        assert!((opts.impression_strength - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]

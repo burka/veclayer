@@ -58,9 +58,14 @@ pub fn compute(chunk: &HierarchicalChunk, weights: &SalienceWeights) -> Salience
 
     let revision = (chunk.relations.len() as f32 / REVISION_SATURATION).tanh();
 
-    let composite = interaction * weights.w_interaction
+    let mut composite = interaction * weights.w_interaction
         + perspective * weights.w_perspective
         + revision * weights.w_revision;
+
+    // Impressions are modulated by their strength (default 1.0 = full weight)
+    if chunk.entry_type == crate::chunk::EntryType::Impression {
+        composite *= chunk.impression_strength;
+    }
 
     SalienceScore {
         interaction,
@@ -301,5 +306,57 @@ mod tests {
         let w = SalienceWeights::default();
         let sum = w.w_interaction + w.w_perspective + w.w_revision;
         assert!((sum - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_impression_strength_modulates_composite() {
+        let mut full = test_chunk("full strength impression");
+        full.entry_type = crate::chunk::EntryType::Impression;
+        full.impression_strength = 1.0;
+        full.access_profile.record_access();
+        full.perspectives = vec!["decisions".to_string()];
+
+        let mut half = test_chunk("half strength impression");
+        half.entry_type = crate::chunk::EntryType::Impression;
+        half.impression_strength = 0.5;
+        half.access_profile.record_access();
+        half.perspectives = vec!["decisions".to_string()];
+
+        let w = SalienceWeights::default();
+        let full_score = compute(&full, &w);
+        let half_score = compute(&half, &w);
+
+        assert!(full_score.composite > 0.0);
+        assert!((half_score.composite - full_score.composite * 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_non_impression_ignores_strength() {
+        let mut chunk = test_chunk("raw entry");
+        chunk.impression_strength = 0.5; // should be ignored for non-impression
+        chunk.access_profile.record_access();
+
+        let mut same = test_chunk("raw entry same");
+        same.impression_strength = 1.0;
+        same.access_profile.record_access();
+
+        let w = SalienceWeights::default();
+        let score_half = compute(&chunk, &w);
+        let score_full = compute(&same, &w);
+
+        // Non-impression entries ignore impression_strength
+        assert!((score_half.composite - score_full.composite).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_impression_zero_strength_zeroes_composite() {
+        let mut chunk = test_chunk("zero impression");
+        chunk.entry_type = crate::chunk::EntryType::Impression;
+        chunk.impression_strength = 0.0;
+        chunk.access_profile.record_access();
+        chunk.perspectives = vec!["decisions".to_string()];
+
+        let score = compute(&chunk, &SalienceWeights::default());
+        assert_eq!(score.composite, 0.0);
     }
 }
