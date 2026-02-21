@@ -628,6 +628,11 @@ impl VectorStore for LanceStore {
     }
 
     async fn get_by_id_prefix(&self, prefix: &str) -> Result<Option<HierarchicalChunk>> {
+        // Validate: IDs are SHA-256 hex, so only allow hex characters
+        if prefix.is_empty() || !prefix.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(None);
+        }
+
         // Try exact match first
         if let Some(chunk) = self.get_by_id(prefix).await? {
             return Ok(Some(chunk));
