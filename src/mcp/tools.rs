@@ -38,10 +38,6 @@ struct StoreSingleInput {
     relations: Vec<StoreRelation>,
 }
 
-/// Resolve a short or full entry ID to its canonical full ID using prefix matching.
-async fn resolve_id(store: &Arc<LanceStore>, id: &str) -> Result<String> {
-    crate::helpers::resolve_id(store, id).await
-}
 
 /// Store a single entry and return its chunk ID.
 async fn store_single_entry(
@@ -110,7 +106,7 @@ async fn store_single_entry(
 
     // Process relations atomically after insert
     for rel in &input.relations {
-        let target = resolve_id(store, &rel.target_id).await?;
+        let target = crate::resolve::resolve_id(store, &rel.target_id).await?;
         match rel.kind.as_str() {
             "supersedes" | "version_of" => {
                 let inverse = crate::ChunkRelation::new("superseded_by", &chunk_id);
@@ -336,7 +332,7 @@ pub async fn execute_think(
                 .id
                 .as_deref()
                 .ok_or_else(|| crate::Error::config("think(promote) requires 'id'"))?;
-            let chunk_id = resolve_id(store, raw_id).await?;
+            let chunk_id = crate::resolve::resolve_id(store, raw_id).await?;
             let vis = input.visibility.as_deref().unwrap_or("always");
             store.update_visibility(&chunk_id, vis).await?;
             Ok(format!("Promoted `{}` to visibility '{}'", chunk_id, vis))
@@ -346,7 +342,7 @@ pub async fn execute_think(
                 .id
                 .as_deref()
                 .ok_or_else(|| crate::Error::config("think(demote) requires 'id'"))?;
-            let chunk_id = resolve_id(store, raw_id).await?;
+            let chunk_id = crate::resolve::resolve_id(store, raw_id).await?;
             let vis = input.visibility.as_deref().unwrap_or("deep_only");
             store.update_visibility(&chunk_id, vis).await?;
             Ok(format!("Demoted `{}` to visibility '{}'", chunk_id, vis))
@@ -361,10 +357,15 @@ pub async fn execute_think(
                 .as_deref()
                 .ok_or_else(|| crate::Error::config("think(relate) requires 'target_id'"))?;
             let kind = input.kind.as_deref().unwrap_or("related_to");
-            let source_id = resolve_id(store, raw_source).await?;
-            let target_id = resolve_id(store, raw_target).await?;
+            let source_id = crate::resolve::resolve_id(store, raw_source).await?;
+            let target_id = crate::resolve::resolve_id(store, raw_target).await?;
             let relation = crate::ChunkRelation::new(kind, &target_id);
             store.add_relation(&source_id, relation).await?;
+            // Bidirectional: related_to gets a backward link (mirrors CLI think_relate)
+            if kind == "related_to" {
+                let backward = crate::ChunkRelation::new("related_to", &source_id);
+                store.add_relation(&target_id, backward).await?;
+            }
             Ok(format!(
                 "Added relation '{}' from `{}` to `{}`",
                 kind, source_id, target_id
@@ -513,11 +514,10 @@ pub async fn execute_think(
                 .id
                 .as_deref()
                 .ok_or_else(|| crate::Error::config("think(history) requires 'id'"))?;
-            let chunk_id = resolve_id(store, raw_id).await?;
-            let chunk = store
-                .get_by_id(&chunk_id)
-                .await?
-                .ok_or_else(|| crate::Error::not_found(format!("Entry '{}' not found", chunk_id)))?;
+            let chunk_id = crate::resolve::resolve_id(store, raw_id).await?;
+            let chunk = store.get_by_id(&chunk_id).await?.ok_or_else(|| {
+                crate::Error::not_found(format!("Entry '{}' not found", chunk_id))
+            })?;
 
             let heading = chunk.heading.as_deref().unwrap_or("(no heading)");
             let mut report = format!(
@@ -674,16 +674,16 @@ pub fn build_share_token(input: ShareInput) -> serde_json::Value {
     })
 }
 
-/// Parse a temporal string — delegates to `helpers::parse_temporal`.
+/// Parse a temporal string — delegates to `resolve::parse_temporal`.
 fn parse_temporal(s: &str) -> Option<i64> {
-    crate::helpers::parse_temporal(s)
+    crate::resolve::parse_temporal(s)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // resolve_id and parse_temporal tests are in helpers::tests.
+    // resolve_id and parse_temporal tests are in resolve::tests.
     // These tests cover tool-specific logic that remains in this module.
 
     fn make_test_chunk(id: &str, content: &str) -> crate::HierarchicalChunk {

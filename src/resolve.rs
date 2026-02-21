@@ -1,7 +1,6 @@
-//! Shared helper functions used by both CLI commands and MCP tools.
+//! ID resolution and temporal parsing shared by CLI commands and MCP tools.
 //!
-//! These were extracted from `mcp/tools.rs` so that the CLI can reuse
-//! the same ID-resolution and temporal-parsing logic without duplicating it.
+//! Extracted from `mcp/tools.rs` so both surfaces use the same logic.
 
 use crate::store::LanceStore;
 use crate::{Result, VectorStore};

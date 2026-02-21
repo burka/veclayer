@@ -7,7 +7,6 @@ pub mod commands;
 pub mod config;
 pub mod embedder;
 pub mod error;
-pub mod helpers;
 pub mod identity;
 #[cfg(feature = "llm")]
 pub mod llm;
@@ -15,6 +14,7 @@ pub mod macros;
 pub mod mcp;
 pub mod parser;
 pub mod perspective;
+pub mod resolve;
 pub mod salience;
 pub mod search;
 pub mod store;
