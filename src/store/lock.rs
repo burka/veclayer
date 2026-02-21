@@ -34,11 +34,15 @@ impl FileLock {
             .truncate(false)
             .open(&lock_path)?;
 
-        file.try_lock_exclusive().map_err(|_| {
-            Error::store(
-                "Another VecLayer process is writing to this store. \
-                 Use --read-only for concurrent read access.",
-            )
+        file.try_lock_exclusive().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::WouldBlock {
+                Error::store(
+                    "Another VecLayer process is writing to this store. \
+                     Use --read-only for concurrent read access.",
+                )
+            } else {
+                Error::store(format!("Failed to acquire store lock: {}", e))
+            }
         })?;
 
         Ok(Self { _file: file })
