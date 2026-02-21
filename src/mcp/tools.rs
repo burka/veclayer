@@ -297,9 +297,10 @@ pub async fn execute_store(
                 },
             )
             .await?;
-            ids.push(id);
+            ids.push(crate::short_id(&id).to_string());
         }
-        Ok(serde_json::json!(ids))
+        let msg = format!("Stored {} entries. IDs: {}", ids.len(), ids.join(", "));
+        Ok(serde_json::json!(msg))
     } else {
         // Single mode
         let id = store_single_entry(
@@ -319,7 +320,10 @@ pub async fn execute_store(
             },
         )
         .await?;
-        Ok(serde_json::json!(id))
+        Ok(serde_json::json!(format!(
+            "Stored. ID: {}",
+            crate::short_id(&id)
+        )))
     }
 }
 
