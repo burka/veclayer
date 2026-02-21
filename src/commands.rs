@@ -1932,7 +1932,7 @@ mod tests {
 
     #[test]
     fn test_references_parsing() {
-        let refs = parse_references(&vec![String::from("abc123:related_to")]);
+        let refs = parse_references(&[String::from("abc123:related_to")]);
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].target_id, "abc123");
         assert_eq!(refs[0].kind, "related_to");
@@ -1940,7 +1940,7 @@ mod tests {
 
     #[test]
     fn test_references_parsing_multiple() {
-        let refs = parse_references(&vec![
+        let refs = parse_references(&[
             String::from("abc123:related_to"),
             String::from("def456:supersedes"),
             String::from("ghi789:derived_from"),
@@ -1956,31 +1956,34 @@ mod tests {
 
     #[test]
     fn test_references_parsing_empty() {
-        let refs = parse_references(&vec![]);
+        let refs = parse_references(&[]);
         assert!(refs.is_empty());
     }
 
     #[test]
     fn test_references_parsing_missing_colon() {
-        let refs = parse_references(&vec![String::from("abc123")]);
+        let refs = parse_references(&[String::from("abc123")]);
         assert!(refs.is_empty());
     }
 
     #[test]
     fn test_references_parsing_empty_id() {
-        let refs = parse_references(&vec![String::from(":related_to")]);
+        let refs = parse_references(&[String::from(":related_to")]);
         assert!(refs.is_empty());
     }
 
     #[test]
     fn test_references_parsing_empty_kind() {
-        let refs = parse_references(&vec![String::from("abc123:")]);
+        let refs = parse_references(&[String::from("abc123:")]);
         assert!(refs.is_empty());
     }
 
     #[test]
     fn test_supersedes_extracts_target_from_target_supersedes_format() {
-        assert_eq!(extract_supersede_target("new-id:supersedes:old-id"), Some("old-id".to_string()));
+        assert_eq!(
+            extract_supersede_target("new-id:supersedes:old-id"),
+            Some("old-id".to_string())
+        );
     }
 
     #[test]

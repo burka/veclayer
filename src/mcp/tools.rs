@@ -949,6 +949,8 @@ mod tests {
                     target_id: "related-id".to_string(),
                 },
             ],
+            impression_hint: None,
+            impression_strength: None,
         };
 
         assert_eq!(input.content, "test content");
@@ -974,6 +976,8 @@ mod tests {
                 kind: "summarizes".to_string(),
                 target_id: "target-id".to_string(),
             }],
+            impression_hint: None,
+            impression_strength: None,
         };
 
         assert_eq!(item.content, "item content");
@@ -992,14 +996,14 @@ mod tests {
             heading: Some("Main Heading".to_string()),
             visibility: "normal".to_string(),
             perspectives: vec!["knowledge".to_string()],
-            relations: vec![
-                StoreRelation {
-                    kind: "derived_from".to_string(),
-                    target_id: "source-id".to_string(),
-                },
-            ],
+            relations: vec![StoreRelation {
+                kind: "derived_from".to_string(),
+                target_id: "source-id".to_string(),
+            }],
             entry_type: None,
             items: vec![],
+            impression_hint: None,
+            impression_strength: None,
         };
 
         assert_eq!(input.content, "main content");
@@ -1029,6 +1033,8 @@ mod tests {
                     source_file: None,
                     entry_type: None,
                     relations: vec![],
+                    impression_hint: None,
+                    impression_strength: None,
                 },
                 StoreItem {
                     content: "item 2".to_string(),
@@ -1042,8 +1048,12 @@ mod tests {
                         kind: "related_to".to_string(),
                         target_id: "other".to_string(),
                     }],
+                    impression_hint: None,
+                    impression_strength: None,
                 },
             ],
+            impression_hint: None,
+            impression_strength: None,
         };
 
         assert!(input.content.is_empty());
@@ -1055,7 +1065,7 @@ mod tests {
 
     #[test]
     fn test_store_relation_kinds() {
-        let relations = vec![
+        let relations = [
             StoreRelation {
                 kind: "supersedes".to_string(),
                 target_id: "id1".to_string(),
