@@ -101,5 +101,19 @@ review session history
 Use `recall(since=\"<today>\")` to see everything stored today. Use `recall(perspective=\"session\")` \
 to find past sessions.
 
+## Reasoning Pattern
+
+Build visible reasoning traces using linked entries:
+
+1. **Observe:** `store(content=\"Search is slow after bulk import\", entry_type=\"impression\")` → id1
+2. **Hypothesize:** `store(content=\"Index not rebuilt after import\", entry_type=\"meta\", \
+relations=[{kind: \"derived_from\", target_id: \"<id1>\"}])` → id2
+3. **Conclude:** `store(content=\"Added index rebuild — 3x faster\", entry_type=\"meta\", \
+perspectives=[\"learnings\"], relations=[{kind: \"derived_from\", target_id: \"<id2>\"}])`
+
+Each step links to the previous via `derived_from`. The chain is visible through `focus` and \
+`think(action='history')`. Revise conclusions by storing a new entry with \
+`relations: [{kind: \"supersedes\", target_id: \"<old_conclusion>\"}]`.
+
 You are the curator of your own memory. Use these tools to build a knowledge base that reflects \
 what matters to you.";
