@@ -61,37 +61,37 @@ pub fn defaults() -> Vec<Perspective> {
         Perspective::builtin(
             "intentions",
             "Intentions",
-            "Absichten, Ziele, Vorhaben, Motivationen",
+            "Goals, motivations, plans, aspirations",
         ),
         Perspective::builtin(
             "people",
             "People",
-            "Personen, Beziehungen, Rollen, Organisationen",
+            "Persons, relationships, roles, organizations",
         ),
         Perspective::builtin(
             "temporal",
             "Temporal",
-            "Zeitverlauf, Entwicklungen, Chronologie, Meilensteine",
+            "Timelines, milestones, chronology, evolution",
         ),
         Perspective::builtin(
             "knowledge",
             "Knowledge",
-            "Dauerhaftes Fachwissen, Definitionen, Konzepte, Referenzen",
+            "Durable expertise, definitions, concepts, references",
         ),
         Perspective::builtin(
             "decisions",
             "Decisions",
-            "Entscheidungen, Abwaegungen, Trade-offs, Alternativen",
+            "Decisions, trade-offs, alternatives, rationale",
         ),
         Perspective::builtin(
             "learnings",
             "Learnings",
-            "Erkenntnisse, Fehler, Lessons Learned, Aha-Momente",
+            "Insights, mistakes, lessons learned, aha-moments",
         ),
         Perspective::builtin(
             "session",
             "Session",
-            "Arbeitssitzungen, Kontext, Zusammenfassungen, Handoffs",
+            "Work sessions, context summaries, handoffs",
         ),
     ]
 }
