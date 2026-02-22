@@ -244,7 +244,8 @@ fn tool_list() -> serde_json::Value {
                         "recency": { "type": "string", "description": "Recency boost: 24h, 7d, 30d" },
                         "perspective": { "type": "string", "description": "Filter by perspective: intentions, people, temporal, knowledge, decisions, learnings, session" },
                         "since": { "type": "string", "description": "Filter: entries created after (ISO 8601 date or epoch seconds)" },
-                        "until": { "type": "string", "description": "Filter: entries created before (ISO 8601 date or epoch seconds)" }
+                        "until": { "type": "string", "description": "Filter: entries created before (ISO 8601 date or epoch seconds)" },
+                        "ongoing": { "type": "boolean", "description": "Filter to open threads — unresolved items needing attention" }
                     }
                 }
             },
