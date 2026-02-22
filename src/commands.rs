@@ -571,7 +571,10 @@ async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<A
 /// Semantic search with hierarchical results (prints output).
 pub async fn search(data_dir: &Path, query_str: &str, options: &SearchOptions) -> Result<()> {
     if options.similar_to.is_some() && !query_str.is_empty() {
-        eprintln!("Warning: query argument is ignored when --similar-to is specified.");
+        return Err(crate::Error::InvalidOperation(
+            "--similar-to and a text query are mutually exclusive. Use one or the other."
+                .to_string(),
+        ));
     }
 
     let results = search_results(data_dir, query_str, options).await?;

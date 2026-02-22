@@ -2,9 +2,6 @@
 
 use std::sync::Arc;
 
-// Over-fetch when temporal filters are active, then filter client-side
-const TEMPORAL_PREFETCH_FACTOR: usize = 3;
-
 const THINK_ACTIONS: &[&str] = &[
     "promote",
     "demote",
@@ -20,7 +17,7 @@ const THINK_ACTIONS: &[&str] = &[
 
 use crate::aging::{self, AgingConfig};
 use crate::embedder::FastEmbedder;
-use crate::search::{HierarchicalSearch, SearchConfig};
+use crate::search::{HierarchicalSearch, SearchConfig, TEMPORAL_PREFETCH_FACTOR};
 use crate::store::LanceStore;
 use crate::{Embedder, Result, VectorStore};
 
@@ -151,7 +148,7 @@ pub async fn execute_recall(
 
     if let Some(ref target_id) = input.similar_to {
         let fetch_limit = if since_epoch.is_some() || until_epoch.is_some() {
-            input.limit * crate::search::TEMPORAL_PREFETCH_FACTOR
+            input.limit * TEMPORAL_PREFETCH_FACTOR
         } else {
             input.limit
         };
