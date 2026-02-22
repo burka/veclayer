@@ -31,7 +31,8 @@ access tracking. Knowledge that you use often stays prominent. Knowledge you ign
 Find relevant knowledge using semantic search, or browse without a query. Results include \
 a relevance tier (strong/moderate/weak/tangential). Use `since`/`until` for temporal filtering. Results come with access profiles \
 showing how often each piece was accessed. Use `deep: true` to include archived knowledge. \
-Use `recency` to boost recently accessed memories.
+Use `recency` to boost recently accessed memories. \
+Use `ongoing: true` to see only open threads — unresolved items that need attention.
 
 ### focus — Tell me more about this specific point.
 Dive deeper into a specific memory node. Returns the node itself plus its children, optionally \

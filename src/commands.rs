@@ -157,6 +157,8 @@ pub struct SearchOptions {
     pub since: Option<String>,
     /// Only entries created before this ISO 8601 date or epoch seconds
     pub until: Option<String>,
+    /// Filter to open threads (unresolved items)
+    pub ongoing: bool,
 }
 
 /// Backwards-compatible alias
@@ -176,6 +178,7 @@ impl Default for SearchOptions {
             min_score: None,
             since: None,
             until: None,
+            ongoing: false,
         }
     }
 }
@@ -714,6 +717,8 @@ pub async fn search_results(
 
     let (embedder, store) = open_store(data_dir).await?;
 
+    let open_thread_ids = crate::identity::resolve_ongoing_filter(&store, options.ongoing).await?;
+
     // Fetch more results when temporal filtering will reduce the set
     let fetch_limit = if since_epoch.is_some() || until_epoch.is_some() {
         options.top_k * TEMPORAL_PREFETCH_FACTOR
@@ -742,7 +747,9 @@ pub async fn search_results(
         .into_iter()
         .filter(|r| {
             let created = r.chunk.access_profile.created_at;
-            since_epoch.is_none_or(|s| created >= s) && until_epoch.is_none_or(|u| created <= u)
+            since_epoch.is_none_or(|s| created >= s)
+                && until_epoch.is_none_or(|u| created <= u)
+                && crate::identity::passes_ongoing_filter(&open_thread_ids, &r.chunk.id)
         })
         .take(options.top_k);
 
@@ -1527,14 +1534,29 @@ pub async fn browse(data_dir: &Path, options: &SearchOptions) -> Result<()> {
         .and_then(crate::resolve::parse_temporal);
 
     let store = LanceStore::open_metadata(data_dir, true).await?;
-    let entries = store
+
+    let open_thread_ids = crate::identity::resolve_ongoing_filter(&store, options.ongoing).await?;
+
+    let fetch_limit = if open_thread_ids.is_some() {
+        usize::MAX
+    } else {
+        options.top_k
+    };
+
+    let all_entries = store
         .list_entries(
             options.perspective.as_deref(),
             since_epoch,
             until_epoch,
-            options.top_k,
+            fetch_limit,
         )
         .await?;
+
+    let entries: Vec<_> = all_entries
+        .into_iter()
+        .filter(|chunk| crate::identity::passes_ongoing_filter(&open_thread_ids, &chunk.id))
+        .take(options.top_k)
+        .collect();
 
     if entries.is_empty() {
         println!("No entries found.");

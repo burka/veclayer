@@ -103,6 +103,9 @@ pub struct RecallInput {
     /// Filter: only entries created before this ISO 8601 date or epoch seconds
     #[serde(default)]
     pub until: Option<String>,
+    /// Filter to open threads — unresolved items needing attention
+    #[serde(default)]
+    pub ongoing: Option<bool>,
 }
 
 fn default_limit() -> usize {

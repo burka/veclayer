@@ -146,6 +146,10 @@ pub async fn execute_recall(
     let since_epoch = input.since.as_deref().and_then(parse_temporal);
     let until_epoch = input.until.as_deref().and_then(parse_temporal);
 
+    let open_thread_ids =
+        crate::identity::resolve_ongoing_filter(store.as_ref(), input.ongoing == Some(true))
+            .await?;
+
     if let Some(ref target_id) = input.similar_to {
         let fetch_limit = if since_epoch.is_some() || until_epoch.is_some() {
             input.limit * TEMPORAL_PREFETCH_FACTOR
@@ -164,7 +168,9 @@ pub async fn execute_recall(
             .into_iter()
             .filter(|r| {
                 let created = r.chunk.access_profile.created_at;
-                since_epoch.is_none_or(|s| created >= s) && until_epoch.is_none_or(|u| created <= u)
+                since_epoch.is_none_or(|s| created >= s)
+                    && until_epoch.is_none_or(|u| created <= u)
+                    && crate::identity::passes_ongoing_filter(&open_thread_ids, &r.chunk.id)
             })
             .take(input.limit)
             .collect();
@@ -194,6 +200,7 @@ pub async fn execute_recall(
                     let created = r.chunk.access_profile.created_at;
                     since_epoch.is_none_or(|s| created >= s)
                         && until_epoch.is_none_or(|u| created <= u)
+                        && crate::identity::passes_ongoing_filter(&open_thread_ids, &r.chunk.id)
                 })
                 .take(input.limit)
                 .collect();
@@ -207,12 +214,20 @@ pub async fn execute_recall(
                     input.perspective.as_deref(),
                     since_epoch,
                     until_epoch,
-                    input.limit,
+                    if open_thread_ids.is_some() {
+                        // Fetch all entries when ongoing filter is active — we filter client-side
+                        // because list_entries doesn't support open-thread filtering natively.
+                        usize::MAX
+                    } else {
+                        input.limit
+                    },
                 )
                 .await?;
 
             Ok(entries
                 .iter()
+                .filter(|chunk| crate::identity::passes_ongoing_filter(&open_thread_ids, &chunk.id))
+                .take(input.limit)
                 .map(|chunk| SearchResultResponse {
                     chunk: ChunkResponse::from(chunk),
                     score: 1.0,
@@ -1073,5 +1088,178 @@ mod tests {
         assert_eq!(relations[2].kind, "related_to");
         assert_eq!(relations[3].kind, "derived_from");
         assert_eq!(relations[4].kind, "version_of");
+    }
+
+    #[tokio::test]
+    async fn test_recall_ongoing_filter_with_query() {
+        let (store, _dir) = make_test_store_with_dir().await;
+        let embedder = Arc::new(FastEmbedder::new().unwrap());
+
+        // Insert a plain chunk with a real embedding so semantic search can find it
+        let plain_content = "plain entry about architecture decisions";
+        let plain_embeddings = embedder.embed(&[plain_content]).unwrap();
+        let mut plain = make_test_chunk(
+            "ccccccc3333333333333333333333333333333333333333333333333333333333",
+            plain_content,
+        );
+        plain.embedding = Some(plain_embeddings.into_iter().next().unwrap());
+        store.insert_chunks(vec![plain]).await.unwrap();
+
+        // Insert a chunk that qualifies as an open thread (superseded, still "normal" visibility)
+        let open_content = "unresolved entry about design decisions";
+        let open_embeddings = embedder.embed(&[open_content]).unwrap();
+        let mut open = make_test_chunk(
+            "ddddddd4444444444444444444444444444444444444444444444444444444444",
+            open_content,
+        );
+        open.embedding = Some(open_embeddings.into_iter().next().unwrap());
+        open.relations
+            .push(crate::ChunkRelation::superseded_by("newer-id"));
+        store.insert_chunks(vec![open]).await.unwrap();
+
+        // With ongoing: true and a query — only the open-thread entry should be returned
+        let input_ongoing = RecallInput {
+            query: Some("entry".to_string()),
+            limit: 10,
+            deep: false,
+            recency: None,
+            perspective: None,
+            similar_to: None,
+            min_salience: None,
+            min_score: None,
+            since: None,
+            until: None,
+            ongoing: Some(true),
+        };
+        let ongoing_results = execute_recall(&store, &embedder, input_ongoing)
+            .await
+            .unwrap();
+        assert_eq!(
+            ongoing_results.len(),
+            1,
+            "ongoing filter with query should return only open-thread entry, got: {:?}",
+            ongoing_results
+                .iter()
+                .map(|r| &r.chunk.id)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            ongoing_results[0].chunk.id.starts_with("ddddddd"),
+            "the open-thread entry should be the one returned"
+        );
+
+        // With ongoing: None and a query — both entries should be returned
+        let input_all = RecallInput {
+            query: Some("entry".to_string()),
+            limit: 10,
+            deep: false,
+            recency: None,
+            perspective: None,
+            similar_to: None,
+            min_salience: None,
+            min_score: None,
+            since: None,
+            until: None,
+            ongoing: None,
+        };
+        let all_results = execute_recall(&store, &embedder, input_all).await.unwrap();
+        assert_eq!(
+            all_results.len(),
+            2,
+            "no ongoing filter with query should return both entries"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recall_ongoing_filter_browse_mode() {
+        let (store, _dir) = make_test_store_with_dir().await;
+        let embedder = Arc::new(FastEmbedder::new().unwrap());
+
+        // Insert a plain chunk (no open thread criteria)
+        let plain = make_test_chunk(
+            "aaaaaaa1111111111111111111111111111111111111111111111111111111111",
+            "plain entry",
+        );
+        store.insert_chunks(vec![plain]).await.unwrap();
+
+        // Insert a chunk that qualifies as an open thread (superseded but still "normal")
+        let mut open = make_test_chunk(
+            "bbbbbbb2222222222222222222222222222222222222222222222222222222222",
+            "unresolved entry",
+        );
+        open.relations
+            .push(crate::ChunkRelation::superseded_by("newer-id"));
+        store.insert_chunks(vec![open]).await.unwrap();
+
+        // Without ongoing filter: both entries returned
+        let input_all = RecallInput {
+            query: None,
+            limit: 10,
+            deep: false,
+            recency: None,
+            perspective: None,
+            similar_to: None,
+            min_salience: None,
+            min_score: None,
+            since: None,
+            until: None,
+            ongoing: None,
+        };
+        let all_results = execute_recall(&store, &embedder, input_all).await.unwrap();
+        assert_eq!(
+            all_results.len(),
+            2,
+            "should return both entries without ongoing filter"
+        );
+
+        // With ongoing: true — only the open thread entry
+        let input_ongoing = RecallInput {
+            query: None,
+            limit: 10,
+            deep: false,
+            recency: None,
+            perspective: None,
+            similar_to: None,
+            min_salience: None,
+            min_score: None,
+            since: None,
+            until: None,
+            ongoing: Some(true),
+        };
+        let ongoing_results = execute_recall(&store, &embedder, input_ongoing)
+            .await
+            .unwrap();
+        assert_eq!(
+            ongoing_results.len(),
+            1,
+            "should return only open thread entries"
+        );
+        assert!(
+            ongoing_results[0].chunk.id.starts_with("bbbbbbb"),
+            "the open thread entry should be returned"
+        );
+
+        // With ongoing: false — behaves the same as no filter
+        let input_not_ongoing = RecallInput {
+            query: None,
+            limit: 10,
+            deep: false,
+            recency: None,
+            perspective: None,
+            similar_to: None,
+            min_salience: None,
+            min_score: None,
+            since: None,
+            until: None,
+            ongoing: Some(false),
+        };
+        let not_ongoing_results = execute_recall(&store, &embedder, input_not_ongoing)
+            .await
+            .unwrap();
+        assert_eq!(
+            not_ongoing_results.len(),
+            2,
+            "ongoing: false should not filter"
+        );
     }
 }

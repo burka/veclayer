@@ -161,6 +161,10 @@ enum Commands {
         /// Only entries created before this ISO 8601 date or epoch seconds
         #[arg(long)]
         until: Option<String>,
+
+        /// Filter to open threads (unresolved items)
+        #[arg(long)]
+        ongoing: bool,
     },
 
     /// Focus on an entry — show details and children, optionally reranked by a question
@@ -441,6 +445,7 @@ async fn main() -> Result<()> {
             min_score,
             since,
             until,
+            ongoing,
         } => {
             let options = SearchOptions {
                 top_k,
@@ -454,6 +459,7 @@ async fn main() -> Result<()> {
                 min_score,
                 since,
                 until,
+                ongoing,
             };
             if options.similar_to.is_some() {
                 veclayer::commands::search(&cli.data_dir, query.as_deref().unwrap_or(""), &options)

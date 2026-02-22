@@ -284,11 +284,47 @@ fn discover_clusters(
     clusters
 }
 
+/// Find open threads from the store: entries with unresolved relations.
+///
+/// Scans all entries (not just hot ones) so that unresolved items are surfaced
+/// regardless of access count.
+pub async fn open_threads_from_store<S: VectorStore>(store: &S) -> crate::Result<Vec<OpenThread>> {
+    let all = store.list_entries(None, None, None, usize::MAX).await?;
+    Ok(find_open_threads(&all))
+}
+
+/// Resolve open-thread IDs from the store when `ongoing` filtering is requested.
+///
+/// Returns `Some(HashSet)` when `ongoing` is true, `None` otherwise.
+/// Callers use `passes_ongoing_filter` to filter entries.
+///
+/// NOTE: This scans the entire store (`list_entries` with `usize::MAX`).
+/// Acceptable for current store sizes but should be optimized if stores
+/// grow beyond ~10k entries (e.g. with a dedicated open-thread index).
+pub async fn resolve_ongoing_filter<S: VectorStore>(
+    store: &S,
+    ongoing: bool,
+) -> crate::Result<Option<std::collections::HashSet<String>>> {
+    if ongoing {
+        let threads = open_threads_from_store(store).await?;
+        Ok(Some(threads.into_iter().map(|t| t.id).collect()))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Check whether an ID passes the ongoing filter.
+///
+/// Returns `true` if there is no filter or if the ID is in the filter set.
+pub fn passes_ongoing_filter(filter: &Option<std::collections::HashSet<String>>, id: &str) -> bool {
+    filter.as_ref().is_none_or(|ids| ids.contains(id))
+}
+
 /// Find open threads: entries with unresolved relations.
 ///
 /// A chunk can match multiple criteria. Reasons are merged rather than
 /// discarded so no context is lost.
-fn find_open_threads(chunks: &[HierarchicalChunk]) -> Vec<OpenThread> {
+pub(crate) fn find_open_threads(chunks: &[HierarchicalChunk]) -> Vec<OpenThread> {
     use std::collections::HashMap;
 
     let mut by_id: HashMap<String, OpenThread> = HashMap::new();

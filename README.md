@@ -52,6 +52,7 @@ veclayer serve
 
 | Command | Description |
 |---------|-------------|
+| `init` | Initialize a new VecLayer store |
 | `store` | Store knowledge (text, file, directory) |
 | `recall` | Semantic search with perspective filter |
 | `focus` | Drill into an entry, show children |
