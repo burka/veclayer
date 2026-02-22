@@ -1,7 +1,72 @@
 //! Input and output types for MCP tools.
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// Intermediate type for deserializing a value that may be a JSON array or a string.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StringOrVec {
+    Vec(Vec<String>),
+    Str(String),
+}
+
+/// Deserialize a `Vec<String>` that tolerates MCP clients sending a string instead of an array.
+///
+/// Accepts:
+///   - `["a", "b"]`         → vec!["a", "b"]
+///   - `"a, b"`             → vec!["a", "b"]  (comma-separated)
+///   - `"a"`                → vec!["a"]
+///   - `null` / missing     → vec![]
+fn string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Option::<StringOrVec>::deserialize(deserializer)? {
+        None => Ok(Vec::new()),
+        Some(StringOrVec::Vec(v)) => Ok(v),
+        Some(StringOrVec::Str(s)) => Ok(parse_string_as_vec(&s)),
+    }
+}
+
+/// Same as [`string_or_vec`] but for `Option<Vec<String>>` fields.
+fn string_or_option_vec<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Option::<StringOrVec>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(StringOrVec::Vec(v)) => Ok(Some(v)),
+        Some(StringOrVec::Str(s)) => {
+            let v = parse_string_as_vec(&s);
+            if v.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(v))
+            }
+        }
+    }
+}
+
+/// Parse a string as a `Vec<String>`, handling JSON-encoded arrays and comma-separated values.
+fn parse_string_as_vec(s: &str) -> Vec<String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    // Handle JSON array accidentally sent as string: "[\"a\", \"b\"]"
+    if trimmed.starts_with('[') {
+        if let Ok(parsed) = serde_json::from_str::<Vec<String>>(trimmed) {
+            return parsed;
+        }
+    }
+    // Comma-separated fallback
+    trimmed
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
 
 // ─── Input types ───────────────────────────────────────────────────────
 
@@ -79,7 +144,7 @@ pub struct StoreItem {
     pub heading: Option<String>,
     #[serde(default = "default_visibility")]
     pub visibility: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "string_or_vec")]
     pub perspectives: Vec<String>,
     #[serde(default)]
     pub source_file: Option<String>,
@@ -112,7 +177,7 @@ pub struct StoreInput {
     #[serde(default = "default_visibility")]
     pub visibility: String,
     /// Perspectives to tag this entry with
-    #[serde(default)]
+    #[serde(default, deserialize_with = "string_or_vec")]
     pub perspectives: Vec<String>,
     /// Relations to establish atomically when storing.
     /// Kinds: "supersedes", "summarizes", "related_to", "derived_from", "version_of"
@@ -164,6 +229,7 @@ pub struct ThinkInput {
     // ── configure_aging parameters ──
     pub degrade_after_days: Option<u32>,
     pub degrade_to: Option<String>,
+    #[serde(default, deserialize_with = "string_or_option_vec")]
     pub degrade_from: Option<Vec<String>>,
 }
 
@@ -177,7 +243,7 @@ pub struct ShareInput {
     /// Tree/scope to share
     pub tree: String,
     /// Allowed operations (default: ["recall", "focus"])
-    #[serde(default)]
+    #[serde(default, deserialize_with = "string_or_vec")]
     pub can: Vec<String>,
     /// Expiry hint (e.g. "90d")
     pub expires: Option<String>,
@@ -287,4 +353,138 @@ pub struct FocusChild {
 pub enum ApiResponse<T> {
     Success(T),
     Error { error: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ── string_or_vec (Vec<String> fields) ──────────────────────────────
+
+    #[test]
+    fn store_perspectives_from_json_array() {
+        let input: StoreInput =
+            serde_json::from_value(json!({"content": "x", "perspectives": ["a", "b"]})).unwrap();
+        assert_eq!(input.perspectives, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn store_perspectives_from_comma_string() {
+        let input: StoreInput =
+            serde_json::from_value(json!({"content": "x", "perspectives": "a, b, c"})).unwrap();
+        assert_eq!(input.perspectives, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn store_perspectives_from_single_string() {
+        let input: StoreInput =
+            serde_json::from_value(json!({"content": "x", "perspectives": "session"})).unwrap();
+        assert_eq!(input.perspectives, vec!["session"]);
+    }
+
+    #[test]
+    fn store_perspectives_from_stringified_json_array() {
+        let input: StoreInput = serde_json::from_value(
+            json!({"content": "x", "perspectives": r#"["session", "knowledge"]"#}),
+        )
+        .unwrap();
+        assert_eq!(input.perspectives, vec!["session", "knowledge"]);
+    }
+
+    #[test]
+    fn store_perspectives_missing_defaults_empty() {
+        let input: StoreInput = serde_json::from_value(json!({"content": "x"})).unwrap();
+        assert!(input.perspectives.is_empty());
+    }
+
+    #[test]
+    fn store_perspectives_null_defaults_empty() {
+        let input: StoreInput =
+            serde_json::from_value(json!({"content": "x", "perspectives": null})).unwrap();
+        assert!(input.perspectives.is_empty());
+    }
+
+    #[test]
+    fn store_perspectives_empty_string_defaults_empty() {
+        let input: StoreInput =
+            serde_json::from_value(json!({"content": "x", "perspectives": ""})).unwrap();
+        assert!(input.perspectives.is_empty());
+    }
+
+    #[test]
+    fn store_item_perspectives_from_string() {
+        let item: StoreItem =
+            serde_json::from_value(json!({"content": "x", "perspectives": "a, b"})).unwrap();
+        assert_eq!(item.perspectives, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn share_can_from_string() {
+        let input: ShareInput =
+            serde_json::from_value(json!({"tree": "/", "can": "recall, focus"})).unwrap();
+        assert_eq!(input.can, vec!["recall", "focus"]);
+    }
+
+    // ── string_or_option_vec (Option<Vec<String>> fields) ───────────────
+
+    #[test]
+    fn think_degrade_from_json_array() {
+        let input: ThinkInput = serde_json::from_value(
+            json!({"action": "configure_aging", "degrade_from": ["normal"]}),
+        )
+        .unwrap();
+        assert_eq!(input.degrade_from, Some(vec!["normal".to_string()]));
+    }
+
+    #[test]
+    fn think_degrade_from_comma_string() {
+        let input: ThinkInput = serde_json::from_value(
+            json!({"action": "configure_aging", "degrade_from": "normal, deep_only"}),
+        )
+        .unwrap();
+        assert_eq!(
+            input.degrade_from,
+            Some(vec!["normal".to_string(), "deep_only".to_string()])
+        );
+    }
+
+    #[test]
+    fn think_degrade_from_null_is_none() {
+        let input: ThinkInput =
+            serde_json::from_value(json!({"action": "configure_aging", "degrade_from": null}))
+                .unwrap();
+        assert_eq!(input.degrade_from, None);
+    }
+
+    #[test]
+    fn think_degrade_from_missing_is_none() {
+        let input: ThinkInput =
+            serde_json::from_value(json!({"action": "configure_aging"})).unwrap();
+        assert_eq!(input.degrade_from, None);
+    }
+
+    #[test]
+    fn think_degrade_from_empty_string_is_none() {
+        let input: ThinkInput =
+            serde_json::from_value(json!({"action": "configure_aging", "degrade_from": ""}))
+                .unwrap();
+        assert_eq!(input.degrade_from, None);
+    }
+
+    // ── edge cases from review ──────────────────────────────────────────
+
+    #[test]
+    fn perspectives_filters_empty_segments_from_double_comma() {
+        let input: StoreInput =
+            serde_json::from_value(json!({"content": "x", "perspectives": "a,,b"})).unwrap();
+        assert_eq!(input.perspectives, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn perspectives_malformed_json_array_falls_back_to_single_token() {
+        let input: StoreInput =
+            serde_json::from_value(json!({"content": "x", "perspectives": "[bad json"})).unwrap();
+        assert_eq!(input.perspectives, vec!["[bad json"]);
+    }
 }
