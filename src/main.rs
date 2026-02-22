@@ -12,7 +12,7 @@ use veclayer::Result;
 
 #[derive(Parser)]
 #[command(name = "veclayer")]
-#[command(about = "Hierarchical memory for AI agents")]
+#[command(about = "Persistent memory for AI agents — recall, store, focus, think, share")]
 #[command(version)]
 struct Cli {
     /// Data directory for VecLayer storage
@@ -41,9 +41,9 @@ enum Commands {
     /// Initialize a new VecLayer store
     Init,
 
-    /// Add knowledge (text, file, or directory)
-    #[command(alias = "store")]
-    Add {
+    /// Store knowledge (text, file, or directory)
+    #[command(alias = "add")]
+    Store {
         /// Text content, file path, or directory to add
         input: String,
 
@@ -112,9 +112,9 @@ enum Commands {
         rel_custom: Vec<String>,
     },
 
-    /// Semantic search with hierarchical results
-    #[command(alias = "s", alias = "recall")]
-    Search {
+    /// Recall knowledge — semantic search with hierarchical results
+    #[command(alias = "search", alias = "s")]
+    Recall {
         /// The search query (omit to browse all entries)
         query: Option<String>,
 
@@ -163,7 +163,7 @@ enum Commands {
         until: Option<String>,
     },
 
-    /// Focus on an entry: show details and children
+    /// Focus on an entry — show details and children, optionally reranked by a question
     #[command(alias = "f")]
     Focus {
         /// Entry ID (full hash or short 7-char prefix)
@@ -235,14 +235,14 @@ enum Commands {
         path: String,
     },
 
-    /// Read-only identity operations: reflection, salience, candidates
+    /// Reflect — identity snapshot, salience ranking, archive candidates
     #[command(alias = "id")]
     Reflect {
         #[command(subcommand)]
         action: Option<ReflectAction>,
     },
 
-    /// Curate memory: promote, demote, relate, aging, LLM consolidation
+    /// Think — curate memory: promote, demote, relate, aging, LLM consolidation
     Think {
         #[command(subcommand)]
         action: Option<ThinkAction>,
@@ -389,7 +389,7 @@ async fn main() -> Result<()> {
         Commands::Init => {
             veclayer::commands::init(&cli.data_dir)?;
         }
-        Commands::Add {
+        Commands::Store {
             input,
             no_recursive,
             no_summarize,
@@ -428,7 +428,7 @@ async fn main() -> Result<()> {
             };
             veclayer::commands::add(&cli.data_dir, &input, options).await?;
         }
-        Commands::Search {
+        Commands::Recall {
             query,
             top_k,
             show_path,

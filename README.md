@@ -32,14 +32,14 @@ For technical details see [ARCHITECTURE.md](ARCHITECTURE.md).
 # Initialize a new VecLayer store
 veclayer init
 
-# Add knowledge
-veclayer add ./docs                        # files/directories
-veclayer add "Core decision: Rust"         # single text
-veclayer add --perspective decisions "We chose Turso over Postgres"
+# Store knowledge
+veclayer store ./docs                        # files/directories
+veclayer store "Core decision: Rust"         # single text
+veclayer store --perspective decisions "We chose Turso over Postgres"
 
-# Search
-veclayer search "architecture decisions"
-veclayer search --perspective decisions "backend"
+# Recall
+veclayer recall "architecture decisions"
+veclayer recall --perspective decisions "backend"
 
 # Drill down
 veclayer focus abc1234
@@ -52,22 +52,20 @@ veclayer serve
 
 | Command | Description |
 |---------|-------------|
-| `init` | Initialize a new VecLayer store |
-| `add` | Add knowledge (text, file, directory) |
-| `search` | Semantic search with perspective filter |
+| `store` | Store knowledge (text, file, directory) |
+| `recall` | Semantic search with perspective filter |
 | `focus` | Drill into an entry, show children |
-| `status` | Store statistics |
-| `sources` | List all indexed source files |
+| `reflect` | Identity snapshot, salience ranking, archive candidates |
+| `think` | Curate: promote, demote, relate, aging, LLM consolidation |
 | `serve` | Start MCP/HTTP server |
-| `compact` | Run aging, compute salience, suggest archival |
-| `id` | Show identity summary |
-| `reflect` | Read-only material preparation (priming) |
-| `think` | LLM-powered reflection + consolidation |
+| `status` | Store statistics |
 | `perspective` | Manage perspectives (list, add, remove) |
 | `history` | Show version/relation history of an entry |
 | `archive` | Demote entries to deep_only visibility |
+| `export` | Export entries to JSONL |
+| `import` | Import entries from JSONL |
 
-Aliases: `store` = `add`, `s` = `search`, `f` = `focus`
+Aliases: `add` = `store`, `search`/`s` = `recall`, `f` = `focus`, `id` = `reflect`
 
 ## Building from Source
 
@@ -92,7 +90,7 @@ On first use, VecLayer downloads the embedding model (`BAAI/bge-small-en-v1.5`, 
 
 ```bash
 veclayer init
-veclayer add "test"   # triggers model download on first run
+veclayer store "test"   # triggers model download on first run
 ```
 
 ### Troubleshooting
@@ -106,7 +104,7 @@ The embedding model couldn't be downloaded. Common causes:
 Install the Protocol Buffers compiler (see prerequisites above).
 
 **`Failed to connect to Ollama`**
-The think cycle and cluster summarization require a running Ollama instance. These features are optional — `add`, `search`, `focus`, and all non-LLM commands work without it.
+The think cycle and cluster summarization require a running Ollama instance. These features are optional — `store`, `recall`, `focus`, and all non-LLM commands work without it.
 
 ## Tech Stack
 
