@@ -1,11 +1,11 @@
 use crate::chunk::now_epoch_secs;
-
-/// Over-fetch factor when temporal filters will reduce the result set.
-pub const TEMPORAL_PREFETCH_FACTOR: usize = 3;
 use crate::embedder::Embedder;
 use crate::salience::{self, SalienceWeights};
 use crate::store::{SearchResult, VectorStore};
 use crate::{ChunkLevel, HierarchicalChunk, RecencyWindow, Result};
+
+/// Over-fetch factor when temporal filters will reduce the result set.
+pub const TEMPORAL_PREFETCH_FACTOR: usize = 3;
 
 /// Result of a hierarchical search including the path through the hierarchy
 #[derive(Debug, Clone)]
@@ -309,7 +309,8 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
 
         let now = now_epoch_secs();
 
-        let fetch_k = (limit + 1) * 2;
+        // +1 to account for the source entry itself appearing in ANN results (excluded below)
+        let fetch_k = limit + 1;
 
         let top_results = if let Some(ref perspective) = self.config.perspective {
             self.store
