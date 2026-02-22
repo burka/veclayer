@@ -117,3 +117,34 @@ Each step links to the previous via `derived_from`. The chain is visible through
 
 You are the curator of your own memory. Use these tools to build a knowledge base that reflects \
 what matters to you.";
+
+/// Combine the static MCP instructions with the dynamic identity priming text.
+///
+/// Returns just the instructions when priming is empty (store has no content yet).
+pub(crate) fn build_priming_text(priming: &str) -> String {
+    if priming.is_empty() {
+        MCP_INSTRUCTIONS.to_string()
+    } else {
+        format!("{}\n\n---\n\n{}", MCP_INSTRUCTIONS, priming)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_priming_text_empty_returns_instructions_only() {
+        let result = build_priming_text("");
+        assert_eq!(result, MCP_INSTRUCTIONS);
+    }
+
+    #[test]
+    fn build_priming_text_with_content_appends_after_separator() {
+        let content = "# Identity Briefing\n\n## Core Knowledge\n\nSomething important.";
+        let result = build_priming_text(content);
+        assert!(result.starts_with(MCP_INSTRUCTIONS));
+        assert!(result.contains("\n\n---\n\n"));
+        assert!(result.ends_with(content));
+    }
+}

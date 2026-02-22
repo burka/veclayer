@@ -71,11 +71,7 @@ async fn handle_mcp_message(
             let priming = match crate::identity::compute_identity(store.as_ref(), data_dir).await {
                 Ok(snapshot) => {
                     let p = crate::identity::generate_priming(&snapshot);
-                    if p.len() > 50 {
-                        format!("{}\n\n---\n\n{}", MCP_INSTRUCTIONS, p)
-                    } else {
-                        MCP_INSTRUCTIONS.to_string()
-                    }
+                    super::build_priming_text(&p)
                 }
                 Err(e) => {
                     warn!("Identity priming failed, using static instructions: {}", e);
