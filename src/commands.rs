@@ -302,9 +302,9 @@ pub fn init(data_dir: &Path) -> Result<()> {
     // Initialize perspectives (idempotent — won't overwrite existing)
     crate::perspective::init(data_dir)?;
     println!("\nNext steps:");
-    println!("  veclayer add ./docs       # Add files");
-    println!("  veclayer add \"text\"        # Add inline text");
-    println!("  veclayer search \"query\"    # Search");
+    println!("  veclayer store ./docs      # Store files");
+    println!("  veclayer store \"text\"      # Store inline text");
+    println!("  veclayer recall \"query\"    # Recall knowledge");
     Ok(())
 }
 
@@ -950,9 +950,9 @@ pub async fn status(data_dir: &Path) -> Result<()> {
     println!("\nSource files: {}", result.source_files.len());
 
     if !result.source_files.is_empty() {
-        println!("\nNext: `veclayer search \"query\"` or `veclayer add <path>`");
+        println!("\nNext: `veclayer recall \"query\"` or `veclayer store <path>`");
     } else {
-        println!("\nStore is empty. Use `veclayer add <path>` to add knowledge.");
+        println!("\nStore is empty. Use `veclayer store <path>` to add knowledge.");
     }
 
     Ok(())
@@ -976,7 +976,7 @@ pub async fn print_sources(data_dir: &Path) -> Result<()> {
     let result = sources(data_dir).await?;
 
     if result.is_empty() {
-        println!("No files indexed. Use `veclayer add <path>` to add knowledge.");
+        println!("No files indexed. Use `veclayer store <path>` to add knowledge.");
     } else {
         println!("Indexed source files:");
         for file in &result {
@@ -1399,9 +1399,9 @@ pub async fn orientation(data_dir: &Path) -> Result<()> {
     let store_stats = store.stats().await?;
     if store_stats.total_chunks == 0 {
         println!("VecLayer is empty. Get started:");
-        println!("  veclayer add \"Your first piece of knowledge\"");
-        println!("  veclayer add ./notes/");
-        println!("  veclayer search \"What do I know about X?\"");
+        println!("  veclayer store \"Your first piece of knowledge\"");
+        println!("  veclayer store ./notes/");
+        println!("  veclayer recall \"What do I know about X?\"");
         return Ok(());
     }
 
@@ -1466,7 +1466,7 @@ pub async fn orientation(data_dir: &Path) -> Result<()> {
     }
 
     // Hints
-    println!("\nTry: search, reflect, think, reflect salience");
+    println!("\nTry: recall, reflect, think, reflect salience");
 
     Ok(())
 }

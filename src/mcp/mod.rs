@@ -29,7 +29,7 @@ access tracking. Knowledge that you use often stays prominent. Knowledge you ign
 
 ### recall — What do I know about this?
 Find relevant knowledge using semantic search, or browse without a query. Results include \
-a relevance tier. Use `since`/`until` for temporal filtering. Results come with access profiles \
+a relevance tier (strong/moderate/weak/tangential). Use `since`/`until` for temporal filtering. Results come with access profiles \
 showing how often each piece was accessed. Use `deep: true` to include archived knowledge. \
 Use `recency` to boost recently accessed memories.
 
@@ -62,19 +62,29 @@ Generates a scoped share-token payload describing what knowledge to share and wi
 permissions. This is a preview of the upcoming UCAN-based sharing system — tokens are not \
 yet cryptographically signed.
 
-## When to Think
+## How to Use Your Memory
 
-Run `think` when you have time: start of session, end of session, between tasks. Review what's \
-hot, what's stale, what needs promoting or archiving. Write summaries of related chunks using \
-`store`. Mark outdated knowledge with `think(action='relate', kind='superseded_by')`.
+### Capture what matters — proactively, not on request
+Store decisions and their rationale as you make them. When you reject an approach, store why. \
+When you learn something, store it with `perspectives: [\"learnings\"]`. When you solve a bug, \
+store the root cause. Don't wait to be asked — good memory is built in the moment.
 
-## Summarization Pattern
+### Before new tasks — check what you already know
+Before starting work, `recall` the topic. You may have solved something similar before, \
+or made a decision that applies. Check `recall(perspective=\"decisions\")` for past trade-offs.
 
+### Summarize to consolidate
+When related knowledge accumulates, synthesize:
 1. `recall` a topic area
 2. `focus` on interesting nodes to read children
-3. Synthesize a summary
+3. Write a summary
 4. `store` it with `parent_id` to place in hierarchy
-5. `think(action='relate', kind='summarized_by')` to link children to the summary
+5. `think(action='relate', kind='summarized_by')` to link originals to the summary
+
+### Curate between tasks
+Run `think` when you have time: start of session, end of session, between tasks. Review what's \
+hot, what's stale, what needs promoting or archiving. Mark outdated knowledge with \
+`think(action='relate', kind='superseded_by')`.
 
 ## Session Pattern
 
