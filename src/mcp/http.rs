@@ -3,6 +3,8 @@
 use std::sync::Arc;
 
 use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use tower_http::cors::{Any, CorsLayer};
@@ -49,6 +51,7 @@ pub async fn run_http(config: Config) -> Result<()> {
         .route("/api/share", post(api_share))
         .route("/api/stats", get(api_stats))
         .route("/api/identity", get(api_identity))
+        .route("/api/priming", get(api_priming))
         .layer(cors)
         .with_state(state);
 
@@ -75,9 +78,12 @@ async fn api_recall(
 ) -> Json<ApiResponse<Vec<SearchResultResponse>>> {
     match tools::execute_recall(&state.store, &state.embedder, input).await {
         Ok(results) => Json(ApiResponse::Success(results)),
-        Err(e) => Json(ApiResponse::Error {
-            error: e.to_string(),
-        }),
+        Err(e) => {
+            tracing::warn!("Recall failed: {e}");
+            Json(ApiResponse::Error {
+                error: "Recall operation failed.".to_string(),
+            })
+        }
     }
 }
 
@@ -87,9 +93,12 @@ async fn api_focus(
 ) -> Json<ApiResponse<FocusResponse>> {
     match tools::execute_focus(&state.store, &state.embedder, input).await {
         Ok(response) => Json(ApiResponse::Success(response)),
-        Err(e) => Json(ApiResponse::Error {
-            error: e.to_string(),
-        }),
+        Err(e) => {
+            tracing::warn!("Focus failed: {e}");
+            Json(ApiResponse::Error {
+                error: "Focus operation failed.".to_string(),
+            })
+        }
     }
 }
 
@@ -104,9 +113,12 @@ async fn api_store(
     }
     match tools::execute_store(&state.store, &state.embedder, input).await {
         Ok(chunk_id) => Json(ApiResponse::Success(format!("Stored. ID: {}", chunk_id))),
-        Err(e) => Json(ApiResponse::Error {
-            error: e.to_string(),
-        }),
+        Err(e) => {
+            tracing::warn!("Store failed: {e}");
+            Json(ApiResponse::Error {
+                error: "Store operation failed.".to_string(),
+            })
+        }
     }
 }
 
@@ -116,9 +128,12 @@ async fn api_think(
 ) -> Json<ApiResponse<String>> {
     match tools::execute_think(&state.store, &state.data_dir, input).await {
         Ok(text) => Json(ApiResponse::Success(text)),
-        Err(e) => Json(ApiResponse::Error {
-            error: e.to_string(),
-        }),
+        Err(e) => {
+            tracing::warn!("Think failed: {e}");
+            Json(ApiResponse::Error {
+                error: "Think operation failed.".to_string(),
+            })
+        }
     }
 }
 
@@ -133,9 +148,12 @@ async fn api_stats(State(state): State<AppState>) -> Json<ApiResponse<serde_json
             "chunks_by_level": stats.chunks_by_level,
             "source_files": stats.source_files,
         }))),
-        Err(e) => Json(ApiResponse::Error {
-            error: e.to_string(),
-        }),
+        Err(e) => {
+            tracing::warn!("Stats failed: {e}");
+            Json(ApiResponse::Error {
+                error: "Stats retrieval failed.".to_string(),
+            })
+        }
     }
 }
 
@@ -144,11 +162,7 @@ async fn api_identity(State(state): State<AppState>) -> Json<ApiResponse<serde_j
     match crate::identity::compute_identity(state.store.as_ref(), &state.data_dir).await {
         Ok(snapshot) => {
             let priming = crate::identity::generate_priming(&snapshot);
-            let instructions = if priming.len() > 50 {
-                format!("{}\n\n---\n\n{}", super::MCP_INSTRUCTIONS, priming)
-            } else {
-                super::MCP_INSTRUCTIONS.to_string()
-            };
+            let instructions = super::build_priming_text(&priming);
             Json(ApiResponse::Success(serde_json::json!({
                 "instructions": instructions,
                 "core_entries": snapshot.core_entries.len(),
@@ -161,8 +175,39 @@ async fn api_identity(State(state): State<AppState>) -> Json<ApiResponse<serde_j
                     .collect::<Vec<_>>(),
             })))
         }
-        Err(e) => Json(ApiResponse::Error {
-            error: e.to_string(),
-        }),
+        Err(e) => {
+            tracing::warn!("Identity computation failed: {e}");
+            Json(ApiResponse::Error {
+                error: "Identity computation temporarily unavailable.".to_string(),
+            })
+        }
+    }
+}
+
+/// Priming endpoint — returns the full MCP instructions + identity briefing as plain text.
+///
+/// Agents connecting via HTTP can GET this endpoint on startup to receive the same
+/// identity briefing that stdio agents receive on `initialize`.
+async fn api_priming(State(state): State<AppState>) -> Response {
+    match crate::identity::compute_identity(state.store.as_ref(), &state.data_dir).await {
+        Ok(snapshot) => {
+            let priming = crate::identity::generate_priming(&snapshot);
+            let text = super::build_priming_text(&priming);
+            (
+                StatusCode::OK,
+                [("content-type", "text/plain; charset=utf-8")],
+                text,
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::warn!("Priming computation failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("content-type", "text/plain; charset=utf-8")],
+                "Identity briefing temporarily unavailable.".to_string(),
+            )
+                .into_response()
+        }
     }
 }

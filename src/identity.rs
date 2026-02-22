@@ -24,6 +24,17 @@ pub struct IdentitySnapshot {
     pub emergent_clusters: Vec<EmergentCluster>,
 }
 
+impl IdentitySnapshot {
+    /// Returns true when the snapshot contains no meaningful content.
+    pub fn is_empty(&self) -> bool {
+        self.core_entries.is_empty()
+            && self.open_threads.is_empty()
+            && self.recent_learnings.is_empty()
+            && self.centroids.is_empty()
+            && self.emergent_clusters.is_empty()
+    }
+}
+
 /// An emergent cluster discovered from embedding similarity.
 #[derive(Debug, Clone)]
 pub struct EmergentCluster {
@@ -375,6 +386,10 @@ pub(crate) fn find_open_threads(chunks: &[HierarchicalChunk]) -> Vec<OpenThread>
 ///
 /// This is the "who am I, what's on my mind" briefing.
 pub fn generate_priming(snapshot: &IdentitySnapshot) -> String {
+    if snapshot.is_empty() {
+        return String::new();
+    }
+
     let mut priming = String::new();
 
     priming.push_str("# Identity Briefing\n\n");
@@ -455,10 +470,6 @@ pub fn generate_priming(snapshot: &IdentitySnapshot) -> String {
             ));
         }
         priming.push('\n');
-    }
-
-    if priming.len() < 30 {
-        priming.push_str("Memory is empty. Start by storing knowledge with `store` or `add`.\n");
     }
 
     priming
@@ -611,7 +622,7 @@ mod tests {
             emergent_clusters: vec![],
         };
         let priming = generate_priming(&snapshot);
-        assert!(priming.contains("Memory is empty"));
+        assert!(priming.is_empty());
     }
 
     #[test]
