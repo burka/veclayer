@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -9,12 +9,52 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase};
+use lancedb::table::NewColumnTransform;
 use lancedb::{connect, Connection, Table};
 
 use super::{FileLock, SearchResult, StoreStats, VectorStore};
 use crate::{ChunkLevel, ClusterMembership, Error, HierarchicalChunk, Result};
 
 const TABLE_NAME: &str = "chunks";
+
+/// Deterministic fingerprint of an Arrow schema: hash of field names + types.
+/// Changes automatically when fields are added, removed, or retyped.
+/// Uses DataType's Display (delegates to Debug for non-Struct types in arrow-schema v55).
+/// Stable within the ^55 pin; a major bump may change fingerprints, which is acceptable
+/// since this is informational metadata, not a migration gate.
+fn schema_fingerprint(schema: &Schema) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    for field in schema.fields() {
+        hasher.update(field.name().as_bytes());
+        hasher.update(b":");
+        hasher.update(format!("{}", field.data_type()).as_bytes());
+        hasher.update(b"\n");
+    }
+    let hash = hasher.finalize();
+    format!("{hash:x}")[..12].to_string()
+}
+
+/// Columns from older schema versions that are no longer in schema() but
+/// may still exist in on-disk tables. These are NOT treated as "newer version".
+const LEGACY_COLUMNS: &[&str] = &["last_accessed", "access_count", "is_summary"];
+
+fn migration_default(field_name: &str) -> Option<&'static str> {
+    match field_name {
+        "cluster_memberships" | "summarizes" | "perspectives" | "relations" => Some("'[]'"),
+        "entry_type" => Some("'raw'"),
+        "visibility" => Some("'normal'"),
+        "created_at" | "last_rolled" => Some("cast(0 as bigint)"),
+        "access_hour" | "access_day" | "access_week" | "access_month" | "access_year" => {
+            Some("cast(0 as smallint unsigned)")
+        }
+        "access_total" => Some("cast(0 as int unsigned)"),
+        "expires_at" => Some("cast(NULL as bigint)"),
+        "impression_hint" => Some("cast(NULL as string)"),
+        "impression_strength" => Some("cast(1.0 as float)"),
+        _ => None,
+    }
+}
 
 fn sql_escape(s: &str) -> String {
     s.replace('\'', "''")
@@ -150,14 +190,151 @@ impl LanceStore {
 
         if !tables.contains(&TABLE_NAME.to_string()) {
             let schema = self.schema();
-
             self.connection
                 .create_empty_table(TABLE_NAME, schema)
                 .execute()
                 .await
                 .map_err(|e| Error::store(format!("Failed to create table: {}", e)))?;
+            let table = self.get_table().await?;
+            Self::stamp_version(&table, &self.schema()).await?;
+            return Ok(());
         }
 
+        // Table exists — check for schema drift
+        let table = self.get_table().await?;
+        let current_schema = table
+            .schema()
+            .await
+            .map_err(|e| Error::store(format!("Failed to read table schema: {}", e)))?;
+        let expected_schema = self.schema();
+
+        let current_fields: HashSet<&str> = current_schema
+            .fields()
+            .iter()
+            .map(|f| f.name().as_str())
+            .collect();
+        let expected_fields: HashSet<&str> = expected_schema
+            .fields()
+            .iter()
+            .map(|f| f.name().as_str())
+            .collect();
+
+        // 1. Columns we need but table doesn't have → add them
+        let missing: Vec<(String, String)> = expected_schema
+            .fields()
+            .iter()
+            .filter(|f| !current_fields.contains(f.name().as_str()))
+            .map(|f| {
+                let default = migration_default(f.name()).ok_or_else(|| {
+                    Error::store(format!(
+                        "Schema migration: core field '{}' missing from table. \
+                         Store may be corrupted or from an incompatible version.",
+                        f.name()
+                    ))
+                })?;
+                Ok((f.name().clone(), default.to_string()))
+            })
+            .collect::<Result<_>>()?;
+
+        if !missing.is_empty() {
+            let names: Vec<&str> = missing.iter().map(|(n, _)| n.as_str()).collect();
+            tracing::info!("migrating store: adding columns {:?}", names);
+            table
+                .add_columns(NewColumnTransform::SqlExpressions(missing), None)
+                .await
+                .map_err(|e| Error::store(format!("Schema migration failed: {}", e)))?;
+        }
+
+        // 2. Migrate data from legacy columns into new columns before dropping
+        if current_fields.contains("is_summary") {
+            tracing::info!("migrating data: is_summary → entry_type");
+            table
+                .update()
+                .column("entry_type", "'summary'")
+                .only_if("is_summary = true AND entry_type = 'raw'")
+                .execute()
+                .await
+                .map_err(|e| Error::store(format!("Data migration is_summary failed: {}", e)))?;
+        }
+
+        // 3. Legacy columns still in table → drop them (safe after data migration)
+        let legacy_to_drop: Vec<&str> = current_fields
+            .iter()
+            .filter(|f| LEGACY_COLUMNS.contains(f))
+            .copied()
+            .collect();
+
+        if !legacy_to_drop.is_empty() {
+            tracing::info!(
+                "migrating store: dropping legacy columns {:?}",
+                legacy_to_drop
+            );
+            table
+                .drop_columns(&legacy_to_drop)
+                .await
+                .map_err(|e| Error::store(format!("Legacy column removal failed: {}", e)))?;
+        }
+
+        // 4. Columns present in both but with different types → incompatible
+        for expected_field in expected_schema.fields() {
+            if let Ok(current_field) = current_schema.field_with_name(expected_field.name()) {
+                if current_field.data_type() != expected_field.data_type() {
+                    return Err(Error::store(format!(
+                        "Column '{}' has type {:?} in store but {:?} in this client. \
+                         Store may be from an incompatible version.",
+                        expected_field.name(),
+                        current_field.data_type(),
+                        expected_field.data_type()
+                    )));
+                }
+            }
+        }
+
+        // 5. Columns table has but we don't expect (excluding legacy) → newer store
+        let unexpected: Vec<&str> = current_fields
+            .iter()
+            .filter(|f| !expected_fields.contains(*f) && !LEGACY_COLUMNS.contains(f))
+            .copied()
+            .collect();
+
+        if !unexpected.is_empty() {
+            let stored_commit = current_schema
+                .metadata()
+                .get("veclayer::commit")
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string());
+            return Err(Error::store(format!(
+                "Store has columns not recognized by this client: {:?}. \
+                 Store was written by version: {}. \
+                 Please update veclayer to a newer version.",
+                unexpected, stored_commit
+            )));
+        }
+
+        // 6. Stamp current version
+        Self::stamp_version(&table, &expected_schema).await?;
+
+        Ok(())
+    }
+
+    /// Write schema fingerprint and build commit into Arrow schema metadata.
+    /// Requires a native (local) LanceDB table — silently skips for remote connections.
+    async fn stamp_version(table: &Table, schema: &Schema) -> Result<()> {
+        if let Some(native) = table.as_native() {
+            let fingerprint = schema_fingerprint(schema);
+            let commit_info = format!(
+                "{} ({})",
+                env!("VECLAYER_GIT_HASH"),
+                env!("VECLAYER_GIT_DATE"),
+            );
+            native
+                .replace_schema_metadata(vec![
+                    ("veclayer::schema_fingerprint".to_string(), fingerprint),
+                    ("veclayer::commit".to_string(), commit_info),
+                ])
+                .await
+                .map_err(|e| Error::store(format!("Failed to stamp version: {}", e)))?;
+        }
         Ok(())
     }
 
@@ -1715,5 +1892,295 @@ mod tests {
         let retrieved = store.get_by_id("imp-2").await.unwrap().unwrap();
         assert_eq!(retrieved.impression_hint, None);
         assert!((retrieved.impression_strength - 1.0).abs() < 0.001);
+    }
+
+    // --- Schema migration tests ---
+
+    /// Every non-core field in schema() must have a migration_default().
+    #[tokio::test]
+    async fn test_migration_default_coverage() {
+        let core_fields = [
+            "id",
+            "content",
+            "embedding",
+            "level",
+            "parent_id",
+            "path",
+            "source_file",
+            "heading",
+        ];
+        let (store, _temp) = create_test_store().await;
+        let schema = store.schema();
+        for field in schema.fields() {
+            if core_fields.contains(&field.name().as_str()) {
+                continue;
+            }
+            assert!(
+                migration_default(field.name()).is_some(),
+                "Field '{}' has no migration_default()",
+                field.name()
+            );
+        }
+    }
+
+    /// Create a table missing impression columns, then open LanceStore.
+    /// Verify the columns were added and data is readable.
+    #[tokio::test]
+    async fn test_adds_missing_columns() {
+        let temp_dir = TempDir::new().unwrap();
+        let uri = temp_dir.path().to_string_lossy().to_string();
+        let connection = connect(&uri).execute().await.unwrap();
+
+        // Create a schema missing impression_hint and impression_strength
+        let old_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("content", DataType::Utf8, false),
+            Field::new(
+                "embedding",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 384),
+                false,
+            ),
+            Field::new("level", DataType::UInt8, false),
+            Field::new("parent_id", DataType::Utf8, true),
+            Field::new("path", DataType::Utf8, false),
+            Field::new("source_file", DataType::Utf8, false),
+            Field::new("heading", DataType::Utf8, true),
+            Field::new("cluster_memberships", DataType::Utf8, false),
+            Field::new("entry_type", DataType::Utf8, false),
+            Field::new("summarizes", DataType::Utf8, false),
+            Field::new("perspectives", DataType::Utf8, false),
+            Field::new("visibility", DataType::Utf8, false),
+            Field::new("relations", DataType::Utf8, false),
+            Field::new("created_at", DataType::Int64, false),
+            Field::new("last_rolled", DataType::Int64, false),
+            Field::new("access_hour", DataType::UInt16, false),
+            Field::new("access_day", DataType::UInt16, false),
+            Field::new("access_week", DataType::UInt16, false),
+            Field::new("access_month", DataType::UInt16, false),
+            Field::new("access_year", DataType::UInt16, false),
+            Field::new("access_total", DataType::UInt32, false),
+            Field::new("expires_at", DataType::Int64, true),
+            // impression_hint and impression_strength intentionally omitted
+        ]));
+
+        connection
+            .create_empty_table(TABLE_NAME, old_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        // Now open via LanceStore — should auto-migrate
+        let store = LanceStore::open(temp_dir.path(), 384, false).await.unwrap();
+
+        // Verify we can insert and read back with the new fields
+        let mut chunk = create_test_chunk("mig-1", "Migrated chunk", ChunkLevel::H1);
+        chunk.impression_hint = Some("test".to_string());
+        chunk.impression_strength = 0.5;
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let retrieved = store.get_by_id("mig-1").await.unwrap().unwrap();
+        assert_eq!(retrieved.impression_hint.as_deref(), Some("test"));
+        assert!((retrieved.impression_strength - 0.5).abs() < 0.001);
+    }
+
+    /// Fresh store → close → reopen. No errors.
+    #[tokio::test]
+    async fn test_noop_when_current() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // First open creates the table
+        let store = LanceStore::open(temp_dir.path(), 384, false).await.unwrap();
+        let chunk = create_test_chunk("noop-1", "Noop test", ChunkLevel::H1);
+        store.insert_chunks(vec![chunk]).await.unwrap();
+        drop(store);
+
+        // Second open should be a no-op migration
+        let store2 = LanceStore::open(temp_dir.path(), 384, false).await.unwrap();
+        let retrieved = store2.get_by_id("noop-1").await.unwrap().unwrap();
+        assert_eq!(retrieved.content, "Noop test");
+    }
+
+    /// Table has an unknown column → error with "update veclayer".
+    #[tokio::test]
+    async fn test_old_client_detects_newer_store() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a store with normal schema first
+        let store = LanceStore::open(temp_dir.path(), 384, false).await.unwrap();
+        drop(store);
+
+        // Add an unknown column to simulate a newer version
+        let uri = temp_dir.path().to_string_lossy().to_string();
+        let connection = connect(&uri).execute().await.unwrap();
+        let table = connection.open_table(TABLE_NAME).execute().await.unwrap();
+        table
+            .add_columns(
+                NewColumnTransform::SqlExpressions(vec![(
+                    "future_column".to_string(),
+                    "cast(NULL as string)".to_string(),
+                )]),
+                None,
+            )
+            .await
+            .unwrap();
+        drop(table);
+        drop(connection);
+
+        // Now open should fail
+        let result = LanceStore::open(temp_dir.path(), 384, false).await;
+        let err_msg = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("Expected error for newer store, but open succeeded"),
+        };
+        assert!(
+            err_msg.contains("update veclayer"),
+            "Error should mention update: {}",
+            err_msg
+        );
+    }
+
+    /// Table has a legacy column (last_accessed) → should NOT trigger error.
+    #[tokio::test]
+    async fn test_legacy_columns_not_flagged() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a store with normal schema
+        let store = LanceStore::open(temp_dir.path(), 384, false).await.unwrap();
+        drop(store);
+
+        // Add a legacy column
+        let uri = temp_dir.path().to_string_lossy().to_string();
+        let connection = connect(&uri).execute().await.unwrap();
+        let table = connection.open_table(TABLE_NAME).execute().await.unwrap();
+        table
+            .add_columns(
+                NewColumnTransform::SqlExpressions(vec![(
+                    "last_accessed".to_string(),
+                    "cast(0 as bigint)".to_string(),
+                )]),
+                None,
+            )
+            .await
+            .unwrap();
+        drop(table);
+        drop(connection);
+
+        // Should open fine — legacy columns are ignored
+        let store2 = LanceStore::open(temp_dir.path(), 384, false).await;
+        assert!(store2.is_ok(), "Legacy column should not cause error");
+    }
+
+    /// Column present in both schemas but with different type → error.
+    #[tokio::test]
+    async fn test_type_mismatch_detected() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a table with visibility as Int64 instead of Utf8
+        let uri = temp_dir.path().to_string_lossy().to_string();
+        std::fs::create_dir_all(temp_dir.path()).unwrap();
+        let connection = connect(&uri).execute().await.unwrap();
+
+        let bad_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("content", DataType::Utf8, false),
+            Field::new(
+                "embedding",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 384),
+                false,
+            ),
+            Field::new("level", DataType::UInt8, false),
+            Field::new("parent_id", DataType::Utf8, true),
+            Field::new("path", DataType::Utf8, false),
+            Field::new("source_file", DataType::Utf8, false),
+            Field::new("heading", DataType::Utf8, true),
+            Field::new("cluster_memberships", DataType::Utf8, false),
+            Field::new("entry_type", DataType::Utf8, false),
+            Field::new("summarizes", DataType::Utf8, false),
+            Field::new("perspectives", DataType::Utf8, false),
+            // Wrong type: Int64 instead of Utf8
+            Field::new("visibility", DataType::Int64, false),
+            Field::new("relations", DataType::Utf8, false),
+            Field::new("created_at", DataType::Int64, false),
+            Field::new("last_rolled", DataType::Int64, false),
+            Field::new("access_hour", DataType::UInt16, false),
+            Field::new("access_day", DataType::UInt16, false),
+            Field::new("access_week", DataType::UInt16, false),
+            Field::new("access_month", DataType::UInt16, false),
+            Field::new("access_year", DataType::UInt16, false),
+            Field::new("access_total", DataType::UInt32, false),
+            Field::new("expires_at", DataType::Int64, true),
+            Field::new("impression_hint", DataType::Utf8, true),
+            Field::new("impression_strength", DataType::Float32, false),
+        ]));
+
+        connection
+            .create_empty_table(TABLE_NAME, bad_schema)
+            .execute()
+            .await
+            .unwrap();
+        drop(connection);
+
+        let result = LanceStore::open(temp_dir.path(), 384, false).await;
+        let err_msg = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("Expected error for type mismatch, but open succeeded"),
+        };
+        assert!(
+            err_msg.contains("visibility"),
+            "Error should mention the mismatched column: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("incompatible"),
+            "Error should mention incompatibility: {}",
+            err_msg
+        );
+    }
+
+    /// Verify version metadata is stamped.
+    #[tokio::test]
+    async fn test_version_metadata_stamped() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = LanceStore::open(temp_dir.path(), 384, false).await.unwrap();
+
+        let table = store.get_table().await.unwrap();
+        let schema = table.schema().await.unwrap();
+        let metadata = schema.metadata();
+
+        let expected_fp = schema_fingerprint(&store.schema());
+        assert_eq!(
+            metadata.get("veclayer::schema_fingerprint"),
+            Some(&expected_fp)
+        );
+        assert!(
+            metadata.contains_key("veclayer::commit"),
+            "Should have commit info"
+        );
+    }
+
+    #[test]
+    fn test_schema_fingerprint_deterministic() {
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("value", DataType::Int64, false),
+        ]);
+        let fp1 = schema_fingerprint(&schema);
+        let fp2 = schema_fingerprint(&schema);
+        assert_eq!(fp1, fp2);
+        assert_eq!(fp1.len(), 12, "Fingerprint should be 12 hex chars");
+    }
+
+    #[test]
+    fn test_schema_fingerprint_changes_on_field_add() {
+        let schema_a = Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("value", DataType::Int64, false),
+        ]);
+        let schema_b = Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("value", DataType::Int64, false),
+            Field::new("extra", DataType::Utf8, true),
+        ]);
+        assert_ne!(schema_fingerprint(&schema_a), schema_fingerprint(&schema_b));
     }
 }
