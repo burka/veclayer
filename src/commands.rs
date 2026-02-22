@@ -312,7 +312,15 @@ pub fn init(data_dir: &Path) -> Result<()> {
 ///
 /// If `input` is a path to a file or directory, it parses and ingests documents.
 /// Otherwise, it treats the input as inline text content.
-pub async fn add(data_dir: &Path, input: &str, options: &AddOptions) -> Result<AddResult> {
+pub async fn add(data_dir: &Path, input: &str, mut options: AddOptions) -> Result<AddResult> {
+    // Expand comma-separated perspectives (e.g. "knowledge,decisions" → ["knowledge", "decisions"])
+    options.perspectives = options
+        .perspectives
+        .iter()
+        .flat_map(|p| p.split(',').map(|s| s.trim().to_string()))
+        .filter(|s| !s.is_empty())
+        .collect();
+
     // Validate perspectives early (fail fast at CLI boundary)
     if !options.perspectives.is_empty() {
         crate::perspective::validate_ids(data_dir, &options.perspectives)?;
@@ -322,10 +330,10 @@ pub async fn add(data_dir: &Path, input: &str, options: &AddOptions) -> Result<A
 
     if input_path.exists() {
         // Input is a file or directory -- ingest it
-        add_files(data_dir, input_path, options).await
+        add_files(data_dir, input_path, &options).await
     } else {
         // Input is inline text -- store as a single entry
-        add_text(data_dir, input, options).await
+        add_text(data_dir, input, &options).await
     }
 }
 
@@ -825,13 +833,6 @@ pub async fn focus(data_dir: &Path, id: &str, options: &FocusOptions) -> Result<
                 .if_supports_color(Stream::Stdout, |s| s.magenta())
         );
     }
-    if !entry.perspectives.is_empty() {
-        println!(
-            "  {}  {}",
-            "Perspectives:".dimmed(),
-            entry.perspectives.join(", ").magenta()
-        );
-    }
     if !entry.relations.is_empty() {
         println!(
             "  {}",
@@ -1115,6 +1116,12 @@ pub async fn history(data_dir: &Path, id: &str) -> Result<()> {
 
 /// Archive entries by demoting them to deep_only visibility.
 pub async fn archive(data_dir: &Path, ids: &[String]) -> Result<()> {
+    if ids.is_empty() {
+        return Err(crate::Error::InvalidOperation(
+            "No entry IDs provided. Usage: veclayer archive <ID>...".into(),
+        ));
+    }
+
     let (_embedder, store) = open_store(data_dir).await?;
 
     for id in ids {

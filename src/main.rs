@@ -426,7 +426,7 @@ async fn main() -> Result<()> {
                 rel_version_of,
                 rel_custom,
             };
-            veclayer::commands::add(&cli.data_dir, &input, &options).await?;
+            veclayer::commands::add(&cli.data_dir, &input, options).await?;
         }
         Commands::Search {
             query,
