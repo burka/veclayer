@@ -4,3 +4,4 @@
 /.fastembed_cache
 /.gitmessage.txt
 .serena/
+*.rlib
