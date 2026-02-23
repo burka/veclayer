@@ -334,6 +334,13 @@ enum ThinkAction {
         kind: String,
     },
 
+    /// Discover hidden connections: find similar-but-unlinked entries
+    Discover {
+        /// Max pairs to show
+        #[arg(short = 'k', long, default_value = "10")]
+        limit: usize,
+    },
+
     /// Manage aging rules
     Aging {
         #[command(subcommand)]
@@ -576,6 +583,9 @@ async fn main() -> Result<()> {
                 kind,
             }) => {
                 veclayer::commands::think_relate(&cli.data_dir, &source, &target, &kind).await?;
+            }
+            Some(ThinkAction::Discover { limit }) => {
+                veclayer::commands::think_discover(&cli.data_dir, limit).await?;
             }
             Some(ThinkAction::Aging { action }) => match action {
                 AgingAction::Apply => {

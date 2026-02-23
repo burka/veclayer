@@ -177,11 +177,12 @@ Identity is computed mechanically from stored data — no LLM required. `compute
 
 On MCP connect, `generate_priming` assembles these into a startup briefing: core knowledge, open threads, recent learnings, and perspective coverage statistics.
 
-## Think Cycle (optional, requires LLM)
+## Think Cycle
 
-The think cycle is the only module that requires an LLM. All other functionality is purely mechanical.
+Most `think` actions are mechanical and require no LLM: `promote`, `demote`, `relate`, `aging`, `salience`, `discover`, `status`, `history`.
+Only the default reflection (`think` with no action) and `think consolidate` use an LLM for narrative generation and consolidation.
 
-**Phases:** reflect → LLM → add → compact.
+**LLM-powered phases:** reflect → LLM → add → compact.
 
 1. **Reflect** — `compute_identity` gathers the current memory state and `generate_priming` formats it as a human-readable briefing.
 2. **LLM** — the briefing plus a full entry-ID reference is sent to the configured `LlmProvider`. The model returns JSON with: a `narrative` (2–3 sentence first-person summary), `consolidations` (summaries over existing entries), and `learnings` (meta-observations).
@@ -197,6 +198,7 @@ The think cycle is the only module that requires an LLM. All other functionality
 | Compute salience, age entries | Decide what is worth keeping |
 | Build identity snapshot | Reflect on identity |
 | Detect open threads | Resolve open threads |
+| Find similar-but-unlinked entries (`discover`) | Interpret connections, decide to relate or consolidate |
 | Compute perspective centroids | Understand what they mean |
 | Write think-cycle entries | Generate the content for them |
 

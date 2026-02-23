@@ -316,7 +316,7 @@ fn tool_list() -> serde_json::Value {
             },
             {
                 "name": "think",
-                "description": "Reflect and curate memory. Without action: reflection report. Actions: promote, demote, relate, configure_aging, apply_aging, salience, consolidate, perspectives (list all), status (store stats), history (entry relations).",
+                "description": "Reflect and curate memory. Without action: reflection report. Actions: promote, demote, relate, configure_aging, apply_aging, salience, consolidate, discover (find similar-but-unlinked entries), perspectives (list all), status (store stats), history (entry relations).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {

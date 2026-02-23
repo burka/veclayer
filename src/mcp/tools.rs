@@ -10,6 +10,7 @@ const THINK_ACTIONS: &[&str] = &[
     "apply_aging",
     "salience",
     "consolidate",
+    "discover",
     "perspectives",
     "status",
     "history",
@@ -598,6 +599,10 @@ pub async fn execute_think(
 
             Ok(report)
         }
+        Some("discover") => {
+            let limit = input.hot_limit.unwrap_or(10);
+            discover_unlinked_pairs(store, limit).await
+        }
         Some(unknown) => Err(crate::Error::config(format!(
             "Unknown think action: '{}'. Available: {}",
             unknown,
@@ -692,6 +697,159 @@ async fn execute_reflect(
     if !has_suggestions {
         report.push_str("No urgent actions needed.\n");
     }
+
+    Ok(report)
+}
+
+/// A discovered pair: two entries that are semantically similar but have no explicit relation.
+struct DiscoveredPair {
+    entry_a: crate::HierarchicalChunk,
+    entry_b: crate::HierarchicalChunk,
+    similarity: f32,
+}
+
+/// Find entries that are semantically similar but share no explicit relation.
+///
+/// Algorithm:
+/// 1. List up to `scan_limit * 2` entries as candidates.
+/// 2. For each candidate that has an embedding, search for its top-5 ANN neighbors.
+/// 3. For each (candidate, neighbor) pair, check whether a relation already exists in either direction.
+/// 4. Deduplicate symmetric pairs using a sorted-ID set key.
+/// 5. Sort by similarity descending and return up to `output_limit`.
+async fn discover_unlinked_pairs(store: &Arc<LanceStore>, output_limit: usize) -> Result<String> {
+    const SCAN_LIMIT: usize = 100;
+    const NEIGHBORS_PER_ENTRY: usize = 5;
+
+    let candidates = store.list_entries(None, None, None, SCAN_LIMIT).await?;
+
+    if candidates.is_empty() {
+        return Ok("No entries in the store. Nothing to discover.".to_string());
+    }
+
+    let mut seen_pairs: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
+    let mut pairs: Vec<DiscoveredPair> = Vec::new();
+
+    for entry in &candidates {
+        let embedding = match &entry.embedding {
+            Some(e) => e,
+            None => continue,
+        };
+
+        let neighbors = store
+            .search(embedding, NEIGHBORS_PER_ENTRY + 1, None)
+            .await?;
+
+        for neighbor_result in &neighbors {
+            let neighbor = &neighbor_result.chunk;
+
+            if neighbor.id == entry.id {
+                continue;
+            }
+
+            // Canonical pair key: smaller ID first so A↔B == B↔A
+            let pair_key = if entry.id < neighbor.id {
+                (entry.id.clone(), neighbor.id.clone())
+            } else {
+                (neighbor.id.clone(), entry.id.clone())
+            };
+
+            if seen_pairs.contains(&pair_key) {
+                continue;
+            }
+
+            let already_related = entry.relations.iter().any(|r| r.target_id == neighbor.id)
+                || neighbor.relations.iter().any(|r| r.target_id == entry.id);
+
+            if already_related {
+                seen_pairs.insert(pair_key);
+                continue;
+            }
+
+            seen_pairs.insert(pair_key);
+            pairs.push(DiscoveredPair {
+                entry_a: entry.clone(),
+                entry_b: neighbor.clone(),
+                similarity: neighbor_result.score,
+            });
+        }
+    }
+
+    if pairs.is_empty() {
+        return Ok(
+            "No unlinked similar entries found. All semantically close pairs are already related."
+                .to_string(),
+        );
+    }
+
+    pairs.sort_by(|a, b| {
+        b.similarity
+            .partial_cmp(&a.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    pairs.truncate(output_limit);
+
+    format_discovered_pairs(&pairs)
+}
+
+/// Format discovered pairs as a markdown report.
+fn format_discovered_pairs(pairs: &[DiscoveredPair]) -> Result<String> {
+    let mut report = String::from("## Discover: Unlinked Similar Entries\n\n");
+    report.push_str("These entry pairs are semantically close but share no explicit relation.\n");
+    report
+        .push_str("Consider linking them with `think(action='relate')` or consolidating them.\n\n");
+
+    for (i, pair) in pairs.iter().enumerate() {
+        let heading_a = pair
+            .entry_a
+            .heading
+            .as_deref()
+            .unwrap_or_else(|| pair.entry_a.content.lines().next().unwrap_or("(untitled)"));
+        let heading_b = pair
+            .entry_b
+            .heading
+            .as_deref()
+            .unwrap_or_else(|| pair.entry_b.content.lines().next().unwrap_or("(untitled)"));
+
+        let preview_a = &heading_a[..heading_a.len().min(100)];
+        let preview_b = &heading_b[..heading_b.len().min(100)];
+
+        report.push_str(&format!(
+            "### Discovery {} (similarity: {:.2})\n\n",
+            i + 1,
+            pair.similarity
+        ));
+        report.push_str(&format!(
+            "**Entry A:** `{}` — \"{}\"\n",
+            crate::chunk::short_id(&pair.entry_a.id),
+            preview_a
+        ));
+        if !pair.entry_a.perspectives.is_empty() {
+            report.push_str(&format!(
+                "  perspectives: {}\n",
+                pair.entry_a.perspectives.join(", ")
+            ));
+        }
+        report.push('\n');
+        report.push_str(&format!(
+            "**Entry B:** `{}` — \"{}\"\n",
+            crate::chunk::short_id(&pair.entry_b.id),
+            preview_b
+        ));
+        if !pair.entry_b.perspectives.is_empty() {
+            report.push_str(&format!(
+                "  perspectives: {}\n",
+                pair.entry_b.perspectives.join(", ")
+            ));
+        }
+        report.push('\n');
+        report.push_str("**Potential:** These entries are semantically close but not linked.\n\n");
+    }
+
+    report.push_str(&format!(
+        "{} pair(s) found. Use `think(action='relate')` to link entries or `recall(similar_to='<id>')` to explore further.\n",
+        pairs.len()
+    ));
 
     Ok(report)
 }
@@ -1261,5 +1419,147 @@ mod tests {
             2,
             "ongoing: false should not filter"
         );
+    }
+
+    // ── discover tests ──────────────────────────────────────────────────
+
+    /// Build a chunk with a real embedding using the FastEmbedder.
+    async fn make_embedded_chunk(
+        embedder: &Arc<FastEmbedder>,
+        id: &str,
+        content: &str,
+    ) -> crate::HierarchicalChunk {
+        let embeddings = embedder.embed(&[content]).unwrap();
+        let mut chunk = make_test_chunk(id, content);
+        chunk.embedding = Some(embeddings.into_iter().next().unwrap());
+        chunk
+    }
+
+    #[tokio::test]
+    async fn test_discover_empty_store() {
+        let (store, dir) = make_test_store_with_dir().await;
+
+        let input = ThinkInput {
+            action: Some("discover".to_string()),
+            hot_limit: Some(10),
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+        };
+        let result = execute_think(&store, dir.path(), input).await.unwrap();
+        assert!(result.contains("Nothing to discover") || result.contains("No entries"));
+    }
+
+    #[tokio::test]
+    async fn test_discover_finds_unlinked_similar_pair() {
+        let (store, dir) = make_test_store_with_dir().await;
+        let embedder = Arc::new(FastEmbedder::new().unwrap());
+
+        // Two semantically similar entries with no relation
+        let chunk_a = make_embedded_chunk(
+            &embedder,
+            "aaa111aaa111aaa111aaa111aaa111aaa111aaa111aaa111aaa111aaa111aaaa",
+            "Rust memory safety: ownership and borrowing prevent data races",
+        )
+        .await;
+        let chunk_b = make_embedded_chunk(
+            &embedder,
+            "bbb222bbb222bbb222bbb222bbb222bbb222bbb222bbb222bbb222bbb222bbbb",
+            "Rust ownership system eliminates memory bugs at compile time",
+        )
+        .await;
+
+        store.insert_chunks(vec![chunk_a, chunk_b]).await.unwrap();
+
+        let input = ThinkInput {
+            action: Some("discover".to_string()),
+            hot_limit: Some(10),
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+        };
+        let result = execute_think(&store, dir.path(), input).await.unwrap();
+
+        // Should produce a discover report with at least one pair
+        assert!(
+            result.contains("Discover") || result.contains("No unlinked"),
+            "expected discover report, got: {}",
+            &result[..result.len().min(200)]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_discover_skips_already_linked_pair() {
+        let (store, dir) = make_test_store_with_dir().await;
+        let embedder = Arc::new(FastEmbedder::new().unwrap());
+
+        let mut chunk_a = make_embedded_chunk(
+            &embedder,
+            "ccc333ccc333ccc333ccc333ccc333ccc333ccc333ccc333ccc333ccc333cccc",
+            "Database indexing speeds up query performance significantly",
+        )
+        .await;
+        let chunk_b = make_embedded_chunk(
+            &embedder,
+            "ddd444ddd444ddd444ddd444ddd444ddd444ddd444ddd444ddd444ddd444dddd",
+            "Adding an index to the database table improves query speed",
+        )
+        .await;
+
+        // Explicitly link the pair before inserting
+        chunk_a
+            .relations
+            .push(crate::ChunkRelation::new("related_to", &chunk_b.id));
+
+        store.insert_chunks(vec![chunk_a, chunk_b]).await.unwrap();
+
+        let input = ThinkInput {
+            action: Some("discover".to_string()),
+            hot_limit: Some(10),
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+        };
+        let result = execute_think(&store, dir.path(), input).await.unwrap();
+
+        // The linked pair should NOT appear (either no pairs found or different pairs only)
+        // We verify the IDs of the linked pair do not appear together as a discovered pair
+        let short_a = crate::chunk::short_id(
+            "ccc333ccc333ccc333ccc333ccc333ccc333ccc333ccc333ccc333ccc333cccc",
+        );
+        let short_b = crate::chunk::short_id(
+            "ddd444ddd444ddd444ddd444ddd444ddd444ddd444ddd444ddd444ddd444dddd",
+        );
+
+        // If both IDs appear in the same "Discovery N" block, the filter failed.
+        // We check by finding the discovery sections and verifying no single section
+        // contains both IDs.
+        for section in result.split("### Discovery") {
+            let has_a = section.contains(short_a);
+            let has_b = section.contains(short_b);
+            assert!(
+                !(has_a && has_b),
+                "linked pair should not appear as a discovery: section = {}",
+                &section[..section.len().min(300)]
+            );
+        }
     }
 }

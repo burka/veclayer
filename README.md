@@ -22,7 +22,7 @@ Summaries are not a feature alongside others — they *are* the memory itself. T
 - **Memory aging** — RRD-inspired access tracking with fixed time windows. Important stays present, unused fades. Configurable degradation rules.
 - **Salience** — Measures significance, not frequency. Composite of interaction density (0.5), perspective spread (0.25), and revision activity (0.25). High-salience entries survive aging.
 - **Identity** — Emerges from salience-weighted embedding centroids per perspective. On connect, the agent receives a priming: core knowledge, open threads, recent learnings. The moment an agent wakes up and knows itself.
-- **Sleep cycle** — Optional LLM-powered consolidation: reflect → think → add → compact. The only module requiring an LLM.
+- **Sleep cycle** — Optional LLM-powered consolidation: reflect → think → add → compact. Most think actions are mechanical; only reflection and consolidation require an LLM.
 
 For technical details see [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -57,7 +57,7 @@ veclayer serve
 | `recall` | Semantic search with perspective filter |
 | `focus` | Drill into an entry, show children |
 | `reflect` | Identity snapshot, salience ranking, archive candidates |
-| `think` | Curate: promote, demote, relate, aging, LLM consolidation |
+| `think` | Curate: promote, demote, relate, discover, aging, LLM consolidation |
 | `serve` | Start MCP/HTTP server |
 | `status` | Store statistics |
 | `perspective` | Manage perspectives (list, add, remove) |
