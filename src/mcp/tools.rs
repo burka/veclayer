@@ -19,7 +19,7 @@ const THINK_ACTIONS: &[&str] = &[
 use crate::aging::{self, AgingConfig};
 use crate::embedder::FastEmbedder;
 use crate::search::{HierarchicalSearch, SearchConfig, TEMPORAL_PREFETCH_FACTOR};
-use crate::store::LanceStore;
+use crate::store::StoreBackend;
 use crate::{Embedder, Result, VectorStore};
 
 use super::types::*;
@@ -60,7 +60,7 @@ struct StoreSingleInput {
 
 /// Store a single entry and return its chunk ID.
 async fn store_single_entry(
-    store: &Arc<LanceStore>,
+    store: &Arc<StoreBackend>,
     embedder: &Arc<FastEmbedder>,
     input: StoreSingleInput,
 ) -> Result<String> {
@@ -140,7 +140,7 @@ async fn store_single_entry(
 }
 
 pub async fn execute_recall(
-    store: &Arc<LanceStore>,
+    store: &Arc<StoreBackend>,
     embedder: &Arc<FastEmbedder>,
     input: RecallInput,
 ) -> Result<Vec<SearchResultResponse>> {
@@ -242,7 +242,7 @@ pub async fn execute_recall(
 }
 
 pub async fn execute_focus(
-    store: &Arc<LanceStore>,
+    store: &Arc<StoreBackend>,
     embedder: &Arc<FastEmbedder>,
     input: FocusInput,
 ) -> Result<FocusResponse> {
@@ -300,7 +300,7 @@ pub async fn execute_focus(
 }
 
 pub async fn execute_store(
-    store: &Arc<LanceStore>,
+    store: &Arc<StoreBackend>,
     embedder: &Arc<FastEmbedder>,
     input: StoreInput,
 ) -> Result<serde_json::Value> {
@@ -356,7 +356,7 @@ pub async fn execute_store(
 }
 
 pub async fn execute_think(
-    store: &Arc<LanceStore>,
+    store: &Arc<StoreBackend>,
     data_dir: &std::path::Path,
     input: ThinkInput,
 ) -> Result<String> {
@@ -612,7 +612,7 @@ pub async fn execute_think(
 }
 
 async fn execute_reflect(
-    store: &Arc<LanceStore>,
+    store: &Arc<StoreBackend>,
     data_dir: &std::path::Path,
     hot_limit: usize,
     stale_limit: usize,
@@ -716,7 +716,7 @@ struct DiscoveredPair {
 /// 3. For each (candidate, neighbor) pair, check whether a relation already exists in either direction.
 /// 4. Deduplicate symmetric pairs using a sorted-ID set key.
 /// 5. Sort by similarity descending and return up to `output_limit`.
-async fn discover_unlinked_pairs(store: &Arc<LanceStore>, output_limit: usize) -> Result<String> {
+async fn discover_unlinked_pairs(store: &Arc<StoreBackend>, output_limit: usize) -> Result<String> {
     const SCAN_LIMIT: usize = 100;
     const NEIGHBORS_PER_ENTRY: usize = 5;
 
@@ -885,9 +885,9 @@ mod tests {
 
     use crate::test_helpers::make_test_chunk;
 
-    async fn make_test_store_with_dir() -> (Arc<LanceStore>, tempfile::TempDir) {
+    async fn make_test_store_with_dir() -> (Arc<StoreBackend>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let store = LanceStore::open(dir.path(), 384, false).await.unwrap();
+        let store = StoreBackend::open(dir.path(), 384, false).await.unwrap();
         (Arc::new(store), dir)
     }
 

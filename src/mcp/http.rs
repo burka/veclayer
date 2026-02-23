@@ -11,7 +11,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 
 use crate::embedder::FastEmbedder;
-use crate::store::LanceStore;
+use crate::store::StoreBackend;
 use crate::{Config, Embedder, Result, VectorStore};
 
 use super::tools;
@@ -20,7 +20,7 @@ use super::types::*;
 /// Shared application state
 #[derive(Clone)]
 struct AppState {
-    store: Arc<LanceStore>,
+    store: Arc<StoreBackend>,
     embedder: Arc<FastEmbedder>,
     data_dir: std::path::PathBuf,
 }
@@ -29,7 +29,7 @@ struct AppState {
 pub async fn run_http(config: Config) -> Result<()> {
     let embedder = FastEmbedder::new()?;
     let dimension = embedder.dimension();
-    let store = LanceStore::open(&config.data_dir, dimension, config.read_only).await?;
+    let store = StoreBackend::open(&config.data_dir, dimension, config.read_only).await?;
 
     let state = AppState {
         store: Arc::new(store),

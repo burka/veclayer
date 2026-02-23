@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tracing::{info, warn};
 
 use crate::embedder::FastEmbedder;
-use crate::store::LanceStore;
+use crate::store::StoreBackend;
 use crate::{Config, Embedder, Result};
 
 use super::tools;
@@ -20,7 +20,7 @@ pub async fn run_stdio(config: Config) -> Result<()> {
 
     let embedder = FastEmbedder::new()?;
     let dimension = embedder.dimension();
-    let store = LanceStore::open(&config.data_dir, dimension, config.read_only).await?;
+    let store = StoreBackend::open(&config.data_dir, dimension, config.read_only).await?;
     let store = Arc::new(store);
     let embedder = Arc::new(embedder);
 
@@ -47,7 +47,7 @@ pub async fn run_stdio(config: Config) -> Result<()> {
 
 async fn handle_mcp_message(
     message: &str,
-    store: &Arc<LanceStore>,
+    store: &Arc<StoreBackend>,
     embedder: &Arc<FastEmbedder>,
     data_dir: &std::path::Path,
 ) -> String {
@@ -122,7 +122,7 @@ async fn handle_tool_call(
     id: Option<serde_json::Value>,
     tool_name: &str,
     arguments: serde_json::Value,
-    store: &Arc<LanceStore>,
+    store: &Arc<StoreBackend>,
     embedder: &Arc<FastEmbedder>,
     data_dir: &std::path::Path,
 ) -> String {

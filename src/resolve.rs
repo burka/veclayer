@@ -2,7 +2,7 @@
 //!
 //! Extracted from `mcp/tools.rs` so both surfaces use the same logic.
 
-use crate::store::LanceStore;
+use crate::store::StoreBackend;
 use crate::{Result, VectorStore};
 use std::sync::Arc;
 
@@ -10,7 +10,7 @@ use std::sync::Arc;
 ///
 /// Accepts either a full content-hash ID or a short prefix (like git short hashes).
 /// Returns an error if no entry matches the prefix.
-pub async fn resolve_id(store: &Arc<LanceStore>, id: &str) -> Result<String> {
+pub async fn resolve_id(store: &Arc<StoreBackend>, id: &str) -> Result<String> {
     store
         .get_by_id_prefix(id)
         .await?
@@ -21,7 +21,7 @@ pub async fn resolve_id(store: &Arc<LanceStore>, id: &str) -> Result<String> {
 /// Resolve a short or full entry ID and return the full chunk.
 ///
 /// Like `resolve_id` but returns the complete `HierarchicalChunk`.
-pub async fn resolve_entry(store: &LanceStore, id: &str) -> Result<crate::HierarchicalChunk> {
+pub async fn resolve_entry(store: &impl VectorStore, id: &str) -> Result<crate::HierarchicalChunk> {
     store
         .get_by_id_prefix(id)
         .await?
@@ -98,7 +98,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_id_exact_match() {
         let dir = tempfile::tempdir().unwrap();
-        let store = crate::store::LanceStore::open(dir.path(), 384, false)
+        let store = crate::store::StoreBackend::open(dir.path(), 384, false)
             .await
             .unwrap();
         let store = Arc::new(store);
@@ -116,7 +116,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_id_prefix_match() {
         let dir = tempfile::tempdir().unwrap();
-        let store = crate::store::LanceStore::open(dir.path(), 384, false)
+        let store = crate::store::StoreBackend::open(dir.path(), 384, false)
             .await
             .unwrap();
         let store = Arc::new(store);
@@ -134,7 +134,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_id_not_found() {
         let dir = tempfile::tempdir().unwrap();
-        let store = crate::store::LanceStore::open(dir.path(), 384, false)
+        let store = crate::store::StoreBackend::open(dir.path(), 384, false)
             .await
             .unwrap();
         let store = Arc::new(store);
@@ -147,7 +147,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_entry_returns_full_chunk() {
         let dir = tempfile::tempdir().unwrap();
-        let store = crate::store::LanceStore::open(dir.path(), 384, false)
+        let store = crate::store::StoreBackend::open(dir.path(), 384, false)
             .await
             .unwrap();
 

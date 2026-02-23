@@ -308,7 +308,7 @@ async fn test_full_ingest_with_summarization() {
     use std::fs;
     use tempfile::TempDir;
     use veclayer::commands::{ingest, IngestOptions};
-    use veclayer::store::LanceStore;
+    use veclayer::StoreBackend;
     use veclayer::VectorStore;
 
     if !ollama_available().await {
@@ -385,7 +385,7 @@ Reference counting handles most cleanup.
 
     // Verify store has chunks and summaries
     let embedder = FastEmbedder::new().expect("Failed to create embedder");
-    let store = LanceStore::open(&data_dir, embedder.dimension(), false)
+    let store = StoreBackend::open(&data_dir, embedder.dimension(), false)
         .await
         .expect("Failed to open store");
 

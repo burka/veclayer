@@ -13,7 +13,6 @@ use crate::chunk::{ChunkRelation, EntryType, HierarchicalChunk};
 use crate::embedder::FastEmbedder;
 use crate::identity::{self, IdentitySnapshot};
 use crate::llm::{LlmProvider, Message};
-use crate::store::LanceStore;
 use crate::{Embedder, Result, VectorStore};
 
 /// Result of a think cycle.
@@ -111,7 +110,7 @@ Rules:
 
 /// Execute one think cycle: reflect → LLM → add → compact.
 pub async fn execute<L: LlmProvider>(
-    store: &LanceStore,
+    store: &impl VectorStore,
     embedder: &FastEmbedder,
     llm: &L,
     data_dir: &Path,
@@ -262,7 +261,7 @@ fn build_prompt(priming: &str, snapshot: &IdentitySnapshot) -> String {
 
 /// Write a single entry to the store with embedding.
 async fn write_entry(
-    store: &LanceStore,
+    store: &impl VectorStore,
     embedder: &FastEmbedder,
     content: &str,
     entry_type: EntryType,
@@ -295,7 +294,7 @@ async fn write_entry(
 }
 
 /// Validate that entry IDs actually exist in the store.
-async fn validate_entry_ids(store: &LanceStore, ids: &[String]) -> Vec<String> {
+async fn validate_entry_ids(store: &impl VectorStore, ids: &[String]) -> Vec<String> {
     let mut valid = Vec::new();
     for id in ids {
         if store.get_by_id(id).await.ok().flatten().is_some() {
