@@ -54,6 +54,7 @@ salience scores, and suggested actions. With an action, executes curation:
 - `action: 'configure_aging'` — Set automatic degradation rules
 - `action: 'apply_aging'` — Execute aging rules now (respects salience protection)
 - `action: 'salience'` — See which entries are most/least important
+- `action: 'discover'` — Find similar-but-unlinked entries (hidden connections, contradictions, consolidation candidates)
 - `action: 'perspectives'` — List all available perspectives
 - `action: 'status'` — Show store statistics (entry count, source files, aging policy)
 - `action: 'history'` — Show an entry's relations and metadata (requires `id`)

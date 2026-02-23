@@ -1749,6 +1749,32 @@ pub async fn think_aging_apply(data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Discover similar-but-unlinked entries (CLI for MCP think(discover)).
+pub async fn think_discover(data_dir: &Path, limit: usize) -> Result<()> {
+    use std::sync::Arc;
+
+    let store = LanceStore::open_metadata(data_dir, true).await?;
+    let store = Arc::new(store);
+
+    let input = crate::mcp::types::ThinkInput {
+        action: Some("discover".to_string()),
+        hot_limit: Some(limit),
+        stale_limit: None,
+        id: None,
+        visibility: None,
+        source_id: None,
+        target_id: None,
+        kind: None,
+        degrade_after_days: None,
+        degrade_to: None,
+        degrade_from: None,
+    };
+
+    let report = crate::mcp::tools::execute_think(&store, data_dir, input).await?;
+    println!("{}", report);
+    Ok(())
+}
+
 /// Configure aging parameters (CLI for MCP think(configure_aging)).
 pub async fn think_aging_configure(
     data_dir: &Path,
