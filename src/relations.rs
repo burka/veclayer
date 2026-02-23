@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::chunk::relation;
-use crate::store::LanceStore;
+use crate::store::StoreBackend;
 use crate::{ChunkRelation, Result, VectorStore};
 
 /// An unprocessed relation parsed from CLI flags or MCP input.
@@ -49,7 +49,7 @@ pub fn validate_relation_kind(kind: &str) -> Result<()> {
 /// Resolves short IDs, writes inverse links on targets, and auto-demotes
 /// targets for `supersedes` / `version_of`.
 pub async fn process_relations(
-    store: &Arc<LanceStore>,
+    store: &Arc<StoreBackend>,
     source_id: &str,
     relations: Vec<RawRelation>,
 ) -> Result<()> {
@@ -132,7 +132,7 @@ mod tests {
     #[tokio::test]
     async fn test_process_supersedes_demotes_and_inverses() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LanceStore::open(dir.path(), 384, false).await.unwrap();
+        let store = StoreBackend::open(dir.path(), 384, false).await.unwrap();
         let store = Arc::new(store);
 
         let target = make_test_chunk("aaaa000000000000", "old content");
@@ -162,7 +162,7 @@ mod tests {
     #[tokio::test]
     async fn test_process_related_to_bidirectional() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LanceStore::open(dir.path(), 384, false).await.unwrap();
+        let store = StoreBackend::open(dir.path(), 384, false).await.unwrap();
         let store = Arc::new(store);
 
         let a = make_test_chunk("cccc000000000000", "alpha");
@@ -199,7 +199,7 @@ mod tests {
     #[tokio::test]
     async fn test_process_derived_from_forward_only() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LanceStore::open(dir.path(), 384, false).await.unwrap();
+        let store = StoreBackend::open(dir.path(), 384, false).await.unwrap();
         let store = Arc::new(store);
 
         let target = make_test_chunk("eeee000000000000", "original");
@@ -234,7 +234,7 @@ mod tests {
     #[tokio::test]
     async fn test_process_custom_kind_forward_only() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LanceStore::open(dir.path(), 384, false).await.unwrap();
+        let store = StoreBackend::open(dir.path(), 384, false).await.unwrap();
         let store = Arc::new(store);
 
         let a = make_test_chunk("1111000000000000", "source");

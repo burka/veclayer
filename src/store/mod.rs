@@ -1,11 +1,12 @@
 mod lancedb_impl;
 pub(crate) mod lock;
 
-pub use lancedb_impl::LanceStore;
+pub(crate) use lancedb_impl::LanceStore;
 pub(crate) use lock::FileLock;
 
 use crate::{AccessProfile, ChunkLevel, ChunkRelation, HierarchicalChunk, Result};
 use std::future::Future;
+use std::path::Path;
 
 /// Search result from the vector store
 #[derive(Debug, Clone)]
@@ -121,8 +122,168 @@ pub struct StoreStats {
     pub source_files: Vec<String>,
 }
 
-/// Box type for dynamic dispatch of stores
-pub type BoxedStore = Box<dyn VectorStore>;
+/// Dispatch enum for storage backends.
+///
+/// Adding a new backend is: one new file, one new variant here, done.
+/// Follows the same pattern as `LlmBackend`.
+pub enum StoreBackend {
+    Lance(LanceStore),
+}
+
+impl StoreBackend {
+    pub async fn open(path: impl AsRef<Path>, dimension: usize, read_only: bool) -> Result<Self> {
+        Ok(Self::Lance(
+            LanceStore::open(path, dimension, read_only).await?,
+        ))
+    }
+
+    pub async fn open_metadata(path: impl AsRef<Path>, read_only: bool) -> Result<Self> {
+        Ok(Self::Lance(
+            LanceStore::open_metadata(path, read_only).await?,
+        ))
+    }
+}
+
+impl VectorStore for StoreBackend {
+    fn insert_chunks(
+        &self,
+        chunks: Vec<HierarchicalChunk>,
+    ) -> impl Future<Output = Result<()>> + Send {
+        match self {
+            Self::Lance(s) => s.insert_chunks(chunks),
+        }
+    }
+
+    fn search(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+        level_filter: Option<ChunkLevel>,
+    ) -> impl Future<Output = Result<Vec<SearchResult>>> + Send {
+        match self {
+            Self::Lance(s) => s.search(query_embedding, limit, level_filter),
+        }
+    }
+
+    fn get_children(
+        &self,
+        parent_id: &str,
+    ) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send {
+        match self {
+            Self::Lance(s) => s.get_children(parent_id),
+        }
+    }
+
+    fn get_by_id(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = Result<Option<HierarchicalChunk>>> + Send {
+        match self {
+            Self::Lance(s) => s.get_by_id(id),
+        }
+    }
+
+    fn get_by_id_prefix(
+        &self,
+        prefix: &str,
+    ) -> impl Future<Output = Result<Option<HierarchicalChunk>>> + Send {
+        match self {
+            Self::Lance(s) => s.get_by_id_prefix(prefix),
+        }
+    }
+
+    fn get_by_source(
+        &self,
+        source_file: &str,
+    ) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send {
+        match self {
+            Self::Lance(s) => s.get_by_source(source_file),
+        }
+    }
+
+    fn delete_by_source(&self, source_file: &str) -> impl Future<Output = Result<usize>> + Send {
+        match self {
+            Self::Lance(s) => s.delete_by_source(source_file),
+        }
+    }
+
+    fn stats(&self) -> impl Future<Output = Result<StoreStats>> + Send {
+        match self {
+            Self::Lance(s) => s.stats(),
+        }
+    }
+
+    fn update_access_profiles(
+        &self,
+        updates: Vec<(String, AccessProfile)>,
+    ) -> impl Future<Output = Result<()>> + Send {
+        match self {
+            Self::Lance(s) => s.update_access_profiles(updates),
+        }
+    }
+
+    fn update_visibility(
+        &self,
+        chunk_id: &str,
+        visibility: &str,
+    ) -> impl Future<Output = Result<()>> + Send {
+        match self {
+            Self::Lance(s) => s.update_visibility(chunk_id, visibility),
+        }
+    }
+
+    fn add_relation(
+        &self,
+        chunk_id: &str,
+        relation: ChunkRelation,
+    ) -> impl Future<Output = Result<()>> + Send {
+        match self {
+            Self::Lance(s) => s.add_relation(chunk_id, relation),
+        }
+    }
+
+    fn search_by_perspective(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+        perspective: &str,
+    ) -> impl Future<Output = Result<Vec<SearchResult>>> + Send {
+        match self {
+            Self::Lance(s) => s.search_by_perspective(query_embedding, limit, perspective),
+        }
+    }
+
+    fn get_hot_chunks(
+        &self,
+        limit: usize,
+    ) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send {
+        match self {
+            Self::Lance(s) => s.get_hot_chunks(limit),
+        }
+    }
+
+    fn get_stale_chunks(
+        &self,
+        stale_seconds: i64,
+        limit: usize,
+    ) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send {
+        match self {
+            Self::Lance(s) => s.get_stale_chunks(stale_seconds, limit),
+        }
+    }
+
+    fn list_entries(
+        &self,
+        perspective: Option<&str>,
+        since: Option<i64>,
+        until: Option<i64>,
+        limit: usize,
+    ) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send {
+        match self {
+            Self::Lance(s) => s.list_entries(perspective, since, until, limit),
+        }
+    }
+}
 
 // Implement VectorStore for Arc<T> where T: VectorStore
 crate::arc_impl!(VectorStore {

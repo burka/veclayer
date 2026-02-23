@@ -39,6 +39,7 @@ pub use error::{Error, Result};
 pub use llm::{LlmBackend, LlmProvider};
 pub use parser::DocumentParser;
 pub use search::HierarchicalSearch;
+pub use store::StoreBackend;
 pub use store::VectorStore;
 #[cfg(feature = "llm")]
 pub use summarizer::{OllamaSummarizer, Summarizer};
