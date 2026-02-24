@@ -62,6 +62,7 @@ struct StoreSingleInput {
 async fn store_single_entry(
     store: &Arc<StoreBackend>,
     embedder: &Arc<FastEmbedder>,
+    blob_store: &Arc<crate::blob_store::BlobStore>,
     input: StoreSingleInput,
 ) -> Result<String> {
     let parent_id = input.parent_id.as_deref().filter(|s| !s.is_empty());
@@ -122,6 +123,10 @@ async fn store_single_entry(
         impression_hint: input.impression_hint,
         impression_strength: input.impression_strength.unwrap_or(1.0),
     };
+
+    // Persist to blob store
+    let blob = crate::entry::StoredBlob::from_chunk_and_embedding(&chunk, embedder.name());
+    blob_store.put(&blob)?;
 
     store.insert_chunks(vec![chunk]).await?;
 
@@ -302,6 +307,7 @@ pub async fn execute_focus(
 pub async fn execute_store(
     store: &Arc<StoreBackend>,
     embedder: &Arc<FastEmbedder>,
+    blob_store: &Arc<crate::blob_store::BlobStore>,
     input: StoreInput,
 ) -> Result<serde_json::Value> {
     if !input.items.is_empty() {
@@ -311,6 +317,7 @@ pub async fn execute_store(
             let id = store_single_entry(
                 store,
                 embedder,
+                blob_store,
                 StoreSingleInput {
                     content: item.content,
                     parent_id: item.parent_id,
@@ -334,6 +341,7 @@ pub async fn execute_store(
         let id = store_single_entry(
             store,
             embedder,
+            blob_store,
             StoreSingleInput {
                 content: input.content,
                 parent_id: input.parent_id,
@@ -358,6 +366,7 @@ pub async fn execute_store(
 pub async fn execute_think(
     store: &Arc<StoreBackend>,
     data_dir: &std::path::Path,
+    blob_store: &Arc<crate::blob_store::BlobStore>,
     input: ThinkInput,
 ) -> Result<String> {
     match input.action.as_deref() {
@@ -450,7 +459,14 @@ pub async fn execute_think(
             let embedder = crate::embedder::FastEmbedder::new()
                 .map_err(|e| crate::Error::llm(format!("Failed to init embedder: {}", e)))?;
 
-            let result = crate::think::execute(store.as_ref(), &embedder, &llm, data_dir).await?;
+            let result = crate::think::execute(
+                store.as_ref(),
+                &embedder,
+                &llm,
+                data_dir,
+                Some(blob_store.as_ref()),
+            )
+            .await?;
 
             if result.entries_created.is_empty() {
                 return Ok("Nothing to consolidate. Memory is well-organized.".to_string());
@@ -885,10 +901,15 @@ mod tests {
 
     use crate::test_helpers::make_test_chunk;
 
-    async fn make_test_store_with_dir() -> (Arc<StoreBackend>, tempfile::TempDir) {
+    async fn make_test_store_with_dir() -> (
+        Arc<StoreBackend>,
+        Arc<crate::blob_store::BlobStore>,
+        tempfile::TempDir,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let store = StoreBackend::open(dir.path(), 384, false).await.unwrap();
-        (Arc::new(store), dir)
+        let blob_store = crate::blob_store::BlobStore::open(dir.path()).unwrap();
+        (Arc::new(store), Arc::new(blob_store), dir)
     }
 
     #[test]
@@ -930,7 +951,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_think_perspectives_action() {
-        let (store, dir) = make_test_store_with_dir().await;
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
         // Initialize perspectives so there's something to list
         crate::perspective::init(dir.path()).unwrap();
 
@@ -947,7 +968,9 @@ mod tests {
             degrade_to: None,
             degrade_from: None,
         };
-        let result = execute_think(&store, dir.path(), input).await.unwrap();
+        let result = execute_think(&store, dir.path(), &blob_store, input)
+            .await
+            .unwrap();
         assert!(result.contains("Perspectives"));
         // Should contain the built-in perspectives
         assert!(result.contains("decisions"));
@@ -956,7 +979,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_think_status_action() {
-        let (store, dir) = make_test_store_with_dir().await;
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
         // Insert a test chunk so stats are non-zero
         store
             .insert_chunks(vec![make_test_chunk("abc123", "test content")])
@@ -976,7 +999,9 @@ mod tests {
             degrade_to: None,
             degrade_from: None,
         };
-        let result = execute_think(&store, dir.path(), input).await.unwrap();
+        let result = execute_think(&store, dir.path(), &blob_store, input)
+            .await
+            .unwrap();
         assert!(result.contains("Store Status"));
         assert!(result.contains("Total entries"));
         assert!(result.contains("1")); // 1 entry
@@ -984,7 +1009,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_think_history_action() {
-        let (store, dir) = make_test_store_with_dir().await;
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
         let mut chunk = make_test_chunk("abcdef1234567890", "historical content");
         chunk
             .relations
@@ -1004,7 +1029,9 @@ mod tests {
             degrade_to: None,
             degrade_from: None,
         };
-        let result = execute_think(&store, dir.path(), input).await.unwrap();
+        let result = execute_think(&store, dir.path(), &blob_store, input)
+            .await
+            .unwrap();
         assert!(result.contains("Entry History"));
         assert!(result.contains("Relations"));
         assert!(result.contains("supersedes"));
@@ -1013,7 +1040,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_think_history_requires_id() {
-        let (store, dir) = make_test_store_with_dir().await;
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
 
         let input = ThinkInput {
             action: Some("history".to_string()),
@@ -1028,14 +1055,14 @@ mod tests {
             degrade_to: None,
             degrade_from: None,
         };
-        let result = execute_think(&store, dir.path(), input).await;
+        let result = execute_think(&store, dir.path(), &blob_store, input).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("requires 'id'"));
     }
 
     #[tokio::test]
     async fn test_think_status_empty_store() {
-        let (store, dir) = make_test_store_with_dir().await;
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
 
         let input = ThinkInput {
             action: Some("status".to_string()),
@@ -1050,14 +1077,16 @@ mod tests {
             degrade_to: None,
             degrade_from: None,
         };
-        let result = execute_think(&store, dir.path(), input).await.unwrap();
+        let result = execute_think(&store, dir.path(), &blob_store, input)
+            .await
+            .unwrap();
         assert!(result.contains("Total entries"));
         assert!(result.contains("0"));
     }
 
     #[tokio::test]
     async fn test_think_unknown_action() {
-        let (store, dir) = make_test_store_with_dir().await;
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
 
         let input = ThinkInput {
             action: Some("nonexistent".to_string()),
@@ -1072,7 +1101,7 @@ mod tests {
             degrade_to: None,
             degrade_from: None,
         };
-        let result = execute_think(&store, dir.path(), input).await;
+        let result = execute_think(&store, dir.path(), &blob_store, input).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Unknown think action"));
@@ -1250,7 +1279,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_recall_ongoing_filter_with_query() {
-        let (store, _dir) = make_test_store_with_dir().await;
+        let (store, _blob_store, _dir) = make_test_store_with_dir().await;
         let embedder = Arc::new(FastEmbedder::new().unwrap());
 
         // Insert a plain chunk with a real embedding so semantic search can find it
@@ -1330,7 +1359,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_recall_ongoing_filter_browse_mode() {
-        let (store, _dir) = make_test_store_with_dir().await;
+        let (store, _blob_store, _dir) = make_test_store_with_dir().await;
         let embedder = Arc::new(FastEmbedder::new().unwrap());
 
         // Insert a plain chunk (no open thread criteria)
@@ -1437,7 +1466,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_discover_empty_store() {
-        let (store, dir) = make_test_store_with_dir().await;
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
 
         let input = ThinkInput {
             action: Some("discover".to_string()),
@@ -1452,13 +1481,15 @@ mod tests {
             degrade_to: None,
             degrade_from: None,
         };
-        let result = execute_think(&store, dir.path(), input).await.unwrap();
+        let result = execute_think(&store, dir.path(), &blob_store, input)
+            .await
+            .unwrap();
         assert!(result.contains("Nothing to discover") || result.contains("No entries"));
     }
 
     #[tokio::test]
     async fn test_discover_finds_unlinked_similar_pair() {
-        let (store, dir) = make_test_store_with_dir().await;
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
         let embedder = Arc::new(FastEmbedder::new().unwrap());
 
         // Two semantically similar entries with no relation
@@ -1490,7 +1521,9 @@ mod tests {
             degrade_to: None,
             degrade_from: None,
         };
-        let result = execute_think(&store, dir.path(), input).await.unwrap();
+        let result = execute_think(&store, dir.path(), &blob_store, input)
+            .await
+            .unwrap();
 
         // Should produce a discover report with at least one pair
         assert!(
@@ -1502,7 +1535,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_discover_skips_already_linked_pair() {
-        let (store, dir) = make_test_store_with_dir().await;
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
         let embedder = Arc::new(FastEmbedder::new().unwrap());
 
         let mut chunk_a = make_embedded_chunk(
@@ -1538,7 +1571,9 @@ mod tests {
             degrade_to: None,
             degrade_from: None,
         };
-        let result = execute_think(&store, dir.path(), input).await.unwrap();
+        let result = execute_think(&store, dir.path(), &blob_store, input)
+            .await
+            .unwrap();
 
         // The linked pair should NOT appear (either no pairs found or different pairs only)
         // We verify the IDs of the linked pair do not appear together as a discovered pair

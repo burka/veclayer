@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
+use crate::blob_store::BlobStore;
 use crate::embedder::FastEmbedder;
 use crate::store::StoreBackend;
 use crate::{Config, Embedder, Result};
@@ -23,6 +24,8 @@ pub async fn run_stdio(config: Config) -> Result<()> {
     let store = StoreBackend::open(&config.data_dir, dimension, config.read_only).await?;
     let store = Arc::new(store);
     let embedder = Arc::new(embedder);
+    let blob_store = BlobStore::open(&config.data_dir)?;
+    let blob_store = Arc::new(blob_store);
 
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
@@ -35,7 +38,7 @@ pub async fn run_stdio(config: Config) -> Result<()> {
             continue;
         }
 
-        let response = handle_mcp_message(&line, &store, &embedder, &data_dir).await;
+        let response = handle_mcp_message(&line, &store, &embedder, &blob_store, &data_dir).await;
         if !response.is_empty() {
             writeln!(stdout, "{}", response).map_err(crate::Error::Io)?;
             stdout.flush().map_err(crate::Error::Io)?;
@@ -49,6 +52,7 @@ async fn handle_mcp_message(
     message: &str,
     store: &Arc<StoreBackend>,
     embedder: &Arc<FastEmbedder>,
+    blob_store: &Arc<BlobStore>,
     data_dir: &std::path::Path,
 ) -> String {
     let parsed: serde_json::Value = match serde_json::from_str(message) {
@@ -100,7 +104,10 @@ async fn handle_mcp_message(
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
 
-            return handle_tool_call(id, tool_name, arguments, store, embedder, data_dir).await;
+            return handle_tool_call(
+                id, tool_name, arguments, store, embedder, blob_store, data_dir,
+            )
+            .await;
         }
         "notifications/initialized" | "initialized" => {
             return String::new();
@@ -124,6 +131,7 @@ async fn handle_tool_call(
     arguments: serde_json::Value,
     store: &Arc<StoreBackend>,
     embedder: &Arc<FastEmbedder>,
+    blob_store: &Arc<BlobStore>,
     data_dir: &std::path::Path,
 ) -> String {
     let result = match tool_name {
@@ -172,7 +180,7 @@ async fn handle_tool_call(
                     "Missing required parameter: content (or items for batch mode)",
                 );
             }
-            match tools::execute_store(store, embedder, input).await {
+            match tools::execute_store(store, embedder, blob_store, input).await {
                 Ok(result) => {
                     let text = if result.is_array() {
                         format!(
@@ -195,7 +203,7 @@ async fn handle_tool_call(
                     return format_mcp_error(id, -32602, &format!("Invalid params: {}", e));
                 }
             };
-            match tools::execute_think(store, data_dir, input).await {
+            match tools::execute_think(store, data_dir, blob_store, input).await {
                 Ok(text) => mcp_text_result(&text),
                 Err(e) => mcp_error_result(&e.to_string()),
             }

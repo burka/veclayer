@@ -503,6 +503,32 @@ impl HierarchicalChunk {
     pub fn embedding_dim(&self) -> usize {
         self.embedding.as_ref().map(|e| e.len()).unwrap_or(0)
     }
+
+    /// Materialize a `HierarchicalChunk` from an `Entry` and a pre-computed embedding.
+    pub fn from_entry(entry: &crate::entry::Entry, embedding: Vec<f32>) -> Self {
+        Self {
+            id: entry.content_id(),
+            content: entry.content.clone(),
+            embedding: Some(embedding),
+            level: entry.level,
+            parent_id: entry.parent_id.clone(),
+            path: entry.path.clone(),
+            source_file: entry.source.clone(),
+            heading: entry.heading.clone(),
+            start_offset: 0,
+            end_offset: 0,
+            cluster_memberships: Vec::new(),
+            entry_type: entry.entry_type,
+            summarizes: entry.summarizes.clone(),
+            visibility: entry.visibility.clone(),
+            perspectives: entry.perspectives.clone(),
+            relations: entry.relations.clone(),
+            access_profile: AccessProfile::new(),
+            expires_at: entry.expires_at,
+            impression_hint: entry.impression_hint.clone(),
+            impression_strength: entry.impression_strength,
+        }
+    }
 }
 
 #[cfg(test)]

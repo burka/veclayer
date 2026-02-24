@@ -50,6 +50,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Content-hash IDs
 sha2 = "0.10"
+blake3 = "1"
+
+# Binary serialization
+postcard = { version = "1", features = ["alloc"] }
 
 # Utilities
 walkdir = "2"
