@@ -48,6 +48,113 @@ veclayer focus abc1234
 veclayer serve
 ```
 
+## MCP Server Setup
+
+VecLayer provides an MCP server for integration with Claude Code and Opencode.
+
+### Installation
+
+Ensure veclayer is installed and available in your PATH:
+
+```bash
+cargo install --path .
+```
+
+First run downloads the embedding model (~130MB). See [First Run](#first-run) for details.
+
+### Claude Code Setup
+
+Single project (store in project directory):
+
+```bash
+claude mcp add memory -- veclayer serve --mcp-stdio
+```
+
+Multi-project setup with shared data directory:
+
+```bash
+# Add for each project with project-scoped memory (data directory is auto-created)
+claude mcp add memory -- veclayer -d ~/.veclayer/data serve --mcp-stdio --project myapp
+```
+
+### Opencode Setup
+
+Opencode uses a similar MCP configuration format. Check the [Opencode documentation](https://opencode.ai) for the current config path and schema.
+
+Example configurations are available in `.claude/settings.json.example` (single-project) and `.claude/settings.json.example.multi-project` (multi-project).
+
+Single project:
+
+```json
+{
+  "mcpServers": {
+    "memory": {
+      "command": "veclayer",
+      "args": ["serve", "--mcp-stdio"]
+    }
+  }
+}
+```
+
+Multi-project (replace `/home/you` with your actual home directory — tilde `~` is not expanded in JSON):
+
+```json
+{
+  "mcpServers": {
+    "memory": {
+      "command": "veclayer",
+      "args": ["-d", "/home/you/.veclayer/data", "serve", "--mcp-stdio", "--project", "myapp"]
+    }
+  }
+}
+```
+
+## Multi-Project Setup
+
+Use a single shared data directory with per-project MCP instances for isolation.
+
+### Mental Model
+
+- One shared data directory (`~/.veclayer/data`)
+- Each project gets its own MCP instance with `--project <name>`
+- Project entries stay scoped to that project
+- Personal entries (with `scope: "personal"`) are visible across all projects
+- Identity priming is computed from project-scoped + personal entries
+
+### Example Configuration
+
+```bash
+# Project A: frontend (data directory is auto-created with 0700 permissions)
+cd ~/projects/frontend
+claude mcp add memory -- veclayer -d ~/.veclayer/data serve --mcp-stdio --project frontend
+
+# Project B: backend
+cd ~/projects/backend
+claude mcp add memory -- veclayer -d ~/.veclayer/data serve --mcp-stdio --project backend
+```
+
+### Cross-Project Knowledge
+
+Store knowledge that follows you across projects with `scope: "personal"`:
+
+```json
+{
+  "content": "I prefer Rust for systems programming due to safety and performance",
+  "scope": "personal",
+  "perspectives": ["learnings"]
+}
+```
+
+Project-scoped knowledge:
+
+```json
+{
+  "content": "Frontend uses React with TypeScript",
+  "scope": "project",
+  "perspectives": ["knowledge"]
+}
+```
+
 ## CLI Overview
 
 | Command | Description |
@@ -83,6 +190,7 @@ Aliases: `add` = `store`, `search`/`s` = `recall`, `f` = `focus`, `id` = `reflec
 ```bash
 cargo build              # debug build
 cargo build --release    # optimized build
+cargo install --path .   # install to PATH
 ```
 
 ### First Run
