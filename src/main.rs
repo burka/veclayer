@@ -199,6 +199,10 @@ enum Commands {
         /// Enable MCP stdio transport
         #[arg(long)]
         mcp_stdio: bool,
+
+        /// Project scope for memory isolation
+        #[arg(long)]
+        project: Option<String>,
     },
 
     /// Show store statistics
@@ -495,12 +499,14 @@ async fn main() -> Result<()> {
             host,
             read_only,
             mcp_stdio,
+            project,
         } => {
             let options = ServeOptions {
                 host,
                 port,
                 read_only,
                 mcp_stdio,
+                project,
             };
             veclayer::commands::serve(&cli.data_dir, &options).await?;
         }

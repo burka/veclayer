@@ -38,6 +38,9 @@ pub struct Config {
 
     /// Number of children to fetch per parent in hierarchical search
     pub search_children_k: usize,
+
+    /// Project scope for memory isolation (None = no scoping)
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -197,6 +200,7 @@ impl Config {
             host,
             search_top_k,
             search_children_k,
+            project: None,
         }
     }
 
@@ -285,6 +289,11 @@ impl Config {
 
     pub fn with_host(mut self, host: impl Into<String>) -> Self {
         self.host = host.into();
+        self
+    }
+
+    pub fn with_project(mut self, project: Option<String>) -> Self {
+        self.project = project;
         self
     }
 }

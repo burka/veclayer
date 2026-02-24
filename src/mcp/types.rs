@@ -161,6 +161,9 @@ pub struct StoreItem {
     /// Impression strength: 0.0–1.0 (only used when entry_type is "impression").
     #[serde(default)]
     pub impression_strength: Option<f32>,
+    /// Scope: "project" (default, scoped to current project) or "personal" (visible across all projects)
+    #[serde(default = "default_scope")]
+    pub scope: String,
 }
 
 /// Input for store (write new memory)
@@ -198,6 +201,9 @@ pub struct StoreInput {
     /// Impression strength: 0.0–1.0, modulates salience weight. Default: 1.0.
     /// Only used when entry_type is "impression".
     pub impression_strength: Option<f32>,
+    /// Scope: "project" (default, scoped to current project) or "personal" (visible across all projects)
+    #[serde(default = "default_scope")]
+    pub scope: String,
 }
 
 fn default_agent_source() -> String {
@@ -206,6 +212,10 @@ fn default_agent_source() -> String {
 
 fn default_visibility() -> String {
     "normal".to_string()
+}
+
+fn default_scope() -> String {
+    "project".to_string()
 }
 
 /// Input for think (curation hub)
