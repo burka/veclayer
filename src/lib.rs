@@ -23,6 +23,8 @@ pub mod search;
 pub mod store;
 #[cfg(feature = "llm")]
 pub mod summarizer;
+#[cfg(feature = "sync")]
+pub mod sync;
 #[cfg(test)]
 pub mod test_helpers;
 #[cfg(feature = "llm")]
@@ -47,3 +49,5 @@ pub use store::StoreBackend;
 pub use store::VectorStore;
 #[cfg(feature = "llm")]
 pub use summarizer::{OllamaSummarizer, Summarizer};
+#[cfg(feature = "sync")]
+pub use sync::{NameResolver, SyncBackend};
