@@ -1027,6 +1027,16 @@ pub async fn sources(data_dir: &Path) -> Result<Vec<String>> {
 
 /// Start the MCP/HTTP server.
 pub async fn serve(data_dir: &Path, options: &ServeOptions) -> Result<()> {
+    // Auto-create data directory with restrictive permissions (contains personal memory)
+    if !data_dir.exists() {
+        std::fs::create_dir_all(data_dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(data_dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+
     let config = Config::new()
         .with_data_dir(data_dir)
         .with_host(&options.host)

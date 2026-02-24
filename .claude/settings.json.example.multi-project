@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "memory": {
+      "command": "veclayer",
+      "args": [
+        "-d",
+        "/home/you/.veclayer/data",
+        "serve",
+        "--mcp-stdio",
+        "--project",
+        "myapp"
+      ]
+    }
+  }
+}
