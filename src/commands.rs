@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use owo_colors::{OwoColorize, Stream};
 use tracing::{debug, info, warn};
 
+use crate::blob_store::BlobStore;
 use crate::chunk::{short_id, EntryType};
 #[cfg(feature = "llm")]
 use crate::cluster::ClusterPipeline;
@@ -25,13 +26,14 @@ use crate::search::TEMPORAL_PREFETCH_FACTOR;
 
 // --- Infrastructure helpers ---
 
-/// Create an embedder + store pair.  Centralises the 3-line init sequence
-/// that was previously repeated in every command that needs embeddings.
-async fn open_store(data_dir: &Path) -> Result<(FastEmbedder, StoreBackend)> {
+/// Create an embedder + store + blob store triple.  Centralises the init
+/// sequence that was previously repeated in every command that needs embeddings.
+async fn open_store(data_dir: &Path) -> Result<(FastEmbedder, StoreBackend, BlobStore)> {
     let embedder = FastEmbedder::new()?;
     let dimension = embedder.dimension();
     let store = StoreBackend::open(data_dir, dimension, false).await?;
-    Ok((embedder, store))
+    let blob_store = BlobStore::open(data_dir)?;
+    Ok((embedder, store, blob_store))
 }
 
 // --- Output helpers ---
@@ -348,7 +350,7 @@ pub async fn ingest(data_dir: &Path, path: &Path, options: &AddOptions) -> Resul
 /// Add files from a path to the store.
 async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result<AddResult> {
     debug!("Opening store at {:?}...", data_dir);
-    let (embedder, store) = open_store(data_dir).await?;
+    let (embedder, store, blob_store) = open_store(data_dir).await?;
 
     let parser = MarkdownParser::new();
 
@@ -391,6 +393,12 @@ async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result
             chunk.embedding = Some(embedding);
         }
 
+        // Persist to blob store
+        for chunk in &chunks {
+            let blob = crate::entry::StoredBlob::from_chunk_and_embedding(chunk, embedder.name());
+            blob_store.put(&blob)?;
+        }
+
         store.insert_chunks(chunks.clone()).await?;
         debug!("  Indexed successfully");
 
@@ -427,6 +435,13 @@ async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result
                         "Inserting {} cluster summaries...",
                         summary_chunk_list.len()
                     );
+                    for chunk in &summary_chunk_list {
+                        let blob = crate::entry::StoredBlob::from_chunk_and_embedding(
+                            chunk,
+                            embedder.name(),
+                        );
+                        blob_store.put(&blob)?;
+                    }
                     summary_entries = summary_chunk_list.len();
                     store.insert_chunks(summary_chunk_list).await?;
                 }
@@ -456,7 +471,7 @@ async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result
 
 /// Add inline text as a single entry.
 async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<AddResult> {
-    let (embedder, store) = open_store(data_dir).await?;
+    let (embedder, store, blob_store) = open_store(data_dir).await?;
 
     let entry_type = match options.entry_type.as_str() {
         "meta" => crate::chunk::EntryType::Meta,
@@ -509,6 +524,10 @@ async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<A
             .next()
             .ok_or_else(|| crate::Error::embedding("Failed to generate embedding"))?,
     );
+
+    // Persist to blob store
+    let blob = crate::entry::StoredBlob::from_chunk_and_embedding(&chunk, embedder.name());
+    blob_store.put(&blob)?;
 
     let id = chunk.id.clone();
     let store = std::sync::Arc::new(store);
@@ -715,7 +734,7 @@ pub async fn search_results(
         .as_deref()
         .and_then(crate::resolve::parse_temporal);
 
-    let (embedder, store) = open_store(data_dir).await?;
+    let (embedder, store, _blob_store) = open_store(data_dir).await?;
 
     let open_thread_ids = crate::identity::resolve_ongoing_filter(&store, options.ongoing).await?;
 
@@ -783,7 +802,7 @@ pub async fn query(
 
 /// Focus on an entry: show details and children.
 pub async fn focus(data_dir: &Path, id: &str, options: &FocusOptions) -> Result<()> {
-    let (embedder, store) = open_store(data_dir).await?;
+    let (embedder, store, _blob_store) = open_store(data_dir).await?;
 
     let entry = store
         .get_by_id_prefix(id)
@@ -1129,7 +1148,7 @@ pub async fn archive(data_dir: &Path, ids: &[String]) -> Result<()> {
         ));
     }
 
-    let (_embedder, store) = open_store(data_dir).await?;
+    let (_embedder, store, _blob_store) = open_store(data_dir).await?;
 
     for id in ids {
         let chunk = resolve_entry(&store, id).await?;
@@ -1192,7 +1211,7 @@ pub async fn compact(
 
 /// Rotate: roll access-profile buckets and apply aging rules.
 async fn compact_rotate(data_dir: &Path) -> Result<()> {
-    let (_embedder, store) = open_store(data_dir).await?;
+    let (_embedder, store, _blob_store) = open_store(data_dir).await?;
 
     let aging_config = crate::aging::AgingConfig::load(data_dir);
     let aging_result = crate::aging::apply_aging(&store, &aging_config).await?;
@@ -1339,7 +1358,7 @@ pub async fn reflect(data_dir: &Path) -> Result<()> {
 /// consolidations and learnings, VecLayer writes them back and cleans up.
 #[cfg(feature = "llm")]
 pub async fn think(data_dir: &Path) -> Result<()> {
-    let (embedder, store) = open_store(data_dir).await?;
+    let (embedder, store, blob_store) = open_store(data_dir).await?;
 
     let config = crate::Config::new().with_data_dir(data_dir);
     let llm = crate::llm::LlmBackend::from_config(&config.llm);
@@ -1349,7 +1368,8 @@ pub async fn think(data_dir: &Path) -> Result<()> {
         config.llm.model, config.llm.provider
     );
 
-    let result = crate::think::execute(&store, &embedder, &llm, data_dir).await?;
+    let result =
+        crate::think::execute(&store, &embedder, &llm, data_dir, Some(&blob_store)).await?;
 
     if result.entries_created.is_empty() {
         println!("\nNothing to consolidate. Memory is either empty or already well-organized.");
@@ -1610,7 +1630,7 @@ pub async fn export_entries(data_dir: &Path, options: &ExportOptions) -> Result<
 /// inserted.  Entries whose `id` already exists in the store are skipped.
 /// A single bad line is logged and skipped without aborting the whole import.
 pub async fn import_entries(data_dir: &Path, options: &ImportOptions) -> Result<ImportResult> {
-    let (embedder, store) = open_store(data_dir).await?;
+    let (embedder, store, blob_store) = open_store(data_dir).await?;
 
     let lines = read_jsonl_lines(&options.path)?;
 
@@ -1618,7 +1638,7 @@ pub async fn import_entries(data_dir: &Path, options: &ImportOptions) -> Result<
     let mut skipped = 0usize;
 
     for (line_number, line) in lines.into_iter().enumerate() {
-        match import_one_entry(&embedder, &store, &line).await {
+        match import_one_entry(&embedder, &store, &blob_store, &line).await {
             Ok(true) => imported += 1,
             Ok(false) => skipped += 1,
             Err(e) => {
@@ -1633,6 +1653,52 @@ pub async fn import_entries(data_dir: &Path, options: &ImportOptions) -> Result<
         imported, skipped
     );
     Ok(ImportResult { imported, skipped })
+}
+
+/// Rebuild the Lance vector index from the blob store.
+///
+/// Reads every blob, re-embeds if the cached embedding model doesn't match,
+/// and inserts into a fresh Lance index.
+pub async fn rebuild_index(data_dir: &Path) -> Result<()> {
+    let blob_store = BlobStore::open(data_dir)?;
+    let blob_count = blob_store.count()?;
+    if blob_count == 0 {
+        println!("No blobs found — nothing to rebuild.");
+        return Ok(());
+    }
+
+    // Drop the existing Lance table so we start fresh (idempotent rebuild).
+    let lance_table = data_dir.join(format!("{}.lance", crate::store::TABLE_NAME));
+    if lance_table.exists() {
+        std::fs::remove_dir_all(&lance_table)?;
+        debug!("Removed existing Lance table at {:?}", lance_table);
+    }
+
+    let embedder = FastEmbedder::new()?;
+    let dimension = embedder.dimension();
+    let store = StoreBackend::open(data_dir, dimension, false).await?;
+
+    let model_name = embedder.name();
+    let mut count = 0;
+
+    for hash_result in blob_store.iter_hashes() {
+        let hash = hash_result?;
+        if let Some(blob) = blob_store.get(&hash)? {
+            let embedding = match blob.embedding_for_model(model_name) {
+                Some(cached) => cached.to_vec(),
+                None => {
+                    let vecs = embedder.embed(&[blob.entry.content.as_str()])?;
+                    vecs.into_iter().next().unwrap_or_default()
+                }
+            };
+            let chunk = crate::HierarchicalChunk::from_entry(&blob.entry, embedding);
+            store.insert_chunks(vec![chunk]).await?;
+            count += 1;
+        }
+    }
+
+    println!("Rebuilt index: {count} entries from blob store");
+    Ok(())
 }
 
 /// Read all non-empty lines from a JSONL file path or stdin ("-").
@@ -1662,6 +1728,7 @@ fn collect_non_empty_lines(reader: impl BufRead) -> Result<Vec<String>> {
 async fn import_one_entry(
     embedder: &impl crate::Embedder,
     store: &impl crate::store::VectorStore,
+    blob_store: &BlobStore,
     line: &str,
 ) -> Result<bool> {
     let mut chunk: crate::HierarchicalChunk = serde_json::from_str(line)?;
@@ -1672,6 +1739,10 @@ async fn import_one_entry(
 
     let embeddings = embedder.embed(&[chunk.content.as_str()])?;
     chunk.embedding = embeddings.into_iter().next();
+
+    // Persist to blob store
+    let blob = crate::entry::StoredBlob::from_chunk_and_embedding(&chunk, embedder.name());
+    blob_store.put(&blob)?;
 
     store.insert_chunks(vec![chunk]).await?;
     Ok(true)
@@ -1753,6 +1824,7 @@ pub async fn think_aging_apply(data_dir: &Path) -> Result<()> {
 pub async fn think_discover(data_dir: &Path, limit: usize) -> Result<()> {
     let store = StoreBackend::open_metadata(data_dir, true).await?;
     let store = std::sync::Arc::new(store);
+    let blob_store = std::sync::Arc::new(BlobStore::open(data_dir)?);
 
     let input = crate::mcp::types::ThinkInput {
         action: Some("discover".to_string()),
@@ -1768,7 +1840,7 @@ pub async fn think_discover(data_dir: &Path, limit: usize) -> Result<()> {
         degrade_from: None,
     };
 
-    let report = crate::mcp::tools::execute_think(&store, data_dir, input).await?;
+    let report = crate::mcp::tools::execute_think(&store, data_dir, &blob_store, input).await?;
     println!("{}", report);
     Ok(())
 }

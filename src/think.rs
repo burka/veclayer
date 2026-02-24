@@ -114,6 +114,7 @@ pub async fn execute<L: LlmProvider>(
     embedder: &FastEmbedder,
     llm: &L,
     data_dir: &Path,
+    blob_store: Option<&crate::blob_store::BlobStore>,
 ) -> Result<ThinkResult> {
     // 1. Reflect: compute identity snapshot
     let snapshot = identity::compute_identity(store, data_dir).await?;
@@ -157,6 +158,7 @@ pub async fn execute<L: LlmProvider>(
                 vec![],
                 vec![],
                 "[think:narrative]",
+                blob_store,
             )
             .await?;
             entries_created.push(ThinkEntry {
@@ -192,6 +194,7 @@ pub async fn execute<L: LlmProvider>(
             relations,
             consolidation.perspectives.clone(),
             "[think:consolidation]",
+            blob_store,
         )
         .await?;
 
@@ -218,6 +221,7 @@ pub async fn execute<L: LlmProvider>(
             vec![],
             learning.perspectives.clone(),
             "[think:learning]",
+            blob_store,
         )
         .await?;
 
@@ -260,6 +264,7 @@ fn build_prompt(priming: &str, snapshot: &IdentitySnapshot) -> String {
 }
 
 /// Write a single entry to the store with embedding.
+#[allow(clippy::too_many_arguments)]
 async fn write_entry(
     store: &impl VectorStore,
     embedder: &FastEmbedder,
@@ -268,6 +273,7 @@ async fn write_entry(
     relations: Vec<ChunkRelation>,
     perspectives: Vec<String>,
     source: &str,
+    blob_store: Option<&crate::blob_store::BlobStore>,
 ) -> Result<String> {
     let embeddings = embedder.embed(&[content])?;
     let embedding = embeddings
@@ -287,6 +293,12 @@ async fn write_entry(
 
     chunk.embedding = Some(embedding);
     chunk.relations = relations;
+
+    // Persist to blob store when available
+    if let Some(bs) = blob_store {
+        let blob = crate::entry::StoredBlob::from_chunk_and_embedding(&chunk, embedder.name());
+        bs.put(&blob)?;
+    }
 
     let id = chunk.id.clone();
     store.insert_chunks(vec![chunk]).await?;

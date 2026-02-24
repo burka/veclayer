@@ -2,6 +2,7 @@ mod lancedb_impl;
 pub(crate) mod lock;
 
 pub(crate) use lancedb_impl::LanceStore;
+pub(crate) use lancedb_impl::TABLE_NAME;
 pub(crate) use lock::FileLock;
 
 use crate::{AccessProfile, ChunkLevel, ChunkRelation, HierarchicalChunk, Result};

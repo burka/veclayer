@@ -15,7 +15,7 @@ use lancedb::{connect, Connection, Table};
 use super::{FileLock, SearchResult, StoreStats, VectorStore};
 use crate::{ChunkLevel, ClusterMembership, Error, HierarchicalChunk, Result};
 
-const TABLE_NAME: &str = "chunks";
+pub(crate) const TABLE_NAME: &str = "chunks";
 
 /// Deterministic fingerprint of an Arrow schema: hash of field names + types.
 /// Changes automatically when fields are added, removed, or retyped.

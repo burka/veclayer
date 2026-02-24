@@ -239,6 +239,10 @@ enum Commands {
         path: String,
     },
 
+    /// Rebuild the Lance index from the blob store
+    #[command(alias = "reindex")]
+    RebuildIndex,
+
     /// Reflect — identity snapshot, salience ranking, archive candidates
     #[command(alias = "id")]
     Reflect {
@@ -530,6 +534,9 @@ async fn main() -> Result<()> {
         Commands::Import { path } => {
             let options = ImportOptions { path };
             veclayer::commands::import_entries(&cli.data_dir, &options).await?;
+        }
+        Commands::RebuildIndex => {
+            veclayer::commands::rebuild_index(&cli.data_dir).await?;
         }
         Commands::Reflect { action } => match action {
             None => {

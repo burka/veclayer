@@ -10,6 +10,7 @@ use axum::{Json, Router};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 
+use crate::blob_store::BlobStore;
 use crate::embedder::FastEmbedder;
 use crate::store::StoreBackend;
 use crate::{Config, Embedder, Result, VectorStore};
@@ -22,6 +23,7 @@ use super::types::*;
 struct AppState {
     store: Arc<StoreBackend>,
     embedder: Arc<FastEmbedder>,
+    blob_store: Arc<BlobStore>,
     data_dir: std::path::PathBuf,
 }
 
@@ -30,10 +32,12 @@ pub async fn run_http(config: Config) -> Result<()> {
     let embedder = FastEmbedder::new()?;
     let dimension = embedder.dimension();
     let store = StoreBackend::open(&config.data_dir, dimension, config.read_only).await?;
+    let blob_store = BlobStore::open(&config.data_dir)?;
 
     let state = AppState {
         store: Arc::new(store),
         embedder: Arc::new(embedder),
+        blob_store: Arc::new(blob_store),
         data_dir: config.data_dir.clone(),
     };
 
@@ -111,7 +115,7 @@ async fn api_store(
             error: "content is required".to_string(),
         });
     }
-    match tools::execute_store(&state.store, &state.embedder, input).await {
+    match tools::execute_store(&state.store, &state.embedder, &state.blob_store, input).await {
         Ok(chunk_id) => Json(ApiResponse::Success(format!("Stored. ID: {}", chunk_id))),
         Err(e) => {
             tracing::warn!("Store failed: {e}");
@@ -126,7 +130,7 @@ async fn api_think(
     State(state): State<AppState>,
     Json(input): Json<ThinkInput>,
 ) -> Json<ApiResponse<String>> {
-    match tools::execute_think(&state.store, &state.data_dir, input).await {
+    match tools::execute_think(&state.store, &state.data_dir, &state.blob_store, input).await {
         Ok(text) => Json(ApiResponse::Success(text)),
         Err(e) => {
             tracing::warn!("Think failed: {e}");

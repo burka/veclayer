@@ -1,11 +1,13 @@
 pub mod access_profile;
 pub mod aging;
+pub mod blob_store;
 pub mod chunk;
 #[cfg(feature = "llm")]
 pub mod cluster;
 pub mod commands;
 pub mod config;
 pub mod embedder;
+pub mod entry;
 pub mod error;
 pub mod identity;
 #[cfg(feature = "llm")]
@@ -26,6 +28,7 @@ pub mod test_helpers;
 #[cfg(feature = "llm")]
 pub mod think;
 
+pub use blob_store::BlobStore;
 pub use chunk::{
     content_hash, relation, short_id, visibility, AccessProfile, ChunkLevel, ChunkRelation,
     ClusterMembership, EntryType, HierarchicalChunk, RecencyWindow, STANDARD_VISIBLE,
@@ -34,6 +37,7 @@ pub use chunk::{
 pub use cluster::{ClusterPipeline, SoftClusterer};
 pub use config::Config;
 pub use embedder::Embedder;
+pub use entry::{EmbeddingCache, Entry, StoredBlob};
 pub use error::{Error, Result};
 #[cfg(feature = "llm")]
 pub use llm::{LlmBackend, LlmProvider};
