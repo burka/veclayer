@@ -80,11 +80,22 @@ pub struct OpenThread {
 pub async fn compute_identity<S: VectorStore>(
     store: &S,
     data_dir: &std::path::Path,
+    project: Option<&str>,
 ) -> crate::Result<IdentitySnapshot> {
     let weights = SalienceWeights::default();
 
     // Fetch the most important entries (use a generous limit)
-    let hot = store.get_hot_chunks(500).await?;
+    let mut hot = store.get_hot_chunks(500).await?;
+
+    // Filter by project if specified
+    if let Some(proj_name) = project {
+        let project_tag = format!("project:{}", proj_name);
+        hot.retain(|chunk| {
+            let is_personal = !chunk.perspectives.iter().any(|p| p.starts_with("project:"));
+            let is_project = chunk.perspectives.contains(&project_tag);
+            is_personal || is_project
+        });
+    }
 
     // Compute centroids per perspective
     let perspectives = crate::perspective::load(data_dir)?;

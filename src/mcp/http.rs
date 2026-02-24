@@ -25,6 +25,7 @@ struct AppState {
     embedder: Arc<FastEmbedder>,
     blob_store: Arc<BlobStore>,
     data_dir: std::path::PathBuf,
+    project: Option<String>,
 }
 
 /// Run the HTTP REST API server.
@@ -39,6 +40,7 @@ pub async fn run_http(config: Config) -> Result<()> {
         embedder: Arc::new(embedder),
         blob_store: Arc::new(blob_store),
         data_dir: config.data_dir.clone(),
+        project: config.project.clone(),
     };
 
     let cors = CorsLayer::new()
@@ -80,7 +82,14 @@ async fn api_recall(
     State(state): State<AppState>,
     Json(input): Json<RecallInput>,
 ) -> Json<ApiResponse<Vec<SearchResultResponse>>> {
-    match tools::execute_recall(&state.store, &state.embedder, input).await {
+    match tools::execute_recall(
+        &state.store,
+        &state.embedder,
+        input,
+        state.project.as_deref(),
+    )
+    .await
+    {
         Ok(results) => Json(ApiResponse::Success(results)),
         Err(e) => {
             tracing::warn!("Recall failed: {e}");
@@ -95,7 +104,14 @@ async fn api_focus(
     State(state): State<AppState>,
     Json(input): Json<FocusInput>,
 ) -> Json<ApiResponse<FocusResponse>> {
-    match tools::execute_focus(&state.store, &state.embedder, input).await {
+    match tools::execute_focus(
+        &state.store,
+        &state.embedder,
+        input,
+        state.project.as_deref(),
+    )
+    .await
+    {
         Ok(response) => Json(ApiResponse::Success(response)),
         Err(e) => {
             tracing::warn!("Focus failed: {e}");
@@ -115,7 +131,15 @@ async fn api_store(
             error: "content is required".to_string(),
         });
     }
-    match tools::execute_store(&state.store, &state.embedder, &state.blob_store, input).await {
+    match tools::execute_store(
+        &state.store,
+        &state.embedder,
+        &state.blob_store,
+        input,
+        state.project.as_deref(),
+    )
+    .await
+    {
         Ok(chunk_id) => Json(ApiResponse::Success(format!("Stored. ID: {}", chunk_id))),
         Err(e) => {
             tracing::warn!("Store failed: {e}");
@@ -130,7 +154,15 @@ async fn api_think(
     State(state): State<AppState>,
     Json(input): Json<ThinkInput>,
 ) -> Json<ApiResponse<String>> {
-    match tools::execute_think(&state.store, &state.data_dir, &state.blob_store, input).await {
+    match tools::execute_think(
+        &state.store,
+        &state.data_dir,
+        &state.blob_store,
+        input,
+        state.project.as_deref(),
+    )
+    .await
+    {
         Ok(text) => Json(ApiResponse::Success(text)),
         Err(e) => {
             tracing::warn!("Think failed: {e}");
@@ -163,7 +195,13 @@ async fn api_stats(State(state): State<AppState>) -> Json<ApiResponse<serde_json
 
 /// Identity endpoint — mirrors stdio auto-priming on MCP initialize.
 async fn api_identity(State(state): State<AppState>) -> Json<ApiResponse<serde_json::Value>> {
-    match crate::identity::compute_identity(state.store.as_ref(), &state.data_dir).await {
+    match crate::identity::compute_identity(
+        state.store.as_ref(),
+        &state.data_dir,
+        state.project.as_deref(),
+    )
+    .await
+    {
         Ok(snapshot) => {
             let priming = crate::identity::generate_priming(&snapshot);
             let instructions = super::build_priming_text(&priming);
@@ -193,7 +231,13 @@ async fn api_identity(State(state): State<AppState>) -> Json<ApiResponse<serde_j
 /// Agents connecting via HTTP can GET this endpoint on startup to receive the same
 /// identity briefing that stdio agents receive on `initialize`.
 async fn api_priming(State(state): State<AppState>) -> Response {
-    match crate::identity::compute_identity(state.store.as_ref(), &state.data_dir).await {
+    match crate::identity::compute_identity(
+        state.store.as_ref(),
+        &state.data_dir,
+        state.project.as_deref(),
+    )
+    .await
+    {
         Ok(snapshot) => {
             let priming = crate::identity::generate_priming(&snapshot);
             let text = super::build_priming_text(&priming);

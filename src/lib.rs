@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 pub mod access_profile;
 pub mod aging;
 pub mod blob_store;

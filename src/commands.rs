@@ -214,6 +214,8 @@ pub struct ServeOptions {
     pub read_only: bool,
     /// Enable MCP stdio transport (for Claude integration)
     pub mcp_stdio: bool,
+    /// Project scope for memory isolation
+    pub project: Option<String>,
 }
 
 impl Default for ServeOptions {
@@ -223,6 +225,7 @@ impl Default for ServeOptions {
             port: 8080,
             read_only: false,
             mcp_stdio: false,
+            project: None,
         }
     }
 }
@@ -1028,7 +1031,8 @@ pub async fn serve(data_dir: &Path, options: &ServeOptions) -> Result<()> {
         .with_data_dir(data_dir)
         .with_host(&options.host)
         .with_port(options.port)
-        .with_read_only(options.read_only);
+        .with_read_only(options.read_only)
+        .with_project(options.project.clone());
 
     if options.mcp_stdio {
         crate::mcp::run_stdio(config).await
@@ -1344,7 +1348,7 @@ async fn compact_archive_candidates(data_dir: &Path, options: &CompactOptions) -
 /// Generate a comprehensive reflection/identity report.
 pub async fn reflect(data_dir: &Path) -> Result<()> {
     let store = StoreBackend::open_metadata(data_dir, true).await?;
-    let snapshot = crate::identity::compute_identity(&store, data_dir).await?;
+    let snapshot = crate::identity::compute_identity(&store, data_dir, None).await?;
     let priming = crate::identity::generate_priming(&snapshot);
     println!("{}", priming);
     Ok(())
@@ -1432,7 +1436,7 @@ pub async fn orientation(data_dir: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let snapshot = crate::identity::compute_identity(&store, data_dir).await?;
+    let snapshot = crate::identity::compute_identity(&store, data_dir, None).await?;
 
     println!(
         "{} {} entries from {} sources",
@@ -1840,7 +1844,8 @@ pub async fn think_discover(data_dir: &Path, limit: usize) -> Result<()> {
         degrade_from: None,
     };
 
-    let report = crate::mcp::tools::execute_think(&store, data_dir, &blob_store, input).await?;
+    let report =
+        crate::mcp::tools::execute_think(&store, data_dir, &blob_store, input, None).await?;
     println!("{}", report);
     Ok(())
 }
