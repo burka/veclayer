@@ -8,6 +8,7 @@ license = "MIT"
 [features]
 default = ["llm"]
 llm = ["dep:reqwest", "dep:linfa", "dep:linfa-clustering", "dep:ndarray"]
+sync = []
 
 [dependencies]
 # CLI
