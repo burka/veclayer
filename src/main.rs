@@ -380,13 +380,23 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let (data_dir, discovered_project) = if let Some(dir) = cli.data_dir {
-        (dir, None)
+    let cwd = std::env::current_dir().expect("Failed to determine current directory");
+    let git_info = veclayer::git_detect::detect(&cwd);
+
+    let (data_dir, discovered_project, discovered_branch) = if let Some(dir) = cli.data_dir {
+        (dir, git_info.remote.clone(), git_info.branch.clone())
     } else {
-        let cwd = std::env::current_dir().unwrap_or_default();
         match veclayer::config::discover_project(&cwd) {
-            Some((dir, project_config)) => (dir, project_config.project),
-            None => (veclayer::default_data_dir(), None),
+            Some((dir, project_config)) => {
+                let project = project_config.project.or(git_info.remote.clone());
+                let branch = git_info.branch.clone();
+                (dir, project, branch)
+            }
+            None => (
+                veclayer::default_data_dir(),
+                git_info.remote.clone(),
+                git_info.branch.clone(),
+            ),
         }
     };
 
@@ -512,6 +522,7 @@ async fn main() -> Result<()> {
                 read_only,
                 mcp_stdio,
                 project: project.or(discovered_project.clone()),
+                branch: discovered_branch.clone(),
             };
             veclayer::commands::serve(&data_dir, &options).await?;
         }

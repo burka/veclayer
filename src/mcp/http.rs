@@ -26,6 +26,7 @@ struct AppState {
     blob_store: Arc<BlobStore>,
     data_dir: std::path::PathBuf,
     project: Option<String>,
+    branch: Option<String>,
 }
 
 /// Run the HTTP REST API server.
@@ -41,6 +42,7 @@ pub async fn run_http(config: Config) -> Result<()> {
         blob_store: Arc::new(blob_store),
         data_dir: config.data_dir.clone(),
         project: config.project.clone(),
+        branch: config.branch.clone(),
     };
 
     let cors = CorsLayer::new()
@@ -87,6 +89,7 @@ async fn api_recall(
         &state.embedder,
         input,
         state.project.as_deref(),
+        state.branch.as_deref(),
     )
     .await
     {
@@ -109,6 +112,7 @@ async fn api_focus(
         &state.embedder,
         input,
         state.project.as_deref(),
+        state.branch.as_deref(),
     )
     .await
     {
@@ -137,6 +141,7 @@ async fn api_store(
         &state.blob_store,
         input,
         state.project.as_deref(),
+        state.branch.as_deref(),
     )
     .await
     {
@@ -160,6 +165,7 @@ async fn api_think(
         &state.blob_store,
         input,
         state.project.as_deref(),
+        state.branch.as_deref(),
     )
     .await
     {
@@ -199,6 +205,7 @@ async fn api_identity(State(state): State<AppState>) -> Json<ApiResponse<serde_j
         state.store.as_ref(),
         &state.data_dir,
         state.project.as_deref(),
+        state.branch.as_deref(),
     )
     .await
     {
@@ -235,6 +242,7 @@ async fn api_priming(State(state): State<AppState>) -> Response {
         state.store.as_ref(),
         &state.data_dir,
         state.project.as_deref(),
+        state.branch.as_deref(),
     )
     .await
     {

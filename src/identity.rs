@@ -9,6 +9,17 @@
 use crate::salience::{self, SalienceWeights};
 use crate::{HierarchicalChunk, VectorStore};
 
+/// Summary of activity on another branch.
+#[derive(Debug, Clone)]
+pub struct BranchActivity {
+    /// Branch name (e.g., "feat/new-ui")
+    pub branch: String,
+    /// Number of entries scoped to this branch
+    pub entry_count: usize,
+    /// Most recent entry's heading or content preview
+    pub latest_heading: Option<String>,
+}
+
 /// A computed identity snapshot.
 #[derive(Debug, Clone)]
 pub struct IdentitySnapshot {
@@ -22,6 +33,8 @@ pub struct IdentitySnapshot {
     pub recent_learnings: Vec<CoreEntry>,
     /// Emergent clusters discovered via k-means on embeddings.
     pub emergent_clusters: Vec<EmergentCluster>,
+    /// Activity on other branches (for cross-branch awareness).
+    pub other_branches: Vec<BranchActivity>,
 }
 
 impl IdentitySnapshot {
@@ -32,6 +45,7 @@ impl IdentitySnapshot {
             && self.recent_learnings.is_empty()
             && self.centroids.is_empty()
             && self.emergent_clusters.is_empty()
+            && self.other_branches.is_empty()
     }
 }
 
@@ -81,6 +95,7 @@ pub async fn compute_identity<S: VectorStore>(
     store: &S,
     data_dir: &std::path::Path,
     project: Option<&str>,
+    branch: Option<&str>,
 ) -> crate::Result<IdentitySnapshot> {
     let weights = SalienceWeights::default();
 
@@ -91,9 +106,17 @@ pub async fn compute_identity<S: VectorStore>(
     if let Some(proj_name) = project {
         let project_tag = format!("project:{}", proj_name);
         hot.retain(|chunk| {
-            let is_personal = !chunk.perspectives.iter().any(|p| p.starts_with("project:"));
+            let is_personal = !chunk.perspectives.iter().any(|p| p.starts_with("project:"))
+                && !chunk.perspectives.iter().any(|p| p.starts_with("branch:"));
             let is_project = chunk.perspectives.contains(&project_tag);
-            is_personal || is_project
+            let current_branch_tag = branch.map(|b| format!("branch:{}@{}", proj_name, b));
+            let is_current_branch = current_branch_tag
+                .as_ref()
+                .map(|tag| chunk.perspectives.contains(tag))
+                .unwrap_or(false);
+            let is_branch_scoped = chunk.perspectives.iter().any(|p| p.starts_with("branch:"));
+
+            is_personal || (is_project && !is_branch_scoped) || is_current_branch
         });
     }
 
@@ -143,12 +166,63 @@ pub async fn compute_identity<S: VectorStore>(
     #[cfg(not(feature = "llm"))]
     let emergent_clusters = Vec::new();
 
+    // Detect other branches' activity
+    let other_branches = if let Some(proj_name) = project {
+        let branch_prefix = format!("branch:{}@", proj_name);
+        let current_branch_tag = branch.map(|b| format!("branch:{}@{}", proj_name, b));
+
+        // Get all entries and find unique branch tags
+        let all_entries = store
+            .list_entries(None, None, None, 1000)
+            .await
+            .unwrap_or_default();
+
+        let mut branch_map: std::collections::HashMap<String, Vec<&HierarchicalChunk>> =
+            std::collections::HashMap::new();
+
+        for entry in &all_entries {
+            for p in &entry.perspectives {
+                if let Some(branch_name) = p.strip_prefix(&branch_prefix) {
+                    // Skip current branch
+                    if let Some(ref current) = current_branch_tag {
+                        if p == current {
+                            continue;
+                        }
+                    }
+                    branch_map
+                        .entry(branch_name.to_string())
+                        .or_default()
+                        .push(entry);
+                }
+            }
+        }
+
+        branch_map
+            .into_iter()
+            .map(|(branch, entries)| {
+                let latest = entries.iter().max_by_key(|e| e.access_profile.created_at);
+                BranchActivity {
+                    branch,
+                    entry_count: entries.len(),
+                    latest_heading: latest.and_then(|e| {
+                        e.heading
+                            .clone()
+                            .or_else(|| Some(e.content.chars().take(80).collect::<String>()))
+                    }),
+                }
+            })
+            .collect()
+    } else {
+        vec![]
+    };
+
     Ok(IdentitySnapshot {
         centroids,
         core_entries,
         open_threads,
         recent_learnings,
         emergent_clusters,
+        other_branches,
     })
 }
 
@@ -424,6 +498,19 @@ pub fn generate_priming(snapshot: &IdentitySnapshot) -> String {
         priming.push('\n');
     }
 
+    // Other branches
+    if !snapshot.other_branches.is_empty() {
+        priming.push_str("## Other Branches\n\n");
+        for branch in &snapshot.other_branches {
+            let heading = branch.latest_heading.as_deref().unwrap_or("(no heading)");
+            priming.push_str(&format!(
+                "- **{}**: {} entries — latest: {}\n",
+                branch.branch, branch.entry_count, heading
+            ));
+        }
+        priming.push('\n');
+    }
+
     // Open threads
     if !snapshot.open_threads.is_empty() {
         priming.push_str("## Open Threads\n\n");
@@ -631,6 +718,7 @@ mod tests {
             open_threads: vec![],
             recent_learnings: vec![],
             emergent_clusters: vec![],
+            other_branches: vec![],
         };
         let priming = generate_priming(&snapshot);
         assert!(priming.is_empty());
@@ -666,6 +754,7 @@ mod tests {
                 perspectives: vec!["learnings".to_string()],
             }],
             emergent_clusters: vec![],
+            other_branches: vec![],
         };
         let priming = generate_priming(&snapshot);
         assert!(priming.contains("Core Knowledge"));
