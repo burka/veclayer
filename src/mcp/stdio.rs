@@ -32,6 +32,7 @@ pub async fn run_stdio(config: Config) -> Result<()> {
 
     let data_dir = config.data_dir.clone();
     let project = config.project.clone();
+    let branch = config.branch.clone();
 
     for line in stdin.lock().lines() {
         let line = line.map_err(crate::Error::Io)?;
@@ -46,6 +47,7 @@ pub async fn run_stdio(config: Config) -> Result<()> {
             &blob_store,
             &data_dir,
             project.as_deref(),
+            branch.as_deref(),
         )
         .await;
         if !response.is_empty() {
@@ -64,6 +66,7 @@ async fn handle_mcp_message(
     blob_store: &Arc<BlobStore>,
     data_dir: &std::path::Path,
     project: Option<&str>,
+    branch: Option<&str>,
 ) -> String {
     let parsed: serde_json::Value = match serde_json::from_str(message) {
         Ok(v) => v,
@@ -81,9 +84,10 @@ async fn handle_mcp_message(
 
     let result = match method {
         "initialize" => {
-            // Generate dynamic priming from identity
             let priming =
-                match crate::identity::compute_identity(store.as_ref(), data_dir, project).await {
+                match crate::identity::compute_identity(store.as_ref(), data_dir, project, branch)
+                    .await
+                {
                     Ok(snapshot) => {
                         let p = crate::identity::generate_priming(&snapshot);
                         super::build_priming_text(&p)
@@ -103,7 +107,7 @@ async fn handle_mcp_message(
                 "instructions": priming
             })
         }
-        "tools/list" => tool_list(project),
+        "tools/list" => tool_list(project, branch),
         "tools/call" => {
             let params = parsed
                 .get("params")
@@ -116,7 +120,7 @@ async fn handle_mcp_message(
                 .unwrap_or(serde_json::json!({}));
 
             return handle_tool_call(
-                id, tool_name, arguments, store, embedder, blob_store, data_dir, project,
+                id, tool_name, arguments, store, embedder, blob_store, data_dir, project, branch,
             )
             .await;
         }
@@ -146,6 +150,7 @@ async fn handle_tool_call(
     blob_store: &Arc<BlobStore>,
     data_dir: &std::path::Path,
     project: Option<&str>,
+    branch: Option<&str>,
 ) -> String {
     let result = match tool_name {
         "recall" => {
@@ -156,7 +161,7 @@ async fn handle_tool_call(
                 }
             };
             let query = input.query.clone();
-            match tools::execute_recall(store, embedder, input, project).await {
+            match tools::execute_recall(store, embedder, input, project, branch).await {
                 Ok(results) => {
                     let text = super::format::format_recall(query.as_deref(), &results);
                     mcp_text_result(&text)
@@ -171,7 +176,7 @@ async fn handle_tool_call(
                     return format_mcp_error(id, -32602, &format!("Invalid params: {}", e));
                 }
             };
-            match tools::execute_focus(store, embedder, input, project).await {
+            match tools::execute_focus(store, embedder, input, project, branch).await {
                 Ok(response) => {
                     let text = super::format::format_focus(&response);
                     mcp_text_result(&text)
@@ -193,7 +198,7 @@ async fn handle_tool_call(
                     "Missing required parameter: content (or items for batch mode)",
                 );
             }
-            match tools::execute_store(store, embedder, blob_store, input, project).await {
+            match tools::execute_store(store, embedder, blob_store, input, project, branch).await {
                 Ok(result) => {
                     let text = if result.is_array() {
                         format!(
@@ -216,7 +221,7 @@ async fn handle_tool_call(
                     return format_mcp_error(id, -32602, &format!("Invalid params: {}", e));
                 }
             };
-            match tools::execute_think(store, data_dir, blob_store, input, project).await {
+            match tools::execute_think(store, data_dir, blob_store, input, project, branch).await {
                 Ok(text) => mcp_text_result(&text),
                 Err(e) => mcp_error_result(&e.to_string()),
             }
@@ -245,11 +250,24 @@ async fn handle_tool_call(
     .to_string()
 }
 
-fn tool_list(project: Option<&str>) -> serde_json::Value {
+fn tool_list(project: Option<&str>, branch: Option<&str>) -> serde_json::Value {
     let (store_desc, recall_desc) = if let Some(proj) = project {
+        let branch_info = branch
+            .map(|b| format!(" (branch: {})", b))
+            .unwrap_or_default();
         (
-            format!("Persist a new memory. Default scope is the '{}' project. Set `scope: \"personal\"` for knowledge that follows you across all projects.", proj),
-            format!("Find relevant knowledge using semantic vector search within the '{}' project. Results include a relevance tier (strong/moderate/weak/tangential). Without a query, browse entries by perspective.", proj),
+            format!(
+                "Persist a new memory. Default scope is the '{}' project{}. \
+                 Use `scope: \"branch\"` for work-in-progress that only this branch should see. \
+                 Use `scope: \"personal\"` for knowledge that follows you across all projects. \
+                 Use `scope: \"project\"` for decisions and conventions visible to all branches.",
+                proj, branch_info
+            ),
+            format!(
+                "Find relevant knowledge within the '{}' project{}. \
+                 Results include a relevance tier. Without a query, browse by perspective.",
+                proj, branch_info
+            ),
         )
     } else {
         (
@@ -304,7 +322,7 @@ fn tool_list(project: Option<&str>) -> serde_json::Value {
                         "visibility": { "type": "string", "default": "normal" },
                         "perspectives": { "type": "array", "items": { "type": "string" }, "description": "Perspectives: intentions, people, temporal, knowledge, decisions, learnings, session" },
                         "entry_type": { "type": "string", "description": "Entry type: raw (default), summary, meta, impression" },
-                        "scope": { "type": "string", "enum": ["project", "personal"], "default": "project", "description": "project = scoped to current project, personal = visible across all projects" },
+                        "scope": { "type": "string", "enum": ["project", "branch", "personal"], "default": "project", "description": "project = visible on all branches, branch = only this branch, personal = follows you everywhere" },
                         "relations": {
                             "type": "array",
                             "items": {
@@ -329,7 +347,7 @@ fn tool_list(project: Option<&str>) -> serde_json::Value {
                                     "perspectives": { "type": "array", "items": { "type": "string" } },
                                     "source_file": { "type": "string" },
                                     "entry_type": { "type": "string", "description": "raw (default), summary, meta, impression" },
-                                    "scope": { "type": "string", "enum": ["project", "personal"], "default": "project", "description": "project = scoped to current project, personal = visible across all projects" },
+                                    "scope": { "type": "string", "enum": ["project", "branch", "personal"], "default": "project", "description": "project = visible on all branches, branch = only this branch, personal = follows you everywhere" },
                                     "relations": {
                                         "type": "array",
                                         "items": {

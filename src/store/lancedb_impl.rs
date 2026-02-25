@@ -152,6 +152,7 @@ impl LanceStore {
             Some(dir) => {
                 let dir = dir.clone();
                 Some(
+                    // Outer ? = tokio JoinError (task panicked), inner ? = lock acquisition error
                     tokio::task::spawn_blocking(move || FileLock::acquire_blocking(&dir))
                         .await
                         .map_err(|e| Error::store(format!("lock task failed: {e}")))??,

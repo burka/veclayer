@@ -29,15 +29,37 @@ use super::types::*;
 /// - No project is set (no filtering)
 /// - Chunk has the project perspective `project:<name>`
 /// - Chunk has no project perspective (personal/unscoped)
-fn passes_project_filter(chunk: &crate::HierarchicalChunk, project: Option<&str>) -> bool {
+fn passes_scope_filter(
+    chunk: &crate::HierarchicalChunk,
+    project: Option<&str>,
+    branch: Option<&str>,
+) -> bool {
     let Some(proj_name) = project else {
-        return true; // No project set → no filtering
+        return true;
     };
+
     let project_tag = format!("project:{}", proj_name);
     let has_project = chunk.perspectives.contains(&project_tag);
     let has_any_project = chunk.perspectives.iter().any(|p| p.starts_with("project:"));
-    // Match if explicitly tagged with this project OR has no project tag (personal/unscoped)
-    has_project || !has_any_project
+    let has_any_branch = chunk.perspectives.iter().any(|p| p.starts_with("branch:"));
+
+    if !has_any_project && !has_any_branch {
+        return true;
+    }
+
+    if !has_project {
+        return false;
+    }
+
+    if has_any_branch {
+        if let Some(br) = branch {
+            let branch_tag = format!("branch:{}@{}", proj_name, br);
+            return chunk.perspectives.contains(&branch_tag);
+        }
+        return false;
+    }
+
+    true
 }
 
 /// Helper: map HierarchicalSearchResult to SearchResultResponse
@@ -82,6 +104,7 @@ async fn store_single_entry(
     blob_store: &Arc<crate::blob_store::BlobStore>,
     input: StoreSingleInput,
     project: Option<&str>,
+    branch: Option<&str>,
 ) -> Result<String> {
     let parent_id = input.parent_id.as_deref().filter(|s| !s.is_empty());
 
@@ -119,7 +142,6 @@ async fn store_single_entry(
         }
     };
 
-    // Auto-add project perspective if scope is "project" and project is set
     let perspectives = match input.scope.as_str() {
         "project" => {
             if let Some(proj) = project {
@@ -129,6 +151,20 @@ async fn store_single_entry(
             } else {
                 input.perspectives.clone()
             }
+        }
+        "branch" => {
+            let mut perspectives = input.perspectives.clone();
+            if let Some(proj) = project {
+                perspectives.push(format!("project:{}", proj));
+            }
+            if let Some(br) = branch {
+                if let Some(proj) = project {
+                    perspectives.push(format!("branch:{}@{}", proj, br));
+                } else {
+                    perspectives.push(format!("branch:{}", br));
+                }
+            }
+            perspectives
         }
         "personal" => input.perspectives.clone(),
         other => {
@@ -185,6 +221,7 @@ pub async fn execute_recall(
     embedder: &Arc<FastEmbedder>,
     input: RecallInput,
     project: Option<&str>,
+    branch: Option<&str>,
 ) -> Result<Vec<SearchResultResponse>> {
     let since_epoch = input.since.as_deref().and_then(parse_temporal);
     let until_epoch = input.until.as_deref().and_then(parse_temporal);
@@ -210,7 +247,7 @@ pub async fn execute_recall(
         let filtered: Vec<_> = results
             .into_iter()
             .filter(|r| {
-                passes_project_filter(&r.chunk, project) && {
+                passes_scope_filter(&r.chunk, project, branch) && {
                     let created = r.chunk.access_profile.created_at;
                     since_epoch.is_none_or(|s| created >= s)
                         && until_epoch.is_none_or(|u| created <= u)
@@ -242,7 +279,7 @@ pub async fn execute_recall(
             let filtered: Vec<_> = results
                 .into_iter()
                 .filter(|r| {
-                    passes_project_filter(&r.chunk, project) && {
+                    passes_scope_filter(&r.chunk, project, branch) && {
                         let created = r.chunk.access_profile.created_at;
                         since_epoch.is_none_or(|s| created >= s)
                             && until_epoch.is_none_or(|u| created <= u)
@@ -275,7 +312,7 @@ pub async fn execute_recall(
             Ok(entries
                 .iter()
                 .filter(|chunk| {
-                    passes_project_filter(chunk, project)
+                    passes_scope_filter(chunk, project, branch)
                         && crate::identity::passes_ongoing_filter(&open_thread_ids, &chunk.id)
                 })
                 .take(input.limit)
@@ -296,6 +333,7 @@ pub async fn execute_focus(
     embedder: &Arc<FastEmbedder>,
     input: FocusInput,
     project: Option<&str>,
+    branch: Option<&str>,
 ) -> Result<FocusResponse> {
     let node = store
         .get_by_id_prefix(&input.id)
@@ -313,7 +351,7 @@ pub async fn execute_focus(
 
         let mut scored: Vec<(crate::HierarchicalChunk, f32)> = children
             .into_iter()
-            .filter(|child| passes_project_filter(child, project))
+            .filter(|child| passes_scope_filter(child, project, branch))
             .map(|child| {
                 let score = child
                     .embedding
@@ -337,7 +375,7 @@ pub async fn execute_focus(
     } else {
         children
             .into_iter()
-            .filter(|child| passes_project_filter(child, project))
+            .filter(|child| passes_scope_filter(child, project, branch))
             .take(input.limit)
             .map(|chunk| FocusChild {
                 chunk: ChunkResponse::from(&chunk),
@@ -358,9 +396,9 @@ pub async fn execute_store(
     blob_store: &Arc<crate::blob_store::BlobStore>,
     input: StoreInput,
     project: Option<&str>,
+    branch: Option<&str>,
 ) -> Result<serde_json::Value> {
     if !input.items.is_empty() {
-        // Batch mode
         let mut ids = Vec::new();
         for item in input.items {
             let id = store_single_entry(
@@ -381,6 +419,7 @@ pub async fn execute_store(
                     scope: item.scope,
                 },
                 project,
+                branch,
             )
             .await?;
             ids.push(crate::short_id(&id).to_string());
@@ -388,7 +427,6 @@ pub async fn execute_store(
         let msg = format!("Stored {} entries. IDs: {}", ids.len(), ids.join(", "));
         Ok(serde_json::json!(msg))
     } else {
-        // Single mode
         let id = store_single_entry(
             store,
             embedder,
@@ -407,6 +445,7 @@ pub async fn execute_store(
                 scope: input.scope,
             },
             project,
+            branch,
         )
         .await?;
         Ok(serde_json::json!(format!(
@@ -422,12 +461,13 @@ pub async fn execute_think(
     blob_store: &Arc<crate::blob_store::BlobStore>,
     input: ThinkInput,
     project: Option<&str>,
+    branch: Option<&str>,
 ) -> Result<String> {
     match input.action.as_deref() {
         None => {
             let hot_limit = input.hot_limit.unwrap_or(10);
             let stale_limit = input.stale_limit.unwrap_or(10);
-            execute_reflect(store, data_dir, hot_limit, stale_limit, project).await
+            execute_reflect(store, data_dir, hot_limit, stale_limit, project, branch).await
         }
         Some("promote") => {
             let raw_id = input
@@ -687,6 +727,7 @@ async fn execute_reflect(
     hot_limit: usize,
     stale_limit: usize,
     project: Option<&str>,
+    branch: Option<&str>,
 ) -> Result<String> {
     let aging_config = AgingConfig::load(data_dir);
 
@@ -700,7 +741,7 @@ async fn execute_reflect(
         .get_hot_chunks(fetch_limit)
         .await?
         .into_iter()
-        .filter(|c| passes_project_filter(c, project))
+        .filter(|c| passes_scope_filter(c, project, branch))
         .take(hot_limit)
         .collect();
     let stale_fetch = if project.is_some() {
@@ -712,7 +753,7 @@ async fn execute_reflect(
         .get_stale_chunks(aging_config.stale_seconds(), stale_fetch)
         .await?
         .into_iter()
-        .filter(|c| passes_project_filter(c, project))
+        .filter(|c| passes_scope_filter(c, project, branch))
         .take(stale_limit)
         .collect();
 
@@ -1044,7 +1085,7 @@ mod tests {
             degrade_to: None,
             degrade_from: None,
         };
-        let result = execute_think(&store, dir.path(), &blob_store, input, None)
+        let result = execute_think(&store, dir.path(), &blob_store, input, None, None)
             .await
             .unwrap();
         assert!(result.contains("Perspectives"));
@@ -1075,7 +1116,7 @@ mod tests {
             degrade_to: None,
             degrade_from: None,
         };
-        let result = execute_think(&store, dir.path(), &blob_store, input, None)
+        let result = execute_think(&store, dir.path(), &blob_store, input, None, None)
             .await
             .unwrap();
         assert!(result.contains("Store Status"));
@@ -1105,7 +1146,7 @@ mod tests {
             degrade_to: None,
             degrade_from: None,
         };
-        let result = execute_think(&store, dir.path(), &blob_store, input, None)
+        let result = execute_think(&store, dir.path(), &blob_store, input, None, None)
             .await
             .unwrap();
         assert!(result.contains("Entry History"));
@@ -1131,7 +1172,7 @@ mod tests {
             degrade_to: None,
             degrade_from: None,
         };
-        let result = execute_think(&store, dir.path(), &blob_store, input, None).await;
+        let result = execute_think(&store, dir.path(), &blob_store, input, None, None).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("requires 'id'"));
     }
@@ -1153,7 +1194,7 @@ mod tests {
             degrade_to: None,
             degrade_from: None,
         };
-        let result = execute_think(&store, dir.path(), &blob_store, input, None)
+        let result = execute_think(&store, dir.path(), &blob_store, input, None, None)
             .await
             .unwrap();
         assert!(result.contains("Total entries"));
@@ -1177,7 +1218,7 @@ mod tests {
             degrade_to: None,
             degrade_from: None,
         };
-        let result = execute_think(&store, dir.path(), &blob_store, input, None).await;
+        let result = execute_think(&store, dir.path(), &blob_store, input, None, None).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Unknown think action"));
@@ -1400,7 +1441,7 @@ mod tests {
             until: None,
             ongoing: Some(true),
         };
-        let ongoing_results = execute_recall(&store, &embedder, input_ongoing, None)
+        let ongoing_results = execute_recall(&store, &embedder, input_ongoing, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1431,7 +1472,7 @@ mod tests {
             until: None,
             ongoing: None,
         };
-        let all_results = execute_recall(&store, &embedder, input_all, None)
+        let all_results = execute_recall(&store, &embedder, input_all, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1476,7 +1517,7 @@ mod tests {
             until: None,
             ongoing: None,
         };
-        let all_results = execute_recall(&store, &embedder, input_all, None)
+        let all_results = execute_recall(&store, &embedder, input_all, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1499,7 +1540,7 @@ mod tests {
             until: None,
             ongoing: Some(true),
         };
-        let ongoing_results = execute_recall(&store, &embedder, input_ongoing, None)
+        let ongoing_results = execute_recall(&store, &embedder, input_ongoing, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1526,7 +1567,7 @@ mod tests {
             until: None,
             ongoing: Some(false),
         };
-        let not_ongoing_results = execute_recall(&store, &embedder, input_not_ongoing, None)
+        let not_ongoing_results = execute_recall(&store, &embedder, input_not_ongoing, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1567,7 +1608,7 @@ mod tests {
             degrade_to: None,
             degrade_from: None,
         };
-        let result = execute_think(&store, dir.path(), &blob_store, input, None)
+        let result = execute_think(&store, dir.path(), &blob_store, input, None, None)
             .await
             .unwrap();
         assert!(result.contains("Nothing to discover") || result.contains("No entries"));
@@ -1607,7 +1648,7 @@ mod tests {
             degrade_to: None,
             degrade_from: None,
         };
-        let result = execute_think(&store, dir.path(), &blob_store, input, None)
+        let result = execute_think(&store, dir.path(), &blob_store, input, None, None)
             .await
             .unwrap();
 
@@ -1657,7 +1698,7 @@ mod tests {
             degrade_to: None,
             degrade_from: None,
         };
-        let result = execute_think(&store, dir.path(), &blob_store, input, None)
+        let result = execute_think(&store, dir.path(), &blob_store, input, None, None)
             .await
             .unwrap();
 

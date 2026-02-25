@@ -41,6 +41,9 @@ pub struct Config {
 
     /// Project scope for memory isolation (None = no scoping)
     pub project: Option<String>,
+
+    /// Git branch for branch-scoped entries (auto-detected)
+    pub branch: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -199,6 +202,7 @@ impl Config {
             search_top_k,
             search_children_k,
             project: None,
+            branch: None,
         }
     }
 
@@ -294,6 +298,11 @@ impl Config {
         self.project = project;
         self
     }
+
+    pub fn with_branch(mut self, branch: Option<String>) -> Self {
+        self.branch = branch;
+        self
+    }
 }
 
 impl Default for Config {
@@ -344,26 +353,48 @@ impl Default for LlmConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ProjectConfig {
-    /// Project name for memory isolation
+    /// Project name for memory isolation (explicit or auto-detected)
     pub project: Option<String>,
+
+    /// Git branch (auto-detected, not from config file)
+    #[serde(skip)]
+    pub branch: Option<String>,
 }
 
 /// Walk up from `start_dir` looking for a `.veclayer/` directory.
 /// Returns `(data_dir, project_config)` if found.
 pub fn discover_project(start_dir: &Path) -> Option<(PathBuf, ProjectConfig)> {
+    let git_info = crate::git_detect::detect(start_dir);
+
     let mut dir = start_dir;
     loop {
         let candidate = dir.join(".veclayer");
         if candidate.is_dir() {
             let config_path = candidate.join("config.toml");
-            let project_config = if config_path.exists() {
-                match std::fs::read_to_string(&config_path) {
-                    Ok(contents) => toml::from_str(&contents).unwrap_or_default(),
-                    Err(_) => ProjectConfig::default(),
-                }
+            let mut project_config = if config_path.exists() {
+                let contents = std::fs::read_to_string(&config_path).unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to read {}: {} — fix or remove the file",
+                        config_path.display(),
+                        e
+                    )
+                });
+                toml::from_str(&contents).unwrap_or_else(|e| {
+                    panic!(
+                        "Invalid TOML in {}: {} — fix the syntax",
+                        config_path.display(),
+                        e
+                    )
+                })
             } else {
                 ProjectConfig::default()
             };
+
+            if project_config.project.is_none() {
+                project_config.project = git_info.remote.clone();
+            }
+            project_config.branch = git_info.branch.clone();
+
             return Some((candidate, project_config));
         }
         dir = dir.parent()?;
@@ -574,5 +605,17 @@ base_url = "http://gpu:11434"
         // No .veclayer/ anywhere
         let result = discover_project(dir.path());
         assert!(result.is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid TOML")]
+    fn test_discover_project_bad_toml_panics() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let veclayer_dir = dir.path().join(".veclayer");
+        std::fs::create_dir_all(&veclayer_dir).unwrap();
+        std::fs::write(veclayer_dir.join("config.toml"), "not valid {{{ toml").unwrap();
+
+        // Must panic — fail fast, fail loud
+        discover_project(dir.path());
     }
 }

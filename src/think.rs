@@ -117,7 +117,7 @@ pub async fn execute<L: LlmProvider>(
     blob_store: Option<&crate::blob_store::BlobStore>,
 ) -> Result<ThinkResult> {
     // 1. Reflect: compute identity snapshot
-    let snapshot = identity::compute_identity(store, data_dir, None).await?;
+    let snapshot = identity::compute_identity(store, data_dir, None, None).await?;
     let priming = identity::generate_priming(&snapshot);
 
     // Nothing to think about if memory is empty
@@ -455,6 +455,7 @@ mod tests {
             open_threads: vec![],
             recent_learnings: vec![],
             emergent_clusters: vec![],
+            other_branches: vec![],
         };
         let prompt = build_prompt("# Briefing\n", &snapshot);
         assert!(prompt.contains("Entry ID Reference"));

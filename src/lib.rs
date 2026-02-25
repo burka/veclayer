@@ -13,6 +13,7 @@ pub mod config;
 pub mod embedder;
 pub mod entry;
 pub mod error;
+pub mod git_detect;
 pub mod identity;
 #[cfg(feature = "llm")]
 pub mod llm;
