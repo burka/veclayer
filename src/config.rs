@@ -145,7 +145,6 @@ impl FileConfig {
 
 // --- Hardcoded defaults ---
 
-const DEFAULT_DATA_DIR: &str = "./veclayer-data";
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_SEARCH_TOP_K: usize = 5;
@@ -164,11 +163,10 @@ impl Config {
         let file = FileConfig::discover(data_dir_env.as_ref().map(Path::new));
 
         // Layer: ENV > TOML > Default
-        let data_dir = PathBuf::from(
-            data_dir_env
-                .or(file.data_dir)
-                .unwrap_or_else(|| DEFAULT_DATA_DIR.to_string()),
-        );
+        let data_dir = data_dir_env
+            .or(file.data_dir)
+            .map(PathBuf::from)
+            .unwrap_or_else(crate::default_data_dir);
 
         let host = env_or("VECLAYER_HOST", file.host, DEFAULT_HOST.to_string());
 
