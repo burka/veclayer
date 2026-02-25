@@ -340,6 +340,36 @@ impl Default for LlmConfig {
     }
 }
 
+/// Discovered project configuration from `.veclayer/config.toml`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ProjectConfig {
+    /// Project name for memory isolation
+    pub project: Option<String>,
+}
+
+/// Walk up from `start_dir` looking for a `.veclayer/` directory.
+/// Returns `(data_dir, project_config)` if found.
+pub fn discover_project(start_dir: &Path) -> Option<(PathBuf, ProjectConfig)> {
+    let mut dir = start_dir;
+    loop {
+        let candidate = dir.join(".veclayer");
+        if candidate.is_dir() {
+            let config_path = candidate.join("config.toml");
+            let project_config = if config_path.exists() {
+                match std::fs::read_to_string(&config_path) {
+                    Ok(contents) => toml::from_str(&contents).unwrap_or_default(),
+                    Err(_) => ProjectConfig::default(),
+                }
+            } else {
+                ProjectConfig::default()
+            };
+            return Some((candidate, project_config));
+        }
+        dir = dir.parent()?;
+    }
+}
+
 // --- Helpers for ENV > TOML > Default resolution ---
 
 /// Return env var if set, else TOML value if present, else default.
@@ -495,5 +525,54 @@ base_url = "http://gpu:11434"
         let config = Config::new();
         let debug_str = format!("{:?}", config);
         assert!(debug_str.contains("Config"));
+    }
+
+    #[test]
+    fn test_discover_project_walk_up() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let veclayer_dir = dir.path().join(".veclayer");
+        std::fs::create_dir_all(&veclayer_dir).unwrap();
+
+        // With config.toml
+        let config_path = veclayer_dir.join("config.toml");
+        std::fs::write(&config_path, "project = \"myproject\"\n").unwrap();
+
+        // Discover from the root
+        let result = discover_project(dir.path());
+        assert!(result.is_some());
+        let (found_dir, config) = result.unwrap();
+        assert_eq!(found_dir, veclayer_dir);
+        assert_eq!(config.project.as_deref(), Some("myproject"));
+
+        // Discover from a subdirectory
+        let sub = dir.path().join("src").join("deep");
+        std::fs::create_dir_all(&sub).unwrap();
+        let result = discover_project(&sub);
+        assert!(result.is_some());
+        let (found_dir, config) = result.unwrap();
+        assert_eq!(found_dir, veclayer_dir);
+        assert_eq!(config.project.as_deref(), Some("myproject"));
+    }
+
+    #[test]
+    fn test_discover_project_no_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let veclayer_dir = dir.path().join(".veclayer");
+        std::fs::create_dir_all(&veclayer_dir).unwrap();
+
+        // No config.toml
+        let result = discover_project(dir.path());
+        assert!(result.is_some());
+        let (found_dir, config) = result.unwrap();
+        assert_eq!(found_dir, veclayer_dir);
+        assert!(config.project.is_none());
+    }
+
+    #[test]
+    fn test_discover_project_not_found() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // No .veclayer/ anywhere
+        let result = discover_project(dir.path());
+        assert!(result.is_none());
     }
 }

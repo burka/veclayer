@@ -49,7 +49,10 @@ impl FileLock {
         Ok(Self { _file: file })
     }
 
-    /// Acquire an exclusive lock on `data_dir`, blocking until it is available.
+    /// Acquire an exclusive lock on `data_dir`, blocking until available or timeout.
+    ///
+    /// Retries with exponential backoff for up to 2 seconds. Returns a clear
+    /// error identifying the lock file if another process holds it too long.
     pub fn acquire_blocking(data_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(data_dir)?;
 
@@ -60,10 +63,35 @@ impl FileLock {
             .truncate(false)
             .open(&lock_path)?;
 
-        file.lock_exclusive()
-            .map_err(|e| Error::store(format!("Failed to acquire store lock: {}", e)))?;
+        // Retry with backoff: 10ms, 20ms, 40ms, 80ms, 160ms, 320ms, 640ms, 1280ms ≈ 2.5s total
+        let mut wait = std::time::Duration::from_millis(10);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
 
-        Ok(Self { _file: file })
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => return Ok(Self { _file: file }),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if std::time::Instant::now() + wait > deadline {
+                        return Err(Error::store(format!(
+                            "Timed out waiting for write lock on {} — \
+                             another veclayer process may be holding it. \
+                             Check for stale processes: lsof {}",
+                            lock_path.display(),
+                            lock_path.display(),
+                        )));
+                    }
+                    std::thread::sleep(wait);
+                    wait = std::time::Duration::from_millis((wait.as_millis() as u64 * 2).min(320));
+                }
+                Err(e) => {
+                    return Err(Error::store(format!(
+                        "Failed to acquire store lock {}: {}",
+                        lock_path.display(),
+                        e
+                    )));
+                }
+            }
+        }
     }
 }
 
@@ -108,5 +136,23 @@ mod tests {
             msg.contains("Another VecLayer process"),
             "unexpected message: {msg}"
         );
+    }
+
+    #[test]
+    fn test_lock_timeout() {
+        let dir = TempDir::new().unwrap();
+        let _lock = FileLock::acquire(dir.path()).unwrap();
+
+        // Second acquisition should timeout (not hang forever)
+        let start = std::time::Instant::now();
+        let result = FileLock::acquire_blocking(dir.path());
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err());
+        assert!(elapsed.as_secs() >= 1, "should have retried for ~2s");
+        assert!(elapsed.as_secs() <= 5, "should not hang forever");
+
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("Timed out"), "unexpected: {msg}");
     }
 }
