@@ -380,13 +380,15 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let data_dir = cli.data_dir.unwrap_or_else(|| {
-        let local = PathBuf::from(".veclayer");
-        if local.exists() {
-            return local;
+    let (data_dir, discovered_project) = if let Some(dir) = cli.data_dir {
+        (dir, None)
+    } else {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        match veclayer::config::discover_project(&cwd) {
+            Some((dir, project_config)) => (dir, project_config.project),
+            None => (veclayer::default_data_dir(), None),
         }
-        veclayer::default_data_dir()
-    });
+    };
 
     let is_mcp_stdio = matches!(
         &cli.command,
@@ -509,7 +511,7 @@ async fn main() -> Result<()> {
                 port,
                 read_only,
                 mcp_stdio,
-                project,
+                project: project.or(discovered_project.clone()),
             };
             veclayer::commands::serve(&data_dir, &options).await?;
         }
