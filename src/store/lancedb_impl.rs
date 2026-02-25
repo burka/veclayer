@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arrow_array::{
@@ -93,13 +93,13 @@ fn prefix_upper_bound(prefix: &str) -> String {
 pub struct LanceStore {
     connection: Connection,
     dimension: usize,
-    _lock: Option<FileLock>,
+    lock_dir: Option<PathBuf>,
 }
 
 impl LanceStore {
     pub async fn open(path: impl AsRef<Path>, dimension: usize, read_only: bool) -> Result<Self> {
         let path = path.as_ref();
-        let lock = (!read_only).then(|| FileLock::acquire(path)).transpose()?;
+        let lock_dir = (!read_only).then(|| path.to_path_buf());
 
         std::fs::create_dir_all(path)?;
 
@@ -112,7 +112,7 @@ impl LanceStore {
         let store = Self {
             connection,
             dimension,
-            _lock: lock,
+            lock_dir,
         };
 
         store.ensure_table().await?;
@@ -122,7 +122,7 @@ impl LanceStore {
 
     pub async fn open_metadata(path: impl AsRef<Path>, read_only: bool) -> Result<Self> {
         let path = path.as_ref();
-        let lock = (!read_only).then(|| FileLock::acquire(path)).transpose()?;
+        let lock_dir = (!read_only).then(|| path.to_path_buf());
 
         std::fs::create_dir_all(path)?;
 
@@ -135,12 +135,32 @@ impl LanceStore {
         let store = Self {
             connection,
             dimension: 384,
-            _lock: lock,
+            lock_dir,
         };
 
         store.ensure_table().await?;
 
         Ok(store)
+    }
+
+    async fn with_write_lock<F, Fut, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        let _lock = match self.lock_dir.as_ref() {
+            Some(dir) => {
+                let dir = dir.clone();
+                Some(
+                    tokio::task::spawn_blocking(move || FileLock::acquire_blocking(&dir))
+                        .await
+                        .map_err(|e| Error::store(format!("lock task failed: {e}")))??,
+                )
+            }
+            None => None,
+        };
+
+        f().await
     }
 
     fn schema(&self) -> Arc<Schema> {
@@ -703,19 +723,22 @@ impl VectorStore for LanceStore {
             return Ok(());
         }
 
-        let batch = self.chunks_to_batch(&chunks)?;
-        let table = self.get_table().await?;
+        self.with_write_lock(|| async {
+            let batch = self.chunks_to_batch(&chunks)?;
+            let table = self.get_table().await?;
 
-        table
-            .add(Box::new(RecordBatchIterator::new(
-                vec![Ok(batch)],
-                self.schema(),
-            )))
-            .execute()
-            .await
-            .map_err(|e| Error::store(format!("Failed to insert chunks: {}", e)))?;
+            table
+                .add(Box::new(RecordBatchIterator::new(
+                    vec![Ok(batch)],
+                    self.schema(),
+                )))
+                .execute()
+                .await
+                .map_err(|e| Error::store(format!("Failed to insert chunks: {}", e)))?;
 
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 
     async fn search(
@@ -867,16 +890,19 @@ impl VectorStore for LanceStore {
     }
 
     async fn delete_by_source(&self, source_file: &str) -> Result<usize> {
-        let table = self.get_table().await?;
+        self.with_write_lock(|| async {
+            let table = self.get_table().await?;
 
-        let before = self.get_by_source(source_file).await?.len();
+            let before = self.get_by_source(source_file).await?.len();
 
-        table
-            .delete(&format!("source_file = '{}'", sql_escape(source_file)))
-            .await
-            .map_err(|e| Error::store(format!("Failed to delete by source: {}", e)))?;
+            table
+                .delete(&format!("source_file = '{}'", sql_escape(source_file)))
+                .await
+                .map_err(|e| Error::store(format!("Failed to delete by source: {}", e)))?;
 
-        Ok(before)
+            Ok(before)
+        })
+        .await
     }
 
     async fn stats(&self) -> Result<StoreStats> {
@@ -927,68 +953,77 @@ impl VectorStore for LanceStore {
             return Ok(());
         }
 
-        let table = self.get_table().await?;
+        self.with_write_lock(|| async {
+            let table = self.get_table().await?;
 
-        for (chunk_id, profile) in updates {
-            let filter = eq_filter("id", &chunk_id);
+            for (chunk_id, profile) in updates {
+                let filter = eq_filter("id", &chunk_id);
 
-            table
-                .update()
-                .column("last_rolled", profile.last_rolled.to_string())
-                .column("access_hour", profile.hour.to_string())
-                .column("access_day", profile.day.to_string())
-                .column("access_week", profile.week.to_string())
-                .column("access_month", profile.month.to_string())
-                .column("access_year", profile.year.to_string())
-                .column("access_total", profile.total.to_string())
-                .only_if(filter)
-                .execute()
-                .await
-                .map_err(|e| Error::store(format!("Failed to update access profile: {}", e)))?;
-        }
+                table
+                    .update()
+                    .column("last_rolled", profile.last_rolled.to_string())
+                    .column("access_hour", profile.hour.to_string())
+                    .column("access_day", profile.day.to_string())
+                    .column("access_week", profile.week.to_string())
+                    .column("access_month", profile.month.to_string())
+                    .column("access_year", profile.year.to_string())
+                    .column("access_total", profile.total.to_string())
+                    .only_if(filter)
+                    .execute()
+                    .await
+                    .map_err(|e| Error::store(format!("Failed to update access profile: {}", e)))?;
+            }
 
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 
     async fn update_visibility(&self, chunk_id: &str, visibility: &str) -> Result<()> {
-        let table = self.get_table().await?;
-        let filter = eq_filter("id", chunk_id);
+        self.with_write_lock(|| async {
+            let table = self.get_table().await?;
+            let filter = eq_filter("id", chunk_id);
 
-        table
-            .update()
-            .column("visibility", format!("'{}'", sql_escape(visibility)))
-            .only_if(filter)
-            .execute()
-            .await
-            .map_err(|e| Error::store(format!("Failed to update visibility: {}", e)))?;
+            table
+                .update()
+                .column("visibility", format!("'{}'", sql_escape(visibility)))
+                .only_if(filter)
+                .execute()
+                .await
+                .map_err(|e| Error::store(format!("Failed to update visibility: {}", e)))?;
 
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 
     async fn add_relation(&self, chunk_id: &str, relation: crate::ChunkRelation) -> Result<()> {
-        let chunk = self
-            .get_by_id(chunk_id)
-            .await?
-            .ok_or_else(|| Error::store(format!("Chunk not found: {}", chunk_id)))?;
+        self.with_write_lock(|| async {
+            let chunk = self
+                .get_by_id(chunk_id)
+                .await?
+                .ok_or_else(|| Error::store(format!("Chunk not found: {}", chunk_id)))?;
 
-        let mut relations = chunk.relations;
-        relations.push(relation);
+            let mut relations = chunk.relations;
+            relations.push(relation);
 
-        let relations_json = serde_json::to_string(&relations)
-            .map_err(|e| Error::store(format!("serialize relations: {}", e)))?;
+            let relations_json = serde_json::to_string(&relations)
+                .map_err(|e| Error::store(format!("serialize relations: {}", e)))?;
 
-        let table = self.get_table().await?;
-        let filter = eq_filter("id", chunk_id);
+            let table = self.get_table().await?;
+            let filter = eq_filter("id", chunk_id);
 
-        table
-            .update()
-            .column("relations", format!("'{}'", sql_escape(&relations_json)))
-            .only_if(filter)
-            .execute()
-            .await
-            .map_err(|e| Error::store(format!("Failed to add relation: {}", e)))?;
+            table
+                .update()
+                .column("relations", format!("'{}'", sql_escape(&relations_json)))
+                .only_if(filter)
+                .execute()
+                .await
+                .map_err(|e| Error::store(format!("Failed to add relation: {}", e)))?;
 
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 
     async fn search_by_perspective(
@@ -1191,6 +1226,24 @@ mod tests {
         chunk.id = id.to_string();
         chunk.embedding = Some(vec![0.2; 384]);
         chunk
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_read_write_access() {
+        let temp_dir = TempDir::new().unwrap();
+        let store1 = LanceStore::open(temp_dir.path(), 384, false).await.unwrap();
+        let store2 = LanceStore::open(temp_dir.path(), 384, false).await.unwrap();
+
+        let stats1 = store1.stats().await.unwrap();
+        let stats2 = store2.stats().await.unwrap();
+        assert_eq!(stats1.total_chunks, 0);
+        assert_eq!(stats2.total_chunks, 0);
+
+        let chunk = create_test_chunk("concurrent-1", "Concurrent content", ChunkLevel::H1);
+        store1.insert_chunks(vec![chunk]).await.unwrap();
+
+        let retrieved = store2.get_by_id("concurrent-1").await.unwrap();
+        assert!(retrieved.is_some());
     }
 
     #[tokio::test]
