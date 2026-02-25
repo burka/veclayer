@@ -24,6 +24,7 @@ impl FileLock {
     /// Acquire an exclusive lock on `data_dir`.
     ///
     /// Returns an error immediately if another process already holds the lock.
+    #[cfg(test)]
     pub fn acquire(data_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(data_dir)?;
 
@@ -44,6 +45,23 @@ impl FileLock {
                 Error::store(format!("Failed to acquire store lock: {}", e))
             }
         })?;
+
+        Ok(Self { _file: file })
+    }
+
+    /// Acquire an exclusive lock on `data_dir`, blocking until it is available.
+    pub fn acquire_blocking(data_dir: &Path) -> Result<Self> {
+        std::fs::create_dir_all(data_dir)?;
+
+        let lock_path = data_dir.join(LOCK_FILE_NAME);
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)?;
+
+        file.lock_exclusive()
+            .map_err(|e| Error::store(format!("Failed to acquire store lock: {}", e)))?;
 
         Ok(Self { _file: file })
     }
