@@ -1,5 +1,7 @@
 #![recursion_limit = "256"]
 
+use std::path::PathBuf;
+
 pub mod access_profile;
 pub mod aging;
 pub mod blob_store;
@@ -31,6 +33,17 @@ pub mod sync;
 pub mod test_helpers;
 #[cfg(feature = "llm")]
 pub mod think;
+
+/// Platform-appropriate default data directory for VecLayer.
+///
+/// Returns `~/.local/share/veclayer` on Linux, `~/Library/Application Support/veclayer`
+/// on macOS, `AppData\Local\veclayer` on Windows. Falls back to `.veclayer` if
+/// platform directories cannot be determined.
+pub fn default_data_dir() -> PathBuf {
+    directories::ProjectDirs::from("", "", "veclayer")
+        .map(|dirs| dirs.data_local_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from(".veclayer"))
+}
 
 pub use blob_store::BlobStore;
 pub use chunk::{
