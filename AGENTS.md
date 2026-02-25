@@ -15,9 +15,11 @@ Every agent interaction that produces a GitHub artifact (issue, comment, PR) **m
 | `Claude Code - Sonnet 4.6` | Claude Code CLI with Sonnet model |
 | `Claude Code - Haiku 4.5` | Claude Code CLI subagents using Haiku |
 | `Opencode - Z.AI GLM-4.7` | Opencode CLI sessions |
+| `OpenAI Codex - GPT-5` | OpenAI Codex sessions |
 | `Florian Burka` | Human author |
 
 This allows us to trace which model and tool produced each decision, design, or code change.
+The list above is non-exhaustive: any agent/model should use `— <tool> - <model>` with their exact tool and model names.
 
 ## Code Quality
 
@@ -104,7 +106,10 @@ Co-Authored-By: <tool> - <model>
 | Claude Code - Sonnet 4.6 | `Co-Authored-By: Claude Code - Sonnet 4.6 <noreply@anthropic.com>` |
 | Claude Code - Haiku 4.5 | `Co-Authored-By: Claude Code - Haiku 4.5 <noreply@anthropic.com>` |
 | Opencode - Z.AI GLM-4.7 | `Co-Authored-By: Opencode - Z.AI GLM-4.7 <noreply@z.ai>` |
+| OpenAI Codex - GPT-5 | `Co-Authored-By: OpenAI Codex - GPT-5 <noreply@openai.com>` |
 | Florian Burka | Human author (no attribution line) |
+
+For tools/models not listed above, use the same `Co-Authored-By: <tool> - <model> <noreply@provider>` pattern with the exact tool/model name.
 
 ## Pull Request Workflow
 
