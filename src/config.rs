@@ -221,7 +221,11 @@ impl UserConfig {
     }
 
     /// Discover and load user config from standard locations.
+    ///
+    /// Uses [`user_config_path`] for resolution, with special handling for
+    /// `VECLAYER_USER_CONFIG`: warns and returns defaults if the file is missing.
     pub fn discover() -> Self {
+        // Special case: explicit env var → warn if file missing (don't fall through)
         if let Ok(path) = std::env::var("VECLAYER_USER_CONFIG") {
             let p = Path::new(&path);
             if p.exists() {
@@ -234,26 +238,13 @@ impl UserConfig {
             return Self::default();
         }
 
-        if let Ok(config_home) = std::env::var("XDG_CONFIG_HOME") {
-            let p = PathBuf::from(config_home).join("veclayer/config.toml");
-            if p.exists() {
-                return Self::load(&p);
-            }
+        // Standard lookup: load if the resolved path exists, else defaults
+        let path = user_config_path();
+        if path.exists() {
+            Self::load(&path)
+        } else {
+            Self::default()
         }
-
-        if let Some(home) = directories::BaseDirs::new() {
-            let p = home.config_dir().join("veclayer/config.toml");
-            if p.exists() {
-                return Self::load(&p);
-            }
-
-            let p = home.home_dir().join(".veclayer/config.toml");
-            if p.exists() {
-                return Self::load(&p);
-            }
-        }
-
-        Self::default()
     }
 
     /// Resolve config for a given directory and optional git remote, merging globals
@@ -650,6 +641,78 @@ pub fn discover_project(start_dir: &Path) -> Option<(PathBuf, ProjectConfig)> {
         }
         dir = dir.parent()?;
     }
+}
+
+/// Return the path to the user config file, using the same lookup order as
+/// [`UserConfig::discover`], but without loading or creating the file.
+pub fn user_config_path() -> PathBuf {
+    if let Ok(path) = std::env::var("VECLAYER_USER_CONFIG") {
+        return PathBuf::from(path);
+    }
+
+    if let Ok(config_home) = std::env::var("XDG_CONFIG_HOME") {
+        return PathBuf::from(config_home).join("veclayer/config.toml");
+    }
+
+    if let Some(base) = directories::BaseDirs::new() {
+        return base.config_dir().join("veclayer/config.toml");
+    }
+
+    // BaseDirs failed — try $HOME manually
+    if let Some(home) = std::env::var("HOME").ok().map(PathBuf::from) {
+        return home.join(".veclayer/config.toml");
+    }
+
+    PathBuf::from(".veclayer/config.toml")
+}
+
+/// Append a `[[match]]` block to the user config file.
+///
+/// At least one of `git_remote` or `path_glob` must be `Some`.
+/// Parent directories are created if they do not exist.
+/// Returns the path of the config file that was written.
+pub fn append_match_to_user_config(
+    git_remote: Option<&str>,
+    path_glob: Option<&str>,
+    project: &str,
+) -> crate::Result<PathBuf> {
+    if git_remote.is_none() && path_glob.is_none() {
+        return Err(crate::Error::config(
+            "at least one of git_remote or path_glob must be provided",
+        ));
+    }
+
+    let config_path = user_config_path();
+
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let existing = match std::fs::read_to_string(&config_path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    let mut block = String::from("[[match]]\n");
+    if let Some(remote) = git_remote {
+        block.push_str(&format!("git-remote = \"{}\"\n", remote));
+    }
+    if let Some(glob) = path_glob {
+        block.push_str(&format!("path = \"{}\"\n", glob));
+    }
+    block.push_str(&format!("project = \"{}\"\n", project));
+
+    // Build the final content: preserve existing, add a blank-line separator, append block.
+    if !existing.is_empty() {
+        let trimmed = existing.trim_end_matches('\n');
+        let final_content = format!("{trimmed}\n\n{block}");
+        std::fs::write(&config_path, final_content)?;
+    } else {
+        std::fs::write(&config_path, &block)?;
+    }
+
+    Ok(config_path)
 }
 
 // --- Helpers for ENV > TOML > Default resolution ---
@@ -1220,5 +1283,37 @@ project = "damalo"
             Some("shallow"),
             "* should match within a single path component"
         );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_append_match_to_user_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+
+        // Use env var to point to our temp file
+        std::env::set_var("VECLAYER_USER_CONFIG", config_path.to_str().unwrap());
+
+        let result = append_match_to_user_config(
+            Some("github.com/org/repo"),
+            Some("/home/user/work/project*"),
+            "myproject",
+        );
+
+        std::env::remove_var("VECLAYER_USER_CONFIG");
+
+        let path = result.unwrap();
+        assert_eq!(path, config_path);
+
+        let contents = std::fs::read_to_string(&config_path).unwrap();
+        assert!(contents.contains("[[match]]"));
+        assert!(contents.contains("git-remote = \"github.com/org/repo\""));
+        assert!(contents.contains("path = \"/home/user/work/project*\""));
+        assert!(contents.contains("project = \"myproject\""));
+
+        // Verify it round-trips through UserConfig::load
+        let loaded = UserConfig::load(&config_path);
+        assert_eq!(loaded.matches.len(), 1);
+        assert_eq!(loaded.matches[0].project.as_deref(), Some("myproject"));
     }
 }
