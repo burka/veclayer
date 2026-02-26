@@ -33,6 +33,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Show resolved configuration for current working directory
+    Config,
+
     /// Initialize a new VecLayer store
     Init,
 
@@ -180,12 +183,12 @@ enum Commands {
     /// Start the MCP/HTTP server
     Serve {
         /// Port to listen on
-        #[arg(short, long, env = "VECLAYER_PORT", default_value = "8080")]
-        port: u16,
+        #[arg(short, long, env = "VECLAYER_PORT")]
+        port: Option<u16>,
 
         /// Host to bind to
-        #[arg(long, env = "VECLAYER_HOST", default_value = "127.0.0.1")]
-        host: String,
+        #[arg(long, env = "VECLAYER_HOST")]
+        host: Option<String>,
 
         /// Run in read-only mode
         #[arg(long)]
@@ -380,23 +383,45 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // Configuration precedence (highest to lowest):
+    // 1. CLI flags (--port, --host, --data-dir, etc.)
+    // 2. Environment variables (VECLAYER_PORT, VECLAYER_HOST, etc.)
+    // 3. User config path overrides (~/.config/veclayer/config.toml [[path]])
+    // 4. User config globals (~/.config/veclayer/config.toml top-level)
+    // 5. Project-local config (.veclayer/config.toml)
+    // 6. Git auto-detection (remote → project, branch → scope)
+    // 7. Platform defaults
+
     let cwd = std::env::current_dir().expect("Failed to determine current directory");
     let git_info = veclayer::git_detect::detect(&cwd);
 
-    let (data_dir, discovered_project, discovered_branch) = if let Some(dir) = cli.data_dir {
-        (dir, git_info.remote.clone(), git_info.branch.clone())
-    } else {
-        match veclayer::config::discover_project(&cwd) {
-            Some((dir, project_config)) => {
-                let project = project_config.project.or(git_info.remote.clone());
-                let branch = git_info.branch.clone();
-                (dir, project, branch)
-            }
-            None => (
-                veclayer::default_data_dir(),
-                git_info.remote.clone(),
-                git_info.branch.clone(),
-            ),
+    let user_config = veclayer::config::UserConfig::discover();
+    let user_resolved = user_config.resolve(&cwd, git_info.remote.as_deref());
+
+    let user_project = user_resolved.project.clone();
+    let user_data_dir = user_resolved.data_dir.clone();
+
+    let (data_dir, discovered_project, discovered_branch) = match cli.data_dir {
+        Some(dir) => (
+            dir,
+            user_project.or(git_info.remote.clone()),
+            git_info.branch.clone(),
+        ),
+        None => {
+            let project_local = veclayer::config::discover_project(&cwd);
+
+            let project = project_local
+                .as_ref()
+                .and_then(|(_, pc)| pc.project.clone())
+                .or(user_project)
+                .or(git_info.remote.clone());
+
+            let data_dir = project_local
+                .map(|(d, _)| d)
+                .or_else(|| user_data_dir.as_ref().map(PathBuf::from))
+                .unwrap_or_else(veclayer::default_data_dir);
+
+            (data_dir, project, git_info.branch.clone())
         }
     };
 
@@ -420,6 +445,14 @@ async fn main() -> Result<()> {
     };
 
     match command {
+        Commands::Config => {
+            veclayer::commands::show_config(
+                &cwd,
+                &user_config,
+                &user_resolved,
+                git_info.remote.as_deref(),
+            )?;
+        }
         Commands::Init => {
             veclayer::commands::init(&data_dir)?;
         }
@@ -517,12 +550,14 @@ async fn main() -> Result<()> {
             project,
         } => {
             let options = ServeOptions {
-                host,
-                port,
-                read_only,
+                host: host
+                    .or(user_resolved.host.clone())
+                    .unwrap_or_else(|| "127.0.0.1".to_string()),
+                port: port.or(user_resolved.port).unwrap_or(8080),
+                read_only: read_only || user_resolved.read_only.unwrap_or(false),
                 mcp_stdio,
-                project: project.or(discovered_project.clone()),
-                branch: discovered_branch.clone(),
+                project: project.or(discovered_project),
+                branch: discovered_branch,
             };
             veclayer::commands::serve(&data_dir, &options).await?;
         }

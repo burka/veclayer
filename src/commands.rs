@@ -1357,6 +1357,110 @@ async fn compact_archive_candidates(data_dir: &Path, options: &CompactOptions) -
     Ok(())
 }
 
+// --- Config command ---
+
+/// Show resolved configuration for the current working directory.
+pub fn show_config(
+    cwd: &Path,
+    user_config: &crate::config::UserConfig,
+    resolved: &crate::config::ResolvedConfig,
+    git_remote: Option<&str>,
+) -> Result<()> {
+    use owo_colors::OwoColorize;
+
+    println!("Configuration for: {}", cwd.display().cyan());
+
+    let cwd_str = cwd.to_str().unwrap_or("");
+
+    println!("\n{}", "[User Config]".bold());
+    println!("  Match overrides: {}", user_config.matches.len());
+    for (idx, m) in user_config.matches.iter().enumerate() {
+        let path_matched = m.path_matches(cwd_str);
+        let remote_matched = m.remote_matches(git_remote);
+        let any_matched = path_matched || remote_matched;
+
+        println!(
+            "  {}",
+            if any_matched {
+                format!("[{}]", idx).bold().to_string()
+            } else {
+                format!("[{}]", idx).dimmed().to_string()
+            }
+        );
+
+        if let Some(ref pat) = m.path {
+            let marker = if path_matched {
+                " [matched]".green().to_string()
+            } else {
+                " [no match]".dimmed().to_string()
+            };
+            println!("    path=\"{}\"{}", pat.as_str(), marker);
+        }
+
+        if let Some(ref re) = m.git_remote {
+            let marker = if remote_matched {
+                " [matched]".green().to_string()
+            } else {
+                " [no match]".dimmed().to_string()
+            };
+            println!("    git-remote=/{}/{}", re.as_str(), marker);
+        }
+
+        if let Some(ref p) = m.project {
+            println!("    → project: {}", p.yellow());
+        }
+        if let Some(ref d) = m.data_dir {
+            println!("    → data_dir: {}", d.yellow());
+        }
+        if let Some(ref h) = m.host {
+            println!("    → host: {}", h.yellow());
+        }
+        if let Some(p) = m.port {
+            println!("    → port: {}", p.to_string().yellow());
+        }
+        if let Some(ro) = m.read_only {
+            let val = if ro {
+                "true".red().to_string()
+            } else {
+                "false".green().to_string()
+            };
+            println!("    → read_only: {}", val);
+        }
+    }
+
+    println!("\n{}", "[Resolved Config]".bold());
+    println!(
+        "  project: {}",
+        resolved.project.as_deref().unwrap_or("(none)").yellow()
+    );
+    println!(
+        "  data_dir: {}",
+        resolved.data_dir.as_deref().unwrap_or("(default)").cyan()
+    );
+    println!(
+        "  host: {}",
+        resolved.host.as_deref().unwrap_or("(default)").cyan()
+    );
+    println!(
+        "  port: {}",
+        resolved
+            .port
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "(default)".to_string())
+            .cyan()
+    );
+    println!(
+        "  read_only: {}",
+        match resolved.read_only {
+            Some(true) => "true".red().to_string(),
+            Some(false) => "false".green().to_string(),
+            None => "(default)".to_string().dimmed().to_string(),
+        }
+    );
+
+    Ok(())
+}
+
 // --- Reflect command ---
 
 /// Generate a comprehensive reflection/identity report.

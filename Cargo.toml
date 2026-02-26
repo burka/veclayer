@@ -62,6 +62,9 @@ strsim = "0.11"
 schemars = "0.8"
 fs2 = "0.4"
 directories = "6"
+glob = "0.3"
+regex = "1"
+shellexpand = "3"
 
 # LLM-dependent (gated behind "llm" feature)
 reqwest = { version = "0.12", features = ["json"], optional = true }
@@ -72,3 +75,4 @@ owo-colors = { version = "4.2.3", features = ["supports-colors"] }
 
 [dev-dependencies]
 tempfile = "3"
+serial_test = "3"
