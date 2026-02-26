@@ -5,12 +5,24 @@
 //! 2. `<data_dir>/veclayer.toml`
 //! 3. `./veclayer.toml`
 //!
+//! User config lookup order (for match-based overrides):
+//! 1. `$VECLAYER_USER_CONFIG` (explicit path)
+//! 2. `$XDG_CONFIG_HOME/veclayer/config.toml`
+//! 3. `$HOME/.config/veclayer/config.toml`
+//! 4. `$HOME/.veclayer/config.toml`
+//!
 //! Any field set in the environment always wins over the config file.
 
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use tracing::warn;
+
+pub const GLOB_MATCH_OPTIONS: glob::MatchOptions = glob::MatchOptions {
+    case_sensitive: true,
+    require_literal_separator: true,
+    require_literal_leading_dot: false,
+};
 
 /// Runtime configuration for VecLayer.
 #[derive(Debug, Clone)]
@@ -65,6 +77,236 @@ struct FileConfig {
     search_children_k: Option<usize>,
     embedder: Option<FileEmbedderConfig>,
     llm: Option<FileLlmConfig>,
+}
+
+/// Unified match override: path glob and/or git-remote regex, plus config fields.
+/// At least one matcher (path or git-remote) must be present.
+#[derive(Debug, Clone)]
+pub struct MatchOverride {
+    pub path: Option<glob::Pattern>,
+    #[allow(dead_code)]
+    pub git_remote: Option<regex::Regex>,
+    pub project: Option<String>,
+    pub data_dir: Option<String>,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub read_only: Option<bool>,
+}
+
+impl MatchOverride {
+    /// Check if this override matches the given cwd and/or git remote (OR logic).
+    pub fn matches(&self, cwd_str: &str, git_remote: Option<&str>) -> bool {
+        let path_match = self
+            .path
+            .as_ref()
+            .is_some_and(|p| p.matches_with(cwd_str, GLOB_MATCH_OPTIONS));
+        let remote_match = self
+            .git_remote
+            .as_ref()
+            .is_some_and(|re| git_remote.is_some_and(|r| re.is_match(r)));
+        path_match || remote_match
+    }
+
+    pub fn path_matches(&self, cwd_str: &str) -> bool {
+        self.path
+            .as_ref()
+            .is_some_and(|p| p.matches_with(cwd_str, GLOB_MATCH_OPTIONS))
+    }
+
+    pub fn remote_matches(&self, git_remote: Option<&str>) -> bool {
+        self.git_remote
+            .as_ref()
+            .is_some_and(|re| git_remote.is_some_and(|r| re.is_match(r)))
+    }
+}
+
+impl<'de> Deserialize<'de> for MatchOverride {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Debug, Deserialize)]
+        struct Raw {
+            path: Option<String>,
+            #[serde(rename = "git-remote")]
+            git_remote: Option<String>,
+            project: Option<String>,
+            data_dir: Option<String>,
+            host: Option<String>,
+            port: Option<u16>,
+            read_only: Option<bool>,
+        }
+
+        let raw = Raw::deserialize(deserializer)?;
+
+        if raw.path.is_none() && raw.git_remote.is_none() {
+            return Err(serde::de::Error::custom(
+                "[[match]] requires at least one of 'path' or 'git-remote'",
+            ));
+        }
+
+        let path = raw
+            .path
+            .map(|d| {
+                let expanded = shellexpand::tilde(&d).to_string();
+                glob::Pattern::new(&expanded).map_err(serde::de::Error::custom)
+            })
+            .transpose()?;
+
+        let git_remote = raw
+            .git_remote
+            .map(|p| regex::Regex::new(&p).map_err(serde::de::Error::custom))
+            .transpose()?;
+
+        let data_dir = raw.data_dir.map(|d| shellexpand::tilde(&d).into_owned());
+
+        Ok(MatchOverride {
+            path,
+            git_remote,
+            project: raw.project,
+            data_dir,
+            host: raw.host,
+            port: raw.port,
+            read_only: raw.read_only,
+        })
+    }
+}
+
+/// User-level configuration with global defaults and match-based overrides.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct UserConfig {
+    pub data_dir: Option<String>,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub read_only: Option<bool>,
+    pub project: Option<String>,
+    #[serde(rename = "match")]
+    pub matches: Vec<MatchOverride>,
+}
+
+impl UserConfig {
+    pub fn load(path: &Path) -> Self {
+        match std::fs::read_to_string(path) {
+            Ok(contents) => match toml::from_str::<Self>(&contents) {
+                Ok(mut config) => {
+                    config.expand_paths();
+                    config
+                }
+                Err(e) => {
+                    eprintln!(
+                        "veclayer: Malformed user config {}: {} — using defaults",
+                        path.display(),
+                        e
+                    );
+                    Self::default()
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "veclayer: Could not read user config {}: {}",
+                    path.display(),
+                    e
+                );
+                Self::default()
+            }
+        }
+    }
+
+    /// Expand tilde (`~`) in path-like fields of the global config.
+    fn expand_paths(&mut self) {
+        if let Some(ref d) = self.data_dir {
+            self.data_dir = Some(shellexpand::tilde(d).into_owned());
+        }
+    }
+
+    /// Discover and load user config from standard locations.
+    pub fn discover() -> Self {
+        if let Ok(path) = std::env::var("VECLAYER_USER_CONFIG") {
+            let p = Path::new(&path);
+            if p.exists() {
+                return Self::load(p);
+            }
+            eprintln!(
+                "veclayer: VECLAYER_USER_CONFIG is set to '{}' but the file does not exist — using defaults",
+                path
+            );
+            return Self::default();
+        }
+
+        if let Ok(config_home) = std::env::var("XDG_CONFIG_HOME") {
+            let p = PathBuf::from(config_home).join("veclayer/config.toml");
+            if p.exists() {
+                return Self::load(&p);
+            }
+        }
+
+        if let Some(home) = directories::BaseDirs::new() {
+            let p = home.config_dir().join("veclayer/config.toml");
+            if p.exists() {
+                return Self::load(&p);
+            }
+
+            let p = home.home_dir().join(".veclayer/config.toml");
+            if p.exists() {
+                return Self::load(&p);
+            }
+        }
+
+        Self::default()
+    }
+
+    /// Resolve config for a given directory and optional git remote, merging globals
+    /// and matching overrides.
+    ///
+    /// Each `[[match]]` entry can have a `path` glob and/or `git-remote` regex.
+    /// Either matcher triggering counts as a match (OR logic).
+    /// All matching overrides are applied in declaration order; last match wins per field.
+    pub fn resolve(&self, cwd: &Path, git_remote: Option<&str>) -> ResolvedConfig {
+        let cwd_str = cwd
+            .to_str()
+            .expect("Current working directory is not valid UTF-8");
+
+        let mut resolved = ResolvedConfig {
+            project: self.project.clone(),
+            data_dir: self.data_dir.clone(),
+            host: self.host.clone(),
+            port: self.port,
+            read_only: self.read_only,
+        };
+
+        for override_ in &self.matches {
+            if override_.matches(cwd_str, git_remote) {
+                if override_.project.is_some() {
+                    resolved.project = override_.project.clone();
+                }
+                if override_.data_dir.is_some() {
+                    resolved.data_dir = override_.data_dir.clone();
+                }
+                if override_.host.is_some() {
+                    resolved.host = override_.host.clone();
+                }
+                if override_.port.is_some() {
+                    resolved.port = override_.port;
+                }
+                if override_.read_only.is_some() {
+                    resolved.read_only = override_.read_only;
+                }
+            }
+        }
+
+        resolved
+    }
+}
+
+/// Resolved configuration from user config (globals + path match).
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedConfig {
+    pub project: Option<String>,
+    pub data_dir: Option<String>,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub read_only: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -626,5 +868,357 @@ base_url = "http://gpu:11434"
 
         // Must panic — fail fast, fail loud
         discover_project(dir.path());
+    }
+
+    #[test]
+    fn test_user_config_default() {
+        let config = UserConfig::default();
+        assert!(config.matches.is_empty());
+        assert!(config.project.is_none());
+        assert!(config.data_dir.is_none());
+    }
+
+    #[test]
+    fn test_match_override_tilde_expansion() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let toml_path = dir.path().join("user.toml");
+        std::fs::write(
+            &toml_path,
+            r#"
+[[match]]
+path = "~/work/damalo*"
+project = "damalo"
+"#,
+        )
+        .unwrap();
+
+        let config = UserConfig::load(&toml_path);
+        assert_eq!(config.matches.len(), 1);
+        assert_eq!(config.matches[0].project.as_deref(), Some("damalo"));
+    }
+
+    #[test]
+    fn test_match_override_absolute_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let toml_path = dir.path().join("user.toml");
+        std::fs::write(
+            &toml_path,
+            r#"
+[[match]]
+path = "/tmp/test*"
+project = "test"
+"#,
+        )
+        .unwrap();
+
+        let config = UserConfig::load(&toml_path);
+        assert_eq!(config.matches.len(), 1);
+        assert_eq!(config.matches[0].project.as_deref(), Some("test"));
+    }
+
+    #[test]
+    fn test_resolve_single_path_match() {
+        let mut config = UserConfig::default();
+        config.matches.push(MatchOverride {
+            path: Some(glob::Pattern::new("/tmp/test/*").unwrap()),
+            git_remote: None,
+            project: Some("test".to_string()),
+            data_dir: Some("/tmp/test-data".to_string()),
+            host: None,
+            port: None,
+            read_only: Some(true),
+        });
+
+        let resolved = config.resolve(Path::new("/tmp/test/something"), None);
+        assert_eq!(resolved.project.as_deref(), Some("test"));
+        assert_eq!(resolved.data_dir.as_deref(), Some("/tmp/test-data"));
+        assert_eq!(resolved.read_only, Some(true));
+    }
+
+    #[test]
+    fn test_resolve_no_match() {
+        let mut config = UserConfig::default();
+        config.matches.push(MatchOverride {
+            path: Some(glob::Pattern::new("/tmp/test/*").unwrap()),
+            git_remote: None,
+            project: Some("test".to_string()),
+            data_dir: None,
+            host: None,
+            port: None,
+            read_only: None,
+        });
+
+        let resolved = config.resolve(Path::new("/other/path"), None);
+        assert!(resolved.project.is_none());
+        assert!(resolved.data_dir.is_none());
+    }
+
+    #[test]
+    fn test_resolve_multiple_match_last_wins() {
+        let mut config = UserConfig::default();
+
+        config.matches.push(MatchOverride {
+            path: Some(glob::Pattern::new("/tmp/test/**").unwrap()),
+            git_remote: None,
+            project: Some("first".to_string()),
+            data_dir: Some("/first".to_string()),
+            host: None,
+            port: None,
+            read_only: Some(false),
+        });
+
+        config.matches.push(MatchOverride {
+            path: Some(glob::Pattern::new("/tmp/test/specific").unwrap()),
+            git_remote: None,
+            project: Some("second".to_string()),
+            data_dir: Some("/second".to_string()),
+            host: None,
+            port: None,
+            read_only: Some(true),
+        });
+
+        let resolved = config.resolve(Path::new("/tmp/test/specific"), None);
+        assert_eq!(resolved.project.as_deref(), Some("second"));
+        assert_eq!(resolved.data_dir.as_deref(), Some("/second"));
+        assert_eq!(resolved.read_only, Some(true));
+    }
+
+    #[test]
+    fn test_resolve_partial_override() {
+        let mut config = UserConfig {
+            project: Some("global".to_string()),
+            ..Default::default()
+        };
+
+        config.matches.push(MatchOverride {
+            path: Some(glob::Pattern::new("/tmp/*").unwrap()),
+            git_remote: None,
+            project: None,
+            data_dir: Some("/tmp/data".to_string()),
+            host: None,
+            port: None,
+            read_only: Some(true),
+        });
+
+        let resolved = config.resolve(Path::new("/tmp/test"), None);
+        assert_eq!(resolved.project.as_deref(), Some("global"));
+        assert_eq!(resolved.data_dir.as_deref(), Some("/tmp/data"));
+        assert_eq!(resolved.read_only, Some(true));
+    }
+
+    #[test]
+    fn test_match_override_invalid_path_pattern() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let toml_path = dir.path().join("user.toml");
+        std::fs::write(
+            &toml_path,
+            r#"
+[[match]]
+path = "[[invalid"
+project = "test"
+"#,
+        )
+        .unwrap();
+
+        let config = UserConfig::load(&toml_path);
+        assert!(config.matches.is_empty());
+    }
+
+    #[test]
+    fn test_match_override_no_matcher_rejected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let toml_path = dir.path().join("user.toml");
+        std::fs::write(
+            &toml_path,
+            r#"
+[[match]]
+project = "orphan"
+"#,
+        )
+        .unwrap();
+
+        // Should fail to parse — at least one matcher required
+        let config = UserConfig::load(&toml_path);
+        assert!(config.matches.is_empty());
+    }
+
+    // BUG-2: tilde in global data_dir must be expanded after load
+    #[test]
+    fn test_user_config_global_data_dir_tilde_expanded() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let toml_path = dir.path().join("user.toml");
+        std::fs::write(&toml_path, "data_dir = \"~/.veclayer\"\n").unwrap();
+
+        let config = UserConfig::load(&toml_path);
+        let data_dir = config.data_dir.expect("data_dir should be set");
+        assert!(
+            !data_dir.starts_with('~'),
+            "data_dir '{}' should not start with '~' after tilde expansion",
+            data_dir
+        );
+    }
+
+    // BUG-2: tilde in match override data_dir must be expanded during deserialization
+    #[test]
+    fn test_match_override_data_dir_tilde_expanded() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let toml_path = dir.path().join("user.toml");
+        std::fs::write(
+            &toml_path,
+            "[[match]]\npath = \"/tmp/work\"\ndata_dir = \"~/.veclayer\"\n",
+        )
+        .unwrap();
+
+        let config = UserConfig::load(&toml_path);
+        let data_dir = config.matches[0]
+            .data_dir
+            .as_deref()
+            .expect("match override data_dir should be set");
+        assert!(
+            !data_dir.starts_with('~'),
+            "match override data_dir '{}' should not start with '~' after tilde expansion",
+            data_dir
+        );
+    }
+
+    // BUG-3: explicit VECLAYER_USER_CONFIG pointing to nonexistent file must not fall through
+    #[test]
+    #[serial_test::serial]
+    fn test_discover_user_config_nonexistent_env_returns_defaults() {
+        let original = std::env::var("VECLAYER_USER_CONFIG").ok();
+
+        std::env::set_var(
+            "VECLAYER_USER_CONFIG",
+            "/nonexistent/path/that/does/not/exist.toml",
+        );
+        let config = UserConfig::discover();
+        assert!(
+            config.matches.is_empty(),
+            "should return default (empty matches)"
+        );
+        assert!(
+            config.data_dir.is_none(),
+            "should return default (no data_dir)"
+        );
+
+        match original {
+            Some(v) => std::env::set_var("VECLAYER_USER_CONFIG", v),
+            None => std::env::remove_var("VECLAYER_USER_CONFIG"),
+        }
+    }
+
+    #[test]
+    fn test_match_git_remote_only() {
+        let toml_str = r#"
+[[match]]
+git-remote = "(?i)damalo"
+project = "damalo"
+
+[[match]]
+git-remote = "github\\.com/myorg/"
+project = "myorg"
+"#;
+        let config: UserConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.matches.len(), 2);
+
+        // git-remote match, no path
+        let resolved = config.resolve(Path::new("/other"), Some("github.com/Damalo/some-repo"));
+        assert_eq!(resolved.project.as_deref(), Some("damalo"));
+
+        let resolved = config.resolve(Path::new("/other"), Some("github.com/myorg/tool"));
+        assert_eq!(resolved.project.as_deref(), Some("myorg"));
+
+        let resolved = config.resolve(Path::new("/other"), Some("github.com/unrelated/repo"));
+        assert!(resolved.project.is_none());
+    }
+
+    #[test]
+    fn test_match_last_wins_with_remote() {
+        let toml_str = r#"
+[[match]]
+git-remote = "specific-repo"
+project = "specific"
+
+[[match]]
+git-remote = ".*"
+project = "catch-all"
+"#;
+        let config: UserConfig = toml::from_str(toml_str).unwrap();
+        // Last match wins: catch-all matches everything, so it always wins
+        let resolved = config.resolve(Path::new("/tmp"), Some("github.com/org/specific-repo"));
+        assert_eq!(resolved.project.as_deref(), Some("catch-all"));
+
+        let resolved = config.resolve(Path::new("/tmp"), Some("github.com/org/other"));
+        assert_eq!(resolved.project.as_deref(), Some("catch-all"));
+    }
+
+    #[test]
+    fn test_match_or_logic_both_matchers() {
+        let toml_str = r#"
+[[match]]
+path = "/home/flob/work/damalo*"
+git-remote = "(?i)damalo"
+project = "damalo"
+"#;
+        let config: UserConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.matches.len(), 1);
+
+        // Path matches, no remote
+        let resolved = config.resolve(Path::new("/home/flob/work/damalo-app"), None);
+        assert_eq!(resolved.project.as_deref(), Some("damalo"));
+
+        // Remote matches, different path
+        let resolved = config.resolve(Path::new("/other/path"), Some("github.com/Damalo/repo"));
+        assert_eq!(resolved.project.as_deref(), Some("damalo"));
+
+        // Both match
+        let resolved = config.resolve(
+            Path::new("/home/flob/work/damalo-app"),
+            Some("github.com/Damalo/repo"),
+        );
+        assert_eq!(resolved.project.as_deref(), Some("damalo"));
+
+        // Neither matches
+        let resolved = config.resolve(Path::new("/other/path"), Some("github.com/other/repo"));
+        assert!(resolved.project.is_none());
+    }
+
+    #[test]
+    fn test_match_no_remote_provided() {
+        let config = UserConfig::default();
+        let resolved = config.resolve(Path::new("/tmp"), None);
+        assert!(resolved.project.is_none());
+    }
+
+    // NIT-3: * must not cross path separators (require_literal_separator = true)
+    #[test]
+    fn test_resolve_star_does_not_cross_separator() {
+        let mut config = UserConfig::default();
+
+        config.matches.push(MatchOverride {
+            path: Some(glob::Pattern::new("/tmp/work*").unwrap()),
+            git_remote: None,
+            project: Some("shallow".to_string()),
+            data_dir: None,
+            host: None,
+            port: None,
+            read_only: None,
+        });
+
+        // /tmp/work/deep has a slash after the * position — must not match
+        let resolved_deep = config.resolve(Path::new("/tmp/work/deep"), None);
+        assert!(
+            resolved_deep.project.is_none(),
+            "* should not cross / (got {:?})",
+            resolved_deep.project
+        );
+
+        // /tmp/workspace has no slash after the * position — must match
+        let resolved_shallow = config.resolve(Path::new("/tmp/workspace"), None);
+        assert_eq!(
+            resolved_shallow.project.as_deref(),
+            Some("shallow"),
+            "* should match within a single path component"
+        );
     }
 }
