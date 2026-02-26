@@ -196,7 +196,7 @@ enum Commands {
         mcp_stdio: bool,
 
         /// Project scope for memory isolation
-        #[arg(long)]
+        #[arg(short = 'P', long)]
         project: Option<String>,
     },
 
