@@ -198,6 +198,36 @@ pub fn validate_ids(data_dir: &Path, ids: &[String]) -> crate::Result<()> {
     Ok(())
 }
 
+/// Merge custom perspectives from `source_dir` into `target_dir`.
+///
+/// Builtin perspectives and any whose ID already exists in the target are
+/// skipped. Returns `(added, skipped)`.
+pub fn merge_from(target_dir: &Path, source_dir: &Path) -> crate::Result<(usize, usize)> {
+    let mut target = load(target_dir)?;
+    let source = load(source_dir)?;
+
+    let existing_ids: std::collections::HashSet<String> =
+        target.iter().map(|p| p.id.clone()).collect();
+
+    let mut added = 0usize;
+    let mut skipped = 0usize;
+
+    for perspective in source {
+        if perspective.builtin || existing_ids.contains(&perspective.id) {
+            skipped += 1;
+        } else {
+            target.push(perspective);
+            added += 1;
+        }
+    }
+
+    if added > 0 {
+        save(target_dir, &target)?;
+    }
+
+    Ok((added, skipped))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,5 +386,71 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         let parsed: Perspective = serde_json::from_str(&json).unwrap();
         assert_eq!(p, parsed);
+    }
+
+    #[test]
+    fn test_merge_from_adds_custom() {
+        let target_dir = TempDir::new().unwrap();
+        let source_dir = TempDir::new().unwrap();
+
+        init(target_dir.path()).unwrap();
+        init(source_dir.path()).unwrap();
+
+        // Add a custom perspective to source
+        add(
+            source_dir.path(),
+            Perspective::new("emotions", "Emotions", "Feelings"),
+        )
+        .unwrap();
+
+        let (added, skipped) = merge_from(target_dir.path(), source_dir.path()).unwrap();
+        assert_eq!(added, 1);
+        assert_eq!(skipped, 7); // 7 builtins skipped
+
+        // Verify it's in the target
+        let target = load(target_dir.path()).unwrap();
+        assert_eq!(target.len(), 8); // 7 defaults + 1 custom
+        assert!(target.iter().any(|p| p.id == "emotions"));
+    }
+
+    #[test]
+    fn test_merge_from_skips_duplicates() {
+        let target_dir = TempDir::new().unwrap();
+        let source_dir = TempDir::new().unwrap();
+
+        init(target_dir.path()).unwrap();
+        init(source_dir.path()).unwrap();
+
+        // Add same custom to both
+        add(
+            target_dir.path(),
+            Perspective::new("emotions", "Emotions", "Feelings"),
+        )
+        .unwrap();
+        add(
+            source_dir.path(),
+            Perspective::new("emotions", "Emotions", "Feelings"),
+        )
+        .unwrap();
+
+        let (added, skipped) = merge_from(target_dir.path(), source_dir.path()).unwrap();
+        assert_eq!(added, 0);
+        assert_eq!(skipped, 8); // 7 builtins + 1 duplicate
+
+        let target = load(target_dir.path()).unwrap();
+        assert_eq!(target.len(), 8); // unchanged
+    }
+
+    #[test]
+    fn test_merge_from_source_no_file() {
+        let target_dir = TempDir::new().unwrap();
+        let source_dir = TempDir::new().unwrap();
+
+        init(target_dir.path()).unwrap();
+        // source has no perspectives.json — load returns defaults
+
+        let (added, skipped) = merge_from(target_dir.path(), source_dir.path()).unwrap();
+        assert_eq!(added, 0);
+        assert_eq!(skipped, 7); // all builtins
     }
 }

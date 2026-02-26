@@ -6,7 +6,7 @@ use tracing_subscriber::EnvFilter;
 
 use veclayer::commands::{
     AddOptions, CompactAction, CompactOptions, ExportOptions, FocusOptions, ImportOptions,
-    SearchOptions, ServeOptions,
+    MergeOptions, SearchOptions, ServeOptions,
 };
 use veclayer::Result;
 
@@ -244,6 +244,24 @@ enum Commands {
     /// Rebuild the Lance index from the blob store
     #[command(alias = "reindex")]
     RebuildIndex,
+
+    /// Merge blobs from another VecLayer store
+    Merge {
+        /// Path to the source .veclayer directory
+        source: PathBuf,
+
+        /// Project scope to tag merged entries with
+        #[arg(short = 'p', long)]
+        project: Option<String>,
+
+        /// Preview only — show what would be merged without changing anything
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Merge without project scope (suppress warning)
+        #[arg(long)]
+        force: bool,
+    },
 
     /// Reflect — identity snapshot, salience ranking, archive candidates
     #[command(alias = "id")]
@@ -594,6 +612,19 @@ async fn main() -> Result<()> {
         }
         Commands::RebuildIndex => {
             veclayer::commands::rebuild_index(&data_dir).await?;
+        }
+        Commands::Merge {
+            source,
+            project,
+            dry_run,
+            force,
+        } => {
+            let options = MergeOptions {
+                project,
+                dry_run,
+                force,
+            };
+            veclayer::commands::merge(&data_dir, &source, &options).await?;
         }
         Commands::Reflect { action } => match action {
             None => {
