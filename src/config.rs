@@ -366,8 +366,17 @@ pub struct ProjectConfig {
 pub fn discover_project(start_dir: &Path) -> Option<(PathBuf, ProjectConfig)> {
     let git_info = crate::git_detect::detect(start_dir);
 
+    // Stop walk-up at $HOME — ~/.veclayer/ is the user config fallback,
+    // not a project-local store.
+    let home = directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf());
+
     let mut dir = start_dir;
     loop {
+        // Don't look inside $HOME itself — only below it
+        if home.as_deref() == Some(dir) {
+            return None;
+        }
+
         let candidate = dir.join(".veclayer");
         if candidate.is_dir() {
             let config_path = candidate.join("config.toml");
