@@ -4,9 +4,15 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
+#[cfg(feature = "llm")]
+use veclayer::commands::think;
 use veclayer::commands::{
-    AddOptions, CompactAction, CompactOptions, ExportOptions, FocusOptions, ImportOptions,
-    MergeOptions, SearchOptions, ServeOptions,
+    add, archive, browse, compact, export_entries, focus, history, import_entries, init, merge,
+    orientation, perspective_add, perspective_list, perspective_remove, print_sources,
+    rebuild_index, reflect, search, serve, show_config, status, think_aging_apply,
+    think_aging_configure, think_demote, think_discover, think_promote, think_relate, AddOptions,
+    CompactAction, CompactOptions, ExportOptions, FocusOptions, ImportOptions, MergeOptions,
+    SearchOptions, ServeOptions,
 };
 use veclayer::Result;
 
@@ -456,15 +462,14 @@ async fn main() -> Result<()> {
     let command = match cli.command {
         Some(cmd) => cmd,
         None => {
-            // No subcommand: show orientation
-            veclayer::commands::orientation(&data_dir).await?;
+            orientation(&data_dir).await?;
             return Ok(());
         }
     };
 
     match command {
         Commands::Config => {
-            veclayer::commands::show_config(
+            show_config(
                 &cwd,
                 &user_config,
                 &user_resolved,
@@ -472,7 +477,7 @@ async fn main() -> Result<()> {
             )?;
         }
         Commands::Init => {
-            veclayer::commands::init(&data_dir)?;
+            init(&data_dir)?;
         }
         Commands::Store {
             input,
@@ -511,7 +516,7 @@ async fn main() -> Result<()> {
                 rel_version_of,
                 rel_custom,
             };
-            veclayer::commands::add(&data_dir, &input, options).await?;
+            add(&data_dir, &input, options).await?;
         }
         Commands::Recall {
             query,
@@ -543,12 +548,11 @@ async fn main() -> Result<()> {
                 ongoing,
             };
             if options.similar_to.is_some() {
-                veclayer::commands::search(&data_dir, query.as_deref().unwrap_or(""), &options)
-                    .await?
+                search(&data_dir, query.as_deref().unwrap_or(""), &options).await?
             } else {
                 match query {
-                    Some(q) => veclayer::commands::search(&data_dir, &q, &options).await?,
-                    None => veclayer::commands::browse(&data_dir, &options).await?,
+                    Some(q) => search(&data_dir, &q, &options).await?,
+                    None => browse(&data_dir, &options).await?,
                 }
             }
         }
@@ -558,7 +562,7 @@ async fn main() -> Result<()> {
             limit,
         } => {
             let options = FocusOptions { question, limit };
-            veclayer::commands::focus(&data_dir, &id, &options).await?;
+            focus(&data_dir, &id, &options).await?;
         }
         Commands::Serve {
             port,
@@ -577,41 +581,41 @@ async fn main() -> Result<()> {
                 project: project.or(discovered_project),
                 branch: discovered_branch,
             };
-            veclayer::commands::serve(&data_dir, &options).await?;
+            serve(&data_dir, &options).await?;
         }
         Commands::Status => {
-            veclayer::commands::status(&data_dir).await?;
+            status(&data_dir).await?;
         }
         Commands::Sources => {
-            veclayer::commands::print_sources(&data_dir).await?;
+            print_sources(&data_dir).await?;
         }
         Commands::Perspective { action } => match action {
             PerspectiveAction::List => {
-                veclayer::commands::perspective_list(&data_dir)?;
+                perspective_list(&data_dir)?;
             }
             PerspectiveAction::Add { id, name, hint } => {
-                veclayer::commands::perspective_add(&data_dir, &id, &name, &hint)?;
+                perspective_add(&data_dir, &id, &name, &hint)?;
             }
             PerspectiveAction::Remove { id } => {
-                veclayer::commands::perspective_remove(&data_dir, &id)?;
+                perspective_remove(&data_dir, &id)?;
             }
         },
         Commands::History { id } => {
-            veclayer::commands::history(&data_dir, &id).await?;
+            history(&data_dir, &id).await?;
         }
         Commands::Archive { ids } => {
-            veclayer::commands::archive(&data_dir, &ids).await?;
+            archive(&data_dir, &ids).await?;
         }
         Commands::Export { perspective } => {
             let options = ExportOptions { perspective };
-            veclayer::commands::export_entries(&data_dir, &options).await?;
+            export_entries(&data_dir, &options).await?;
         }
         Commands::Import { path } => {
             let options = ImportOptions { path };
-            veclayer::commands::import_entries(&data_dir, &options).await?;
+            import_entries(&data_dir, &options).await?;
         }
         Commands::RebuildIndex => {
-            veclayer::commands::rebuild_index(&data_dir).await?;
+            rebuild_index(&data_dir).await?;
         }
         Commands::Merge {
             source,
@@ -624,35 +628,32 @@ async fn main() -> Result<()> {
                 dry_run,
                 force,
             };
-            veclayer::commands::merge(&data_dir, &source, &options).await?;
+            merge(&data_dir, &source, &options).await?;
         }
         Commands::Reflect { action } => match action {
             None => {
-                // Full identity + reflection report (merged reflect + id)
-                veclayer::commands::reflect(&data_dir).await?;
+                reflect(&data_dir).await?;
             }
             Some(ReflectAction::Salience { limit }) => {
                 let options = CompactOptions {
                     limit,
                     ..Default::default()
                 };
-                veclayer::commands::compact(&data_dir, CompactAction::Salience, &options).await?;
+                compact(&data_dir, CompactAction::Salience, &options).await?;
             }
             Some(ReflectAction::ArchiveCandidates { limit, threshold }) => {
                 let options = CompactOptions {
                     limit,
                     archive_threshold: threshold,
                 };
-                veclayer::commands::compact(&data_dir, CompactAction::ArchiveCandidates, &options)
-                    .await?;
+                compact(&data_dir, CompactAction::ArchiveCandidates, &options).await?;
             }
         },
         Commands::Think { action } => match action {
             None => {
-                // Full LLM sleep cycle
                 #[cfg(feature = "llm")]
                 {
-                    veclayer::commands::think(&data_dir).await?;
+                    think(&data_dir).await?;
                 }
                 #[cfg(not(feature = "llm"))]
                 {
@@ -662,36 +663,30 @@ async fn main() -> Result<()> {
                 }
             }
             Some(ThinkAction::Promote { id, visibility }) => {
-                veclayer::commands::think_promote(&data_dir, &id, &visibility).await?;
+                think_promote(&data_dir, &id, &visibility).await?;
             }
             Some(ThinkAction::Demote { id, visibility }) => {
-                veclayer::commands::think_demote(&data_dir, &id, &visibility).await?;
+                think_demote(&data_dir, &id, &visibility).await?;
             }
             Some(ThinkAction::Relate {
                 source,
                 target,
                 kind,
             }) => {
-                veclayer::commands::think_relate(&data_dir, &source, &target, &kind).await?;
+                think_relate(&data_dir, &source, &target, &kind).await?;
             }
             Some(ThinkAction::Discover { limit }) => {
-                veclayer::commands::think_discover(&data_dir, limit).await?;
+                think_discover(&data_dir, limit).await?;
             }
             Some(ThinkAction::Aging { action }) => match action {
                 AgingAction::Apply => {
-                    veclayer::commands::think_aging_apply(&data_dir).await?;
+                    think_aging_apply(&data_dir).await?;
                 }
                 AgingAction::Configure { days, to } => {
-                    veclayer::commands::think_aging_configure(&data_dir, days, to.as_deref())
-                        .await?;
+                    think_aging_configure(&data_dir, days, to.as_deref()).await?;
                 }
                 AgingAction::Rotate => {
-                    veclayer::commands::compact(
-                        &data_dir,
-                        CompactAction::Rotate,
-                        &CompactOptions::default(),
-                    )
-                    .await?;
+                    compact(&data_dir, CompactAction::Rotate, &CompactOptions::default()).await?;
                 }
             },
         },
