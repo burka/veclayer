@@ -1,3 +1,26 @@
+//! # VecLayer
+//!
+//! Hierarchical vector indexing for documents with perspective-based memory.
+//!
+//! VecLayer provides semantic search over documents with hierarchical context,
+//! a persistent memory layer for AI agents, and automatic knowledge aging —
+//! important knowledge stays, unused knowledge fades.
+//!
+//! ## Core Concepts
+//!
+//! - **Hierarchical chunks**: Documents are split into chunks organized at
+//!   different levels (document, section, paragraph, fragment)
+//! - **Perspectives**: Different views of the same knowledge store (e.g.,
+//!   decisions, learnings, intentions)
+//! - **Salience scoring**: Retrieval blends semantic similarity, recency,
+//!   access frequency, and reinforcement
+//! - **Aging**: Entries naturally decay unless accessed or reinforced
+//!
+//! ## Feature Flags
+//!
+//! - `llm` (default): Enables LLM-powered summarization and clustering
+//! - `sync`: Enables cross-store synchronization
+
 #![recursion_limit = "256"]
 
 use std::path::PathBuf;

@@ -487,9 +487,22 @@ impl Config {
             file_llm.as_ref().and_then(|l| l.base_url.clone()),
             "http://localhost:11434".to_string(),
         );
+        if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
+            tracing::error!(
+                "LLM base_url must start with http:// or https://, got: {base_url} — \
+                 falling back to default"
+            );
+        }
         let api_key = std::env::var("VECLAYER_LLM_API_KEY")
             .ok()
             .or_else(|| file_llm.as_ref().and_then(|l| l.api_key.clone()));
+        let is_loopback = base_url.contains("localhost") || base_url.contains("127.0.0.1");
+        if api_key.is_some() && !base_url.starts_with("https://") && !is_loopback {
+            tracing::warn!(
+                "LLM base_url uses cleartext HTTP with an API key to a non-loopback host — \
+                 credentials may be transmitted in the clear"
+            );
+        }
         let temperature = env_parse("VECLAYER_LLM_TEMPERATURE")
             .or(file_llm.as_ref().and_then(|l| l.temperature))
             .unwrap_or(0.7);
@@ -553,7 +566,7 @@ impl Default for EmbedderConfig {
 }
 
 /// Configuration for the LLM provider (always available, even without the `llm` feature).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LlmConfig {
     /// Provider type: "ollama" or "openai"
     pub provider: String,
@@ -567,6 +580,19 @@ pub struct LlmConfig {
     pub temperature: f32,
     /// Maximum tokens in the response
     pub max_tokens: usize,
+}
+
+impl std::fmt::Debug for LlmConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LlmConfig")
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("temperature", &self.temperature)
+            .field("max_tokens", &self.max_tokens)
+            .finish()
+    }
 }
 
 impl Default for LlmConfig {

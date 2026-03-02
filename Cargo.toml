@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2021"
 description = "Hierarchical vector indexing for documents"
 license = "MIT"
+repository = "https://github.com/burka/veclayer"
+homepage = "https://github.com/burka/veclayer"
+readme = "README.md"
+authors = ["Florian Burka"]
+keywords = ["vector", "embedding", "memory", "llm", "rag"]
+categories = ["database", "command-line-utilities"]
+rust-version = "1.91"
 
 [features]
 default = ["llm"]

@@ -302,7 +302,7 @@ pub async fn execute_recall(
                     if needs_client_filter {
                         // Over-fetch when client-side filtering is active (ongoing, project)
                         // because list_entries doesn't support these filters natively.
-                        usize::MAX
+                        10_000
                     } else {
                         input.limit
                     },
@@ -455,6 +455,7 @@ pub async fn execute_store(
     }
 }
 
+#[allow(unused_variables)]
 pub async fn execute_think(
     store: &Arc<StoreBackend>,
     data_dir: &std::path::Path,
@@ -732,11 +733,7 @@ async fn execute_reflect(
     let aging_config = AgingConfig::load(data_dir);
 
     // Over-fetch when project filter is active, then filter client-side
-    let fetch_limit = if project.is_some() {
-        usize::MAX
-    } else {
-        hot_limit
-    };
+    let fetch_limit = if project.is_some() { 10_000 } else { hot_limit };
     let hot: Vec<_> = store
         .get_hot_chunks(fetch_limit)
         .await?
@@ -745,7 +742,7 @@ async fn execute_reflect(
         .take(hot_limit)
         .collect();
     let stale_fetch = if project.is_some() {
-        usize::MAX
+        10_000
     } else {
         stale_limit
     };

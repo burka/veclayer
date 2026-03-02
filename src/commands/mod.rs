@@ -7,7 +7,9 @@ use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use owo_colors::{OwoColorize, Stream};
-use tracing::{debug, info, warn};
+#[cfg(feature = "llm")]
+use tracing::info;
+use tracing::{debug, warn};
 
 use crate::blob_store::BlobStore;
 use crate::chunk::{short_id, EntryType};
@@ -84,6 +86,7 @@ pub fn preview(s: &str, max: usize) -> String {
 #[derive(Debug, Clone)]
 pub struct AddOptions {
     pub recursive: bool,
+    pub follow_links: bool,
     pub summarize: bool,
     pub model: String,
     pub visibility: Option<String>,
@@ -101,12 +104,11 @@ pub struct AddOptions {
     pub rel_custom: Vec<String>,
 }
 
-pub type IngestOptions = AddOptions;
-
 impl Default for AddOptions {
     fn default() -> Self {
         Self {
             recursive: true,
+            follow_links: false,
             summarize: true,
             model: "llama3.2".to_string(),
             visibility: None,
@@ -255,6 +257,7 @@ pub struct AddResult {
     pub files_processed: usize,
 }
 
+pub type IngestOptions = AddOptions;
 pub type IngestResult = AddResult;
 
 /// Result of a search/query operation

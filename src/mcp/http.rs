@@ -3,11 +3,13 @@
 use std::sync::Arc;
 
 use axum::extract::State;
+use axum::http::header::CONTENT_TYPE;
+use axum::http::Method;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::info;
 
 use crate::blob_store::BlobStore;
@@ -46,9 +48,12 @@ pub async fn run_http(config: Config) -> Result<()> {
     };
 
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_origin(AllowOrigin::predicate(|origin, _| {
+            let s = origin.as_bytes();
+            s.starts_with(b"http://localhost") || s.starts_with(b"http://127.0.0.1")
+        }))
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers([CONTENT_TYPE]);
 
     let app = Router::new()
         .route("/health", get(|| async { "OK" }))

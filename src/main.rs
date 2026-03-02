@@ -16,6 +16,25 @@ use veclayer::commands::{
 };
 use veclayer::Result;
 
+#[derive(Clone, Debug, clap::ValueEnum)]
+enum EntryKind {
+    Raw,
+    Summary,
+    Meta,
+    Impression,
+}
+
+impl std::fmt::Display for EntryKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EntryKind::Raw => write!(f, "raw"),
+            EntryKind::Summary => write!(f, "summary"),
+            EntryKind::Meta => write!(f, "meta"),
+            EntryKind::Impression => write!(f, "impression"),
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "veclayer")]
 #[command(about = "Persistent memory for AI agents — recall, store, focus, think, share")]
@@ -67,9 +86,9 @@ enum Commands {
         #[arg(long)]
         visibility: Option<String>,
 
-        /// Entry type: raw (default), meta, impression
-        #[arg(long, default_value = "raw")]
-        entry_type: String,
+        /// Entry type: raw (default), summary, meta, impression
+        #[arg(long)]
+        entry_type: Option<EntryKind>,
 
         /// Tag with perspectives (comma-separated or repeated)
         #[arg(short = 'P', long = "perspective")]
@@ -92,28 +111,37 @@ enum Commands {
         impression_strength: f32,
 
         /// This entry supersedes the target (auto-demotes target)
-        #[arg(long, value_name = "ID")]
+        #[arg(long, value_name = "ID", help_heading = "Relations")]
         rel_supersedes: Vec<String>,
 
         /// This entry summarizes the target
-        #[arg(long, value_name = "ID")]
+        #[arg(long, value_name = "ID", help_heading = "Relations")]
         rel_summarizes: Vec<String>,
 
         /// Bidirectional related_to link
-        #[arg(long, value_name = "ID")]
+        #[arg(long, value_name = "ID", help_heading = "Relations")]
         rel_to: Vec<String>,
 
         /// This entry is derived from the target (forward only)
-        #[arg(long, value_name = "ID")]
+        #[arg(long, value_name = "ID", help_heading = "Relations")]
         rel_derived_from: Vec<String>,
 
         /// This is a new version of the target (auto-demotes target)
-        #[arg(long, value_name = "ID")]
+        #[arg(long, value_name = "ID", help_heading = "Relations")]
         rel_version_of: Vec<String>,
 
         /// Custom relation: KIND:ID (forward on self only)
-        #[arg(short = 'R', long = "rel", value_name = "KIND:ID")]
+        #[arg(
+            short = 'R',
+            long = "rel",
+            value_name = "KIND:ID",
+            help_heading = "Relations"
+        )]
         rel_custom: Vec<String>,
+
+        /// Follow symbolic links when recursing into directories
+        #[arg(long)]
+        follow_links: bool,
     },
 
     /// Recall knowledge — semantic search with hierarchical results
@@ -205,7 +233,7 @@ enum Commands {
         mcp_stdio: bool,
 
         /// Project scope for memory isolation
-        #[arg(short = 'P', long)]
+        #[arg(long)]
         project: Option<String>,
     },
 
@@ -257,7 +285,7 @@ enum Commands {
         source: PathBuf,
 
         /// Project scope to tag merged entries with
-        #[arg(short = 'p', long)]
+        #[arg(long)]
         project: Option<String>,
 
         /// Preview only — show what would be merged without changing anything
@@ -497,13 +525,17 @@ async fn main() -> Result<()> {
             rel_derived_from,
             rel_version_of,
             rel_custom,
+            follow_links,
         } => {
             let options = AddOptions {
                 recursive: !no_recursive,
+                follow_links,
                 summarize: !no_summarize,
                 model,
                 visibility,
-                entry_type,
+                entry_type: entry_type
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "raw".to_string()),
                 perspectives,
                 parent_id,
                 heading,

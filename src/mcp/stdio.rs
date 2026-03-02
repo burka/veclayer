@@ -374,16 +374,16 @@ fn tool_list(project: Option<&str>, branch: Option<&str>) -> serde_json::Value {
                     "type": "object",
                     "properties": {
                         "action": { "type": "string" },
-                        "hot_limit": { "type": "integer", "default": 10 },
-                        "stale_limit": { "type": "integer", "default": 10 },
-                        "id": { "type": "string" },
-                        "visibility": { "type": "string" },
-                        "source_id": { "type": "string" },
-                        "target_id": { "type": "string" },
-                        "kind": { "type": "string" },
-                        "degrade_after_days": { "type": "integer" },
-                        "degrade_to": { "type": "string" },
-                        "degrade_from": { "type": "array", "items": { "type": "string" } }
+                        "hot_limit": { "type": "integer", "default": 10, "description": "Max hot entries to show (for review action, default 10)" },
+                        "stale_limit": { "type": "integer", "default": 10, "description": "Max stale entries to show (for review action, default 5)" },
+                        "id": { "type": "string", "description": "Target entry ID (for promote, demote, history, archive, link, unlink)" },
+                        "visibility": { "type": "string", "description": "New visibility 0.0-1.0 (for promote/demote actions)" },
+                        "source_id": { "type": "string", "description": "Source entry ID (for link/unlink actions)" },
+                        "target_id": { "type": "string", "description": "Target entry ID (for link/unlink actions)" },
+                        "kind": { "type": "string", "description": "Relation kind (for link/unlink actions)" },
+                        "degrade_after_days": { "type": "integer", "description": "Days before degradation starts (for age-config action)" },
+                        "degrade_to": { "type": "string", "description": "Target visibility after degradation (for age-config action)" },
+                        "degrade_from": { "type": "array", "items": { "type": "string" }, "description": "Source visibility threshold for degradation (for age-config action)" }
                     }
                 }
             },

@@ -8,7 +8,7 @@ use super::*;
 pub async fn export_entries(data_dir: &Path, options: &ExportOptions) -> Result<()> {
     let store = StoreBackend::open_metadata(data_dir, true).await?;
     let mut entries = store
-        .list_entries(options.perspective.as_deref(), None, None, usize::MAX)
+        .list_entries(options.perspective.as_deref(), None, None, 10_000)
         .await?;
 
     entries.sort_by(|a, b| a.id.cmp(&b.id));
@@ -188,7 +188,7 @@ mod tests {
         let jsonl_file = dir.path().join("export.jsonl");
         let entry_count = {
             let store = StoreBackend::open_metadata(dir.path(), true).await?;
-            let entries = store.list_entries(None, None, None, usize::MAX).await?;
+            let entries = store.list_entries(None, None, None, 10_000).await?;
             let jsonl: String = entries
                 .iter()
                 .map(|c| serde_json::to_string(&c.clone().without_embedding()).unwrap() + "\n")
@@ -222,7 +222,7 @@ mod tests {
                 ])
                 .await?;
 
-            let entries = store.list_entries(None, None, None, usize::MAX).await?;
+            let entries = store.list_entries(None, None, None, 10_000).await?;
             let mut sorted = entries.clone();
             sorted.sort_by(|a, b| a.id.cmp(&b.id));
             let jsonl: String = sorted

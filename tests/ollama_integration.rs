@@ -357,6 +357,7 @@ Reference counting handles most cleanup.
     // Ingest with summarization
     let options = IngestOptions {
         recursive: true,
+        follow_links: false,
         summarize: true,
         model: "tinyllama".to_string(),
         visibility: None,

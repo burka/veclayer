@@ -37,7 +37,7 @@ async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result
 
     let parser = MarkdownParser::new();
 
-    let files = collect_files(path, options.recursive, &parser)?;
+    let files = collect_files(path, options.recursive, options.follow_links, &parser)?;
     debug!("Found {} files to process", files.len());
 
     let mut all_chunks = Vec::new();
@@ -88,6 +88,7 @@ async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result
     }
 
     let total_entries = all_chunks.len();
+    #[allow(unused_mut)]
     let mut summary_entries = 0;
 
     #[cfg(feature = "llm")]
@@ -279,6 +280,7 @@ async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<A
 pub fn collect_files(
     path: &Path,
     recursive: bool,
+    follow_links: bool,
     parser: &impl DocumentParser,
 ) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
@@ -290,7 +292,7 @@ pub fn collect_files(
     } else if path.is_dir() {
         if recursive {
             for entry in walkdir::WalkDir::new(path)
-                .follow_links(true)
+                .follow_links(follow_links)
                 .into_iter()
                 .filter_map(|e| e.ok())
             {
@@ -323,6 +325,7 @@ mod tests {
     fn test_add_options_default() {
         let opts = AddOptions::default();
         assert!(opts.recursive);
+        assert!(!opts.follow_links);
         assert!(opts.summarize);
         assert_eq!(opts.model, "llama3.2");
         assert_eq!(opts.entry_type, "raw");
@@ -345,7 +348,7 @@ mod tests {
         fs::write(&file_path, "# Test")?;
 
         let parser = MarkdownParser::new();
-        let files = collect_files(&file_path, false, &parser)?;
+        let files = collect_files(&file_path, false, false, &parser)?;
 
         assert_eq!(files.len(), 1);
         assert_eq!(files[0], file_path);
@@ -360,7 +363,7 @@ mod tests {
         fs::write(&file_path, "Test content")?;
 
         let parser = MarkdownParser::new();
-        let files = collect_files(&file_path, false, &parser)?;
+        let files = collect_files(&file_path, false, false, &parser)?;
 
         assert_eq!(files.len(), 0);
 
@@ -375,7 +378,7 @@ mod tests {
         fs::write(temp_dir.path().join("ignore.txt"), "Text file")?;
 
         let parser = MarkdownParser::new();
-        let files = collect_files(temp_dir.path(), false, &parser)?;
+        let files = collect_files(temp_dir.path(), false, false, &parser)?;
 
         assert_eq!(files.len(), 2);
         assert!(files.iter().all(|f| f.extension().unwrap() == "md"));
@@ -394,10 +397,10 @@ mod tests {
 
         let parser = MarkdownParser::new();
 
-        let files_non_recursive = collect_files(temp_dir.path(), false, &parser)?;
+        let files_non_recursive = collect_files(temp_dir.path(), false, false, &parser)?;
         assert_eq!(files_non_recursive.len(), 1);
 
-        let files_recursive = collect_files(temp_dir.path(), true, &parser)?;
+        let files_recursive = collect_files(temp_dir.path(), true, false, &parser)?;
         assert_eq!(files_recursive.len(), 2);
 
         Ok(())
@@ -408,7 +411,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
 
         let parser = MarkdownParser::new();
-        let files = collect_files(temp_dir.path(), true, &parser)?;
+        let files = collect_files(temp_dir.path(), true, false, &parser)?;
 
         assert_eq!(files.len(), 0);
 
