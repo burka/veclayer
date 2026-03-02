@@ -59,10 +59,10 @@ salience scores, and suggested actions. With an action, executes curation:
 - `action: 'status'` — Show store statistics (entry count, source files, aging policy)
 - `action: 'history'` — Show an entry's relations and metadata (requires `id`)
 
-### share — Here, this is for you. (Preview)
+### share — Here, this is for you. [Experimental — not yet functional]
 Generates a scoped share-token payload describing what knowledge to share and with what \
 permissions. This is a preview of the upcoming UCAN-based sharing system — tokens are not \
-yet cryptographically signed.
+yet cryptographically signed. Do not rely on this tool in production workflows.
 
 ## How to Use Your Memory
 

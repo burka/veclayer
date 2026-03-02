@@ -1,3 +1,10 @@
+//! Embedding trait and backend implementations.
+//!
+//! [`Embedder`] defines the interface for converting text batches into
+//! fixed-size float vectors. [`FastEmbedder`] is the production backend,
+//! running models locally via the `fastembed` crate. All implementations
+//! must be `Send + Sync` for concurrent use across async tasks.
+
 mod fastembed_impl;
 
 pub use fastembed_impl::FastEmbedder;

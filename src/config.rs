@@ -59,6 +59,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum EmbedderConfig {
     FastEmbed { model: String },
     Ollama { model: String, base_url: String },
@@ -493,6 +494,8 @@ impl Config {
                  falling back to default"
             );
         }
+        // TODO(security): Consider warning when api_key is set via config file
+        // rather than environment variable, as config files may be less protected.
         let api_key = std::env::var("VECLAYER_LLM_API_KEY")
             .ok()
             .or_else(|| file_llm.as_ref().and_then(|l| l.api_key.clone()));
@@ -574,6 +577,10 @@ pub struct LlmConfig {
     pub model: String,
     /// Base URL for the API
     pub base_url: String,
+    // TODO(security): API key stored as plain String — not zeroed on drop.
+    // Acceptable for short-lived CLI use. For long-running server deployments,
+    // consider using a secrets crate (e.g., secrecy::SecretString) that zeros
+    // memory on drop. Tracked for a future release.
     /// API key (required for OpenAI-compatible providers)
     pub api_key: Option<String>,
     /// Sampling temperature
@@ -1171,6 +1178,9 @@ project = "orphan"
     }
 
     // BUG-3: explicit VECLAYER_USER_CONFIG pointing to nonexistent file must not fall through
+    // NOTE(known-limitation): std::env::set_var/remove_var are unsafe since Rust 1.83+.
+    // These tests use serial_test to avoid data races, but will need unsafe blocks when
+    // the crate upgrades to Rust edition 2024. See README "Known Limitations".
     #[test]
     #[serial_test::serial]
     fn test_discover_user_config_nonexistent_env_returns_defaults() {
@@ -1311,6 +1321,7 @@ project = "damalo"
         );
     }
 
+    // NOTE(known-limitation): std::env::set_var/remove_var — see comment above.
     #[test]
     #[serial_test::serial]
     fn test_append_match_to_user_config() {

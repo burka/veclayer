@@ -1,3 +1,9 @@
+//! Error types for VecLayer operations.
+//!
+//! All fallible operations return [`Result<T>`], which uses the [`Error`] enum
+//! to represent the different failure modes across storage, embedding, search,
+//! configuration, and serialization layers.
+
 use thiserror::Error;
 
 /// Result type for VecLayer operations
@@ -5,6 +11,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Errors that can occur in VecLayer
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum Error {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

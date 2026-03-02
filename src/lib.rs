@@ -30,17 +30,22 @@ pub mod aging;
 pub mod blob_store;
 pub mod chunk;
 #[cfg(feature = "llm")]
+#[doc(hidden)]
 pub mod cluster;
+#[doc(hidden)]
 pub mod commands;
 pub mod config;
 pub mod embedder;
 pub mod entry;
 pub mod error;
+#[doc(hidden)]
 pub mod git_detect;
 pub mod identity;
 #[cfg(feature = "llm")]
+#[doc(hidden)]
 pub mod llm;
-pub mod macros;
+pub(crate) mod macros;
+#[doc(hidden)]
 pub mod mcp;
 pub mod parser;
 pub mod perspective;
@@ -50,12 +55,14 @@ pub mod salience;
 pub mod search;
 pub mod store;
 #[cfg(feature = "llm")]
+#[doc(hidden)]
 pub mod summarizer;
 #[cfg(feature = "sync")]
 pub mod sync;
 #[cfg(test)]
-pub mod test_helpers;
+pub(crate) mod test_helpers;
 #[cfg(feature = "llm")]
+#[doc(hidden)]
 pub mod think;
 
 /// Platform-appropriate default data directory for VecLayer.
@@ -83,7 +90,8 @@ pub use error::{Error, Result};
 #[cfg(feature = "llm")]
 pub use llm::{LlmBackend, LlmProvider};
 pub use parser::DocumentParser;
-pub use search::HierarchicalSearch;
+pub use salience::SalienceWeights;
+pub use search::{HierarchicalSearch, HierarchicalSearchResult, SearchConfig};
 pub use store::StoreBackend;
 pub use store::VectorStore;
 #[cfg(feature = "llm")]

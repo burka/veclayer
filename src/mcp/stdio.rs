@@ -389,7 +389,7 @@ fn tool_list(project: Option<&str>, branch: Option<&str>) -> serde_json::Value {
             },
             {
                 "name": "share",
-                "description": "Generate a scoped share-token payload (UCAN preview).",
+                "description": "[Experimental — not yet functional] Generate a scoped share-token payload (UCAN preview).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {

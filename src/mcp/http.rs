@@ -47,6 +47,10 @@ pub async fn run_http(config: Config) -> Result<()> {
         branch: config.branch.clone(),
     };
 
+    // TODO(security): The HTTP API has no authentication. Any process that can reach
+    // the bound socket can read/write the entire knowledge store. Currently mitigated
+    // by localhost-only binding + restricted CORS. Add token-based auth before
+    // exposing to untrusted networks. Tracked for a future release.
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(|origin, _| {
             let s = origin.as_bytes();

@@ -1,3 +1,12 @@
+//! Core domain types for VecLayer's hierarchical chunk model.
+//!
+//! This module defines [`HierarchicalChunk`] — the primary in-memory data unit —
+//! along with [`EntryType`], [`ChunkLevel`], [`ChunkRelation`], and [`ClusterMembership`].
+//! Visibility and relation constants live in sub-modules [`visibility`] and [`relation`].
+//!
+//! **Planned refactoring:** `ChunkRelation` and relation constants will be extracted
+//! to the `relations` module before v0.2 to reduce this module's scope.
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -27,6 +36,19 @@ pub fn short_id(id: &str) -> &str {
 /// - `summary` -- Generated summary of child entries
 /// - `meta` -- Reflection, assessment, evaluation
 /// - `impression` -- Spontaneous observation, quick note
+///
+/// # Examples
+///
+/// ```
+/// use veclayer::EntryType;
+///
+/// let t = EntryType::Raw;
+/// assert_eq!(t, EntryType::default());
+///
+/// let s = EntryType::Summary;
+/// assert_ne!(t, s);
+/// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum EntryType {
@@ -216,6 +238,22 @@ impl std::fmt::Display for ChunkLevel {
 /// This is the core data unit of VecLayer. Each chunk carries its content,
 /// its position in the hierarchy, and metadata about how it should be treated
 /// (visibility, relations, access patterns).
+///
+/// # Examples
+///
+/// ```
+/// use veclayer::{HierarchicalChunk, ChunkLevel};
+///
+/// let chunk = HierarchicalChunk::new(
+///     "Rust is fast and safe.".to_string(),
+///     ChunkLevel::H1,
+///     None,
+///     "Guide".to_string(),
+///     "guide.md".to_string(),
+/// );
+/// assert_eq!(chunk.level, ChunkLevel::H1);
+/// assert!(!chunk.has_embedding());
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HierarchicalChunk {
     /// Unique identifier for this chunk

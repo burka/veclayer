@@ -1,3 +1,10 @@
+//! Hierarchical search engine with blended salience scoring.
+//!
+//! [`HierarchicalSearch`] traverses the document hierarchy in two phases:
+//! first locating top-level matches via vector similarity, then enriching each
+//! result with parent context and matching children. [`SearchConfig`] controls
+//! blending of vector score with recency and salience signals.
+
 use crate::chunk::now_epoch_secs;
 use crate::embedder::Embedder;
 use crate::salience::{self, SalienceWeights};
@@ -28,7 +35,23 @@ pub const ACTIVE_RECENCY_ALPHA: f32 = 0.3;
 /// 0.0 = pure recency, 1.0 = pure salience.
 pub const DEFAULT_SALIENCE_WEIGHT: f32 = 0.3;
 
-/// Configuration for hierarchical search
+/// Configuration for hierarchical search.
+///
+/// # Examples
+///
+/// ```
+/// use veclayer::search::SearchConfig;
+///
+/// // Default: top-5 results, shallow search, no recency boost.
+/// let config = SearchConfig::default();
+/// assert_eq!(config.top_k, 5);
+/// assert!(!config.deep);
+///
+/// // Convenience builder for a query with a recency window.
+/// let config = SearchConfig::for_query(10, false, Some("7d"));
+/// assert_eq!(config.top_k, 10);
+/// assert!(config.recency_window.is_some());
+/// ```
 #[derive(Debug, Clone)]
 pub struct SearchConfig {
     /// Number of top-level chunks to retrieve

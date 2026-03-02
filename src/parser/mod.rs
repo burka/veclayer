@@ -1,3 +1,9 @@
+//! Document parsing traits and implementations.
+//!
+//! [`DocumentParser`] is the core trait: implementations receive raw document
+//! text and emit a flat list of [`HierarchicalChunk`]s with parent-child IDs
+//! already wired. [`MarkdownParser`] handles Markdown (`.md`) files.
+
 mod markdown;
 
 pub use markdown::MarkdownParser;

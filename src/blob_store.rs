@@ -1,3 +1,9 @@
+//! Git-style content-addressed blob store.
+//!
+//! Blobs are stored as files named by their BLAKE3 hash, sharded into
+//! two-character prefix directories (like git's object store). Writes
+//! are atomic via temp-file-then-rename.
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,6 +28,11 @@ impl BlobStore {
     pub fn open(data_dir: &Path) -> crate::Result<Self> {
         let objects_dir = data_dir.join("objects");
         fs::create_dir_all(&objects_dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&objects_dir, std::fs::Permissions::from_mode(0o700))?;
+        }
         Ok(Self { objects_dir })
     }
 
@@ -44,6 +55,11 @@ impl BlobStore {
 
         let shard_dir = final_path.parent().expect("path always has a parent");
         fs::create_dir_all(shard_dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(shard_dir, std::fs::Permissions::from_mode(0o700))?;
+        }
 
         let bytes = blob
             .to_bytes()
@@ -55,6 +71,11 @@ impl BlobStore {
 
         fs::write(&tmp_path, &bytes)?;
         fs::rename(&tmp_path, &final_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&final_path, std::fs::Permissions::from_mode(0o600))?;
+        }
 
         Ok(hash)
     }

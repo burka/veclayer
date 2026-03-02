@@ -1,3 +1,9 @@
+//! Vector store trait and backend implementations.
+//!
+//! [`VectorStore`] defines the async interface for all storage backends.
+//! [`StoreBackend`] is the dispatch enum — adding a new backend requires one
+//! new file and one new variant. The current production backend is LanceDB.
+
 mod lancedb_impl;
 pub(crate) mod lock;
 
@@ -127,6 +133,7 @@ pub struct StoreStats {
 ///
 /// Adding a new backend is: one new file, one new variant here, done.
 /// Follows the same pattern as `LlmBackend`.
+#[non_exhaustive]
 pub enum StoreBackend {
     Lance(LanceStore),
 }

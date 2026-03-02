@@ -15,6 +15,13 @@ Instead of flat chunk lists or key-value stores, VecLayer provides structured, a
 
 Summaries are not a feature alongside others — they *are* the memory itself. The hierarchy that makes RAG better (overview before detail, navigation instead of flat lists) is the same structure from which identity emerges. And personality is not shaped by what you do often, but by what moved you. That is why salience measures significance, not frequency.
 
+## What You Get
+
+- **Semantic search with hierarchy** — query your documents and get results organized by document → section → paragraph, not flat chunk lists
+- **Persistent AI memory** — an MCP server that gives coding assistants (Claude, etc.) long-term memory across sessions
+- **Automatic aging** — important knowledge stays present, unused knowledge naturally fades
+- **Identity from memory** — on connect, an agent receives a priming of who it is: core knowledge, open threads, recent learnings
+
 ## Core Concepts
 
 - **One primitive: Entry** — Everything is an Entry. Four types: `raw`, `summary`, `meta`, `impression`. ID = `sha256(content)`, first 7 hex chars in CLI (like git). Identical content = identical ID = idempotent.
@@ -46,6 +53,40 @@ veclayer focus abc1234
 
 # Start server (MCP/HTTP)
 veclayer serve
+```
+
+## Configuration
+
+VecLayer resolves configuration in this order (highest priority first):
+CLI flags → environment variables → user config path overrides → user config globals → project-local config → git auto-detection → defaults.
+
+### User config (`~/.config/veclayer/config.toml`)
+
+```toml
+# Global defaults
+data_dir = "~/.local/share/veclayer"
+
+[llm]
+provider = "ollama"
+model = "llama3.2"
+base_url = "http://localhost:11434"
+# api_key = "sk-..."  # for OpenAI-compatible providers (use HTTPS!)
+
+# Project-specific overrides — matched by path glob and/or git remote
+[[match]]
+path = "~/work/myproject"
+data_dir = "~/work/myproject/.veclayer-data"
+
+[[match]]
+git_remote = "github\\.com/myorg/.*"
+data_dir = "~/.local/share/veclayer/myorg"
+```
+
+### Project-local config (`.veclayer/config.toml` in project root)
+
+```toml
+[llm]
+model = "codellama"
 ```
 
 ## MCP Server Setup
@@ -215,6 +256,21 @@ Install the Protocol Buffers compiler (see prerequisites above).
 **`Failed to connect to Ollama`**
 The think cycle and cluster summarization require a running Ollama instance. These features are optional — `store`, `recall`, `focus`, and all non-LLM commands work without it.
 
+## Feature Flags
+
+| Feature | Default | What it enables |
+|---------|---------|-----------------|
+| `llm` | Yes | LLM-powered summarization, clustering, think/consolidation cycle |
+| `sync` | No | Cross-store synchronization (experimental) |
+
+Build without LLM dependencies:
+
+```bash
+cargo build --no-default-features
+```
+
+All core functionality (store, recall, focus, perspectives, aging, identity) works without the `llm` feature. Only summarization and the `think` command require it.
+
 ## Tech Stack
 
 | Component | Technology |
@@ -230,6 +286,15 @@ The think cycle and cluster summarization require a running Ollama instance. The
 ## Status
 
 Phases 1–5.5 complete: core model, perspectives, aging/salience, identity, think cycle, tool ergonomics. Next up: Phase 6 (UCAN sharing). See [Issues](https://github.com/burka/veclayer/issues?q=label%3Aphase) for the full roadmap.
+
+## Known Limitations
+
+The following are known issues tracked for future releases:
+
+- **HTTP server has no authentication** — The REST API (`veclayer serve --http`) binds to localhost with restricted CORS but has no auth tokens. Do not expose to untrusted networks. Auth is planned for a future release.
+- **API keys stored as plain strings** — LLM API keys (for OpenAI-compatible providers) are held in memory as `String` without zeroing on drop. Acceptable for CLI use; not suitable for long-running shared server deployments without additional safeguards.
+- **Test env var manipulation** — Some tests use `std::env::set_var` which became `unsafe` in Rust 1.83+. These tests use `serial_test` for isolation but will need `unsafe` blocks in a future Rust edition.
+- **chunk.rs scope** — The core `chunk` module (1000+ lines) is planned for decomposition before v0.2: `ChunkRelation` and relation constants will move to the `relations` module.
 
 ## Design Decisions: What VecLayer Does NOT Do
 

@@ -43,6 +43,7 @@ pub struct AccessProfile {
 }
 
 /// Time window for recency-weighted search.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecencyWindow {
     Day,

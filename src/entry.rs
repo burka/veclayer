@@ -1,3 +1,10 @@
+//! Entry: the portable, serializable form of a [`HierarchicalChunk`].
+//!
+//! An [`Entry`] is the canonical subset of chunk fields that can be persisted
+//! and round-tripped without the embedding vector. [`StoredBlob`] wraps an
+//! `Entry` with zero or more cached [`EmbeddingCache`] vectors, serialized via
+//! postcard for compact binary storage in the blob store.
+
 use serde::{Deserialize, Serialize};
 
 use crate::chunk::{ChunkLevel, ChunkRelation, EntryType, HierarchicalChunk};
@@ -14,6 +21,25 @@ fn default_impression_strength() -> f32 {
 ///
 /// Fields are the portable subset of `HierarchicalChunk` that can be round-tripped
 /// through the blob store independently of the embedding or index details.
+///
+/// # Examples
+///
+/// ```
+/// use veclayer::{HierarchicalChunk, ChunkLevel};
+/// use veclayer::entry::Entry;
+///
+/// let chunk = HierarchicalChunk::new(
+///     "Architecture decision: use LanceDB".to_string(),
+///     ChunkLevel::H1,
+///     None,
+///     "root".to_string(),
+///     "decisions.md".to_string(),
+/// );
+///
+/// let entry = Entry::from_chunk(&chunk);
+/// assert_eq!(entry.content, chunk.content);
+/// assert_eq!(entry.content_id(), chunk.id);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Entry {
     pub content: String,
