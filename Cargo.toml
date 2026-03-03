@@ -2,7 +2,7 @@
 name = "veclayer"
 version = "0.1.0"
 edition = "2021"
-description = "Hierarchical vector indexing for documents"
+description = "Hierarchical vector memory for AI agents — perspectives, salience, aging, identity"
 license = "MIT"
 repository = "https://github.com/burka/veclayer"
 homepage = "https://github.com/burka/veclayer"
@@ -10,6 +10,7 @@ readme = "README.md"
 authors = ["Florian Burka"]
 keywords = ["vector", "embedding", "memory", "llm", "rag"]
 categories = ["database", "command-line-utilities"]
+exclude = [".claude/", ".mcp.json", "opencode.json"]
 rust-version = "1.91"
 
 [features]

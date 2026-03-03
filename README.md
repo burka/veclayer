@@ -2,7 +2,7 @@
 
 **Long-term memory for AI agents. Hierarchical, perspectival, aging knowledge.**
 
-> Status: In Development — prototype, APIs may change
+> Status: 0.1.0 — MCP tool & CLI for local use. APIs are evolving.
 > Author: Florian Burka, developed in dialogue with Claude
 
 ## What is VecLayer?
@@ -328,7 +328,7 @@ All core functionality (store, recall, focus, perspectives, aging, identity) wor
 | Component | Technology |
 |-----------|-----------|
 | Language | Rust |
-| Storage | LanceDB (prototype), Turso/SQLite (planned) |
+| Storage | LanceDB (local cache & indices) |
 | Embeddings | fastembed (CPU, ONNX) — trait-based, swappable |
 | Parsing | pulldown-cmark (Markdown), extensible |
 | Server | axum (MCP + HTTP) |
