@@ -115,6 +115,18 @@ impl LanceStore {
             lock_dir,
         };
 
+        // Hold the write lock during schema creation/migration so two concurrent
+        // opens cannot race on table creation or column add/drop (issue #70).
+        let _migration_lock = if !read_only {
+            let dir = path.to_path_buf();
+            Some(
+                tokio::task::spawn_blocking(move || FileLock::acquire_blocking(&dir))
+                    .await
+                    .map_err(|e| Error::store(format!("lock task failed: {e}")))??,
+            )
+        } else {
+            None
+        };
         store.ensure_table().await?;
 
         Ok(store)
@@ -138,6 +150,18 @@ impl LanceStore {
             lock_dir,
         };
 
+        // Hold the write lock during schema creation/migration so two concurrent
+        // opens cannot race on table creation or column add/drop (issue #70).
+        let _migration_lock = if !read_only {
+            let dir = path.to_path_buf();
+            Some(
+                tokio::task::spawn_blocking(move || FileLock::acquire_blocking(&dir))
+                    .await
+                    .map_err(|e| Error::store(format!("lock task failed: {e}")))??,
+            )
+        } else {
+            None
+        };
         store.ensure_table().await?;
 
         Ok(store)
@@ -2236,5 +2260,59 @@ mod tests {
             Field::new("extra", DataType::Utf8, true),
         ]);
         assert_ne!(schema_fingerprint(&schema_a), schema_fingerprint(&schema_b));
+    }
+
+    // Verifies the per-write-operation locking design (issue #70).
+    //
+    // Design: multiple LanceStore instances MAY open the same directory concurrently.
+    // Mutual exclusion is enforced only around individual write operations, not for the
+    // lifetime of the store. The schema migration at open time is also serialised by a
+    // short-lived write lock so two simultaneous opens cannot race on table creation or
+    // column migrations. After open, each write acquires the lock independently, which
+    // means interleaved writes from different handles are safe and the last writer wins.
+    #[tokio::test]
+    async fn test_concurrent_rw_access_works_with_per_write_lock() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Both read-write opens must succeed — no process-lifetime lock is held.
+        let store1 = LanceStore::open(temp_dir.path(), 384, false)
+            .await
+            .expect("first read-write open must succeed");
+        let store2 = LanceStore::open(temp_dir.path(), 384, false)
+            .await
+            .expect("second read-write open must succeed (per-write locking, no open-time lock)");
+
+        // Writes from both handles must succeed and be visible to the other.
+        let chunk1 = create_test_chunk("concurrent-rw-1", "Written by store1", ChunkLevel::H1);
+        store1
+            .insert_chunks(vec![chunk1])
+            .await
+            .expect("insert via store1 must succeed");
+
+        let chunk2 = create_test_chunk("concurrent-rw-2", "Written by store2", ChunkLevel::H1);
+        store2
+            .insert_chunks(vec![chunk2])
+            .await
+            .expect("insert via store2 must succeed");
+
+        // Both chunks must be retrievable from either store handle.
+        let from_store2 = store2
+            .get_by_id("concurrent-rw-1")
+            .await
+            .expect("get_by_id must not error")
+            .expect("chunk written by store1 must be visible via store2");
+        assert_eq!(from_store2.content, "Written by store1");
+
+        let from_store1 = store1
+            .get_by_id("concurrent-rw-2")
+            .await
+            .expect("get_by_id must not error")
+            .expect("chunk written by store2 must be visible via store1");
+        assert_eq!(from_store1.content, "Written by store2");
+
+        // Read-only access on the same directory must always succeed.
+        LanceStore::open(temp_dir.path(), 384, true)
+            .await
+            .expect("read-only open must succeed concurrently with read-write stores");
     }
 }
