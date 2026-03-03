@@ -494,11 +494,15 @@ impl Config {
                  falling back to default"
             );
         }
-        // TODO(security): Consider warning when api_key is set via config file
-        // rather than environment variable, as config files may be less protected.
-        let api_key = std::env::var("VECLAYER_LLM_API_KEY")
-            .ok()
-            .or_else(|| file_llm.as_ref().and_then(|l| l.api_key.clone()));
+        let api_key_from_env = std::env::var("VECLAYER_LLM_API_KEY").ok();
+        let api_key_from_file = file_llm.as_ref().and_then(|l| l.api_key.clone());
+        if api_key_from_env.is_none() && api_key_from_file.is_some() {
+            tracing::warn!(
+                "LLM API key loaded from config file — consider using the \
+                 VECLAYER_LLM_API_KEY environment variable instead for better security"
+            );
+        }
+        let api_key = api_key_from_env.or(api_key_from_file);
         let is_loopback = base_url.contains("localhost") || base_url.contains("127.0.0.1");
         if api_key.is_some() && !base_url.starts_with("https://") && !is_loopback {
             tracing::warn!(

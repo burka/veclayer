@@ -67,7 +67,9 @@ impl BlobStore {
 
         let pid = std::process::id();
         let seq = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let tmp_path = PathBuf::from(format!("{}.tmp.{pid}.{seq}", final_path.display()));
+        let mut tmp_name = final_path.as_os_str().to_os_string();
+        tmp_name.push(format!(".tmp.{pid}.{seq}"));
+        let tmp_path = PathBuf::from(tmp_name);
 
         fs::write(&tmp_path, &bytes)?;
         fs::rename(&tmp_path, &final_path)?;

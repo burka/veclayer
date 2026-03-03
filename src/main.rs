@@ -82,7 +82,7 @@ enum Commands {
         #[arg(long, env = "VECLAYER_OLLAMA_MODEL", default_value = "llama3.2")]
         model: String,
 
-        /// Visibility (e.g. "always", "deep_only", or custom)
+        /// Visibility: "normal" (default), "always", "deep_only", "seasonal", or custom
         #[arg(long)]
         visibility: Option<String>,
 
@@ -130,7 +130,9 @@ enum Commands {
         #[arg(long, value_name = "ID", help_heading = "Relations")]
         rel_version_of: Vec<String>,
 
-        /// Custom relation: KIND:ID (forward on self only)
+        /// Custom relation: KIND:ID (forward on self only).
+        /// Known kinds: supersedes, summarizes, related_to, derived_from, version_of.
+        /// Custom kinds are also accepted.
         #[arg(
             short = 'R',
             long = "rel",
@@ -174,7 +176,7 @@ enum Commands {
         #[arg(short = 'P', long)]
         perspective: Option<String>,
 
-        /// Search for entries similar to this entry ID (uses its embedding as query)
+        /// Search for entries similar to this entry ID (mutually exclusive with query)
         #[arg(long)]
         similar_to: Option<String>,
 

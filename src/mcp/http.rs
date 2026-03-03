@@ -10,6 +10,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::limit::RequestBodyLimitLayer;
 use tracing::info;
 
 use crate::blob_store::BlobStore;
@@ -69,6 +70,7 @@ pub async fn run_http(config: Config) -> Result<()> {
         .route("/api/stats", get(api_stats))
         .route("/api/identity", get(api_identity))
         .route("/api/priming", get(api_priming))
+        .layer(RequestBodyLimitLayer::new(4 * 1024 * 1024)) // 4 MiB
         .layer(cors)
         .with_state(state);
 
@@ -106,7 +108,7 @@ async fn api_recall(
         Err(e) => {
             tracing::warn!("Recall failed: {e}");
             Json(ApiResponse::Error {
-                error: "Recall operation failed.".to_string(),
+                error: format!("Recall failed: {e}"),
             })
         }
     }
@@ -129,7 +131,7 @@ async fn api_focus(
         Err(e) => {
             tracing::warn!("Focus failed: {e}");
             Json(ApiResponse::Error {
-                error: "Focus operation failed.".to_string(),
+                error: format!("Focus failed: {e}"),
             })
         }
     }
@@ -158,7 +160,7 @@ async fn api_store(
         Err(e) => {
             tracing::warn!("Store failed: {e}");
             Json(ApiResponse::Error {
-                error: "Store operation failed.".to_string(),
+                error: format!("Store failed: {e}"),
             })
         }
     }
@@ -182,7 +184,7 @@ async fn api_think(
         Err(e) => {
             tracing::warn!("Think failed: {e}");
             Json(ApiResponse::Error {
-                error: "Think operation failed.".to_string(),
+                error: format!("Think failed: {e}"),
             })
         }
     }
@@ -202,7 +204,7 @@ async fn api_stats(State(state): State<AppState>) -> Json<ApiResponse<serde_json
         Err(e) => {
             tracing::warn!("Stats failed: {e}");
             Json(ApiResponse::Error {
-                error: "Stats retrieval failed.".to_string(),
+                error: format!("Stats failed: {e}"),
             })
         }
     }
@@ -236,7 +238,7 @@ async fn api_identity(State(state): State<AppState>) -> Json<ApiResponse<serde_j
         Err(e) => {
             tracing::warn!("Identity computation failed: {e}");
             Json(ApiResponse::Error {
-                error: "Identity computation temporarily unavailable.".to_string(),
+                error: format!("Identity computation failed: {e}"),
             })
         }
     }
@@ -270,7 +272,7 @@ async fn api_priming(State(state): State<AppState>) -> Response {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [("content-type", "text/plain; charset=utf-8")],
-                "Identity briefing temporarily unavailable.".to_string(),
+                format!("Priming failed: {e}"),
             )
                 .into_response()
         }
