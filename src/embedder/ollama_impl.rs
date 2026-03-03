@@ -55,6 +55,8 @@ impl OllamaEmbedder {
         base_url: impl Into<String>,
         dimension: usize,
     ) -> Result<Self> {
+        // TODO: extract a shared HTTP client builder (with consistent timeouts) used by
+        // embedder, src/llm/ollama.rs, and src/llm/openai.rs.
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(120))
@@ -143,6 +145,8 @@ impl OllamaEmbedder {
         Ok(parsed.data.into_iter().map(|e| e.embedding).collect())
     }
 
+    // TODO: chunk large batches (e.g. >64 texts) into smaller sub-batches to bound
+    // memory and avoid hitting the request timeout on slow backends.
     async fn embed_async(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(vec![]);
@@ -169,6 +173,9 @@ impl OllamaEmbedder {
 }
 
 impl Embedder for OllamaEmbedder {
+    // TODO: block_in_place panics on current_thread runtimes and requires an active
+    // tokio Handle. Consider making the Embedder trait async or constructing a dedicated
+    // runtime in new() to decouple from the caller's executor.
     fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         tokio::task::block_in_place(|| Handle::current().block_on(self.embed_async(texts)))
     }
