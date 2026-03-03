@@ -2262,6 +2262,118 @@ mod tests {
         assert_ne!(schema_fingerprint(&schema_a), schema_fingerprint(&schema_b));
     }
 
+    /// `open_metadata` creates the table on first call and is re-entrant for
+    /// both read-write and read-only opens on the same directory.
+    #[tokio::test]
+    async fn test_open_metadata_basic() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // First call (read-write) — must create the table and succeed.
+        let store_rw = LanceStore::open_metadata(temp_dir.path(), false)
+            .await
+            .expect("open_metadata read-write must succeed on a fresh directory");
+
+        let stats = store_rw
+            .stats()
+            .await
+            .expect("stats on empty metadata store must succeed");
+        assert_eq!(stats.total_chunks, 0);
+
+        // Second call (read-only) on the same directory — must also succeed.
+        let store_ro = LanceStore::open_metadata(temp_dir.path(), true)
+            .await
+            .expect("open_metadata read-only must succeed when table already exists");
+
+        let stats_ro = store_ro
+            .stats()
+            .await
+            .expect("stats on read-only metadata store must succeed");
+        assert_eq!(stats_ro.total_chunks, 0);
+    }
+
+    /// A read-only store has `lock_dir = None`, so `with_write_lock` takes the
+    /// `None` branch and issues no FileLock at all. Concretely: opening a second
+    /// read-write store while a read-only store is open must succeed immediately
+    /// without any lock contention, confirming the read-only path never acquires
+    /// the lock file.
+    #[tokio::test]
+    async fn test_read_only_store_skips_write_lock() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Seed: create the table via a read-write open.
+        let store_rw = LanceStore::open(temp_dir.path(), 384, false)
+            .await
+            .expect("initial read-write open must succeed");
+
+        let chunk = create_test_chunk("ro-lock-1", "Seed chunk", ChunkLevel::H1);
+        store_rw.insert_chunks(vec![chunk]).await.unwrap();
+
+        // Open a read-only handle — this must not hold any lock file.
+        let _store_ro = LanceStore::open(temp_dir.path(), 384, true)
+            .await
+            .expect("read-only open must succeed");
+
+        // A fresh read-write open on the same directory must succeed immediately:
+        // if the read-only store had held the lock this would block until timeout.
+        let store_rw2 = LanceStore::open(temp_dir.path(), 384, false)
+            .await
+            .expect("second read-write open must not be blocked by the read-only handle");
+
+        // Confirm the read-write handle is fully functional.
+        let chunk2 = create_test_chunk("ro-lock-2", "Written after ro open", ChunkLevel::H1);
+        store_rw2
+            .insert_chunks(vec![chunk2])
+            .await
+            .expect("write via second read-write store must succeed");
+
+        let retrieved = store_rw2
+            .get_by_id("ro-lock-2")
+            .await
+            .unwrap()
+            .expect("chunk must be readable back");
+        assert_eq!(retrieved.content, "Written after ro open");
+    }
+
+    /// Multiple concurrent `open()` calls on the same fresh directory must all
+    /// succeed. The migration lock serialises table creation so only one caller
+    /// creates the table while others wait and see it already present.
+    #[tokio::test]
+    async fn test_concurrent_open_serialized_by_migration_lock() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().to_path_buf();
+
+        let p1 = path.clone();
+        let p2 = path.clone();
+        let p3 = path.clone();
+        let p4 = path.clone();
+
+        let (r1, r2, r3, r4) = tokio::join!(
+            LanceStore::open(p1, 384, false),
+            LanceStore::open(p2, 384, false),
+            LanceStore::open(p3, 384, false),
+            LanceStore::open(p4, 384, false),
+        );
+
+        let store1 = r1.expect("concurrent open #1 must succeed");
+        let _store2 = r2.expect("concurrent open #2 must succeed");
+        let _store3 = r3.expect("concurrent open #3 must succeed");
+        let store4 = r4.expect("concurrent open #4 must succeed");
+
+        // Write via one handle, read via another — confirms a single coherent table.
+        let chunk = create_test_chunk("concurrent-open-1", "Raced into existence", ChunkLevel::H1);
+        store1
+            .insert_chunks(vec![chunk])
+            .await
+            .expect("insert after concurrent open must succeed");
+
+        let retrieved = store4
+            .get_by_id("concurrent-open-1")
+            .await
+            .expect("get_by_id must not error")
+            .expect("chunk written by store1 must be visible via store4");
+        assert_eq!(retrieved.content, "Raced into existence");
+    }
+
     // Verifies the per-write-operation locking design (issue #70).
     //
     // Design: multiple LanceStore instances MAY open the same directory concurrently.

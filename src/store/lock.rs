@@ -155,4 +155,63 @@ mod tests {
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("Timed out"), "unexpected: {msg}");
     }
+
+    /// Verify that a read-only directory (mode 0o444) causes acquire_blocking to
+    /// return a clear error rather than panicking. The lock file cannot be created
+    /// because the directory is not writable.
+    #[cfg(unix)]
+    #[test]
+    fn test_lock_acquire_permission_denied() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+
+        // Make the directory read-only so no file can be created inside it.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        let result = FileLock::acquire_blocking(dir.path());
+
+        // Restore permissions so TempDir cleanup succeeds.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(
+            result.is_err(),
+            "acquire_blocking on a read-only directory must return Err, not panic"
+        );
+        // The error may come from opening the lock file (OS-level "permission denied")
+        // or from locking; either way it must be an Err — just verify it is not Ok.
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.to_lowercase().contains("permission denied")
+                || msg.contains("Failed to acquire store lock"),
+            "unexpected error message: {msg}"
+        );
+    }
+
+    /// Verify the POSIX flock guarantee: the lock is released when the file
+    /// descriptor is closed (i.e. when the holding thread exits and the
+    /// FileLock value is dropped). After joining the thread, a new acquisition
+    /// on the same directory must succeed immediately.
+    #[test]
+    fn test_lock_released_on_thread_exit() {
+        let dir = TempDir::new().unwrap();
+        let dir_path = dir.path().to_path_buf();
+
+        let handle = std::thread::spawn(move || {
+            // Acquire the lock inside the thread, then let it drop when the
+            // thread function returns.
+            let _lock = FileLock::acquire_blocking(&dir_path).unwrap();
+            // Lock is held here and released on function exit.
+        });
+
+        handle.join().expect("thread must not panic");
+
+        // The thread has exited and dropped FileLock; re-acquiring must succeed.
+        let result = FileLock::acquire_blocking(dir.path());
+        assert!(
+            result.is_ok(),
+            "lock must be released after the holding thread exits: {:?}",
+            result.err()
+        );
+    }
 }
