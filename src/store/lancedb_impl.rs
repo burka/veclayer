@@ -987,7 +987,9 @@ impl VectorStore for LanceStore {
                 *chunks_by_level.entry(level).or_insert(0) += 1;
                 source_file_set.insert(sources.value(i).to_string());
 
-                if status_col.is_some_and(|col| !col.is_null(i) && col.value(i) == EMBEDDING_STATUS_PENDING) {
+                if status_col
+                    .is_some_and(|col| !col.is_null(i) && col.value(i) == EMBEDDING_STATUS_PENDING)
+                {
                     pending_embeddings += 1;
                 }
             }
@@ -1094,8 +1096,7 @@ impl VectorStore for LanceStore {
         let escaped = sql_escape(perspective);
         let filter = format!(
             "{} AND perspectives LIKE '%\"{}%'",
-            EMBEDDING_EMBEDDED_FILTER,
-            escaped
+            EMBEDDING_EMBEDDED_FILTER, escaped
         );
 
         let query = table
@@ -1286,10 +1287,20 @@ impl VectorStore for LanceStore {
                 .only_if(&filter)
                 .execute()
                 .await
-                .map_err(|e| Error::search(format!("Failed to query chunks for batch embedding update: {}", e)))?
+                .map_err(|e| {
+                    Error::search(format!(
+                        "Failed to query chunks for batch embedding update: {}",
+                        e
+                    ))
+                })?
                 .try_collect::<Vec<_>>()
                 .await
-                .map_err(|e| Error::search(format!("Failed to collect chunks for batch embedding update: {}", e)))?;
+                .map_err(|e| {
+                    Error::search(format!(
+                        "Failed to collect chunks for batch embedding update: {}",
+                        e
+                    ))
+                })?;
 
             let mut chunks_by_id: HashMap<String, HierarchicalChunk> = HashMap::new();
             for batch in results {
@@ -1306,7 +1317,10 @@ impl VectorStore for LanceStore {
                         updated_chunks.push(chunk);
                     }
                     None => {
-                        tracing::warn!("Chunk not found for batch embedding update, skipping: {}", chunk_id);
+                        tracing::warn!(
+                            "Chunk not found for batch embedding update, skipping: {}",
+                            chunk_id
+                        );
                     }
                 }
             }
@@ -1315,10 +1329,12 @@ impl VectorStore for LanceStore {
                 return Ok(());
             }
 
-            table
-                .delete(&filter)
-                .await
-                .map_err(|e| Error::store(format!("Failed to delete for batch embedding update: {}", e)))?;
+            table.delete(&filter).await.map_err(|e| {
+                Error::store(format!(
+                    "Failed to delete for batch embedding update: {}",
+                    e
+                ))
+            })?;
 
             let batch = self.chunks_to_batch(&updated_chunks)?;
             table
@@ -1328,7 +1344,12 @@ impl VectorStore for LanceStore {
                 )))
                 .execute()
                 .await
-                .map_err(|e| Error::store(format!("Failed to reinsert after batch embedding update: {}", e)))?;
+                .map_err(|e| {
+                    Error::store(format!(
+                        "Failed to reinsert after batch embedding update: {}",
+                        e
+                    ))
+                })?;
 
             Ok(())
         })
@@ -1711,10 +1732,7 @@ mod tests {
         let mut pending = create_test_chunk("pend-1", "Pending chunk", ChunkLevel::H1);
         pending.embedding = None;
 
-        store
-            .insert_chunks(vec![embedded, pending])
-            .await
-            .unwrap();
+        store.insert_chunks(vec![embedded, pending]).await.unwrap();
 
         // Vector search should only return the embedded chunk
         let query = vec![0.1f32; 384];
@@ -1777,10 +1795,7 @@ mod tests {
         let mut pending = create_test_chunk("s-pend", "Pending", ChunkLevel::H1);
         pending.embedding = None;
 
-        store
-            .insert_chunks(vec![embedded, pending])
-            .await
-            .unwrap();
+        store.insert_chunks(vec![embedded, pending]).await.unwrap();
 
         let stats = store.stats().await.unwrap();
         assert_eq!(stats.total_chunks, 2);
@@ -1797,10 +1812,7 @@ mod tests {
         let mut p2 = create_test_chunk("cp-p2", "Pending 2", ChunkLevel::H1);
         p2.embedding = None;
 
-        store
-            .insert_chunks(vec![embedded, p1, p2])
-            .await
-            .unwrap();
+        store.insert_chunks(vec![embedded, p1, p2]).await.unwrap();
 
         assert_eq!(store.count_pending_embeddings().await.unwrap(), 2);
 

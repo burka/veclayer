@@ -711,17 +711,11 @@ mod tests {
             Ok(vec![])
         }
 
-        async fn get_pending_embeddings(
-            &self,
-            _limit: usize,
-        ) -> Result<Vec<HierarchicalChunk>> {
+        async fn get_pending_embeddings(&self, _limit: usize) -> Result<Vec<HierarchicalChunk>> {
             Ok(vec![])
         }
 
-        async fn batch_update_embeddings(
-            &self,
-            _updates: Vec<(String, Vec<f32>)>,
-        ) -> Result<()> {
+        async fn batch_update_embeddings(&self, _updates: Vec<(String, Vec<f32>)>) -> Result<()> {
             Ok(())
         }
 
