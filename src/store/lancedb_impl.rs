@@ -17,6 +17,12 @@ use crate::{ChunkLevel, ClusterMembership, Error, HierarchicalChunk, Result};
 
 pub(crate) const TABLE_NAME: &str = "chunks";
 
+const EMBEDDING_STATUS_EMBEDDED: &str = "embedded";
+const EMBEDDING_STATUS_PENDING: &str = "pending";
+const EMBEDDING_EMBEDDED_FILTER: &str = "embedding_status = 'embedded'";
+const EMBEDDING_PENDING_FILTER: &str = "embedding_status = 'pending'";
+const EMBEDDING_EMBEDDED_SQL: &str = "'embedded'";
+
 /// Deterministic fingerprint of an Arrow schema: hash of field names + types.
 /// Changes automatically when fields are added, removed, or retyped.
 /// Uses DataType's Display (delegates to Debug for non-Struct types in arrow-schema v55).
@@ -52,6 +58,7 @@ fn migration_default(field_name: &str) -> Option<&'static str> {
         "expires_at" => Some("cast(NULL as bigint)"),
         "impression_hint" => Some("cast(NULL as string)"),
         "impression_strength" => Some("cast(1.0 as float)"),
+        "embedding_status" => Some(EMBEDDING_EMBEDDED_SQL),
         _ => None,
     }
 }
@@ -222,6 +229,7 @@ impl LanceStore {
             Field::new("expires_at", DataType::Int64, true),
             Field::new("impression_hint", DataType::Utf8, true),
             Field::new("impression_strength", DataType::Float32, false),
+            Field::new("embedding_status", DataType::Utf8, false),
         ]))
     }
 
@@ -450,6 +458,7 @@ impl LanceStore {
         let impression_strength: Vec<f32> = chunks.iter().map(|c| c.impression_strength).collect();
 
         let mut embedding_values: Vec<f32> = Vec::with_capacity(chunks.len() * self.dimension);
+        let mut embedding_status: Vec<&str> = Vec::with_capacity(chunks.len());
         for chunk in chunks {
             if let Some(ref emb) = chunk.embedding {
                 if emb.len() != self.dimension {
@@ -460,8 +469,11 @@ impl LanceStore {
                     )));
                 }
                 embedding_values.extend(emb);
+                embedding_status.push(EMBEDDING_STATUS_EMBEDDED);
             } else {
-                return Err(Error::store("Chunk missing embedding"));
+                // Zero-vector for pending entries — self-excludes from cosine similarity (score ≈ 0.0)
+                embedding_values.extend(std::iter::repeat_n(0.0f32, self.dimension));
+                embedding_status.push(EMBEDDING_STATUS_PENDING);
             }
         }
 
@@ -498,6 +510,7 @@ impl LanceStore {
                 Arc::new(Int64Array::from(expires_at)),
                 Arc::new(StringArray::from(impression_hint)),
                 Arc::new(Float32Array::from(impression_strength)),
+                Arc::new(StringArray::from(embedding_status)),
             ],
         )
         .map_err(|e| Error::store(format!("Failed to create record batch: {}", e)))
@@ -583,18 +596,30 @@ impl LanceStore {
         let impression_strength_col = batch
             .column_by_name("impression_strength")
             .and_then(|c| c.as_any().downcast_ref::<Float32Array>());
+        let embedding_status_col = batch
+            .column_by_name("embedding_status")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
 
         let mut chunks = Vec::with_capacity(batch.num_rows());
 
         for i in 0..batch.num_rows() {
-            let embedding_array = embeddings.value(i);
-            let embedding_values = embedding_array
-                .as_any()
-                .downcast_ref::<Float32Array>()
-                .ok_or_else(|| Error::store("Invalid embedding values"))?;
-            let embedding: Vec<f32> = (0..embedding_values.len())
-                .map(|j| embedding_values.value(j))
-                .collect();
+            let is_pending = embedding_status_col
+                .is_some_and(|col| !col.is_null(i) && col.value(i) == EMBEDDING_STATUS_PENDING);
+
+            let embedding: Option<Vec<f32>> = if is_pending {
+                None
+            } else {
+                let embedding_array = embeddings.value(i);
+                let embedding_values = embedding_array
+                    .as_any()
+                    .downcast_ref::<Float32Array>()
+                    .ok_or_else(|| Error::store("Invalid embedding values"))?;
+                Some(
+                    (0..embedding_values.len())
+                        .map(|j| embedding_values.value(j))
+                        .collect(),
+                )
+            };
 
             let cluster_memberships: Vec<ClusterMembership> = cluster_memberships_col
                 .and_then(|col| {
@@ -701,7 +726,7 @@ impl LanceStore {
             chunks.push(HierarchicalChunk {
                 id: ids.value(i).to_string(),
                 content: contents.value(i).to_string(),
-                embedding: Some(embedding),
+                embedding,
                 level: ChunkLevel(levels.value(i)),
                 parent_id: if parent_ids.is_null(i) {
                     None
@@ -780,6 +805,7 @@ impl VectorStore for LanceStore {
             Error::search(format!("Failed to create nearest neighbor query: {}", e))
         })?;
 
+        query = query.only_if(EMBEDDING_EMBEDDED_FILTER);
         if let Some(level) = level_filter {
             query = query.only_if(format!("level = {}", level.depth()));
         }
@@ -944,21 +970,25 @@ impl VectorStore for LanceStore {
 
         let mut total_chunks = 0;
         let mut chunks_by_level: HashMap<u8, usize> = HashMap::new();
-        let mut source_files: Vec<String> = Vec::new();
+        let mut source_file_set: HashSet<String> = HashSet::new();
+        let mut pending_embeddings = 0usize;
 
-        for batch in results {
+        for batch in &results {
             total_chunks += batch.num_rows();
 
-            let levels = Self::extract_column::<UInt8Array>(&batch, 3, "level")?;
-            let sources = Self::extract_column::<StringArray>(&batch, 6, "source_file")?;
+            let levels = Self::extract_column::<UInt8Array>(batch, 3, "level")?;
+            let sources = Self::extract_column::<StringArray>(batch, 6, "source_file")?;
+            let status_col = batch
+                .column_by_name("embedding_status")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
 
             for i in 0..batch.num_rows() {
                 let level = levels.value(i);
                 *chunks_by_level.entry(level).or_insert(0) += 1;
+                source_file_set.insert(sources.value(i).to_string());
 
-                let source = sources.value(i).to_string();
-                if !source_files.contains(&source) {
-                    source_files.push(source);
+                if status_col.is_some_and(|col| !col.is_null(i) && col.value(i) == EMBEDDING_STATUS_PENDING) {
+                    pending_embeddings += 1;
                 }
             }
         }
@@ -966,7 +996,8 @@ impl VectorStore for LanceStore {
         Ok(StoreStats {
             total_chunks,
             chunks_by_level,
-            source_files,
+            source_files: source_file_set.into_iter().collect(),
+            pending_embeddings,
         })
     }
 
@@ -1061,7 +1092,11 @@ impl VectorStore for LanceStore {
         let query_vec: Vec<f32> = query_embedding.to_vec();
 
         let escaped = sql_escape(perspective);
-        let filter = format!("perspectives LIKE '%\"{}%'", escaped);
+        let filter = format!(
+            "{} AND perspectives LIKE '%\"{}%'",
+            EMBEDDING_EMBEDDED_FILTER,
+            escaped
+        );
 
         let query = table
             .query()
@@ -1208,6 +1243,113 @@ impl VectorStore for LanceStore {
         all_chunks.truncate(limit);
 
         Ok(all_chunks)
+    }
+
+    async fn get_pending_embeddings(&self, limit: usize) -> Result<Vec<HierarchicalChunk>> {
+        let table = self.get_table().await?;
+
+        let results = table
+            .query()
+            .only_if(EMBEDDING_PENDING_FILTER)
+            .limit(limit)
+            .execute()
+            .await
+            .map_err(|e| Error::search(format!("Failed to query pending embeddings: {}", e)))?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| Error::search(format!("Failed to collect pending embeddings: {}", e)))?;
+
+        let mut chunks = Vec::new();
+        for batch in results {
+            chunks.extend(self.batch_to_chunks(&batch)?);
+        }
+        Ok(chunks)
+    }
+
+    async fn batch_update_embeddings(&self, updates: Vec<(String, Vec<f32>)>) -> Result<()> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+
+        self.with_write_lock(|| async {
+            let id_list: String = updates
+                .iter()
+                .map(|(id, _)| format!("'{}'", sql_escape(id)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let filter = format!("id IN ({})", id_list);
+
+            let table = self.get_table().await?;
+
+            let results = table
+                .query()
+                .only_if(&filter)
+                .execute()
+                .await
+                .map_err(|e| Error::search(format!("Failed to query chunks for batch embedding update: {}", e)))?
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(|e| Error::search(format!("Failed to collect chunks for batch embedding update: {}", e)))?;
+
+            let mut chunks_by_id: HashMap<String, HierarchicalChunk> = HashMap::new();
+            for batch in results {
+                for chunk in self.batch_to_chunks(&batch)? {
+                    chunks_by_id.insert(chunk.id.clone(), chunk);
+                }
+            }
+
+            let mut updated_chunks = Vec::with_capacity(updates.len());
+            for (chunk_id, embedding) in updates {
+                match chunks_by_id.remove(&chunk_id) {
+                    Some(mut chunk) => {
+                        chunk.embedding = Some(embedding);
+                        updated_chunks.push(chunk);
+                    }
+                    None => {
+                        tracing::warn!("Chunk not found for batch embedding update, skipping: {}", chunk_id);
+                    }
+                }
+            }
+
+            if updated_chunks.is_empty() {
+                return Ok(());
+            }
+
+            table
+                .delete(&filter)
+                .await
+                .map_err(|e| Error::store(format!("Failed to delete for batch embedding update: {}", e)))?;
+
+            let batch = self.chunks_to_batch(&updated_chunks)?;
+            table
+                .add(Box::new(RecordBatchIterator::new(
+                    vec![Ok(batch)],
+                    self.schema(),
+                )))
+                .execute()
+                .await
+                .map_err(|e| Error::store(format!("Failed to reinsert after batch embedding update: {}", e)))?;
+
+            Ok(())
+        })
+        .await
+    }
+
+    async fn count_pending_embeddings(&self) -> Result<usize> {
+        let table = self.get_table().await?;
+
+        let results = table
+            .query()
+            .only_if(EMBEDDING_PENDING_FILTER)
+            .select(lancedb::query::Select::columns(&["id"]))
+            .execute()
+            .await
+            .map_err(|e| Error::search(format!("Failed to count pending embeddings: {}", e)))?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| Error::search(format!("Failed to collect pending count: {}", e)))?;
+
+        Ok(results.iter().map(|b| b.num_rows()).sum())
     }
 }
 
@@ -1545,14 +1687,129 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_missing_embedding() {
+    async fn test_missing_embedding_inserts_as_pending() {
         let (store, _temp) = create_test_store().await;
 
         let mut chunk = create_test_chunk("no-emb", "No embedding", ChunkLevel::H1);
         chunk.embedding = None;
 
-        let result = store.insert_chunks(vec![chunk]).await;
-        assert!(result.is_err());
+        // Should succeed — inserts with zero-vector + pending status
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        // Round-trips with embedding: None
+        let retrieved = store.get_by_id("no-emb").await.unwrap().unwrap();
+        assert_eq!(retrieved.id, "no-emb");
+        assert!(retrieved.embedding.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_pending_chunk_excluded_from_vector_search() {
+        let (store, _temp) = create_test_store().await;
+
+        // Insert one embedded and one pending chunk
+        let embedded = create_test_chunk("emb-1", "Embedded chunk", ChunkLevel::H1);
+        let mut pending = create_test_chunk("pend-1", "Pending chunk", ChunkLevel::H1);
+        pending.embedding = None;
+
+        store
+            .insert_chunks(vec![embedded, pending])
+            .await
+            .unwrap();
+
+        // Vector search should only return the embedded chunk
+        let query = vec![0.1f32; 384];
+        let results = store.search(&query, 10, None).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].chunk.id, "emb-1");
+    }
+
+    #[tokio::test]
+    async fn test_get_pending_embeddings() {
+        let (store, _temp) = create_test_store().await;
+
+        let embedded = create_test_chunk("emb-2", "Embedded", ChunkLevel::H1);
+        let mut pending1 = create_test_chunk("pend-2", "Pending A", ChunkLevel::H1);
+        pending1.embedding = None;
+        let mut pending2 = create_test_chunk("pend-3", "Pending B", ChunkLevel::H1);
+        pending2.embedding = None;
+
+        store
+            .insert_chunks(vec![embedded, pending1, pending2])
+            .await
+            .unwrap();
+
+        let pending = store.get_pending_embeddings(10).await.unwrap();
+        assert_eq!(pending.len(), 2);
+        assert!(pending.iter().all(|c| c.embedding.is_none()));
+    }
+
+    #[tokio::test]
+    async fn test_update_embedding_makes_searchable() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut pending = create_test_chunk("upd-1", "To be embedded", ChunkLevel::H1);
+        pending.embedding = None;
+        store.insert_chunks(vec![pending]).await.unwrap();
+
+        // Not searchable yet
+        let query = vec![0.1f32; 384];
+        let results = store.search(&query, 10, None).await.unwrap();
+        assert!(results.is_empty());
+
+        // Update with real embedding
+        store
+            .batch_update_embeddings(vec![("upd-1".to_string(), vec![0.1f32; 384])])
+            .await
+            .unwrap();
+
+        // Now searchable
+        let results = store.search(&query, 10, None).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].chunk.id, "upd-1");
+        assert!(results[0].chunk.embedding.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_stats_reflect_pending_count() {
+        let (store, _temp) = create_test_store().await;
+
+        let embedded = create_test_chunk("s-emb", "Embedded", ChunkLevel::H1);
+        let mut pending = create_test_chunk("s-pend", "Pending", ChunkLevel::H1);
+        pending.embedding = None;
+
+        store
+            .insert_chunks(vec![embedded, pending])
+            .await
+            .unwrap();
+
+        let stats = store.stats().await.unwrap();
+        assert_eq!(stats.total_chunks, 2);
+        assert_eq!(stats.pending_embeddings, 1);
+    }
+
+    #[tokio::test]
+    async fn test_count_pending_embeddings() {
+        let (store, _temp) = create_test_store().await;
+
+        let embedded = create_test_chunk("cp-emb", "Embedded", ChunkLevel::H1);
+        let mut p1 = create_test_chunk("cp-p1", "Pending 1", ChunkLevel::H1);
+        p1.embedding = None;
+        let mut p2 = create_test_chunk("cp-p2", "Pending 2", ChunkLevel::H1);
+        p2.embedding = None;
+
+        store
+            .insert_chunks(vec![embedded, p1, p2])
+            .await
+            .unwrap();
+
+        assert_eq!(store.count_pending_embeddings().await.unwrap(), 2);
+
+        // After updating one, count decreases
+        store
+            .batch_update_embeddings(vec![("cp-p1".to_string(), vec![0.1f32; 384])])
+            .await
+            .unwrap();
+        assert_eq!(store.count_pending_embeddings().await.unwrap(), 1);
     }
 
     #[tokio::test]

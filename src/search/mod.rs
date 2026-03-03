@@ -710,6 +710,24 @@ mod tests {
         ) -> Result<Vec<HierarchicalChunk>> {
             Ok(vec![])
         }
+
+        async fn get_pending_embeddings(
+            &self,
+            _limit: usize,
+        ) -> Result<Vec<HierarchicalChunk>> {
+            Ok(vec![])
+        }
+
+        async fn batch_update_embeddings(
+            &self,
+            _updates: Vec<(String, Vec<f32>)>,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn count_pending_embeddings(&self) -> Result<usize> {
+            Ok(0)
+        }
     }
 
     /// Mock embedder for testing

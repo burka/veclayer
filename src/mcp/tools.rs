@@ -97,11 +97,13 @@ struct StoreSingleInput {
 }
 
 /// Store a single entry and return its chunk ID.
+/// Pass `Some(embedding)` for immediate embedding, or `None` for deferred (pending).
 async fn store_single_entry(
     store: &Arc<StoreBackend>,
     embedder: &Arc<dyn Embedder + Send + Sync>,
     blob_store: &Arc<crate::blob_store::BlobStore>,
     input: StoreSingleInput,
+    embedding: Option<Vec<f32>>,
     project: Option<&str>,
     branch: Option<&str>,
 ) -> Result<String> {
@@ -119,12 +121,6 @@ async fn store_single_entry(
     } else {
         (crate::chunk::ChunkLevel(1), input.source_file.clone())
     };
-
-    let embeddings = embedder.embed(&[input.content.as_str()])?;
-    let embedding = embeddings
-        .into_iter()
-        .next()
-        .ok_or_else(|| crate::Error::embedding("Failed to generate embedding"))?;
 
     let chunk_id = crate::chunk::content_hash(&input.content);
 
@@ -175,7 +171,7 @@ async fn store_single_entry(
     let chunk = crate::HierarchicalChunk {
         id: chunk_id.clone(),
         content: input.content,
-        embedding: Some(embedding),
+        embedding,
         level,
         parent_id: parent_id.map(String::from),
         path,
@@ -398,7 +394,6 @@ pub async fn execute_store(
     branch: Option<&str>,
 ) -> Result<serde_json::Value> {
     if !input.items.is_empty() {
-        let count = input.items.len();
         let mut ids = Vec::new();
         let mut long_entries = 0usize;
         for item in input.items {
@@ -420,6 +415,7 @@ pub async fn execute_store(
                     impression_strength: item.impression_strength,
                     scope: item.scope,
                 },
+                None, // deferred — background worker will embed
                 project,
                 branch,
             )
@@ -429,7 +425,12 @@ pub async fn execute_store(
                 long_entries += 1;
             }
         }
-        let mut msg = format!("Stored {} entries. IDs: {}", ids.len(), ids.join(", "));
+        let mut msg = format!(
+            "Stored {} entries. IDs: {}. Embeddings are being computed in the background \
+             — entries become searchable as they complete.",
+            ids.len(),
+            ids.join(", ")
+        );
         if long_entries > 0 {
             msg.push_str(&format!(
                 "\n\nNote: {} entr{} exceeded 2000 chars. Long content embeds less precisely — \
@@ -438,16 +439,14 @@ pub async fn execute_store(
                 if long_entries == 1 { "y" } else { "ies" }
             ));
         }
-        if count > 20 {
-            msg.push_str(&format!(
-                "\n\nNote: Large batch ({} items). Each item is embedded individually — \
-                 for faster throughput, keep batches under ~20 items.",
-                count
-            ));
-        }
         Ok(serde_json::json!(msg))
     } else {
         let content_len = input.content.len();
+        let embeddings = embedder.embed(&[input.content.as_str()])?;
+        let embedding = embeddings
+            .into_iter()
+            .next()
+            .ok_or_else(|| crate::Error::embedding("Failed to generate embedding"))?;
         let id = store_single_entry(
             store,
             embedder,
@@ -465,6 +464,7 @@ pub async fn execute_store(
                 impression_strength: input.impression_strength,
                 scope: input.scope,
             },
+            Some(embedding),
             project,
             branch,
         )
@@ -685,6 +685,13 @@ pub async fn execute_think(
                 aging_config.degrade_to,
                 aging_config.degrade_after_days,
             ));
+
+            if stats.pending_embeddings > 0 {
+                let eta = super::embed_worker::eta_seconds(stats.pending_embeddings);
+                report.push_str("\n### Pending embeddings\n\n");
+                report.push_str(&format!("- **Pending:** {}\n", stats.pending_embeddings));
+                report.push_str(&format!("- **Estimated completion:** ~{}s\n", eta));
+            }
 
             Ok(report)
         }

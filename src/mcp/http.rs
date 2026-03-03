@@ -40,10 +40,21 @@ pub async fn run_http(config: Config) -> Result<()> {
     let store = StoreBackend::open(&config.data_dir, dimension, config.read_only).await?;
     let blob_store = BlobStore::open(&config.data_dir)?;
 
+    let store = Arc::new(store);
+    let blob_store = Arc::new(blob_store);
+
+    if !config.read_only {
+        let _worker = super::embed_worker::spawn(
+            Arc::clone(&store),
+            Arc::clone(&embedder),
+            Arc::clone(&blob_store),
+        );
+    }
+
     let state = AppState {
-        store: Arc::new(store),
+        store,
         embedder,
-        blob_store: Arc::new(blob_store),
+        blob_store,
         data_dir: config.data_dir.clone(),
         project: config.project.clone(),
         branch: config.branch.clone(),
@@ -201,6 +212,7 @@ async fn api_stats(State(state): State<AppState>) -> Json<ApiResponse<serde_json
             "total_chunks": stats.total_chunks,
             "chunks_by_level": stats.chunks_by_level,
             "source_files": stats.source_files,
+            "pending_embeddings": stats.pending_embeddings,
         }))),
         Err(e) => {
             tracing::warn!("Stats failed: {e}");

@@ -25,7 +25,7 @@ pub struct SearchResult {
 /// Trait for vector storage backends.
 /// All operations are async to support both local and remote backends.
 pub trait VectorStore: Send + Sync {
-    /// Insert chunks into the store. Chunks must have embeddings.
+    /// Insert chunks into the store. Chunks without embeddings are stored as pending.
     fn insert_chunks(
         &self,
         chunks: Vec<HierarchicalChunk>,
@@ -119,6 +119,22 @@ pub trait VectorStore: Send + Sync {
         until: Option<i64>,
         limit: usize,
     ) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
+
+    /// Get chunks whose embeddings are still pending (zero-vector placeholders).
+    fn get_pending_embeddings(
+        &self,
+        limit: usize,
+    ) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
+
+    /// Replace zero-vector placeholders with real embeddings and set status to "embedded".
+    /// Each tuple is (chunk_id, embedding). Performed as a single batch delete+reinsert.
+    fn batch_update_embeddings(
+        &self,
+        updates: Vec<(String, Vec<f32>)>,
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    /// Count how many chunks are still awaiting embeddings.
+    fn count_pending_embeddings(&self) -> impl Future<Output = Result<usize>> + Send;
 }
 
 /// Statistics about the vector store
@@ -127,6 +143,7 @@ pub struct StoreStats {
     pub total_chunks: usize,
     pub chunks_by_level: std::collections::HashMap<u8, usize>,
     pub source_files: Vec<String>,
+    pub pending_embeddings: usize,
 }
 
 /// Dispatch enum for storage backends.
@@ -291,6 +308,30 @@ impl VectorStore for StoreBackend {
             Self::Lance(s) => s.list_entries(perspective, since, until, limit),
         }
     }
+
+    fn get_pending_embeddings(
+        &self,
+        limit: usize,
+    ) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send {
+        match self {
+            Self::Lance(s) => s.get_pending_embeddings(limit),
+        }
+    }
+
+    fn batch_update_embeddings(
+        &self,
+        updates: Vec<(String, Vec<f32>)>,
+    ) -> impl Future<Output = Result<()>> + Send {
+        match self {
+            Self::Lance(s) => s.batch_update_embeddings(updates),
+        }
+    }
+
+    fn count_pending_embeddings(&self) -> impl Future<Output = Result<usize>> + Send {
+        match self {
+            Self::Lance(s) => s.count_pending_embeddings(),
+        }
+    }
 }
 
 // Implement VectorStore for Arc<T> where T: VectorStore
@@ -310,4 +351,7 @@ crate::arc_impl!(VectorStore {
     fn get_hot_chunks(&self, limit: usize) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
     fn get_stale_chunks(&self, stale_seconds: i64, limit: usize) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
     fn list_entries(&self, perspective: Option<&str>, since: Option<i64>, until: Option<i64>, limit: usize) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
+    fn get_pending_embeddings(&self, limit: usize) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
+    fn batch_update_embeddings(&self, updates: Vec<(String, Vec<f32>)>) -> impl Future<Output = Result<()>> + Send;
+    fn count_pending_embeddings(&self) -> impl Future<Output = Result<usize>> + Send;
 });

@@ -27,6 +27,14 @@ pub async fn run_stdio(config: Config) -> Result<()> {
     let blob_store = BlobStore::open(&config.data_dir)?;
     let blob_store = Arc::new(blob_store);
 
+    if !config.read_only {
+        let _worker = super::embed_worker::spawn(
+            Arc::clone(&store),
+            Arc::clone(&embedder),
+            Arc::clone(&blob_store),
+        );
+    }
+
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
 
@@ -362,7 +370,7 @@ fn tool_list(project: Option<&str>, branch: Option<&str>) -> serde_json::Value {
                                 },
                                 "required": ["content"]
                             },
-                            "description": "Batch mode: array of entries. When present, top-level fields are ignored. Each entry is embedded individually — keep batches under ~20 items to avoid timeouts. For larger imports, split across multiple store calls."
+                            "description": "Batch mode: array of entries. When present, top-level fields are ignored. Batch items are stored instantly and become searchable as embeddings complete in the background (typically within seconds)."
                         }
                     }
                 }

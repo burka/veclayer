@@ -8,6 +8,8 @@
 use super::types::*;
 use crate::chunk::short_id;
 
+const EMBEDDING_PENDING_LABEL: &str = "embedding pending";
+
 /// Format recall results as readable markdown.
 pub fn format_recall(query: Option<&str>, results: &[SearchResultResponse]) -> String {
     if results.is_empty() {
@@ -59,6 +61,9 @@ pub fn format_recall(query: Option<&str>, results: &[SearchResultResponse]) -> S
         }
         // Include raw score for relevance debugging
         meta.push(format!("{:.2}", r.score));
+        if r.chunk.embedding_pending {
+            meta.push(EMBEDDING_PENDING_LABEL.to_string());
+        }
         out.push_str(&format!("> {}\n", meta.join(" · ")));
 
         // Content: render directly as markdown
@@ -116,6 +121,9 @@ pub fn format_focus(response: &FocusResponse) -> String {
     if node.source_file != "[agent]" && node.source_file != "[inline]" {
         meta.push(node.source_file.clone());
     }
+    if node.embedding_pending {
+        meta.push("embedding pending".to_string());
+    }
     out.push_str(&format!("> {}\n", meta.join(" · ")));
 
     // Full content
@@ -146,6 +154,9 @@ pub fn format_focus(response: &FocusResponse) -> String {
             }
             if !child.chunk.perspectives.is_empty() {
                 meta.push(child.chunk.perspectives.join(", "));
+            }
+            if child.chunk.embedding_pending {
+                meta.push(EMBEDDING_PENDING_LABEL.to_string());
             }
             out.push_str(&format!("> {}\n", meta.join(" · ")));
 
@@ -224,6 +235,7 @@ mod tests {
                 year: 0,
                 total: 0,
             },
+            embedding_pending: false,
         }
     }
 
@@ -410,5 +422,35 @@ mod tests {
         };
         let out = format_focus(&response);
         assert!(out.contains("> `child00` · summary · decisions"));
+    }
+
+    #[test]
+    fn recall_embedding_pending_shown() {
+        let mut chunk = make_chunk("abc1234deadbeef", "Content", Some("Title"));
+        chunk.embedding_pending = true;
+        let results = vec![SearchResultResponse {
+            chunk,
+            score: 0.5,
+            relevance: "strong".to_string(),
+            hierarchy_path: vec![],
+            children: vec![],
+        }];
+        let out = format_recall(Some("q"), &results);
+        assert!(out.contains("embedding pending"));
+    }
+
+    #[test]
+    fn recall_embedding_not_pending_hidden() {
+        let chunk = make_chunk("abc1234deadbeef", "Content", Some("Title"));
+        // embedding_pending defaults to false in make_chunk
+        let results = vec![SearchResultResponse {
+            chunk,
+            score: 0.5,
+            relevance: "strong".to_string(),
+            hierarchy_path: vec![],
+            children: vec![],
+        }];
+        let out = format_recall(Some("q"), &results);
+        assert!(!out.contains("embedding pending"));
     }
 }

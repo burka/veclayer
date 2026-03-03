@@ -292,6 +292,8 @@ pub struct ChunkResponse {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub perspectives: Vec<String>,
     pub access: AccessProfileResponse,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub embedding_pending: bool,
 }
 
 impl From<&crate::HierarchicalChunk> for ChunkResponse {
@@ -315,6 +317,7 @@ impl From<&crate::HierarchicalChunk> for ChunkResponse {
                 year: chunk.access_profile.year,
                 total: chunk.access_profile.total,
             },
+            embedding_pending: !chunk.has_embedding(),
         }
     }
 }
