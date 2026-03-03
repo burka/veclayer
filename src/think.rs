@@ -10,7 +10,6 @@
 use std::path::Path;
 
 use crate::chunk::{ChunkRelation, EntryType, HierarchicalChunk};
-use crate::embedder::FastEmbedder;
 use crate::identity::{self, IdentitySnapshot};
 use crate::llm::{LlmProvider, Message};
 use crate::{Embedder, Result, VectorStore};
@@ -111,7 +110,7 @@ Rules:
 /// Execute one think cycle: reflect → LLM → add → compact.
 pub async fn execute<L: LlmProvider>(
     store: &impl VectorStore,
-    embedder: &FastEmbedder,
+    embedder: &dyn Embedder,
     llm: &L,
     data_dir: &Path,
     blob_store: Option<&crate::blob_store::BlobStore>,
@@ -267,7 +266,7 @@ fn build_prompt(priming: &str, snapshot: &IdentitySnapshot) -> String {
 #[allow(clippy::too_many_arguments)]
 async fn write_entry(
     store: &impl VectorStore,
-    embedder: &FastEmbedder,
+    embedder: &dyn Embedder,
     content: &str,
     entry_type: EntryType,
     relations: Vec<ChunkRelation>,

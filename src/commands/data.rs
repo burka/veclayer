@@ -28,7 +28,7 @@ pub async fn export_entries(data_dir: &Path, options: &ExportOptions) -> Result<
 
 /// Import entries from a JSONL file (or stdin when path is "-").
 pub async fn import_entries(data_dir: &Path, options: &ImportOptions) -> Result<ImportResult> {
-    let (embedder, store, blob_store) = open_store(data_dir).await?;
+    let (_config, embedder, store, blob_store) = open_store(data_dir).await?;
 
     let lines = read_jsonl_lines(&options.path)?;
 
@@ -68,7 +68,8 @@ pub async fn rebuild_index(data_dir: &Path) -> Result<()> {
         debug!("Removed existing Lance table at {:?}", lance_table);
     }
 
-    let embedder = FastEmbedder::new()?;
+    let config = crate::Config::new().with_data_dir(data_dir);
+    let embedder = crate::embedder::from_config(&config.embedder)?;
     let dimension = embedder.dimension();
     let store = StoreBackend::open(data_dir, dimension, false).await?;
 

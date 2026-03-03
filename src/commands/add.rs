@@ -33,7 +33,7 @@ pub async fn add(data_dir: &Path, input: &str, mut options: AddOptions) -> Resul
 /// Add files from a path to the store.
 async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result<AddResult> {
     debug!("Opening store at {:?}...", data_dir);
-    let (embedder, store, blob_store) = super::open_store(data_dir).await?;
+    let (config, embedder, store, blob_store) = super::open_store(data_dir).await?;
 
     let parser = MarkdownParser::new();
 
@@ -98,7 +98,7 @@ async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result
             options.model
         );
 
-        let summary_embedder = FastEmbedder::new()?;
+        let summary_embedder = crate::embedder::from_config(&config.embedder)?;
         let summarizer = OllamaSummarizer::new().with_model(&options.model);
 
         let pipeline = ClusterPipeline::with_summarizer(summary_embedder, summarizer)
@@ -154,7 +154,7 @@ async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result
 
 /// Add inline text as a single entry.
 async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<AddResult> {
-    let (embedder, store, blob_store) = super::open_store(data_dir).await?;
+    let (_config, embedder, store, blob_store) = super::open_store(data_dir).await?;
 
     let entry_type = match options.entry_type.as_str() {
         "meta" => crate::chunk::EntryType::Meta,

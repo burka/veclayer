@@ -136,7 +136,7 @@ pub async fn search_results(
         .as_deref()
         .and_then(crate::resolve::parse_temporal);
 
-    let (embedder, store, _blob_store) = open_store(data_dir).await?;
+    let (_config, embedder, store, _blob_store) = open_store(data_dir).await?;
 
     let open_thread_ids = crate::identity::resolve_ongoing_filter(&store, options.ongoing).await?;
 
@@ -194,7 +194,7 @@ pub async fn search_results(
 
 /// Focus on an entry: show details and children.
 pub async fn focus(data_dir: &Path, id: &str, options: &FocusOptions) -> Result<()> {
-    let (embedder, store, _blob_store) = open_store(data_dir).await?;
+    let (_config, embedder, store, _blob_store) = open_store(data_dir).await?;
 
     let entry = store
         .get_by_id_prefix(id)

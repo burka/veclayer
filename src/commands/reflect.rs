@@ -25,7 +25,7 @@ pub async fn compact(
 
 /// Rotate: roll access-profile buckets and apply aging rules.
 async fn compact_rotate(data_dir: &Path) -> Result<()> {
-    let (_embedder, store, _blob_store) = open_store(data_dir).await?;
+    let (_config, _embedder, store, _blob_store) = open_store(data_dir).await?;
 
     let aging_config = crate::aging::AgingConfig::load(data_dir);
     let aging_result = crate::aging::apply_aging(&store, &aging_config).await?;

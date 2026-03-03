@@ -89,6 +89,58 @@ data_dir = "~/.local/share/veclayer/myorg"
 model = "codellama"
 ```
 
+## Embedding Models
+
+VecLayer supports local and external embedding backends.
+
+### Built-in models (fastembed, default)
+
+| Model | Dimension | Config value |
+|---|---|---|
+| BAAI/bge-small-en-v1.5 (default) | 384 | `Xenova/bge-small-en-v1.5` |
+| BAAI/bge-base-en-v1.5 | 768 | `Xenova/bge-base-en-v1.5` |
+| BAAI/bge-large-en-v1.5 | 1024 | `Xenova/bge-large-en-v1.5` |
+| all-MiniLM-L6-v2 | 384 | `Xenova/all-MiniLM-L6-v2` |
+
+Models download automatically on first use.
+
+### GPU embedding with TEI or Ollama
+
+Use an external HTTP server for GPU-accelerated embeddings. VecLayer tries Ollama format first (`/api/embed`), then falls back to OpenAI-compatible (`/v1/embeddings`).
+
+**Config** (`.veclayer/config.toml` or `~/.config/veclayer/config.toml`):
+
+```toml
+[embedder]
+type = "ollama"
+model = "nomic-embed-text"          # or any model your server supports
+base_url = "http://localhost:11434"
+dimension = 768                      # must match the model's output dimension
+```
+
+**Environment variables** (override config):
+
+```
+VECLAYER_EMBEDDER=ollama
+VECLAYER_OLLAMA_MODEL=nomic-embed-text
+VECLAYER_OLLAMA_URL=http://localhost:11434
+VECLAYER_OLLAMA_DIMENSION=768
+```
+
+**TEI example** (Hugging Face Text Embeddings Inference):
+
+```bash
+docker run --gpus all -p 8080:80 ghcr.io/huggingface/text-embeddings-inference \
+  --model-id BAAI/bge-small-en-v1.5
+
+# then in config.toml:
+# [embedder]
+# type = "ollama"
+# base_url = "http://localhost:8080"
+# model = "BAAI/bge-small-en-v1.5"
+# dimension = 384
+```
+
 ## MCP Server Setup
 
 VecLayer provides an MCP server for integration with Claude Code and Opencode.

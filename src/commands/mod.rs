@@ -15,7 +15,7 @@ use crate::blob_store::BlobStore;
 use crate::chunk::{short_id, EntryType};
 #[cfg(feature = "llm")]
 use crate::cluster::ClusterPipeline;
-use crate::embedder::FastEmbedder;
+use crate::embedder;
 use crate::parser::MarkdownParser;
 use crate::search::{HierarchicalSearch, SearchConfig};
 use crate::store::StoreBackend;
@@ -38,14 +38,22 @@ use crate::search::TEMPORAL_PREFETCH_FACTOR;
 
 // --- Infrastructure helpers ---
 
-/// Create an embedder + store + blob store triple.  Centralises the init
+/// Create a config + embedder + store + blob store quad.  Centralises the init
 /// sequence that was previously repeated in every command that needs embeddings.
-pub async fn open_store(data_dir: &Path) -> Result<(FastEmbedder, StoreBackend, BlobStore)> {
-    let embedder = FastEmbedder::new()?;
+pub async fn open_store(
+    data_dir: &Path,
+) -> Result<(
+    Config,
+    Box<dyn Embedder + Send + Sync>,
+    StoreBackend,
+    BlobStore,
+)> {
+    let config = Config::new().with_data_dir(data_dir);
+    let embedder = embedder::from_config(&config.embedder)?;
     let dimension = embedder.dimension();
     let store = StoreBackend::open(data_dir, dimension, false).await?;
     let blob_store = BlobStore::open(data_dir)?;
-    Ok((embedder, store, blob_store))
+    Ok((config, embedder, store, blob_store))
 }
 
 // --- Output helpers ---

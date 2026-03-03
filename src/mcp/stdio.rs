@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tracing::{info, warn};
 
 use crate::blob_store::BlobStore;
-use crate::embedder::FastEmbedder;
+use crate::embedder;
 use crate::store::StoreBackend;
 use crate::{Config, Embedder, Result};
 
@@ -19,11 +19,11 @@ pub async fn run_stdio(config: Config) -> Result<()> {
 
     info!("Starting MCP stdio server...");
 
-    let embedder = FastEmbedder::new()?;
+    let embedder: Arc<dyn Embedder + Send + Sync> =
+        Arc::from(embedder::from_config(&config.embedder)?);
     let dimension = embedder.dimension();
     let store = StoreBackend::open(&config.data_dir, dimension, config.read_only).await?;
     let store = Arc::new(store);
-    let embedder = Arc::new(embedder);
     let blob_store = BlobStore::open(&config.data_dir)?;
     let blob_store = Arc::new(blob_store);
 
@@ -62,7 +62,7 @@ pub async fn run_stdio(config: Config) -> Result<()> {
 async fn handle_mcp_message(
     message: &str,
     store: &Arc<StoreBackend>,
-    embedder: &Arc<FastEmbedder>,
+    embedder: &Arc<dyn Embedder + Send + Sync>,
     blob_store: &Arc<BlobStore>,
     data_dir: &std::path::Path,
     project: Option<&str>,
@@ -146,7 +146,7 @@ async fn handle_tool_call(
     tool_name: &str,
     arguments: serde_json::Value,
     store: &Arc<StoreBackend>,
-    embedder: &Arc<FastEmbedder>,
+    embedder: &Arc<dyn Embedder + Send + Sync>,
     blob_store: &Arc<BlobStore>,
     data_dir: &std::path::Path,
     project: Option<&str>,

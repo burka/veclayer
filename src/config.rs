@@ -61,8 +61,15 @@ pub struct Config {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum EmbedderConfig {
-    FastEmbed { model: String },
-    Ollama { model: String, base_url: String },
+    FastEmbed {
+        model: String,
+    },
+    Ollama {
+        model: String,
+        base_url: String,
+        /// Dimension of embeddings returned by the model
+        dimension: usize,
+    },
 }
 
 // --- TOML file schema (all fields optional) ---
@@ -324,6 +331,8 @@ struct FileEmbedderConfig {
     embedder_type: String,
     model: Option<String>,
     base_url: Option<String>,
+    /// Embedding vector dimension (required for ollama; ignored for fastembed)
+    dimension: Option<usize>,
 }
 
 fn default_embedder_type() -> String {
@@ -389,6 +398,7 @@ const DEFAULT_SEARCH_CHILDREN_K: usize = 3;
 const DEFAULT_FASTEMBED_MODEL: &str = "BAAI/bge-small-en-v1.5";
 const DEFAULT_OLLAMA_MODEL: &str = "nomic-embed-text";
 const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
+const DEFAULT_OLLAMA_DIMENSION: usize = 768;
 
 impl Config {
     /// Build config with full layered resolution: ENV > TOML file > Defaults.
@@ -459,7 +469,16 @@ impl Config {
                     file_embedder.as_ref().and_then(|e| e.base_url.clone()),
                     DEFAULT_OLLAMA_URL.to_string(),
                 );
-                EmbedderConfig::Ollama { model, base_url }
+                let dimension = std::env::var("VECLAYER_OLLAMA_DIMENSION")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .or_else(|| file_embedder.as_ref().and_then(|e| e.dimension))
+                    .unwrap_or(DEFAULT_OLLAMA_DIMENSION);
+                EmbedderConfig::Ollama {
+                    model,
+                    base_url,
+                    dimension,
+                }
             }
             _ => {
                 let model = env_or(

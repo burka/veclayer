@@ -14,7 +14,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tracing::info;
 
 use crate::blob_store::BlobStore;
-use crate::embedder::FastEmbedder;
+use crate::embedder;
 use crate::store::StoreBackend;
 use crate::{Config, Embedder, Result, VectorStore};
 
@@ -25,7 +25,7 @@ use super::types::*;
 #[derive(Clone)]
 struct AppState {
     store: Arc<StoreBackend>,
-    embedder: Arc<FastEmbedder>,
+    embedder: Arc<dyn Embedder + Send + Sync>,
     blob_store: Arc<BlobStore>,
     data_dir: std::path::PathBuf,
     project: Option<String>,
@@ -34,14 +34,15 @@ struct AppState {
 
 /// Run the HTTP REST API server.
 pub async fn run_http(config: Config) -> Result<()> {
-    let embedder = FastEmbedder::new()?;
+    let embedder: Arc<dyn Embedder + Send + Sync> =
+        Arc::from(embedder::from_config(&config.embedder)?);
     let dimension = embedder.dimension();
     let store = StoreBackend::open(&config.data_dir, dimension, config.read_only).await?;
     let blob_store = BlobStore::open(&config.data_dir)?;
 
     let state = AppState {
         store: Arc::new(store),
-        embedder: Arc::new(embedder),
+        embedder,
         blob_store: Arc::new(blob_store),
         data_dir: config.data_dir.clone(),
         project: config.project.clone(),

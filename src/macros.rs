@@ -27,7 +27,7 @@ macro_rules! arc_impl {
             fn $method:ident(&self $(, $arg:ident: $arg_ty:ty)*) -> $ret:ty;
         )*
     }) => {
-        impl<T: $trait_name> $trait_name for std::sync::Arc<T> {
+        impl<T: $trait_name + ?Sized> $trait_name for std::sync::Arc<T> {
             $(
                 fn $method(&self $(, $arg: $arg_ty)*) -> $ret {
                     (**self).$method($($arg),*)

@@ -5,9 +5,8 @@ use super::*;
 /// Run one think cycle: reflect → LLM → add → compact.
 #[cfg(feature = "llm")]
 pub async fn think(data_dir: &Path) -> Result<()> {
-    let (embedder, store, blob_store) = open_store(data_dir).await?;
+    let (config, embedder, store, blob_store) = open_store(data_dir).await?;
 
-    let config = crate::Config::new().with_data_dir(data_dir);
     let llm = crate::llm::LlmBackend::from_config(&config.llm);
 
     println!(

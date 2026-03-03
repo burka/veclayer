@@ -17,7 +17,6 @@ const THINK_ACTIONS: &[&str] = &[
 ];
 
 use crate::aging::{self, AgingConfig};
-use crate::embedder::FastEmbedder;
 use crate::search::{HierarchicalSearch, SearchConfig, TEMPORAL_PREFETCH_FACTOR};
 use crate::store::StoreBackend;
 use crate::{Embedder, Result, VectorStore};
@@ -100,7 +99,7 @@ struct StoreSingleInput {
 /// Store a single entry and return its chunk ID.
 async fn store_single_entry(
     store: &Arc<StoreBackend>,
-    embedder: &Arc<FastEmbedder>,
+    embedder: &Arc<dyn Embedder + Send + Sync>,
     blob_store: &Arc<crate::blob_store::BlobStore>,
     input: StoreSingleInput,
     project: Option<&str>,
@@ -218,7 +217,7 @@ async fn store_single_entry(
 
 pub async fn execute_recall(
     store: &Arc<StoreBackend>,
-    embedder: &Arc<FastEmbedder>,
+    embedder: &Arc<dyn Embedder + Send + Sync>,
     input: RecallInput,
     project: Option<&str>,
     branch: Option<&str>,
@@ -330,7 +329,7 @@ pub async fn execute_recall(
 
 pub async fn execute_focus(
     store: &Arc<StoreBackend>,
-    embedder: &Arc<FastEmbedder>,
+    embedder: &Arc<dyn Embedder + Send + Sync>,
     input: FocusInput,
     project: Option<&str>,
     branch: Option<&str>,
@@ -392,7 +391,7 @@ pub async fn execute_focus(
 
 pub async fn execute_store(
     store: &Arc<StoreBackend>,
-    embedder: &Arc<FastEmbedder>,
+    embedder: &Arc<dyn Embedder + Send + Sync>,
     blob_store: &Arc<crate::blob_store::BlobStore>,
     input: StoreInput,
     project: Option<&str>,
@@ -551,12 +550,12 @@ pub async fn execute_think(
         Some("consolidate") => {
             let config = crate::Config::new().with_data_dir(data_dir);
             let llm = crate::llm::LlmBackend::from_config(&config.llm);
-            let embedder = crate::embedder::FastEmbedder::new()
+            let embedder = crate::embedder::from_config(&config.embedder)
                 .map_err(|e| crate::Error::llm(format!("Failed to init embedder: {}", e)))?;
 
             let result = crate::think::execute(
                 store.as_ref(),
-                &embedder,
+                embedder.as_ref(),
                 &llm,
                 data_dir,
                 Some(blob_store.as_ref()),
@@ -1013,6 +1012,7 @@ mod tests {
     // resolve_id and parse_temporal tests are in resolve::tests.
     // These tests cover tool-specific logic that remains in this module.
 
+    use crate::embedder::FastEmbedder;
     use crate::test_helpers::make_test_chunk;
 
     async fn make_test_store_with_dir() -> (
@@ -1400,7 +1400,7 @@ mod tests {
     #[tokio::test]
     async fn test_recall_ongoing_filter_with_query() {
         let (store, _blob_store, _dir) = make_test_store_with_dir().await;
-        let embedder = Arc::new(FastEmbedder::new().unwrap());
+        let embedder: Arc<dyn Embedder + Send + Sync> = Arc::new(FastEmbedder::new().unwrap());
 
         // Insert a plain chunk with a real embedding so semantic search can find it
         let plain_content = "plain entry about architecture decisions";
@@ -1482,7 +1482,7 @@ mod tests {
     #[tokio::test]
     async fn test_recall_ongoing_filter_browse_mode() {
         let (store, _blob_store, _dir) = make_test_store_with_dir().await;
-        let embedder = Arc::new(FastEmbedder::new().unwrap());
+        let embedder: Arc<dyn Embedder + Send + Sync> = Arc::new(FastEmbedder::new().unwrap());
 
         // Insert a plain chunk (no open thread criteria)
         let plain = make_test_chunk(
@@ -1578,7 +1578,7 @@ mod tests {
 
     /// Build a chunk with a real embedding using the FastEmbedder.
     async fn make_embedded_chunk(
-        embedder: &Arc<FastEmbedder>,
+        embedder: &Arc<dyn Embedder + Send + Sync>,
         id: &str,
         content: &str,
     ) -> crate::HierarchicalChunk {
@@ -1614,7 +1614,7 @@ mod tests {
     #[tokio::test]
     async fn test_discover_finds_unlinked_similar_pair() {
         let (store, blob_store, dir) = make_test_store_with_dir().await;
-        let embedder = Arc::new(FastEmbedder::new().unwrap());
+        let embedder: Arc<dyn Embedder + Send + Sync> = Arc::new(FastEmbedder::new().unwrap());
 
         // Two semantically similar entries with no relation
         let chunk_a = make_embedded_chunk(
@@ -1660,7 +1660,7 @@ mod tests {
     #[tokio::test]
     async fn test_discover_skips_already_linked_pair() {
         let (store, blob_store, dir) = make_test_store_with_dir().await;
-        let embedder = Arc::new(FastEmbedder::new().unwrap());
+        let embedder: Arc<dyn Embedder + Send + Sync> = Arc::new(FastEmbedder::new().unwrap());
 
         let mut chunk_a = make_embedded_chunk(
             &embedder,

@@ -13,7 +13,11 @@ The roadmap is tracked as [GitHub Issues](https://github.com/burka/veclayer/issu
 
 ## Next
 
-- **Phase 6:** Server + Sharing — UCAN auth, personalized tool descriptions, REST API ([#8](https://github.com/burka/veclayer/issues/8))
+- **Phase 6:** Identity + Auth + Sync ([#8](https://github.com/burka/veclayer/issues/8))
+  - **6a:** Identity — Ed25519 keypair, DID, `secrecy` crate, local keystore
+  - **6b:** Server Auth — UCAN tokens, Bearer middleware, capability scoping
+  - **6c:** Sync + Multi-Embedding — S3 backend (LanceDB), BYOE, embedding queue, user embedding column, Lance-versioned sync
+  - **6d:** Platform Integration — Hosted server (Fly.io, scale-to-zero), remote MCP for claude.ai/chatgpt.com, WebAuthn, device linking
 - **Phase 7:** Polish — aliases, multi-format parsing, alternative backends ([#9](https://github.com/burka/veclayer/issues/9))
 
 ## Success Criteria
