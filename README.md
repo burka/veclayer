@@ -1,5 +1,10 @@
 # VecLayer
 
+[![crates.io](https://img.shields.io/crates/v/veclayer)](https://crates.io/crates/veclayer)
+[![docs.rs](https://img.shields.io/docsrs/veclayer)](https://docs.rs/veclayer)
+[![CI](https://github.com/burka/veclayer/actions/workflows/ci.yml/badge.svg)](https://github.com/burka/veclayer/actions)
+[![license](https://img.shields.io/crates/l/veclayer)](https://github.com/burka/veclayer/blob/main/LICENSE)
+
 **Long-term memory for AI agents. Hierarchical, perspectival, aging knowledge.**
 
 > Status: 0.1.0 — MCP tool & CLI for local use. APIs are evolving.
