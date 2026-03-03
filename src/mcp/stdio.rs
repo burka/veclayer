@@ -315,7 +315,7 @@ fn tool_list(project: Option<&str>, branch: Option<&str>) -> serde_json::Value {
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "content": { "type": "string" },
+                        "content": { "type": "string", "description": "The text to store. Keep entries focused and concise — long content (>2000 chars) embeds less precisely. For longer material, split into multiple entries under a shared parent_id." },
                         "parent_id": { "type": "string" },
                         "source_file": { "type": "string", "default": "[agent]" },
                         "heading": { "type": "string" },
@@ -362,7 +362,7 @@ fn tool_list(project: Option<&str>, branch: Option<&str>) -> serde_json::Value {
                                 },
                                 "required": ["content"]
                             },
-                            "description": "Batch mode: array of entries. When present, top-level fields are ignored."
+                            "description": "Batch mode: array of entries. When present, top-level fields are ignored. Each entry is embedded individually — keep batches under ~20 items to avoid timeouts. For larger imports, split across multiple store calls."
                         }
                     }
                 }

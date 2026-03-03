@@ -398,8 +398,11 @@ pub async fn execute_store(
     branch: Option<&str>,
 ) -> Result<serde_json::Value> {
     if !input.items.is_empty() {
+        let count = input.items.len();
         let mut ids = Vec::new();
+        let mut long_entries = 0usize;
         for item in input.items {
+            let content_len = item.content.len();
             let id = store_single_entry(
                 store,
                 embedder,
@@ -422,10 +425,29 @@ pub async fn execute_store(
             )
             .await?;
             ids.push(crate::short_id(&id).to_string());
+            if content_len > 2000 {
+                long_entries += 1;
+            }
         }
-        let msg = format!("Stored {} entries. IDs: {}", ids.len(), ids.join(", "));
+        let mut msg = format!("Stored {} entries. IDs: {}", ids.len(), ids.join(", "));
+        if long_entries > 0 {
+            msg.push_str(&format!(
+                "\n\nNote: {} entr{} exceeded 2000 chars. Long content embeds less precisely — \
+                 consider splitting into smaller entries under a shared parent_id.",
+                long_entries,
+                if long_entries == 1 { "y" } else { "ies" }
+            ));
+        }
+        if count > 20 {
+            msg.push_str(&format!(
+                "\n\nNote: Large batch ({} items). Each item is embedded individually — \
+                 for faster throughput, keep batches under ~20 items.",
+                count
+            ));
+        }
         Ok(serde_json::json!(msg))
     } else {
+        let content_len = input.content.len();
         let id = store_single_entry(
             store,
             embedder,
@@ -447,10 +469,14 @@ pub async fn execute_store(
             branch,
         )
         .await?;
-        Ok(serde_json::json!(format!(
-            "Stored. ID: {}",
-            crate::short_id(&id)
-        )))
+        let mut msg = format!("Stored. ID: {}", crate::short_id(&id));
+        if content_len > 2000 {
+            msg.push_str(
+                "\n\nNote: Content exceeded 2000 chars. Long entries embed less precisely — \
+                 consider splitting into smaller entries under a shared parent_id for better recall.",
+            );
+        }
+        Ok(serde_json::json!(msg))
     }
 }
 
