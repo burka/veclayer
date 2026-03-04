@@ -1,7 +1,9 @@
-//! HTTP REST API server.
+//! HTTP REST API server with Streamable HTTP MCP transport.
 
+use std::result::Result as StdResult;
 use std::sync::Arc;
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::State;
 use axum::http::header::CONTENT_TYPE;
 use axum::http::Method;
@@ -9,8 +11,12 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use rmcp::transport::streamable_http_server::{
+    session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
+};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::trace::TraceLayer;
 use tracing::info;
 
 use crate::blob_store::BlobStore;
@@ -18,18 +24,142 @@ use crate::embedder;
 use crate::store::StoreBackend;
 use crate::{Config, Embedder, Result, VectorStore};
 
+use super::handler::McpHandler;
 use super::tools;
 use super::types::*;
 
-/// Shared application state
+/// Shared application state for both REST API handlers and MCP session factory.
 #[derive(Clone)]
-struct AppState {
-    store: Arc<StoreBackend>,
-    embedder: Arc<dyn Embedder + Send + Sync>,
-    blob_store: Arc<BlobStore>,
-    data_dir: std::path::PathBuf,
-    project: Option<String>,
-    branch: Option<String>,
+pub struct AppState {
+    pub store: Arc<StoreBackend>,
+    pub embedder: Arc<dyn Embedder + Send + Sync>,
+    pub blob_store: Arc<BlobStore>,
+    pub data_dir: std::path::PathBuf,
+    pub project: Option<String>,
+    pub branch: Option<String>,
+}
+
+/// HTTP error response with proper status codes.
+struct AppError {
+    status: StatusCode,
+    message: String,
+}
+
+impl AppError {
+    fn bad_request(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: msg.into(),
+        }
+    }
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let body = serde_json::json!({ "error": self.message });
+        (self.status, Json(body)).into_response()
+    }
+}
+
+impl From<crate::Error> for AppError {
+    fn from(err: crate::Error) -> Self {
+        let status = match &err {
+            crate::Error::NotFound(_) => StatusCode::NOT_FOUND,
+            crate::Error::Parse(_)
+            | crate::Error::InvalidOperation(_)
+            | crate::Error::Config(_) => StatusCode::BAD_REQUEST,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        Self {
+            status,
+            message: err.to_string(),
+        }
+    }
+}
+
+impl From<JsonRejection> for AppError {
+    fn from(rejection: JsonRejection) -> Self {
+        Self::bad_request(rejection.body_text())
+    }
+}
+
+/// Log a warning and convert a domain error into an HTTP error response.
+fn warn_and_convert(context: &str) -> impl FnOnce(crate::Error) -> AppError + '_ {
+    move |e| {
+        tracing::warn!("{context} failed: {e}");
+        AppError::from(e)
+    }
+}
+
+/// Build the application router (public for integration tests).
+///
+/// # Security
+///
+/// **No authentication.** Any process that can reach the bound socket can
+/// read/write the entire knowledge store. Currently mitigated by:
+/// - Localhost-only binding (default `127.0.0.1`)
+/// - CORS restricted to `http://localhost*` and `http://127.0.0.1*`
+///
+/// Add token-based auth (e.g. `Authorization: Bearer`) before exposing
+/// to untrusted networks.
+///
+/// **No rate limiting.** There is no request throttling on any endpoint.
+/// For localhost single-agent use this is acceptable. Add
+/// `tower_http::limit::RateLimitLayer` or similar middleware before
+/// exposing to multi-tenant or remote environments.
+pub fn build_app(state: AppState) -> Router {
+    let cors = CorsLayer::new()
+        .allow_origin(AllowOrigin::predicate(|origin, _| {
+            let s = origin.as_bytes();
+            s.starts_with(b"http://localhost") || s.starts_with(b"http://127.0.0.1")
+        }))
+        // DELETE is required by the MCP Streamable HTTP spec for session termination.
+        .allow_methods([Method::GET, Method::POST, Method::DELETE])
+        .allow_headers([CONTENT_TYPE]);
+
+    // Streamable HTTP MCP transport: one McpHandler per session.
+    // Each session computes fresh identity priming so the agent gets
+    // up-to-date knowledge context on connect.
+    let mcp_state = state.clone();
+    let mcp_service = StreamableHttpService::new(
+        move || {
+            let instructions = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(super::compute_instructions(
+                    mcp_state.store.as_ref(),
+                    &mcp_state.data_dir,
+                    mcp_state.project.as_deref(),
+                    mcp_state.branch.as_deref(),
+                ))
+            });
+            Ok(McpHandler::new(
+                Arc::clone(&mcp_state.store),
+                Arc::clone(&mcp_state.embedder),
+                Arc::clone(&mcp_state.blob_store),
+                mcp_state.data_dir.clone(),
+                mcp_state.project.clone(),
+                mcp_state.branch.clone(),
+                instructions,
+            ))
+        },
+        LocalSessionManager::default().into(),
+        StreamableHttpServerConfig::default(),
+    );
+
+    Router::new()
+        .route("/health", get(|| async { "OK" }))
+        .route("/api/recall", post(api_recall))
+        .route("/api/focus", post(api_focus))
+        .route("/api/store", post(api_store))
+        .route("/api/think", post(api_think))
+        .route("/api/share", post(api_share))
+        .route("/api/stats", get(api_stats))
+        .route("/api/identity", get(api_identity))
+        .route("/api/priming", get(api_priming))
+        .nest_service("/mcp", mcp_service)
+        .layer(TraceLayer::new_for_http())
+        .layer(RequestBodyLimitLayer::new(4 * 1024 * 1024)) // 4 MiB
+        .layer(cors)
+        .with_state(state)
 }
 
 /// Run the HTTP REST API server.
@@ -60,31 +190,7 @@ pub async fn run_http(config: Config) -> Result<()> {
         branch: config.branch.clone(),
     };
 
-    // TODO(security): The HTTP API has no authentication. Any process that can reach
-    // the bound socket can read/write the entire knowledge store. Currently mitigated
-    // by localhost-only binding + restricted CORS. Add token-based auth before
-    // exposing to untrusted networks. Tracked for a future release.
-    let cors = CorsLayer::new()
-        .allow_origin(AllowOrigin::predicate(|origin, _| {
-            let s = origin.as_bytes();
-            s.starts_with(b"http://localhost") || s.starts_with(b"http://127.0.0.1")
-        }))
-        .allow_methods([Method::GET, Method::POST])
-        .allow_headers([CONTENT_TYPE]);
-
-    let app = Router::new()
-        .route("/health", get(|| async { "OK" }))
-        .route("/api/recall", post(api_recall))
-        .route("/api/focus", post(api_focus))
-        .route("/api/store", post(api_store))
-        .route("/api/think", post(api_think))
-        .route("/api/share", post(api_share))
-        .route("/api/stats", get(api_stats))
-        .route("/api/identity", get(api_identity))
-        .route("/api/priming", get(api_priming))
-        .layer(RequestBodyLimitLayer::new(4 * 1024 * 1024)) // 4 MiB
-        .layer(cors)
-        .with_state(state);
+    let app = build_app(state);
 
     let addr: std::net::SocketAddr = format!("{}:{}", config.host, config.port)
         .parse()
@@ -105,9 +211,10 @@ pub async fn run_http(config: Config) -> Result<()> {
 
 async fn api_recall(
     State(state): State<AppState>,
-    Json(input): Json<RecallInput>,
-) -> Json<ApiResponse<Vec<SearchResultResponse>>> {
-    match tools::execute_recall(
+    body: StdResult<Json<RecallInput>, JsonRejection>,
+) -> StdResult<Json<Vec<SearchResultResponse>>, AppError> {
+    let Json(input) = body?;
+    let results = tools::execute_recall(
         &state.store,
         &state.embedder,
         input,
@@ -115,22 +222,16 @@ async fn api_recall(
         state.branch.as_deref(),
     )
     .await
-    {
-        Ok(results) => Json(ApiResponse::Success(results)),
-        Err(e) => {
-            tracing::warn!("Recall failed: {e}");
-            Json(ApiResponse::Error {
-                error: format!("Recall failed: {e}"),
-            })
-        }
-    }
+    .map_err(warn_and_convert("Recall"))?;
+    Ok(Json(results))
 }
 
 async fn api_focus(
     State(state): State<AppState>,
-    Json(input): Json<FocusInput>,
-) -> Json<ApiResponse<FocusResponse>> {
-    match tools::execute_focus(
+    body: StdResult<Json<FocusInput>, JsonRejection>,
+) -> StdResult<Json<FocusResponse>, AppError> {
+    let Json(input) = body?;
+    let response = tools::execute_focus(
         &state.store,
         &state.embedder,
         input,
@@ -138,27 +239,19 @@ async fn api_focus(
         state.branch.as_deref(),
     )
     .await
-    {
-        Ok(response) => Json(ApiResponse::Success(response)),
-        Err(e) => {
-            tracing::warn!("Focus failed: {e}");
-            Json(ApiResponse::Error {
-                error: format!("Focus failed: {e}"),
-            })
-        }
-    }
+    .map_err(warn_and_convert("Focus"))?;
+    Ok(Json(response))
 }
 
 async fn api_store(
     State(state): State<AppState>,
-    Json(input): Json<StoreInput>,
-) -> Json<ApiResponse<String>> {
+    body: StdResult<Json<StoreInput>, JsonRejection>,
+) -> StdResult<Json<String>, AppError> {
+    let Json(input) = body?;
     if input.content.is_empty() {
-        return Json(ApiResponse::Error {
-            error: "content is required".to_string(),
-        });
+        return Err(AppError::bad_request("content is required"));
     }
-    match tools::execute_store(
+    let chunk_id = tools::execute_store(
         &state.store,
         &state.embedder,
         &state.blob_store,
@@ -167,22 +260,16 @@ async fn api_store(
         state.branch.as_deref(),
     )
     .await
-    {
-        Ok(chunk_id) => Json(ApiResponse::Success(format!("Stored. ID: {}", chunk_id))),
-        Err(e) => {
-            tracing::warn!("Store failed: {e}");
-            Json(ApiResponse::Error {
-                error: format!("Store failed: {e}"),
-            })
-        }
-    }
+    .map_err(warn_and_convert("Store"))?;
+    Ok(Json(format!("Stored. ID: {}", chunk_id)))
 }
 
 async fn api_think(
     State(state): State<AppState>,
-    Json(input): Json<ThinkInput>,
-) -> Json<ApiResponse<String>> {
-    match tools::execute_think(
+    body: StdResult<Json<ThinkInput>, JsonRejection>,
+) -> StdResult<Json<String>, AppError> {
+    let Json(input) = body?;
+    let text = tools::execute_think(
         &state.store,
         &state.data_dir,
         &state.blob_store,
@@ -191,70 +278,53 @@ async fn api_think(
         state.branch.as_deref(),
     )
     .await
-    {
-        Ok(text) => Json(ApiResponse::Success(text)),
-        Err(e) => {
-            tracing::warn!("Think failed: {e}");
-            Json(ApiResponse::Error {
-                error: format!("Think failed: {e}"),
-            })
-        }
-    }
+    .map_err(warn_and_convert("Think"))?;
+    Ok(Json(text))
 }
 
-async fn api_share(Json(input): Json<ShareInput>) -> Json<ApiResponse<serde_json::Value>> {
-    Json(ApiResponse::Success(tools::build_share_token(input)))
+async fn api_share(Json(input): Json<ShareInput>) -> Json<serde_json::Value> {
+    Json(tools::build_share_token(input))
 }
 
-async fn api_stats(State(state): State<AppState>) -> Json<ApiResponse<serde_json::Value>> {
-    match state.store.stats().await {
-        Ok(stats) => Json(ApiResponse::Success(serde_json::json!({
-            "total_chunks": stats.total_chunks,
-            "chunks_by_level": stats.chunks_by_level,
-            "source_files": stats.source_files,
-            "pending_embeddings": stats.pending_embeddings,
-        }))),
-        Err(e) => {
-            tracing::warn!("Stats failed: {e}");
-            Json(ApiResponse::Error {
-                error: format!("Stats failed: {e}"),
-            })
-        }
-    }
+async fn api_stats(State(state): State<AppState>) -> StdResult<Json<serde_json::Value>, AppError> {
+    let stats = state
+        .store
+        .stats()
+        .await
+        .map_err(warn_and_convert("Stats"))?;
+    Ok(Json(serde_json::json!({
+        "total_chunks": stats.total_chunks,
+        "chunks_by_level": stats.chunks_by_level,
+        "source_files": stats.source_files,
+        "pending_embeddings": stats.pending_embeddings,
+    })))
 }
 
 /// Identity endpoint — mirrors stdio auto-priming on MCP initialize.
-async fn api_identity(State(state): State<AppState>) -> Json<ApiResponse<serde_json::Value>> {
-    match crate::identity::compute_identity(
+async fn api_identity(
+    State(state): State<AppState>,
+) -> StdResult<Json<serde_json::Value>, AppError> {
+    let snapshot = crate::identity::compute_identity(
         state.store.as_ref(),
         &state.data_dir,
         state.project.as_deref(),
         state.branch.as_deref(),
     )
     .await
-    {
-        Ok(snapshot) => {
-            let priming = crate::identity::generate_priming(&snapshot);
-            let instructions = super::build_priming_text(&priming);
-            Json(ApiResponse::Success(serde_json::json!({
-                "instructions": instructions,
-                "core_entries": snapshot.core_entries.len(),
-                "open_threads": snapshot.open_threads.len(),
-                "perspectives": snapshot.centroids.iter()
-                    .map(|c| serde_json::json!({
-                        "perspective": c.perspective,
-                        "entry_count": c.entry_count,
-                    }))
-                    .collect::<Vec<_>>(),
-            })))
-        }
-        Err(e) => {
-            tracing::warn!("Identity computation failed: {e}");
-            Json(ApiResponse::Error {
-                error: format!("Identity computation failed: {e}"),
-            })
-        }
-    }
+    .map_err(warn_and_convert("Identity computation"))?;
+    let priming = crate::identity::generate_priming(&snapshot);
+    let instructions = super::build_priming_text(&priming);
+    Ok(Json(serde_json::json!({
+        "instructions": instructions,
+        "core_entries": snapshot.core_entries.len(),
+        "open_threads": snapshot.open_threads.len(),
+        "perspectives": snapshot.centroids.iter()
+            .map(|c| serde_json::json!({
+                "perspective": c.perspective,
+                "entry_count": c.entry_count,
+            }))
+            .collect::<Vec<_>>(),
+    })))
 }
 
 /// Priming endpoint — returns the full MCP instructions + identity briefing as plain text.

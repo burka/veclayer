@@ -28,7 +28,7 @@ use super::types::*;
 /// - No project is set (no filtering)
 /// - Chunk has the project perspective `project:<name>`
 /// - Chunk has no project perspective (personal/unscoped)
-fn passes_scope_filter(
+pub(super) fn passes_scope_filter(
     chunk: &crate::HierarchicalChunk,
     project: Option<&str>,
     branch: Option<&str>,
@@ -650,50 +650,8 @@ pub async fn execute_think(
         }
         Some("status") => {
             let stats = store.stats().await?;
-            let mut report = String::from("## Store Status\n\n");
-            report.push_str(&format!("- **Total entries:** {}\n", stats.total_chunks));
-            report.push_str(&format!(
-                "- **Source files:** {}\n",
-                stats.source_files.len()
-            ));
-
-            if !stats.chunks_by_level.is_empty() {
-                report.push_str("\n### Entries by level\n\n");
-                for level in 1..=7 {
-                    if let Some(count) = stats.chunks_by_level.get(&level) {
-                        let level_name = if level <= 6 {
-                            format!("H{}", level)
-                        } else {
-                            "Content".to_string()
-                        };
-                        report.push_str(&format!("- {}: {}\n", level_name, count));
-                    }
-                }
-            }
-
-            if !stats.source_files.is_empty() {
-                report.push_str("\n### Source files\n\n");
-                for file in &stats.source_files {
-                    report.push_str(&format!("- {}\n", file));
-                }
-            }
-
             let aging_config = AgingConfig::load(data_dir);
-            report.push_str(&format!(
-                "\n### Aging policy\n\n- Degrade {} → '{}' after {} days\n",
-                aging_config.degrade_from.join("/"),
-                aging_config.degrade_to,
-                aging_config.degrade_after_days,
-            ));
-
-            if stats.pending_embeddings > 0 {
-                let eta = super::embed_worker::eta_seconds(stats.pending_embeddings);
-                report.push_str("\n### Pending embeddings\n\n");
-                report.push_str(&format!("- **Pending:** {}\n", stats.pending_embeddings));
-                report.push_str(&format!("- **Estimated completion:** ~{}s\n", eta));
-            }
-
-            Ok(report)
+            Ok(super::format::format_store_status(&stats, &aging_config))
         }
         Some("history") => {
             let raw_id = input

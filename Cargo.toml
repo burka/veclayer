@@ -33,12 +33,13 @@ fastembed = "4"
 # Markdown parsing
 pulldown-cmark = "0.13"
 
-# MCP Server (manual implementation, no rmcp dependency for prototype)
+# MCP Server (rmcp — official Rust MCP SDK)
+rmcp = { version = "1.1", features = ["server", "macros", "transport-io", "transport-streamable-http-server", "schemars"] }
 
 # Web server
 axum = "0.8"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "limit"] }
+tower-http = { version = "0.6", features = ["cors", "limit", "trace"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -64,10 +65,13 @@ blake3 = "1"
 # Binary serialization
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 
+# Date/time (needed for rmcp Annotations)
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+
 # Utilities
 walkdir = "2"
 strsim = "0.11"
-schemars = "0.8"
+schemars = "1"
 fs2 = "0.4"
 directories = "6"
 glob = "0.3"
@@ -84,3 +88,4 @@ owo-colors = { version = "4.2.3", features = ["supports-colors"] }
 [dev-dependencies]
 tempfile = "3"
 serial_test = "3"
+reqwest = { version = "0.12", features = ["json"] }

@@ -363,14 +363,6 @@ pub struct FocusChild {
     pub relevance: Option<f32>,
 }
 
-/// API response wrapper
-#[derive(Debug, Serialize)]
-#[serde(untagged)]
-pub enum ApiResponse<T> {
-    Success(T),
-    Error { error: String },
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

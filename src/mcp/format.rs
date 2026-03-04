@@ -211,6 +211,145 @@ fn floor_char_boundary(s: &str, index: usize) -> usize {
     i
 }
 
+/// Format store status as readable markdown for `veclayer://status` and `think(status)`.
+pub fn format_store_status(
+    stats: &crate::store::StoreStats,
+    aging_config: &crate::aging::AgingConfig,
+) -> String {
+    let mut md = String::from("## Store Status\n\n");
+    md.push_str(&format!("- **Total entries:** {}\n", stats.total_chunks));
+    md.push_str(&format!(
+        "- **Source files:** {}\n",
+        stats.source_files.len()
+    ));
+
+    if !stats.chunks_by_level.is_empty() {
+        md.push_str("\n### Entries by level\n\n");
+        for level in 1..=7 {
+            if let Some(count) = stats.chunks_by_level.get(&level) {
+                let name = if level <= 6 {
+                    format!("H{level}")
+                } else {
+                    "Content".to_string()
+                };
+                md.push_str(&format!("- {name}: {count}\n"));
+            }
+        }
+    }
+
+    if !stats.source_files.is_empty() {
+        md.push_str("\n### Source files\n\n");
+        for file in &stats.source_files {
+            md.push_str(&format!("- {file}\n"));
+        }
+    }
+
+    md.push_str(&format!(
+        "\n### Aging policy\n\n- Degrade {} → '{}' after {} days\n",
+        aging_config.degrade_from.join("/"),
+        aging_config.degrade_to,
+        aging_config.degrade_after_days,
+    ));
+
+    if stats.pending_embeddings > 0 {
+        let eta = super::embed_worker::eta_seconds(stats.pending_embeddings);
+        md.push_str("\n### Pending embeddings\n\n");
+        md.push_str(&format!("- **Pending:** {}\n", stats.pending_embeddings));
+        md.push_str(&format!("- **Estimated completion:** ~{eta}s\n"));
+    }
+
+    md
+}
+
+/// Format hot entries with salience scores for the `veclayer://hot` resource.
+pub fn format_hot_entries(
+    chunks: &[crate::HierarchicalChunk],
+    top: &[(usize, crate::salience::SalienceScore)],
+) -> String {
+    let mut md = String::from("## Hot Entries\n\n");
+    for (idx, score) in top {
+        let chunk = &chunks[*idx];
+        let heading = chunk.heading.as_deref().unwrap_or("(no heading)");
+        let short = short_id(&chunk.id);
+        let perspectives = if chunk.perspectives.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", chunk.perspectives.join(", "))
+        };
+        let preview = content_preview(&chunk.content, 120);
+        md.push_str(&format!(
+            "- **{heading}** [{:.3}] `{short}`{perspectives}\n  {preview}\n",
+            score.composite,
+        ));
+    }
+    md.push_str(&format!("\n_{} entry(ies)._\n", top.len()));
+    md
+}
+
+/// Format a full entry with children for the `veclayer://entries/{id}` resource.
+pub fn format_entry_detail(
+    chunk: &crate::HierarchicalChunk,
+    children: &[crate::HierarchicalChunk],
+) -> String {
+    let heading = chunk.heading.as_deref().unwrap_or("(no heading)");
+    let mut md = format!("## {heading}\n\n");
+
+    // Content
+    md.push_str(chunk.content.trim());
+    md.push_str("\n\n");
+
+    // Metadata block
+    md.push_str("### Metadata\n\n");
+    md.push_str(&format!("- **ID:** `{}`\n", chunk.id));
+    md.push_str(&format!("- **Type:** {}\n", chunk.entry_type));
+    md.push_str(&format!("- **Visibility:** {}\n", chunk.visibility));
+    md.push_str(&format!("- **Level:** {}\n", chunk.level));
+    md.push_str(&format!("- **Source:** {}\n", chunk.source_file));
+    if !chunk.perspectives.is_empty() {
+        md.push_str(&format!(
+            "- **Perspectives:** {}\n",
+            chunk.perspectives.join(", ")
+        ));
+    }
+    if let Some(parent) = &chunk.parent_id {
+        md.push_str(&format!("- **Parent:** `{}`\n", short_id(parent)));
+    }
+
+    // Access profile
+    let ap = &chunk.access_profile;
+    md.push_str(&format!(
+        "- **Access:** total={}, hour={}, day={}, week={}\n",
+        ap.total, ap.hour, ap.day, ap.week
+    ));
+
+    // Relations
+    if !chunk.relations.is_empty() {
+        md.push_str(&format!("\n### Relations ({})\n\n", chunk.relations.len()));
+        for rel in &chunk.relations {
+            md.push_str(&format!(
+                "- {} → `{}`\n",
+                rel.kind,
+                short_id(&rel.target_id)
+            ));
+        }
+    }
+
+    // Children
+    if !children.is_empty() {
+        md.push_str(&format!("\n### Children ({})\n\n", children.len()));
+        for child in children {
+            let child_heading = child.heading.as_deref().unwrap_or("(no heading)");
+            let child_short = short_id(&child.id);
+            let preview = content_preview(&child.content, 120);
+            md.push_str(&format!(
+                "- **{child_heading}** `{child_short}`\n  {preview}\n"
+            ));
+        }
+    }
+
+    md
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

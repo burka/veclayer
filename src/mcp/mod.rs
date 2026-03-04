@@ -3,17 +3,21 @@
 //! Split into:
 //! - `types` -- Input/output structs
 //! - `tools` -- Tool implementation functions
-//! - `stdio` -- MCP stdio transport
-//! - `http` -- HTTP REST API
+//! - `handler` -- Shared rmcp tool handler (used by both transports)
+//! - `stdio` -- MCP stdio transport (rmcp)
+//! - `http` -- HTTP REST API + Streamable HTTP MCP transport (rmcp)
 
 pub mod embed_worker;
 pub mod format;
+pub mod handler;
 pub mod http;
+pub mod resources;
 pub mod stdio;
 pub mod tools;
 pub mod types;
 
-pub use http::run_http;
+pub use handler::McpHandler;
+pub use http::{build_app, run_http, AppState};
 pub use stdio::run_stdio;
 
 /// Instructions provided to agents on first connection.
@@ -128,6 +132,27 @@ pub(crate) fn build_priming_text(priming: &str) -> String {
         MCP_INSTRUCTIONS.to_string()
     } else {
         format!("{}\n\n---\n\n{}", MCP_INSTRUCTIONS, priming)
+    }
+}
+
+/// Compute the full MCP instructions text (static + identity priming).
+///
+/// Used by both stdio and HTTP startup to pre-compute the instructions once.
+pub(crate) async fn compute_instructions(
+    store: &crate::store::StoreBackend,
+    data_dir: &std::path::Path,
+    project: Option<&str>,
+    branch: Option<&str>,
+) -> String {
+    match crate::identity::compute_identity(store, data_dir, project, branch).await {
+        Ok(snapshot) => {
+            let priming = crate::identity::generate_priming(&snapshot);
+            build_priming_text(&priming)
+        }
+        Err(e) => {
+            tracing::warn!("Identity priming failed, using static instructions: {}", e);
+            MCP_INSTRUCTIONS.to_string()
+        }
     }
 }
 
