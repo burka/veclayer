@@ -27,6 +27,7 @@ use std::path::PathBuf;
 
 pub mod access_profile;
 pub mod aging;
+pub mod auth;
 pub mod blob_store;
 pub mod chunk;
 #[cfg(feature = "llm")]
@@ -35,6 +36,7 @@ pub mod cluster;
 #[doc(hidden)]
 pub mod commands;
 pub mod config;
+pub mod crypto;
 pub mod embedder;
 pub mod entry;
 pub mod error;
@@ -64,6 +66,7 @@ pub(crate) mod test_helpers;
 #[cfg(feature = "llm")]
 #[doc(hidden)]
 pub mod think;
+pub mod util;
 
 /// Platform-appropriate default data directory for VecLayer.
 ///

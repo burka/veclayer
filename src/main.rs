@@ -7,12 +7,12 @@ use tracing_subscriber::EnvFilter;
 #[cfg(feature = "llm")]
 use veclayer::commands::think;
 use veclayer::commands::{
-    add, archive, browse, compact, export_entries, focus, history, import_entries, init, merge,
-    orientation, perspective_add, perspective_list, perspective_remove, print_sources,
-    rebuild_index, reflect, search, serve, show_config, status, think_aging_apply,
-    think_aging_configure, think_demote, think_discover, think_promote, think_relate, AddOptions,
-    CompactAction, CompactOptions, ExportOptions, FocusOptions, ImportOptions, MergeOptions,
-    SearchOptions, ServeOptions,
+    add, archive, auth_login, auth_status, auth_token, browse, compact, export_entries, focus,
+    history, identity_init, identity_show, import_entries, init, merge, orientation,
+    perspective_add, perspective_list, perspective_remove, print_sources, rebuild_index, reflect,
+    search, serve, show_config, status, think_aging_apply, think_aging_configure, think_demote,
+    think_discover, think_promote, think_relate, AddOptions, CompactAction, CompactOptions,
+    ExportOptions, FocusOptions, ImportOptions, MergeOptions, SearchOptions, ServeOptions,
 };
 use veclayer::Result;
 
@@ -237,6 +237,18 @@ enum Commands {
         /// Project scope for memory isolation
         #[arg(long)]
         project: Option<String>,
+
+        /// Require authentication for all API access
+        #[arg(long, env = "VECLAYER_AUTH_REQUIRED")]
+        auth_required: bool,
+
+        /// Public server URL for OAuth metadata
+        #[arg(long, env = "VECLAYER_SERVER_URL")]
+        server_url: Option<String>,
+
+        /// Auto-approve OAuth requests (testing only)
+        #[arg(long, env = "VECLAYER_AUTO_APPROVE", hide = true)]
+        auto_approve: bool,
     },
 
     /// Show store statistics
@@ -299,6 +311,18 @@ enum Commands {
         force: bool,
     },
 
+    /// Manage cryptographic identity (DID, keypairs)
+    Identity {
+        #[command(subcommand)]
+        action: IdentityAction,
+    },
+
+    /// Manage authentication tokens
+    Auth {
+        #[command(subcommand)]
+        action: AuthAction,
+    },
+
     /// Reflect — identity snapshot, salience ranking, archive candidates
     #[command(alias = "id")]
     Reflect {
@@ -335,6 +359,42 @@ enum PerspectiveAction {
         /// Perspective ID to remove
         id: String,
     },
+}
+
+#[derive(Subcommand)]
+enum IdentityAction {
+    /// Generate a new Ed25519 keypair and store it encrypted
+    Init {
+        /// Overwrite existing identity
+        #[arg(long)]
+        force: bool,
+    },
+    /// Show current identity (DID, public key, keystore path)
+    Show,
+}
+
+#[derive(Subcommand)]
+enum AuthAction {
+    /// Mint a JWT access token (for server operators)
+    Token {
+        /// Capability: read, write, admin
+        #[arg(long, default_value = "read")]
+        can: String,
+        /// Expiry duration: 1h, 30d, 3600 (seconds)
+        #[arg(long, default_value = "1h")]
+        expires: String,
+        /// Target server DID (defaults to own DID)
+        #[arg(long)]
+        audience: Option<String>,
+    },
+    /// Authenticate against a remote VecLayer server
+    Login {
+        /// Server URL (e.g. https://my-veclayer.fly.dev)
+        #[arg(long)]
+        server: String,
+    },
+    /// Show current authentication status
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -604,7 +664,11 @@ async fn main() -> Result<()> {
             read_only,
             mcp_stdio,
             project,
+            auth_required,
+            server_url,
+            auto_approve,
         } => {
+            let auth_config = veclayer::config::Config::new().auth;
             let options = ServeOptions {
                 host: host
                     .or(user_resolved.host.clone())
@@ -614,6 +678,11 @@ async fn main() -> Result<()> {
                 mcp_stdio,
                 project: project.or(discovered_project),
                 branch: discovered_branch,
+                auth_required: auth_required || auth_config.auth_required,
+                server_url: server_url.or(auth_config.server_url),
+                auto_approve: auto_approve || auth_config.auto_approve,
+                token_expiry_secs: auth_config.token_expiry_secs,
+                refresh_expiry_secs: auth_config.refresh_expiry_secs,
             };
             serve(&data_dir, &options).await?;
         }
@@ -664,6 +733,29 @@ async fn main() -> Result<()> {
             };
             merge(&data_dir, &source, &options).await?;
         }
+        Commands::Identity { action } => match action {
+            IdentityAction::Init { force } => {
+                identity_init(&data_dir, force).await?;
+            }
+            IdentityAction::Show => {
+                identity_show(&data_dir).await?;
+            }
+        },
+        Commands::Auth { action } => match action {
+            AuthAction::Token {
+                can,
+                expires,
+                audience,
+            } => {
+                auth_token(&data_dir, &can, &expires, audience.as_deref()).await?;
+            }
+            AuthAction::Login { server } => {
+                auth_login(&data_dir, &server).await?;
+            }
+            AuthAction::Status => {
+                auth_status(&data_dir).await?;
+            }
+        },
         Commands::Reflect { action } => match action {
             None => {
                 reflect(&data_dir).await?;

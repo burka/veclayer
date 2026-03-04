@@ -36,6 +36,9 @@ pub struct Config {
     /// LLM provider for the think/sleep cycle
     pub llm: LlmConfig,
 
+    /// Authentication configuration
+    pub auth: AuthConfig,
+
     /// Whether to run in read-only mode
     pub read_only: bool,
 
@@ -56,6 +59,38 @@ pub struct Config {
 
     /// Git branch for branch-scoped entries (auto-detected)
     pub branch: Option<String>,
+}
+
+/// Authentication configuration.
+#[derive(Debug, Clone)]
+pub struct AuthConfig {
+    /// Require authentication for HTTP API access (default: false for backward compat).
+    pub auth_required: bool,
+
+    /// Public URL of this server (used as OAuth issuer and JWT audience).
+    /// Example: "https://my-veclayer.fly.dev"
+    pub server_url: Option<String>,
+
+    /// Access token lifetime in seconds (default: 3600 = 1 hour).
+    pub token_expiry_secs: u64,
+
+    /// Refresh token lifetime in seconds (default: 2592000 = 30 days).
+    pub refresh_expiry_secs: u64,
+
+    /// Auto-approve OAuth authorization requests (TESTING ONLY — never in production).
+    pub auto_approve: bool,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            auth_required: false,
+            server_url: None,
+            token_expiry_secs: 3600,
+            refresh_expiry_secs: 2_592_000,
+            auto_approve: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +120,16 @@ struct FileConfig {
     search_children_k: Option<usize>,
     embedder: Option<FileEmbedderConfig>,
     llm: Option<FileLlmConfig>,
+    auth: Option<FileAuthConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FileAuthConfig {
+    auth_required: Option<bool>,
+    server_url: Option<String>,
+    token_expiry_secs: Option<u64>,
+    refresh_expiry_secs: Option<u64>,
+    auto_approve: Option<bool>,
 }
 
 /// Unified match override: path glob and/or git-remote regex, plus config fields.
@@ -435,11 +480,13 @@ impl Config {
 
         let embedder = Self::resolve_embedder(file.embedder);
         let llm = Self::resolve_llm(file.llm);
+        let auth = Self::resolve_auth(file.auth);
 
         Self {
             data_dir,
             embedder,
             llm,
+            auth,
             read_only,
             port,
             host,
@@ -543,6 +590,38 @@ impl Config {
             api_key,
             temperature,
             max_tokens,
+        }
+    }
+
+    fn resolve_auth(file_auth: Option<FileAuthConfig>) -> AuthConfig {
+        let defaults = AuthConfig::default();
+
+        let auth_required = env_bool("VECLAYER_AUTH_REQUIRED")
+            .or(file_auth.as_ref().and_then(|a| a.auth_required))
+            .unwrap_or(defaults.auth_required);
+
+        let server_url = std::env::var("VECLAYER_SERVER_URL")
+            .ok()
+            .or_else(|| file_auth.as_ref().and_then(|a| a.server_url.clone()));
+
+        let token_expiry_secs = env_parse("VECLAYER_TOKEN_EXPIRY")
+            .or(file_auth.as_ref().and_then(|a| a.token_expiry_secs))
+            .unwrap_or(defaults.token_expiry_secs);
+
+        let refresh_expiry_secs = env_parse("VECLAYER_REFRESH_EXPIRY")
+            .or(file_auth.as_ref().and_then(|a| a.refresh_expiry_secs))
+            .unwrap_or(defaults.refresh_expiry_secs);
+
+        let auto_approve = env_bool("VECLAYER_AUTO_APPROVE")
+            .or(file_auth.as_ref().and_then(|a| a.auto_approve))
+            .unwrap_or(defaults.auto_approve);
+
+        AuthConfig {
+            auth_required,
+            server_url,
+            token_expiry_secs,
+            refresh_expiry_secs,
+            auto_approve,
         }
     }
 
@@ -1375,5 +1454,76 @@ project = "damalo"
         let loaded = UserConfig::load(&config_path);
         assert_eq!(loaded.matches.len(), 1);
         assert_eq!(loaded.matches[0].project.as_deref(), Some("myproject"));
+    }
+
+    #[test]
+    fn test_auth_config_defaults() {
+        let auth = AuthConfig::default();
+        assert!(!auth.auth_required);
+        assert!(auth.server_url.is_none());
+        assert_eq!(auth.token_expiry_secs, 3600);
+        assert_eq!(auth.refresh_expiry_secs, 2_592_000);
+        assert!(!auth.auto_approve);
+    }
+
+    #[test]
+    fn test_auth_config_from_toml() {
+        let toml_str = r#"
+[auth]
+auth_required = true
+server_url = "https://my-veclayer.example.com"
+token_expiry_secs = 1800
+refresh_expiry_secs = 86400
+auto_approve = true
+"#;
+        let fc: FileConfig = toml::from_str(toml_str).unwrap();
+        let auth_file = fc.auth.unwrap();
+        assert_eq!(auth_file.auth_required, Some(true));
+        assert_eq!(
+            auth_file.server_url.as_deref(),
+            Some("https://my-veclayer.example.com")
+        );
+        assert_eq!(auth_file.token_expiry_secs, Some(1800));
+        assert_eq!(auth_file.refresh_expiry_secs, Some(86400));
+        assert_eq!(auth_file.auto_approve, Some(true));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_auth_config_env_override() {
+        let saved_required = std::env::var("VECLAYER_AUTH_REQUIRED").ok();
+        let saved_url = std::env::var("VECLAYER_SERVER_URL").ok();
+        let saved_expiry = std::env::var("VECLAYER_TOKEN_EXPIRY").ok();
+        let saved_approve = std::env::var("VECLAYER_AUTO_APPROVE").ok();
+
+        std::env::set_var("VECLAYER_AUTH_REQUIRED", "true");
+        std::env::set_var("VECLAYER_SERVER_URL", "https://env.example.com");
+        std::env::set_var("VECLAYER_TOKEN_EXPIRY", "7200");
+        std::env::set_var("VECLAYER_AUTO_APPROVE", "1");
+
+        let auth = Config::resolve_auth(None);
+
+        // Restore env
+        match saved_required {
+            Some(v) => std::env::set_var("VECLAYER_AUTH_REQUIRED", v),
+            None => std::env::remove_var("VECLAYER_AUTH_REQUIRED"),
+        }
+        match saved_url {
+            Some(v) => std::env::set_var("VECLAYER_SERVER_URL", v),
+            None => std::env::remove_var("VECLAYER_SERVER_URL"),
+        }
+        match saved_expiry {
+            Some(v) => std::env::set_var("VECLAYER_TOKEN_EXPIRY", v),
+            None => std::env::remove_var("VECLAYER_TOKEN_EXPIRY"),
+        }
+        match saved_approve {
+            Some(v) => std::env::set_var("VECLAYER_AUTO_APPROVE", v),
+            None => std::env::remove_var("VECLAYER_AUTO_APPROVE"),
+        }
+
+        assert!(auth.auth_required);
+        assert_eq!(auth.server_url.as_deref(), Some("https://env.example.com"));
+        assert_eq!(auth.token_expiry_secs, 7200);
+        assert!(auth.auto_approve);
     }
 }

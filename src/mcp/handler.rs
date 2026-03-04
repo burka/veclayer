@@ -14,6 +14,7 @@ use rmcp::{
     ServerHandler,
 };
 
+use crate::auth::capability::Capability;
 use crate::blob_store::BlobStore;
 use crate::store::StoreBackend;
 use crate::Embedder;
@@ -44,10 +45,13 @@ pub struct McpHandler {
     /// Instruction text returned in `get_info` (MCP `initialize` response).
     /// Computed from static instructions + identity priming at session creation.
     instructions: String,
+    /// Authorization level for this session. Checked before executing each tool.
+    capability: Capability,
     tool_router: ToolRouter<Self>,
 }
 
 impl McpHandler {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         store: Arc<StoreBackend>,
         embedder: Arc<dyn Embedder + Send + Sync>,
@@ -56,6 +60,7 @@ impl McpHandler {
         project: Option<String>,
         branch: Option<String>,
         instructions: String,
+        capability: Capability,
     ) -> Self {
         let mut tool_router = Self::tool_router();
 
@@ -92,6 +97,7 @@ impl McpHandler {
             project,
             branch,
             instructions,
+            capability,
             tool_router,
         }
     }
@@ -106,6 +112,11 @@ impl McpHandler {
         &self,
         Parameters(input): Parameters<RecallInput>,
     ) -> Result<CallToolResult, McpError> {
+        if !self.capability.permits(Capability::Read) {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "Insufficient permission: need read",
+            )]));
+        }
         let query = input.query.clone();
         match tools::execute_recall(
             &self.store,
@@ -131,6 +142,11 @@ impl McpHandler {
         &self,
         Parameters(input): Parameters<FocusInput>,
     ) -> Result<CallToolResult, McpError> {
+        if !self.capability.permits(Capability::Read) {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "Insufficient permission: need read",
+            )]));
+        }
         match tools::execute_focus(
             &self.store,
             &self.embedder,
@@ -155,6 +171,11 @@ impl McpHandler {
         &self,
         Parameters(input): Parameters<StoreInput>,
     ) -> Result<CallToolResult, McpError> {
+        if !self.capability.permits(Capability::Write) {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "Insufficient permission: need write",
+            )]));
+        }
         if input.content.is_empty() && input.items.is_empty() {
             return Ok(CallToolResult::error(vec![Content::text(
                 "Missing required parameter: content (or items for batch mode)",
@@ -185,6 +206,11 @@ impl McpHandler {
         &self,
         Parameters(input): Parameters<ThinkInput>,
     ) -> Result<CallToolResult, McpError> {
+        if !self.capability.permits(Capability::Write) {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "Insufficient permission: need write",
+            )]));
+        }
         match tools::execute_think(
             &self.store,
             &self.data_dir,
@@ -205,6 +231,11 @@ impl McpHandler {
         &self,
         Parameters(input): Parameters<ShareInput>,
     ) -> Result<CallToolResult, McpError> {
+        if !self.capability.permits(Capability::Write) {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "Insufficient permission: need write",
+            )]));
+        }
         let token = tools::build_share_token(input);
         let text = serde_json::to_string_pretty(&token).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(text)]))

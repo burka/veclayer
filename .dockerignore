@@ -1,0 +1,7 @@
+target/
+.git/
+.veclayer/
+*.md
+.github/
+.claude/
+tests/

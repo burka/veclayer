@@ -17,7 +17,7 @@ pub mod tools;
 pub mod types;
 
 pub use handler::McpHandler;
-pub use http::{build_app, run_http, AppState};
+pub use http::{build_app, run_http, AppState, AuthSetup};
 pub use stdio::run_stdio;
 
 /// Instructions provided to agents on first connection.

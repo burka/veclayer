@@ -49,6 +49,9 @@ pub enum Error {
     #[error("LLM error: {0}")]
     Llm(String),
 
+    #[error("Crypto error: {0}")]
+    Crypto(String),
+
     #[cfg(feature = "sync")]
     #[error("Sync error: {0}")]
     Sync(String),

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use rmcp::{transport::stdio, ServiceExt};
 use tracing::info;
 
+use crate::auth::capability::Capability;
 use crate::blob_store::BlobStore;
 use crate::embedder;
 use crate::store::StoreBackend;
@@ -42,7 +43,8 @@ pub async fn run_stdio(config: Config) -> Result<()> {
     )
     .await;
 
-    // Create handler and serve via rmcp stdio transport
+    // Create handler and serve via rmcp stdio transport.
+    // Stdio transport is trusted (local process), so it always gets Admin capability.
     let handler = McpHandler::new(
         store,
         embedder,
@@ -51,6 +53,7 @@ pub async fn run_stdio(config: Config) -> Result<()> {
         config.project.clone(),
         config.branch.clone(),
         instructions,
+        Capability::Admin,
     );
 
     let service = handler

@@ -62,6 +62,20 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sha2 = "0.10"
 blake3 = "1"
 
+# Cryptographic identity (Phase 6a)
+ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
+
+# Auth — JWT tokens and capability model (Phase 6b)
+jsonwebtoken = { version = "10", features = ["ed25519-dalek", "rust_crypto"] }
+uuid = { version = "1", features = ["v4"] }
+zeroize = "1"
+aes-gcm = "0.10"
+argon2 = "0.5"
+rand = "0.8"
+rpassword = "7"
+bs58 = "0.5"
+base64 = "0.22"
+
 # Binary serialization
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 
@@ -84,6 +98,7 @@ linfa = { version = "0.7", optional = true }
 linfa-clustering = { version = "0.7", optional = true }
 ndarray = { version = "0.15", optional = true }
 owo-colors = { version = "4.2.3", features = ["supports-colors"] }
+percent-encoding = "2"
 
 [dev-dependencies]
 tempfile = "3"

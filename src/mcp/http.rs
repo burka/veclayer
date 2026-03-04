@@ -1,11 +1,12 @@
 //! HTTP REST API server with Streamable HTTP MCP transport.
 
+use std::collections::HashMap;
 use std::result::Result as StdResult;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::extract::rejection::JsonRejection;
-use axum::extract::State;
-use axum::http::header::CONTENT_TYPE;
+use axum::extract::{Extension, State};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
 use axum::http::Method;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -19,6 +20,10 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
+use crate::auth::capability::Capability;
+use crate::auth::middleware::{auth_middleware, AuthState};
+use crate::auth::oauth::{oauth_router, OAuthState};
+use crate::auth::token_store::TokenStore;
 use crate::blob_store::BlobStore;
 use crate::embedder;
 use crate::store::StoreBackend;
@@ -27,6 +32,18 @@ use crate::{Config, Embedder, Result, VectorStore};
 use super::handler::McpHandler;
 use super::tools;
 use super::types::*;
+
+// ─── Auth setup ───────────────────────────────────────────────────────────────
+
+/// Pre-built auth state passed into [`build_app`] when authentication is
+/// configured.  Created in [`run_http`] from the keystore and serve options.
+#[derive(Clone)]
+pub struct AuthSetup {
+    pub auth_state: AuthState,
+    pub oauth_state: OAuthState,
+}
+
+// ─── Application state ────────────────────────────────────────────────────────
 
 /// Shared application state for both REST API handlers and MCP session factory.
 #[derive(Clone)]
@@ -37,7 +54,11 @@ pub struct AppState {
     pub data_dir: std::path::PathBuf,
     pub project: Option<String>,
     pub branch: Option<String>,
+    /// Present when authentication is enabled.
+    pub auth: Option<AuthSetup>,
 }
+
+// ─── Error types ──────────────────────────────────────────────────────────────
 
 /// HTTP error response with proper status codes.
 struct AppError {
@@ -49,6 +70,13 @@ impl AppError {
     fn bad_request(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
+            message: msg.into(),
+        }
+    }
+
+    fn forbidden(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
             message: msg.into(),
         }
     }
@@ -91,35 +119,49 @@ fn warn_and_convert(context: &str) -> impl FnOnce(crate::Error) -> AppError + '_
     }
 }
 
-/// Build the application router (public for integration tests).
+// ─── Capability helpers ───────────────────────────────────────────────────────
+
+/// Return a 403 `AppError` for an insufficient capability.
+fn insufficient(required: Capability) -> AppError {
+    AppError::forbidden(format!("Insufficient permission: need {required}"))
+}
+
+// ─── Router builder ───────────────────────────────────────────────────────────
+
+/// Build the application router.
+///
+/// When `state.auth` is `Some`, OAuth endpoints and the auth middleware are
+/// wired in.  When it is `None` the server runs fully open (backward-compatible
+/// mode for local single-agent use).
 ///
 /// # Security
 ///
-/// **No authentication.** Any process that can reach the bound socket can
-/// read/write the entire knowledge store. Currently mitigated by:
-/// - Localhost-only binding (default `127.0.0.1`)
-/// - CORS restricted to `http://localhost*` and `http://127.0.0.1*`
+/// **Open mode** (`auth = None`): any process that can reach the socket has
+/// full Admin access.  Mitigated by localhost-only binding.
 ///
-/// Add token-based auth (e.g. `Authorization: Bearer`) before exposing
-/// to untrusted networks.
+/// **Auth mode** (`auth = Some`): Bearer JWT tokens are required for all
+/// `/api/*` and `/mcp/*` routes.  `/health` and OAuth endpoints remain public.
 ///
-/// **No rate limiting.** There is no request throttling on any endpoint.
-/// For localhost single-agent use this is acceptable. Add
-/// `tower_http::limit::RateLimitLayer` or similar middleware before
-/// exposing to multi-tenant or remote environments.
+/// # Rate limiting
+///
+/// No request throttling.  For multi-tenant or remote use, add
+/// `tower_governor` or a similar layer before deploying.
 pub fn build_app(state: AppState) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(AllowOrigin::predicate(|origin, _| {
-            let s = origin.as_bytes();
-            s.starts_with(b"http://localhost") || s.starts_with(b"http://127.0.0.1")
-        }))
-        // DELETE is required by the MCP Streamable HTTP spec for session termination.
-        .allow_methods([Method::GET, Method::POST, Method::DELETE])
-        .allow_headers([CONTENT_TYPE]);
+    let cors = build_cors(state.auth.as_ref().and_then(|a| {
+        let url = &a.oauth_state.server_url;
+        if url.starts_with("http://localhost") || url.starts_with("http://127.0.0.1") {
+            None
+        } else {
+            Some(url.clone())
+        }
+    }));
 
-    // Streamable HTTP MCP transport: one McpHandler per session.
-    // Each session computes fresh identity priming so the agent gets
-    // up-to-date knowledge context on connect.
+    // MCP sessions inherit Admin: once a request has passed the auth middleware
+    // (which rejects unauthenticated or under-privileged callers), the session
+    // factory closure has no access to per-request extensions.  The middleware
+    // already acts as the enforcement boundary for /mcp/*.
+    let mcp_capability = Capability::Admin;
+
     let mcp_state = state.clone();
     let mcp_service = StreamableHttpService::new(
         move || {
@@ -139,14 +181,15 @@ pub fn build_app(state: AppState) -> Router {
                 mcp_state.project.clone(),
                 mcp_state.branch.clone(),
                 instructions,
+                mcp_capability,
             ))
         },
         LocalSessionManager::default().into(),
         StreamableHttpServerConfig::default(),
     );
 
-    Router::new()
-        .route("/health", get(|| async { "OK" }))
+    // Routes that require authorization.
+    let protected: Router<AppState> = Router::new()
         .route("/api/recall", post(api_recall))
         .route("/api/focus", post(api_focus))
         .route("/api/store", post(api_store))
@@ -155,12 +198,85 @@ pub fn build_app(state: AppState) -> Router {
         .route("/api/stats", get(api_stats))
         .route("/api/identity", get(api_identity))
         .route("/api/priming", get(api_priming))
-        .nest_service("/mcp", mcp_service)
-        .layer(TraceLayer::new_for_http())
+        .nest_service("/mcp", mcp_service);
+
+    let base: Router<AppState> = Router::new().route("/health", get(|| async { "OK" }));
+
+    let app: Router<AppState> = match state.auth.clone() {
+        Some(auth_setup) => {
+            // Inject Admin capability for open paths (health).  Auth middleware
+            // will inject the token capability for protected paths.
+            let open_with_cap = base.layer(axum::middleware::from_fn(inject_admin_capability));
+
+            let guarded = protected.layer(axum::middleware::from_fn_with_state(
+                auth_setup.auth_state,
+                auth_middleware,
+            ));
+
+            let oauth: Router<AppState> = oauth_router(auth_setup.oauth_state).with_state(());
+
+            Router::new()
+                .merge(oauth)
+                .merge(open_with_cap)
+                .merge(guarded)
+        }
+        None => {
+            // No auth: inject Admin for all requests so handlers can read the
+            // Capability extension uniformly.
+            let all_routes = base.merge(protected);
+            all_routes.layer(axum::middleware::from_fn(inject_admin_capability))
+        }
+    };
+
+    app.layer(TraceLayer::new_for_http())
         .layer(RequestBodyLimitLayer::new(4 * 1024 * 1024)) // 4 MiB
         .layer(cors)
         .with_state(state)
 }
+
+/// Middleware that injects [`Capability::Admin`] into request extensions.
+///
+/// Used on routes that are always public (e.g. `/health`) so that handlers
+/// can read capability extensions uniformly regardless of auth mode.
+async fn inject_admin_capability(
+    mut request: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> Response {
+    request.extensions_mut().insert(Capability::Admin);
+    next.run(request).await
+}
+
+/// Build the CORS layer.
+///
+/// Always allows localhost origins.  When a remote `server_url` is provided
+/// it is added as an allowed origin alongside `claude.ai` origins.
+/// The `Authorization` header is always included in allowed headers.
+fn build_cors(server_url: Option<String>) -> CorsLayer {
+    let extra_origin = server_url.clone();
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::predicate(move |origin, _| {
+            let s = origin.as_bytes();
+            if s.starts_with(b"http://localhost")
+                || s.starts_with(b"http://127.0.0.1")
+                || s == b"https://claude.ai"
+                || (s.starts_with(b"https://") && s.ends_with(b".claude.ai"))
+            {
+                return true;
+            }
+            if let Some(url) = &extra_origin {
+                let origin_str = std::str::from_utf8(s).unwrap_or_default();
+                if origin_str == url.as_str() {
+                    return true;
+                }
+            }
+            false
+        }))
+        // DELETE is required by the MCP Streamable HTTP spec for session termination.
+        .allow_methods([Method::GET, Method::POST, Method::DELETE])
+        .allow_headers([CONTENT_TYPE, AUTHORIZATION])
+}
+
+// ─── Server startup ───────────────────────────────────────────────────────────
 
 /// Run the HTTP REST API server.
 pub async fn run_http(config: Config) -> Result<()> {
@@ -181,6 +297,8 @@ pub async fn run_http(config: Config) -> Result<()> {
         );
     }
 
+    let auth = build_auth_setup(&config)?;
+
     let state = AppState {
         store,
         embedder,
@@ -188,6 +306,7 @@ pub async fn run_http(config: Config) -> Result<()> {
         data_dir: config.data_dir.clone(),
         project: config.project.clone(),
         branch: config.branch.clone(),
+        auth,
     };
 
     let app = build_app(state);
@@ -209,10 +328,79 @@ pub async fn run_http(config: Config) -> Result<()> {
     Ok(())
 }
 
+/// Load the keystore and build auth state, or return `None` when auth is
+/// disabled and no keystore exists.
+///
+/// Errors when `auth_required=true` but no identity has been initialised.
+fn build_auth_setup(config: &Config) -> Result<Option<AuthSetup>> {
+    use crate::crypto::keypair;
+    use crate::crypto::keystore;
+
+    let keystore_path = keystore::keystore_path(&config.data_dir);
+    let auth_required = config.auth.auth_required;
+
+    if !keystore::exists(&keystore_path) {
+        if auth_required {
+            return Err(crate::Error::Config(
+                "Authentication is required but no server identity exists. \
+                 Run `veclayer identity init` first."
+                    .to_owned(),
+            ));
+        }
+        // No identity and auth not required — run fully open.
+        return Ok(None);
+    }
+
+    let passphrase = std::env::var("VECLAYER_PASSPHRASE").unwrap_or_default();
+    let signing_key = keystore::load(&passphrase, &keystore_path)
+        .map_err(|e| crate::Error::Config(format!("Failed to load identity: {e}")))?;
+
+    let verifying_key = signing_key.verifying_key();
+    let did = keypair::to_did(&verifying_key);
+
+    let server_url = config
+        .auth
+        .server_url
+        .clone()
+        .unwrap_or_else(|| format!("http://{}:{}", config.host, config.port));
+
+    let mut token_store = TokenStore::open(&config.data_dir)
+        .map_err(|e| crate::Error::Config(format!("Failed to open token store: {e}")))?;
+    token_store.purge_expired();
+
+    let oauth_state = OAuthState {
+        token_store: Arc::new(Mutex::new(token_store)),
+        signing_key: Arc::new(signing_key),
+        server_did: did.clone(),
+        server_url,
+        token_expiry_secs: config.auth.token_expiry_secs,
+        refresh_expiry_secs: config.auth.refresh_expiry_secs,
+        auto_approve: config.auth.auto_approve,
+        device_codes: Arc::new(Mutex::new(HashMap::new())),
+    };
+
+    let auth_state = AuthState {
+        verifying_key,
+        server_did: did,
+        auth_required,
+    };
+
+    Ok(Some(AuthSetup {
+        auth_state,
+        oauth_state,
+    }))
+}
+
+// ─── REST API handlers ────────────────────────────────────────────────────────
+
 async fn api_recall(
     State(state): State<AppState>,
+    Extension(cap): Extension<Capability>,
     body: StdResult<Json<RecallInput>, JsonRejection>,
 ) -> StdResult<Json<Vec<SearchResultResponse>>, AppError> {
+    if !cap.permits(Capability::Read) {
+        return Err(insufficient(Capability::Read));
+    }
     let Json(input) = body?;
     let results = tools::execute_recall(
         &state.store,
@@ -228,8 +416,12 @@ async fn api_recall(
 
 async fn api_focus(
     State(state): State<AppState>,
+    Extension(cap): Extension<Capability>,
     body: StdResult<Json<FocusInput>, JsonRejection>,
 ) -> StdResult<Json<FocusResponse>, AppError> {
+    if !cap.permits(Capability::Read) {
+        return Err(insufficient(Capability::Read));
+    }
     let Json(input) = body?;
     let response = tools::execute_focus(
         &state.store,
@@ -245,8 +437,12 @@ async fn api_focus(
 
 async fn api_store(
     State(state): State<AppState>,
+    Extension(cap): Extension<Capability>,
     body: StdResult<Json<StoreInput>, JsonRejection>,
 ) -> StdResult<Json<String>, AppError> {
+    if !cap.permits(Capability::Write) {
+        return Err(insufficient(Capability::Write));
+    }
     let Json(input) = body?;
     if input.content.is_empty() {
         return Err(AppError::bad_request("content is required"));
@@ -266,8 +462,12 @@ async fn api_store(
 
 async fn api_think(
     State(state): State<AppState>,
+    Extension(cap): Extension<Capability>,
     body: StdResult<Json<ThinkInput>, JsonRejection>,
 ) -> StdResult<Json<String>, AppError> {
+    if !cap.permits(Capability::Write) {
+        return Err(insufficient(Capability::Write));
+    }
     let Json(input) = body?;
     let text = tools::execute_think(
         &state.store,
@@ -282,11 +482,23 @@ async fn api_think(
     Ok(Json(text))
 }
 
-async fn api_share(Json(input): Json<ShareInput>) -> Json<serde_json::Value> {
-    Json(tools::build_share_token(input))
+async fn api_share(
+    Extension(cap): Extension<Capability>,
+    Json(input): Json<ShareInput>,
+) -> StdResult<Json<serde_json::Value>, AppError> {
+    if !cap.permits(Capability::Write) {
+        return Err(insufficient(Capability::Write));
+    }
+    Ok(Json(tools::build_share_token(input)))
 }
 
-async fn api_stats(State(state): State<AppState>) -> StdResult<Json<serde_json::Value>, AppError> {
+async fn api_stats(
+    State(state): State<AppState>,
+    Extension(cap): Extension<Capability>,
+) -> StdResult<Json<serde_json::Value>, AppError> {
+    if !cap.permits(Capability::Read) {
+        return Err(insufficient(Capability::Read));
+    }
     let stats = state
         .store
         .stats()
@@ -303,7 +515,11 @@ async fn api_stats(State(state): State<AppState>) -> StdResult<Json<serde_json::
 /// Identity endpoint — mirrors stdio auto-priming on MCP initialize.
 async fn api_identity(
     State(state): State<AppState>,
+    Extension(cap): Extension<Capability>,
 ) -> StdResult<Json<serde_json::Value>, AppError> {
+    if !cap.permits(Capability::Read) {
+        return Err(insufficient(Capability::Read));
+    }
     let snapshot = crate::identity::compute_identity(
         state.store.as_ref(),
         &state.data_dir,
@@ -331,7 +547,13 @@ async fn api_identity(
 ///
 /// Agents connecting via HTTP can GET this endpoint on startup to receive the same
 /// identity briefing that stdio agents receive on `initialize`.
-async fn api_priming(State(state): State<AppState>) -> Response {
+async fn api_priming(
+    State(state): State<AppState>,
+    Extension(cap): Extension<Capability>,
+) -> Response {
+    if !cap.permits(Capability::Read) {
+        return (StatusCode::FORBIDDEN, "Insufficient permission: need read").into_response();
+    }
     match crate::identity::compute_identity(
         state.store.as_ref(),
         &state.data_dir,

@@ -24,7 +24,9 @@ use crate::summarizer::OllamaSummarizer;
 use crate::{Config, Embedder, Result, VectorStore};
 
 pub mod add;
+pub mod auth;
 pub mod data;
+pub mod identity;
 pub mod merge;
 pub mod perspective_ops;
 pub mod reflect;
@@ -197,6 +199,11 @@ pub struct ServeOptions {
     pub mcp_stdio: bool,
     pub project: Option<String>,
     pub branch: Option<String>,
+    pub auth_required: bool,
+    pub server_url: Option<String>,
+    pub auto_approve: bool,
+    pub token_expiry_secs: u64,
+    pub refresh_expiry_secs: u64,
 }
 
 impl Default for ServeOptions {
@@ -208,6 +215,11 @@ impl Default for ServeOptions {
             mcp_stdio: false,
             project: None,
             branch: None,
+            auth_required: false,
+            server_url: None,
+            auto_approve: false,
+            token_expiry_secs: 3600,
+            refresh_expiry_secs: 2_592_000,
         }
     }
 }
@@ -293,7 +305,9 @@ pub async fn resolve_entry(store: &impl VectorStore, id: &str) -> Result<crate::
 // --- Re-exports for external API ---
 
 pub use add::{add, ingest};
+pub use auth::{auth_login, auth_status, auth_token, cache_path, CachedToken};
 pub use data::{export_entries, import_entries, rebuild_index};
+pub use identity::{identity_init, identity_show};
 pub use merge::merge;
 pub use perspective_ops::{perspective_add, perspective_list, perspective_remove};
 pub use reflect::{compact, reflect, CompactAction};

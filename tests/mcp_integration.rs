@@ -26,6 +26,7 @@ async fn spawn_server_with(project: Option<String>, branch: Option<String>) -> (
         data_dir: tmp.path().to_path_buf(),
         project,
         branch,
+        auth: None,
     };
 
     let app = build_app(state);
