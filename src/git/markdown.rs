@@ -203,13 +203,12 @@ fn entry_to_frontmatter(entry: &Entry) -> Result<Frontmatter, GitError> {
 
     // Impression strength is only meaningful when an impression hint exists.
     // Omit when at the default (exactly 1.0) or when there's no hint.
-    let impression_strength = if entry.impression_hint.is_some()
-        && entry.impression_strength != 1.0_f32
-    {
-        Some(entry.impression_strength)
-    } else {
-        None
-    };
+    let impression_strength =
+        if entry.impression_hint.is_some() && entry.impression_strength != 1.0_f32 {
+            Some(entry.impression_strength)
+        } else {
+            None
+        };
 
     Ok(Frontmatter {
         id,
@@ -980,7 +979,10 @@ mod tests {
         };
         let filename = entry_filename(&entry);
         assert!(!filename.is_empty(), "filename must not be empty");
-        assert!(!filename.starts_with('-'), "filename must not start with '-'");
+        assert!(
+            !filename.starts_with('-'),
+            "filename must not start with '-'"
+        );
         assert!(filename.ends_with(".md"), "filename must end with .md");
     }
 
@@ -996,7 +998,10 @@ mod tests {
         };
         let filename = entry_filename(&entry);
         assert!(!filename.is_empty(), "filename must not be empty");
-        assert!(!filename.starts_with('-'), "filename must not start with '-'");
+        assert!(
+            !filename.starts_with('-'),
+            "filename must not start with '-'"
+        );
         assert!(filename.ends_with(".md"), "filename must end with .md");
     }
 

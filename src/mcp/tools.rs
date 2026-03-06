@@ -14,6 +14,7 @@ const THINK_ACTIONS: &[&str] = &[
     "perspectives",
     "status",
     "history",
+    "sync",
 ];
 
 use crate::aging::{self, AgingConfig};
@@ -110,14 +111,14 @@ fn commit_to_git(
     let store = git_store?;
 
     if let Err(e) = store.store_entry(entry) {
-        let msg = format!("Git staging failed: {e}");
+        let msg = format!("⚠ Git staging failed: {e}");
         tracing::warn!("{msg}");
         return Some(msg);
     }
 
     if let Some(emb) = embedding {
         if let Err(e) = store.store_embedding(entry, embedder_name, emb) {
-            tracing::warn!("Failed to cache embedding in git: {e}");
+            tracing::warn!("⚠ Failed to cache embedding in git: {e}");
         }
     }
 
@@ -560,7 +561,7 @@ pub async fn execute_store(
     }
 }
 
-#[allow(unused_variables)]
+#[allow(unused_variables, clippy::too_many_arguments)]
 pub async fn execute_think(
     store: &Arc<StoreBackend>,
     data_dir: &std::path::Path,
@@ -568,6 +569,8 @@ pub async fn execute_think(
     input: ThinkInput,
     project: Option<&str>,
     branch: Option<&str>,
+    git_store: Option<&crate::git::memory_store::MemoryStore>,
+    push_mode: Option<crate::git::branch_config::PushMode>,
 ) -> Result<String> {
     match input.action.as_deref() {
         None => {
@@ -731,7 +734,25 @@ pub async fn execute_think(
         Some("status") => {
             let stats = store.stats().await?;
             let aging_config = AgingConfig::load(data_dir);
-            Ok(super::format::format_store_status(&stats, &aging_config))
+            let mut status = super::format::format_store_status(&stats, &aging_config);
+
+            if let Some(git) = git_store {
+                status.push_str("\n### Git Memory\n\n");
+                match git.unpushed_commit_count() {
+                    Ok(0) => status.push_str("- **Pending commits:** 0 (in sync with remote)\n"),
+                    Ok(n) => {
+                        status.push_str(&format!("- **Pending commits:** {n} (not yet pushed)\n"))
+                    }
+                    Err(_) => {
+                        status.push_str("- **Pending commits:** unknown (no remote configured)\n")
+                    }
+                }
+                if let Some(pm) = push_mode {
+                    status.push_str(&format!("- **Push mode:** {pm}\n"));
+                }
+            }
+
+            Ok(status)
         }
         Some("history") => {
             let raw_id = input
@@ -783,6 +804,77 @@ pub async fn execute_think(
         Some("discover") => {
             let limit = input.hot_limit.unwrap_or(10);
             discover_unlinked_pairs(store, limit).await
+        }
+        Some("sync") => {
+            use crate::git::{PushResult, SyncResult};
+
+            let git = git_store.ok_or_else(|| {
+                crate::Error::config(
+                    "Git memory storage is not configured. Run `veclayer init --share` first.",
+                )
+            })?;
+
+            let direction = input.direction.as_deref().unwrap_or("both");
+            let mut report = String::from("## Sync Report\n\n");
+
+            match direction {
+                "push" => match git.push() {
+                    Ok(PushResult::Success) => {
+                        report.push_str("**Pushed** to remote successfully.\n")
+                    }
+                    Ok(PushResult::NothingToPush) => {
+                        report.push_str("Nothing to push — already up to date.\n")
+                    }
+                    Ok(PushResult::Rejected) => {
+                        report.push_str("Push **rejected** — remote has diverged.\n");
+                        report.push_str("Try `think(action='sync')` to pull first, then push.\n");
+                    }
+                    Err(e) => report.push_str(&format!("Push failed: {e}\n")),
+                },
+                "pull" => match git.pull() {
+                    Ok(SyncResult::Success) => {
+                        report.push_str("**Pulled** new entries from remote.\n")
+                    }
+                    Ok(SyncResult::NothingToSync) => {
+                        report.push_str("Already up to date with remote.\n")
+                    }
+                    Ok(SyncResult::Conflicts(files)) => {
+                        report.push_str("**Conflict detected** during pull. Rebase aborted.\n\n");
+                        report.push_str("Conflicting files:\n");
+                        for f in &files {
+                            report.push_str(&format!("- `{f}`\n"));
+                        }
+                        report.push_str(
+                            "\nResolve manually or use `think(action='sync')` after fixing.\n",
+                        );
+                    }
+                    Err(e) => report.push_str(&format!("Pull failed: {e}\n")),
+                },
+                _ => match git.sync() {
+                    Ok(SyncResult::Success) => {
+                        report.push_str("**Synced** — pulled and pushed successfully.\n")
+                    }
+                    Ok(SyncResult::NothingToSync) => {
+                        report.push_str("Already in sync with remote.\n")
+                    }
+                    Ok(SyncResult::Conflicts(files)) => {
+                        report.push_str("**Conflict detected** during sync.\n\n");
+                        report.push_str("Conflicting files:\n");
+                        for f in &files {
+                            report.push_str(&format!("- `{f}`\n"));
+                        }
+                    }
+                    Err(e) => report.push_str(&format!("Sync failed: {e}\n")),
+                },
+            }
+
+            match git.unpushed_commit_count() {
+                Ok(0) => {}
+                Ok(n) => report.push_str(&format!("\n{n} commit(s) still pending push.\n")),
+                Err(_) => {}
+            }
+
+            Ok(report)
         }
         Some(unknown) => Err(crate::Error::config(format!(
             "Unknown think action: '{}'. Available: {}",
@@ -1147,10 +1239,20 @@ mod tests {
             degrade_after_days: None,
             degrade_to: None,
             degrade_from: None,
+            direction: None,
         };
-        let result = execute_think(&store, dir.path(), &blob_store, input, None, None)
-            .await
-            .unwrap();
+        let result = execute_think(
+            &store,
+            dir.path(),
+            &blob_store,
+            input,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(result.contains("Perspectives"));
         // Should contain the built-in perspectives
         assert!(result.contains("decisions"));
@@ -1178,10 +1280,20 @@ mod tests {
             degrade_after_days: None,
             degrade_to: None,
             degrade_from: None,
+            direction: None,
         };
-        let result = execute_think(&store, dir.path(), &blob_store, input, None, None)
-            .await
-            .unwrap();
+        let result = execute_think(
+            &store,
+            dir.path(),
+            &blob_store,
+            input,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(result.contains("Store Status"));
         assert!(result.contains("Total entries"));
         assert!(result.contains("1")); // 1 entry
@@ -1208,10 +1320,20 @@ mod tests {
             degrade_after_days: None,
             degrade_to: None,
             degrade_from: None,
+            direction: None,
         };
-        let result = execute_think(&store, dir.path(), &blob_store, input, None, None)
-            .await
-            .unwrap();
+        let result = execute_think(
+            &store,
+            dir.path(),
+            &blob_store,
+            input,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(result.contains("Entry History"));
         assert!(result.contains("Relations"));
         assert!(result.contains("supersedes"));
@@ -1234,8 +1356,19 @@ mod tests {
             degrade_after_days: None,
             degrade_to: None,
             degrade_from: None,
+            direction: None,
         };
-        let result = execute_think(&store, dir.path(), &blob_store, input, None, None).await;
+        let result = execute_think(
+            &store,
+            dir.path(),
+            &blob_store,
+            input,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("requires 'id'"));
     }
@@ -1256,10 +1389,20 @@ mod tests {
             degrade_after_days: None,
             degrade_to: None,
             degrade_from: None,
+            direction: None,
         };
-        let result = execute_think(&store, dir.path(), &blob_store, input, None, None)
-            .await
-            .unwrap();
+        let result = execute_think(
+            &store,
+            dir.path(),
+            &blob_store,
+            input,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(result.contains("Total entries"));
         assert!(result.contains("0"));
     }
@@ -1280,14 +1423,101 @@ mod tests {
             degrade_after_days: None,
             degrade_to: None,
             degrade_from: None,
+            direction: None,
         };
-        let result = execute_think(&store, dir.path(), &blob_store, input, None, None).await;
+        let result = execute_think(
+            &store,
+            dir.path(),
+            &blob_store,
+            input,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Unknown think action"));
         assert!(err.contains("perspectives"));
         assert!(err.contains("status"));
         assert!(err.contains("history"));
+        assert!(err.contains("sync"));
+    }
+
+    #[tokio::test]
+    async fn test_think_sync_without_git_store_returns_error() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+
+        let input = ThinkInput {
+            action: Some("sync".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+        let result = execute_think(
+            &store,
+            dir.path(),
+            &blob_store,
+            input,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Git memory storage is not configured"));
+    }
+
+    #[tokio::test]
+    async fn test_think_status_without_git_includes_store_status() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+        store
+            .insert_chunks(vec![make_test_chunk("abc123", "test content")])
+            .await
+            .unwrap();
+
+        let input = ThinkInput {
+            action: Some("status".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+        // With no git_store, status should still return store info without git section
+        let result = execute_think(
+            &store,
+            dir.path(),
+            &blob_store,
+            input,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(result.contains("Store Status"));
+        assert!(result.contains("Total entries"));
+        // Git section should NOT appear when git_store is None
+        assert!(!result.contains("Git Memory"));
     }
 
     #[test]
@@ -1670,10 +1900,20 @@ mod tests {
             degrade_after_days: None,
             degrade_to: None,
             degrade_from: None,
+            direction: None,
         };
-        let result = execute_think(&store, dir.path(), &blob_store, input, None, None)
-            .await
-            .unwrap();
+        let result = execute_think(
+            &store,
+            dir.path(),
+            &blob_store,
+            input,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(result.contains("Nothing to discover") || result.contains("No entries"));
     }
 
@@ -1710,10 +1950,20 @@ mod tests {
             degrade_after_days: None,
             degrade_to: None,
             degrade_from: None,
+            direction: None,
         };
-        let result = execute_think(&store, dir.path(), &blob_store, input, None, None)
-            .await
-            .unwrap();
+        let result = execute_think(
+            &store,
+            dir.path(),
+            &blob_store,
+            input,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Should produce a discover report with at least one pair
         assert!(
@@ -1760,10 +2010,20 @@ mod tests {
             degrade_after_days: None,
             degrade_to: None,
             degrade_from: None,
+            direction: None,
         };
-        let result = execute_think(&store, dir.path(), &blob_store, input, None, None)
-            .await
-            .unwrap();
+        let result = execute_think(
+            &store,
+            dir.path(),
+            &blob_store,
+            input,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         // The linked pair should NOT appear (either no pairs found or different pairs only)
         // We verify the IDs of the linked pair do not appear together as a discovered pair

@@ -746,8 +746,7 @@ fn setup_two_clients_with_remote() -> (TempDir, TempDir, TempDir, PathBuf, PathB
 fn test_pull_rebase_detects_conflict() {
     let branch_name = "test-memory";
 
-    let (_bare, _ca_dir, _cb_dir, client_a_git, client_b_git) =
-        setup_two_clients_with_remote();
+    let (_bare, _ca_dir, _cb_dir, client_a_git, client_b_git) = setup_two_clients_with_remote();
 
     // Both clients open a MemoryStore on the same branch name.
     let store_a = MemoryStore::open(&client_a_git, Some(branch_name)).unwrap();
@@ -768,20 +767,14 @@ fn test_pull_rebase_detects_conflict() {
     let content_b = b"---\ncreated_at: 1740000000\n---\nClient B content\n";
 
     // A writes the shared file and pushes.
-    store_a
-        .branch()
-        .write_file(shared_file, content_a)
-        .unwrap();
+    store_a.branch().write_file(shared_file, content_a).unwrap();
     store_a.branch().commit("A: write conflict target").unwrap();
     store_a.push().unwrap();
 
     // B writes the same file path with different content — this creates a
     // local commit that diverges from the remote because A's commit advanced
     // the remote tip.
-    store_b
-        .branch()
-        .write_file(shared_file, content_b)
-        .unwrap();
+    store_b.branch().write_file(shared_file, content_b).unwrap();
     store_b.branch().commit("B: write conflict target").unwrap();
 
     // B's local branch diverges from origin/test-memory. pull --rebase
@@ -820,8 +813,7 @@ fn test_pull_rebase_detects_conflict() {
 fn test_push_with_retry_handles_rejection() {
     let branch_name = "test-memory";
 
-    let (_bare, _ca_dir, _cb_dir, client_a_git, client_b_git) =
-        setup_two_clients_with_remote();
+    let (_bare, _ca_dir, _cb_dir, client_a_git, client_b_git) = setup_two_clients_with_remote();
 
     let store_a = MemoryStore::open(&client_a_git, Some(branch_name)).unwrap();
     let store_b = MemoryStore::open(&client_b_git, Some(branch_name)).unwrap();
@@ -899,8 +891,7 @@ fn test_push_with_retry_handles_rejection() {
 fn test_sync_pulls_and_pushes() {
     let branch_name = "test-memory";
 
-    let (_bare, _ca_dir, _cb_dir, client_a_git, client_b_git) =
-        setup_two_clients_with_remote();
+    let (_bare, _ca_dir, _cb_dir, client_a_git, client_b_git) = setup_two_clients_with_remote();
 
     let store_a = MemoryStore::open(&client_a_git, Some(branch_name)).unwrap();
     let store_b = MemoryStore::open(&client_b_git, Some(branch_name)).unwrap();
@@ -918,10 +909,7 @@ fn test_sync_pulls_and_pushes() {
 
     // Client B calls sync(): pulls A's state from remote, then pushes B's entry.
     let sync_result = store_b.sync();
-    assert!(
-        sync_result.is_ok(),
-        "sync() must succeed: {sync_result:?}"
-    );
+    assert!(sync_result.is_ok(), "sync() must succeed: {sync_result:?}");
 
     // Client B's local branch must now contain both entries.
     // We read directly from the branch (no remote fetch needed here).

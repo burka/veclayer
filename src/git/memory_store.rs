@@ -179,6 +179,16 @@ impl MemoryStore {
 // ---------------------------------------------------------------------------
 
 impl MemoryStore {
+    /// Pull-rebase from remote without pushing.
+    ///
+    /// Silently succeeds when no remote is configured.
+    pub fn pull(&self) -> Result<SyncResult, GitError> {
+        if !self.branch.has_remote()? {
+            return Ok(SyncResult::NothingToSync);
+        }
+        self.branch.pull_rebase()
+    }
+
     /// Pull-rebase from remote then push local commits.
     ///
     /// Both operations silently succeed when no remote is configured.
@@ -703,11 +713,9 @@ mod tests {
         assert!(after.is_none(), "embedding should be absent after gc");
 
         // A cleanup commit must exist on the branch.
-        let log_output = run_git_with_gitdir(
-            &git_dir,
-            &["log", "--oneline", "--grep=gc:", "test-memory"],
-        )
-        .expect("git log should succeed");
+        let log_output =
+            run_git_with_gitdir(&git_dir, &["log", "--oneline", "--grep=gc:", "test-memory"])
+                .expect("git log should succeed");
         let log = String::from_utf8_lossy(&log_output.stdout);
         assert!(
             !log.trim().is_empty(),

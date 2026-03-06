@@ -376,6 +376,10 @@ enum Commands {
         /// Filter migrate to entries created after this date (ISO 8601, epoch seconds, or relative: 7d, 1m)
         #[arg(long, value_name = "DATE")]
         since: Option<String>,
+
+        /// Show what would be synced without making changes
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -919,6 +923,7 @@ async fn main() -> Result<()> {
             perspective,
             exclude_perspective,
             since,
+            dry_run,
         } => {
             if pending {
                 veclayer::commands::sync::show_pending().await?;
@@ -975,7 +980,7 @@ async fn main() -> Result<()> {
                 scopes.retain(|s| s.name == *name);
             }
 
-            veclayer::commands::sync::sync(&data_dir, &scopes).await?;
+            veclayer::commands::sync::sync(&data_dir, &scopes, dry_run).await?;
         }
     }
 

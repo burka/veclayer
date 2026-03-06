@@ -124,10 +124,20 @@ pub async fn think_discover(data_dir: &Path, limit: usize) -> Result<()> {
         degrade_after_days: None,
         degrade_to: None,
         degrade_from: None,
+        direction: None,
     };
 
-    let report =
-        crate::mcp::tools::execute_think(&store, data_dir, &blob_store, input, None, None).await?;
+    let report = crate::mcp::tools::execute_think(
+        &store,
+        data_dir,
+        &blob_store,
+        input,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await?;
     println!("{}", report);
     Ok(())
 }

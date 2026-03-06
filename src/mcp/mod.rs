@@ -63,6 +63,7 @@ salience scores, and suggested actions. With an action, executes curation:
 - `action: 'perspectives'` — List all available perspectives
 - `action: 'status'` — Show store statistics (entry count, source files, aging policy)
 - `action: 'history'` — Show an entry's relations and metadata (requires `id`)
+- `action: 'sync'` — Sync with remote: pull then push. Optional `direction`: 'pull', 'push', or omit for both
 
 ### share — Here, this is for you. [Experimental — not yet functional]
 Generates a scoped share-token payload describing what knowledge to share and with what \

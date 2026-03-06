@@ -219,8 +219,8 @@ mod tests {
             .status()
             .expect("git worktree add");
 
-        let git_dir = find_git_dir(&worktree_path)
-            .expect("find_git_dir should resolve worktree .git file");
+        let git_dir =
+            find_git_dir(&worktree_path).expect("find_git_dir should resolve worktree .git file");
 
         // The resolved git dir must sit inside .git/worktrees/<name>.
         let expected_suffix = std::path::Path::new(".git").join("worktrees").join("wt");
@@ -228,7 +228,10 @@ mod tests {
             git_dir.ends_with(&expected_suffix),
             "expected git_dir to end with {expected_suffix:?}, got {git_dir:?}"
         );
-        assert!(git_dir.is_dir(), "resolved git dir must exist as a directory");
+        assert!(
+            git_dir.is_dir(),
+            "resolved git dir must exist as a directory"
+        );
     }
 
     #[test]

@@ -13,13 +13,59 @@ use super::{run_git_in, run_git_with_gitdir, GitError, GitMemoryBranch, PushResu
 const REMOTE: &str = "origin";
 
 // ---------------------------------------------------------------------------
-// Auth-failure detection
+// Auth-failure detection and guidance
 // ---------------------------------------------------------------------------
 
+/// True when the git stderr indicates an authentication/credential problem.
 fn is_auth_failure(stderr: &str) -> bool {
     stderr.contains("Authentication failed")
         || stderr.contains("Permission denied")
         || stderr.contains("fatal: could not read")
+        || stderr.contains("Host key verification failed")
+        || stderr.contains("Permission denied (publickey)")
+        || stderr.contains("terminal prompts disabled")
+        || stderr.contains("could not read Username")
+}
+
+/// True when the git stderr indicates a network/connectivity problem.
+fn is_network_failure(stderr: &str) -> bool {
+    stderr.contains("Connection refused")
+        || stderr.contains("Connection timed out")
+        || stderr.contains("Could not resolve hostname")
+        || stderr.contains("ssh: connect to host")
+}
+
+/// Build an appropriate `GitError` for auth or network failures, with
+/// an actionable hint appended to the message.
+fn classified_connection_error(stderr: &str, command: &str) -> GitError {
+    let hint = if stderr.contains("publickey") || stderr.contains("Permission denied") {
+        "\n\nHint: Check that your SSH key is loaded (ssh-add -l) and that ssh-agent is running."
+    } else if stderr.contains("Host key verification") {
+        "\n\nHint: The host key is not trusted. Run: ssh -T git@<host> to verify and accept it."
+    } else if stderr.contains("Could not resolve hostname")
+        || stderr.contains("Connection refused")
+        || stderr.contains("Connection timed out")
+    {
+        "\n\nHint: Network issue — check your internet connection and the remote URL."
+    } else if stderr.contains("terminal prompts disabled")
+        || stderr.contains("could not read Username")
+    {
+        "\n\nHint: Git tried to prompt for credentials but prompts are disabled. Configure SSH keys or a credential helper."
+    } else {
+        ""
+    };
+
+    let msg = format!("{}{hint}", stderr.trim());
+
+    if is_auth_failure(stderr) {
+        GitError::AuthFailed(msg)
+    } else {
+        GitError::CommandFailed {
+            command: command.to_string(),
+            stderr: msg,
+            exit_code: -1,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -48,12 +94,13 @@ impl GitMemoryBranch {
         }
 
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if is_auth_failure(&stderr) {
-            return Err(GitError::AuthFailed(stderr.trim().to_string()));
+        let cmd = format!("fetch {REMOTE} {}", self.branch);
+        if is_auth_failure(&stderr) || is_network_failure(&stderr) {
+            return Err(classified_connection_error(&stderr, &cmd));
         }
 
         Err(GitError::CommandFailed {
-            command: format!("fetch {REMOTE} {}", self.branch),
+            command: cmd,
             stderr: stderr.trim().to_string(),
             exit_code: output.status.code().unwrap_or(-1),
         })
@@ -96,8 +143,9 @@ impl GitMemoryBranch {
             return Ok(SyncResult::Success);
         }
 
-        if is_auth_failure(&stderr) {
-            return Err(GitError::AuthFailed(stderr.trim().to_string()));
+        if is_auth_failure(&stderr) || is_network_failure(&stderr) {
+            let cmd = format!("pull --rebase {REMOTE} {}", self.branch);
+            return Err(classified_connection_error(&stderr, &cmd));
         }
 
         if combined.contains("CONFLICT") || combined.contains("could not apply") {
@@ -129,8 +177,9 @@ impl GitMemoryBranch {
             return Ok(PushResult::Success);
         }
 
-        if is_auth_failure(&stderr) {
-            return Err(GitError::AuthFailed(stderr.trim().to_string()));
+        if is_auth_failure(&stderr) || is_network_failure(&stderr) {
+            let cmd = args.join(" ");
+            return Err(classified_connection_error(&stderr, &cmd));
         }
 
         if stderr.contains("rejected") || stderr.contains("[rejected]") {
@@ -314,5 +363,150 @@ mod tests {
         // Keep dirs alive until end of test.
         drop(client_dir);
         drop(server_dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // is_auth_failure — new patterns
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_auth_failure_patterns() {
+        let auth_patterns = [
+            "Authentication failed",
+            "Permission denied",
+            "fatal: could not read",
+            "Host key verification failed",
+            "Permission denied (publickey)",
+            "terminal prompts disabled",
+            "could not read Username for 'https://github.com'",
+        ];
+        for pattern in auth_patterns {
+            assert!(
+                is_auth_failure(pattern),
+                "expected is_auth_failure=true for: {pattern:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_network_failure_patterns() {
+        let network_patterns = [
+            "Connection refused",
+            "Connection timed out",
+            "Could not resolve hostname example.com",
+            "ssh: connect to host github.com port 22",
+        ];
+        for pattern in network_patterns {
+            assert!(
+                is_network_failure(pattern),
+                "expected is_network_failure=true for: {pattern:?}"
+            );
+            assert!(
+                !is_auth_failure(pattern),
+                "network errors should NOT be auth failures: {pattern:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_auth_failure_non_auth_errors_return_false() {
+        let non_auth = [
+            "repository not found",
+            "fatal: not a git repository",
+            "error: failed to push some refs",
+            "remote: Repository not found.",
+        ];
+        for msg in non_auth {
+            assert!(
+                !is_auth_failure(msg),
+                "expected is_auth_failure to return false for: {msg:?}"
+            );
+            assert!(
+                !is_network_failure(msg),
+                "expected is_network_failure to return false for: {msg:?}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // classified_connection_error
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_classified_connection_error_ssh_key_hint() {
+        let err = classified_connection_error("Permission denied (publickey).", "push");
+        match err {
+            GitError::AuthFailed(msg) => {
+                assert!(
+                    msg.contains("ssh-add -l"),
+                    "expected SSH key hint in message, got: {msg:?}"
+                );
+            }
+            other => panic!("expected AuthFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_classified_connection_error_network_hint() {
+        let err = classified_connection_error(
+            "ssh: connect to host github.com: Connection refused",
+            "fetch",
+        );
+        match err {
+            GitError::CommandFailed { stderr, .. } => {
+                assert!(
+                    stderr.contains("Network issue"),
+                    "expected network hint in message, got: {stderr:?}"
+                );
+            }
+            other => panic!("expected CommandFailed for network error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_classified_connection_error_credential_hint() {
+        let err = classified_connection_error(
+            "fatal: could not read Username: terminal prompts disabled",
+            "push",
+        );
+        match err {
+            GitError::AuthFailed(msg) => {
+                assert!(
+                    msg.contains("credential helper"),
+                    "expected credential hint in message, got: {msg:?}"
+                );
+            }
+            other => panic!("expected AuthFailed, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_conflict_files
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_conflict_files_multiple_conflicts() {
+        let output = "\
+CONFLICT (content): Merge conflict in src/main.rs
+CONFLICT (content): Merge conflict in README.md
+Auto-merging src/lib.rs
+CONFLICT (modify/delete): Merge conflict in src/deleted.rs
+";
+        let files = extract_conflict_files(output);
+        assert_eq!(
+            files,
+            vec!["src/main.rs", "README.md", "src/deleted.rs"],
+            "conflict files did not match expected"
+        );
+    }
+
+    #[test]
+    fn test_extract_conflict_files_no_conflicts_returns_empty() {
+        let output = "Successfully rebased and updated refs/heads/main.\n";
+        let files = extract_conflict_files(output);
+        assert!(
+            files.is_empty(),
+            "expected empty vec for output with no conflicts"
+        );
     }
 }

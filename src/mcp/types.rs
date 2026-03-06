@@ -244,6 +244,10 @@ pub struct ThinkInput {
     pub degrade_to: Option<String>,
     #[serde(default, deserialize_with = "string_or_option_vec")]
     pub degrade_from: Option<Vec<String>>,
+
+    // ── sync parameters ──
+    /// Direction for sync: "pull", "push", or omit for both (pull then push).
+    pub direction: Option<String>,
 }
 
 fn default_reflect_limit() -> Option<usize> {

@@ -523,6 +523,8 @@ async fn api_think(
         input,
         state.project.as_deref(),
         state.branch.as_deref(),
+        state.git_store.as_deref(),
+        Some(state.push_mode),
     )
     .await
     .map_err(warn_and_convert("Think"))?;

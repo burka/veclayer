@@ -9,15 +9,14 @@ use crate::git::memory_store::MemoryStore;
 use crate::git::PushResult;
 use crate::store::VectorStore as _;
 
-/// Sync entries from all configured git-backed scopes.
+/// Sync entries from all configured git-backed scopes into the local LanceDB index.
 ///
 /// For each scope with `storage = "git"` (same-repo orphan branch), opens the
-/// [`MemoryStore`], loads all entries, and reports the count. Remote git URLs
-/// are not yet supported and are reported as skipped.
+/// [`MemoryStore`], loads all entries, checks which are already indexed, and
+/// embeds and inserts new ones. Remote git URLs are not yet supported.
 ///
-/// This is a read-only skeleton: entries are loaded and counted but not yet
-/// inserted into LanceDB (that requires the embedder and is a separate step).
-pub async fn sync(_data_dir: &Path, scopes: &[ResolvedScope]) -> crate::Result<()> {
+/// When `dry_run` is true, prints what would be indexed without making changes.
+pub async fn sync(data_dir: &Path, scopes: &[ResolvedScope], dry_run: bool) -> crate::Result<()> {
     if scopes.is_empty() {
         println!("No scopes configured. Add scopes to your config:");
         println!("  veclayer init --share    # enable git memory for this project");
@@ -27,17 +26,25 @@ pub async fn sync(_data_dir: &Path, scopes: &[ResolvedScope]) -> crate::Result<(
     println!("Checking {} scope(s)...", scopes.len());
 
     let cwd = std::env::current_dir()?;
+    let (_config, embedder, store, blob_store) = crate::commands::open_store(data_dir).await?;
 
     for scope in scopes {
-        sync_scope(&cwd, scope);
+        sync_scope(&cwd, scope, &embedder, &store, &blob_store, dry_run).await;
     }
 
     Ok(())
 }
 
-fn sync_scope(cwd: &Path, scope: &ResolvedScope) {
+async fn sync_scope(
+    cwd: &Path,
+    scope: &ResolvedScope,
+    embedder: &dyn crate::Embedder,
+    store: &impl crate::store::VectorStore,
+    blob_store: &crate::blob_store::BlobStore,
+    dry_run: bool,
+) {
     if scope.storage == "git" {
-        sync_local_git_scope(cwd, scope);
+        sync_local_git_scope(cwd, scope, embedder, store, blob_store, dry_run).await;
     } else if is_remote_git_url(&scope.storage) {
         println!(
             "  {} — remote storage not yet supported ({})",
@@ -48,27 +55,129 @@ fn sync_scope(cwd: &Path, scope: &ResolvedScope) {
     }
 }
 
-fn sync_local_git_scope(cwd: &Path, scope: &ResolvedScope) {
+async fn sync_local_git_scope(
+    cwd: &Path,
+    scope: &ResolvedScope,
+    embedder: &dyn crate::Embedder,
+    store: &impl crate::store::VectorStore,
+    blob_store: &crate::blob_store::BlobStore,
+    dry_run: bool,
+) {
     let Some(git_dir) = detect::find_git_dir(cwd) else {
         println!("  {} — skipped (not a git repository)", scope.name);
         return;
     };
 
-    match MemoryStore::open(&git_dir, Some(&scope.branch)) {
-        Ok(store) => report_loaded_entries(scope, &store),
-        Err(e) => println!("  {} — error opening: {}", scope.name, e),
-    }
+    let git_store = match MemoryStore::open(&git_dir, Some(&scope.branch)) {
+        Ok(s) => s,
+        Err(e) => {
+            println!("  {} — error opening: {}", scope.name, e);
+            return;
+        }
+    };
+
+    let entries = match git_store.load() {
+        Ok(e) => e,
+        Err(e) => {
+            println!("  {} — error loading: {}", scope.name, e);
+            return;
+        }
+    };
+
+    println!(
+        "  {} — {} entries on branch '{}'",
+        scope.name,
+        entries.len(),
+        scope.branch,
+    );
+
+    index_entries(&entries, embedder, store, blob_store, dry_run).await;
 }
 
-fn report_loaded_entries(scope: &ResolvedScope, store: &MemoryStore) {
-    match store.load() {
-        Ok(entries) => println!(
-            "  {} — {} entries from branch '{}'",
-            scope.name,
-            entries.len(),
-            scope.branch,
-        ),
-        Err(e) => println!("  {} — error loading: {}", scope.name, e),
+async fn index_entries(
+    entries: &[Entry],
+    embedder: &dyn crate::Embedder,
+    store: &impl crate::store::VectorStore,
+    blob_store: &crate::blob_store::BlobStore,
+    dry_run: bool,
+) {
+    let mut indexed = 0usize;
+    let mut skipped = 0usize;
+
+    for entry in entries {
+        let content_id = entry.content_id();
+
+        match store.get_by_id(&content_id).await {
+            Ok(Some(_)) => {
+                skipped += 1;
+                continue;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to check entry {} in store: {}",
+                    &content_id[..7.min(content_id.len())],
+                    e
+                );
+                skipped += 1;
+                continue;
+            }
+        }
+
+        if dry_run {
+            indexed += 1;
+            continue;
+        }
+
+        let embedding = match embedder.embed(&[entry.content.as_str()]) {
+            Ok(vecs) => vecs.into_iter().next().unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to embed entry {}: {}",
+                    &content_id[..7.min(content_id.len())],
+                    e
+                );
+                skipped += 1;
+                continue;
+            }
+        };
+
+        let chunk = crate::HierarchicalChunk::from_entry(entry, embedding);
+        let blob = crate::entry::StoredBlob::from_chunk_and_embedding(&chunk, embedder.name());
+
+        if let Err(e) = blob_store.put(&blob) {
+            tracing::warn!(
+                "Failed to persist blob for entry {}: {}",
+                &content_id[..7.min(content_id.len())],
+                e
+            );
+            skipped += 1;
+            continue;
+        }
+
+        match store.insert_chunks(vec![chunk]).await {
+            Ok(_) => indexed += 1,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to insert entry {} into store: {}",
+                    &content_id[..7.min(content_id.len())],
+                    e
+                );
+                skipped += 1;
+            }
+        }
+    }
+
+    if dry_run {
+        println!(
+            "    {} new entries would be indexed (dry run), {} already in local store",
+            indexed, skipped
+        );
+    } else {
+        println!(
+            "    {} new entries indexed, {} already in local store",
+            indexed, skipped
+        );
     }
 }
 

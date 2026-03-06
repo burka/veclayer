@@ -241,7 +241,7 @@ impl McpHandler {
     }
 
     #[tool(
-        description = "Reflect and curate memory. Without action: reflection report. Actions: promote, demote, relate, configure_aging, apply_aging, salience, consolidate, discover, perspectives, status, history."
+        description = "Reflect and curate memory. Without action: reflection report. Actions: promote, demote, relate, configure_aging, apply_aging, salience, consolidate, discover, perspectives, status, history, sync."
     )]
     async fn think(
         &self,
@@ -259,6 +259,8 @@ impl McpHandler {
             input,
             self.project.as_deref(),
             self.branch.as_deref(),
+            self.git_store.as_deref(),
+            Some(self.push_mode),
         )
         .await
         {

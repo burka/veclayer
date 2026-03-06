@@ -98,10 +98,10 @@ async fn add_files(
             for chunk in &chunks {
                 let entry = crate::entry::Entry::from_chunk(chunk);
                 if let Err(e) = gs.store_entry(&entry) {
-                    warn!("Failed to commit entry to git: {e}");
+                    eprintln!("Warning: failed to stage entry in git: {e}");
                 } else if let Some(emb) = chunk.embedding.as_deref() {
                     if let Err(e) = gs.store_embedding(&entry, embedder.name(), emb) {
-                        warn!("Failed to cache embedding in git: {e}");
+                        eprintln!("Warning: failed to cache embedding in git: {e}");
                     }
                 }
             }
@@ -246,10 +246,10 @@ async fn add_text(
 
     if let Some(gs) = git_store {
         if let Err(e) = gs.store_entry(&git_entry) {
-            warn!("Failed to commit entry to git: {e}");
+            eprintln!("Warning: failed to stage entry in git: {e}");
         } else if let Some(emb) = git_embedding.as_deref() {
             if let Err(e) = gs.store_embedding(&git_entry, &embedder_name, emb) {
-                warn!("Failed to cache embedding in git: {e}");
+                eprintln!("Warning: failed to cache embedding in git: {e}");
             }
         }
     }
