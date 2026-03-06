@@ -16,6 +16,7 @@ use rmcp::{
 
 use crate::auth::capability::Capability;
 use crate::blob_store::BlobStore;
+use crate::git::branch_config::PushMode;
 use crate::store::StoreBackend;
 use crate::Embedder;
 
@@ -47,6 +48,10 @@ pub struct McpHandler {
     instructions: String,
     /// Authorization level for this session. Checked before executing each tool.
     capability: Capability,
+    /// Git memory store for persisting entries to the memory branch, if configured.
+    git_store: Option<Arc<crate::git::memory_store::MemoryStore>>,
+    /// Push mode governing how entries are staged/pushed to git.
+    push_mode: PushMode,
     tool_router: ToolRouter<Self>,
 }
 
@@ -61,6 +66,8 @@ impl McpHandler {
         branch: Option<String>,
         instructions: String,
         capability: Capability,
+        git_store: Option<Arc<crate::git::memory_store::MemoryStore>>,
+        push_mode: PushMode,
     ) -> Self {
         let mut tool_router = Self::tool_router();
 
@@ -80,12 +87,34 @@ impl McpHandler {
                      Without a query, browse by perspective."
                 )));
             }
-            if let Some(route) = tool_router.map.get_mut("store") {
-                route.attr.description = Some(Cow::Owned(format!(
+
+            // Store tool description varies by push mode
+            let store_desc = match push_mode {
+                PushMode::Always => format!(
+                    "Persist a new memory in the '{proj}' project{branch_info}. \
+                     Entries with scope 'project' are automatically shared via git. \
+                     Supports relations, entry_type, and batch mode via items array."
+                ),
+                PushMode::Review | PushMode::PullRequest => format!(
+                    "Persist a new memory in the '{proj}' project{branch_info}. \
+                     Entries with scope 'project' are staged for team sharing — \
+                     the user reviews and pushes them. Ask the user when ready to push. \
+                     Supports relations, entry_type, and batch mode via items array."
+                ),
+                PushMode::Manual => format!(
+                    "Persist a new memory in the '{proj}' project{branch_info}. \
+                     Entries are local by default. The user promotes entries to \
+                     shared git memory manually. \
+                     Supports relations, entry_type, and batch mode via items array."
+                ),
+                PushMode::Off => format!(
                     "Persist a new memory in the '{proj}' project{branch_info}. \
                      Use `scope: \"branch\"` for WIP visible only on this branch. \
                      Supports relations, entry_type, and batch mode via items array."
-                )));
+                ),
+            };
+            if let Some(route) = tool_router.map.get_mut("store") {
+                route.attr.description = Some(Cow::Owned(store_desc));
             }
         }
 
@@ -98,6 +127,8 @@ impl McpHandler {
             branch,
             instructions,
             capability,
+            git_store,
+            push_mode,
             tool_router,
         }
     }
@@ -181,6 +212,14 @@ impl McpHandler {
                 "Missing required parameter: content (or items for batch mode)",
             )]));
         }
+
+        // Only pass git_store when the scope warrants staging and push mode allows it.
+        let effective_git_store = if self.push_mode.auto_stages() {
+            self.git_store.as_deref()
+        } else {
+            None
+        };
+
         match tools::execute_store(
             &self.store,
             &self.embedder,
@@ -188,6 +227,8 @@ impl McpHandler {
             input,
             self.project.as_deref(),
             self.branch.as_deref(),
+            effective_git_store,
+            self.push_mode,
         )
         .await
         {

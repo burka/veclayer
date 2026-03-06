@@ -13,6 +13,7 @@
 //!
 //! Any field set in the environment always wins over the config file.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -23,6 +24,18 @@ pub const GLOB_MATCH_OPTIONS: glob::MatchOptions = glob::MatchOptions {
     require_literal_separator: true,
     require_literal_leading_dot: false,
 };
+
+/// A named memory scope — a storage backend for entries.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScopeConfig {
+    /// Where entries are stored: "git" (orphan branch in current repo),
+    /// a git URL, or a local directory path.
+    pub storage: String,
+    /// Git branch name (default: "veclayer-memory").
+    pub branch: Option<String>,
+    /// Push mode: "always", "pull-request", "review", "manual", or "off".
+    pub push: Option<String>,
+}
 
 /// Runtime configuration for VecLayer.
 #[derive(Debug, Clone)]
@@ -59,6 +72,12 @@ pub struct Config {
 
     /// Git branch for branch-scoped entries (auto-detected)
     pub branch: Option<String>,
+
+    /// Storage backend for the project scope (e.g. "git" for git memory branch)
+    pub storage: Option<String>,
+
+    /// Push mode for git storage (parsed from project/user config string)
+    pub push_mode: crate::git::branch_config::PushMode,
 }
 
 /// Authentication configuration.
@@ -144,6 +163,8 @@ pub struct MatchOverride {
     pub host: Option<String>,
     pub port: Option<u16>,
     pub read_only: Option<bool>,
+    /// Named scopes to activate when this override matches.
+    pub scopes: Vec<String>,
 }
 
 impl MatchOverride {
@@ -188,6 +209,8 @@ impl<'de> Deserialize<'de> for MatchOverride {
             host: Option<String>,
             port: Option<u16>,
             read_only: Option<bool>,
+            #[serde(default)]
+            scopes: Vec<String>,
         }
 
         let raw = Raw::deserialize(deserializer)?;
@@ -221,6 +244,7 @@ impl<'de> Deserialize<'de> for MatchOverride {
             host: raw.host,
             port: raw.port,
             read_only: raw.read_only,
+            scopes: raw.scopes,
         })
     }
 }
@@ -236,6 +260,8 @@ pub struct UserConfig {
     pub project: Option<String>,
     #[serde(rename = "match")]
     pub matches: Vec<MatchOverride>,
+    /// Named scope definitions keyed by scope name.
+    pub scopes: HashMap<String, ScopeConfig>,
 }
 
 impl UserConfig {
@@ -317,7 +343,12 @@ impl UserConfig {
             host: self.host.clone(),
             port: self.port,
             read_only: self.read_only,
+            scopes: Vec::new(),
+            storage: None,
+            push: None,
         };
+
+        let mut match_scope_names: Vec<String> = Vec::new();
 
         for override_ in &self.matches {
             if override_.matches(cwd_str, git_remote) {
@@ -336,11 +367,68 @@ impl UserConfig {
                 if override_.read_only.is_some() {
                     resolved.read_only = override_.read_only;
                 }
+                for scope_name in &override_.scopes {
+                    if !match_scope_names.contains(scope_name) {
+                        match_scope_names.push(scope_name.clone());
+                    }
+                }
             }
         }
 
+        resolved.scopes = self.resolve_scopes(&[], &match_scope_names);
         resolved
     }
+
+    /// Resolve named scopes from the user config's `[scopes]` map.
+    ///
+    /// Produces a deduplicated union of `project_scopes` and `match_scopes`,
+    /// preserving declaration order (project scopes first). Scope names not
+    /// found in `self.scopes` are warned about and skipped.
+    pub fn resolve_scopes(
+        &self,
+        project_scopes: &[String],
+        match_scopes: &[String],
+    ) -> Vec<ResolvedScope> {
+        let mut seen: Vec<String> = Vec::new();
+        for name in project_scopes.iter().chain(match_scopes.iter()) {
+            if !seen.contains(name) {
+                seen.push(name.clone());
+            }
+        }
+
+        seen.into_iter()
+            .filter_map(|name| match self.scopes.get(&name) {
+                Some(scope_config) => Some(ResolvedScope {
+                    name: name.clone(),
+                    storage: scope_config.storage.clone(),
+                    branch: scope_config
+                        .branch
+                        .clone()
+                        .unwrap_or_else(|| "veclayer-memory".to_string()),
+                    push: scope_config
+                        .push
+                        .clone()
+                        .unwrap_or_else(|| "manual".to_string()),
+                }),
+                None => {
+                    warn!(
+                        "Unknown scope '{}' — skipping (not defined in [scopes])",
+                        name
+                    );
+                    None
+                }
+            })
+            .collect()
+    }
+}
+
+/// A fully resolved scope ready for use.
+#[derive(Debug, Clone)]
+pub struct ResolvedScope {
+    pub name: String,
+    pub storage: String,
+    pub branch: String,
+    pub push: String,
 }
 
 /// Resolved configuration from user config (globals + path match).
@@ -351,6 +439,12 @@ pub struct ResolvedConfig {
     pub host: Option<String>,
     pub port: Option<u16>,
     pub read_only: Option<bool>,
+    /// Resolved scopes active for this context.
+    pub scopes: Vec<ResolvedScope>,
+    /// Project-level storage override (from project config).
+    pub storage: Option<String>,
+    /// Project-level push mode (from project config).
+    pub push: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -494,6 +588,8 @@ impl Config {
             search_children_k,
             project: None,
             branch: None,
+            storage: None,
+            push_mode: crate::git::branch_config::PushMode::default(),
         }
     }
 
@@ -654,6 +750,38 @@ impl Config {
         self.branch = branch;
         self
     }
+
+    pub fn with_storage(mut self, storage: Option<String>) -> Self {
+        self.storage = storage;
+        self
+    }
+
+    pub fn with_push_mode(mut self, push: Option<&str>) -> Self {
+        if let Some(p) = push {
+            self.push_mode = parse_push_mode(p);
+        }
+        self
+    }
+}
+
+/// Parse a push mode string, with backward-compatible mapping of "auto" → Always.
+pub fn parse_push_mode(s: &str) -> crate::git::branch_config::PushMode {
+    use crate::git::branch_config::PushMode;
+    match s {
+        "always" => PushMode::Always,
+        "auto" => {
+            tracing::warn!("push mode 'auto' is deprecated, use 'always' instead");
+            PushMode::Always
+        }
+        "pull-request" => PushMode::PullRequest,
+        "review" => PushMode::Review,
+        "manual" => PushMode::Manual,
+        "off" => PushMode::Off,
+        unknown => {
+            tracing::warn!("unknown push mode '{unknown}', defaulting to 'review'");
+            PushMode::Review
+        }
+    }
 }
 
 impl Default for Config {
@@ -727,12 +855,21 @@ pub struct ProjectConfig {
     /// Git branch (auto-detected, not from config file)
     #[serde(skip)]
     pub branch: Option<String>,
+
+    /// Storage backend override for this project ("git", a git URL, or a local path).
+    pub storage: Option<String>,
+
+    /// Push mode override for this project ("always", "pull-request", "review", "manual", or "off").
+    pub push: Option<String>,
+
+    /// Named scopes to activate for this project.
+    pub scopes: Vec<String>,
 }
 
 /// Walk up from `start_dir` looking for a `.veclayer/` directory.
 /// Returns `(data_dir, project_config)` if found.
 pub fn discover_project(start_dir: &Path) -> Option<(PathBuf, ProjectConfig)> {
-    let git_info = crate::git_detect::detect(start_dir);
+    let git_info = crate::git::detect::detect(start_dir);
 
     // Stop walk-up at $HOME — ~/.veclayer/ is the user config fallback,
     // not a project-local store.
@@ -1125,6 +1262,7 @@ project = "test"
             host: None,
             port: None,
             read_only: Some(true),
+            scopes: vec![],
         });
 
         let resolved = config.resolve(Path::new("/tmp/test/something"), None);
@@ -1144,6 +1282,7 @@ project = "test"
             host: None,
             port: None,
             read_only: None,
+            scopes: vec![],
         });
 
         let resolved = config.resolve(Path::new("/other/path"), None);
@@ -1163,6 +1302,7 @@ project = "test"
             host: None,
             port: None,
             read_only: Some(false),
+            scopes: vec![],
         });
 
         config.matches.push(MatchOverride {
@@ -1173,6 +1313,7 @@ project = "test"
             host: None,
             port: None,
             read_only: Some(true),
+            scopes: vec![],
         });
 
         let resolved = config.resolve(Path::new("/tmp/test/specific"), None);
@@ -1196,6 +1337,7 @@ project = "test"
             host: None,
             port: None,
             read_only: Some(true),
+            scopes: vec![],
         });
 
         let resolved = config.resolve(Path::new("/tmp/test"), None);
@@ -1404,6 +1546,7 @@ project = "damalo"
             host: None,
             port: None,
             read_only: None,
+            scopes: vec![],
         });
 
         // /tmp/work/deep has a slash after the * position — must not match
@@ -1525,5 +1668,112 @@ auto_approve = true
         assert_eq!(auth.server_url.as_deref(), Some("https://env.example.com"));
         assert_eq!(auth.token_expiry_secs, 7200);
         assert!(auth.auto_approve);
+    }
+
+    #[test]
+    fn test_scope_config_parsing() {
+        let toml_str = r#"
+[scopes.personal]
+storage = "git@github.com:flob/my-memory.git"
+push = "manual"
+
+[scopes.acme]
+storage = "git@github.com:acme/shared-memory.git"
+push = "review"
+branch = "acme-memory"
+"#;
+        let config: UserConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.scopes.len(), 2);
+
+        let personal = config.scopes.get("personal").unwrap();
+        assert_eq!(personal.storage, "git@github.com:flob/my-memory.git");
+        assert_eq!(personal.push.as_deref(), Some("manual"));
+        assert!(personal.branch.is_none());
+
+        let acme = config.scopes.get("acme").unwrap();
+        assert_eq!(acme.storage, "git@github.com:acme/shared-memory.git");
+        assert_eq!(acme.push.as_deref(), Some("review"));
+        assert_eq!(acme.branch.as_deref(), Some("acme-memory"));
+    }
+
+    #[test]
+    fn test_match_with_scopes() {
+        let toml_str = r#"
+[scopes.personal]
+storage = "git@github.com:flob/my-memory.git"
+
+[scopes.acme]
+storage = "git@github.com:acme/shared-memory.git"
+
+[[match]]
+git-remote = "github.com/acme/"
+project = "acme-stuff"
+scopes = ["personal", "acme"]
+"#;
+        let config: UserConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.matches.len(), 1);
+        assert_eq!(config.matches[0].scopes, vec!["personal", "acme"]);
+        assert_eq!(config.matches[0].project.as_deref(), Some("acme-stuff"));
+    }
+
+    #[test]
+    fn test_project_config_with_scopes() {
+        let toml_str = r#"
+project = "myproject"
+storage = "git"
+push = "auto"
+scopes = ["acme"]
+"#;
+        let project_config: ProjectConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(project_config.project.as_deref(), Some("myproject"));
+        assert_eq!(project_config.storage.as_deref(), Some("git"));
+        assert_eq!(project_config.push.as_deref(), Some("auto"));
+        assert_eq!(project_config.scopes, vec!["acme"]);
+    }
+
+    #[test]
+    fn test_scope_resolution() {
+        let toml_str = r#"
+[scopes.personal]
+storage = "git@github.com:flob/my-memory.git"
+
+[scopes.acme]
+storage = "git@github.com:acme/shared-memory.git"
+push = "review"
+"#;
+        let config: UserConfig = toml::from_str(toml_str).unwrap();
+
+        // Union: project=[acme], match=[personal, acme] → [acme, personal] (dedup, project first)
+        let project_scopes = vec!["acme".to_string()];
+        let match_scopes = vec!["personal".to_string(), "acme".to_string()];
+        let resolved = config.resolve_scopes(&project_scopes, &match_scopes);
+
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved[0].name, "acme");
+        assert_eq!(resolved[0].storage, "git@github.com:acme/shared-memory.git");
+        assert_eq!(resolved[0].push, "review");
+        assert_eq!(resolved[0].branch, "veclayer-memory"); // default
+
+        assert_eq!(resolved[1].name, "personal");
+        assert_eq!(resolved[1].storage, "git@github.com:flob/my-memory.git");
+        assert_eq!(resolved[1].push, "manual"); // default
+        assert_eq!(resolved[1].branch, "veclayer-memory"); // default
+    }
+
+    #[test]
+    fn test_unknown_scope_warning() {
+        let toml_str = r#"
+[scopes.known]
+storage = "git"
+"#;
+        let config: UserConfig = toml::from_str(toml_str).unwrap();
+
+        let project_scopes = vec!["known".to_string()];
+        let match_scopes = vec!["unknown".to_string()];
+        let resolved = config.resolve_scopes(&project_scopes, &match_scopes);
+
+        // "unknown" is skipped; only "known" resolves
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].name, "known");
     }
 }

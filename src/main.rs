@@ -62,7 +62,10 @@ enum Commands {
     Config,
 
     /// Initialize a new VecLayer store
-    Init,
+    Init {
+        #[arg(long, help = "Enable git-based memory sharing for this project")]
+        share: bool,
+    },
 
     /// Store knowledge (text, file, or directory)
     #[command(alias = "add")]
@@ -335,6 +338,45 @@ enum Commands {
         #[command(subcommand)]
         action: Option<ThinkAction>,
     },
+
+    /// Sync memory from git scopes into the local index
+    Sync {
+        /// Only sync a specific scope by name
+        #[arg(long)]
+        scope: Option<String>,
+
+        /// Export local entries to the git memory branch
+        #[arg(long)]
+        migrate: bool,
+
+        /// List entries on the local branch not yet pushed to remote
+        #[arg(long)]
+        pending: bool,
+
+        /// Push the local git memory branch to remote
+        #[arg(long)]
+        push: bool,
+
+        /// Stage a LanceDB entry to the git branch by ID (for manual push mode)
+        #[arg(long, value_name = "ID")]
+        stage: Option<String>,
+
+        /// Remove an entry from the git branch by ID (unstage)
+        #[arg(long, value_name = "ID")]
+        reject: Option<String>,
+
+        /// Filter migrate to entries with this perspective
+        #[arg(long, value_name = "NAME")]
+        perspective: Option<String>,
+
+        /// Filter migrate to exclude entries with this perspective
+        #[arg(long, value_name = "NAME")]
+        exclude_perspective: Option<String>,
+
+        /// Filter migrate to entries created after this date (ISO 8601, epoch seconds, or relative: 7d, 1m)
+        #[arg(long, value_name = "DATE")]
+        since: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -507,7 +549,7 @@ async fn main() -> Result<()> {
     // 7. Platform defaults
 
     let cwd = std::env::current_dir().expect("Failed to determine current directory");
-    let git_info = veclayer::git_detect::detect(&cwd);
+    let git_info = veclayer::git::detect::detect(&cwd);
 
     let user_config = veclayer::config::UserConfig::discover();
     let user_resolved = user_config.resolve(&cwd, git_info.remote.as_deref());
@@ -515,11 +557,21 @@ async fn main() -> Result<()> {
     let user_project = user_resolved.project.clone();
     let user_data_dir = user_resolved.data_dir.clone();
 
-    let (data_dir, discovered_project, discovered_branch) = match cli.data_dir {
+    let (
+        data_dir,
+        discovered_project,
+        discovered_branch,
+        project_scopes,
+        project_storage,
+        project_push,
+    ) = match cli.data_dir {
         Some(dir) => (
             dir,
             user_project.or(git_info.remote.clone()),
             git_info.branch.clone(),
+            Vec::<String>::new(),
+            None::<String>,
+            None::<String>,
         ),
         None => {
             let project_local = veclayer::config::discover_project(&cwd);
@@ -530,14 +582,39 @@ async fn main() -> Result<()> {
                 .or(user_project)
                 .or(git_info.remote.clone());
 
+            let scopes = project_local
+                .as_ref()
+                .map(|(_, pc)| pc.scopes.clone())
+                .unwrap_or_default();
+            let storage = project_local
+                .as_ref()
+                .and_then(|(_, pc)| pc.storage.clone());
+            let push = project_local.as_ref().and_then(|(_, pc)| pc.push.clone());
+
             let data_dir = project_local
                 .map(|(d, _)| d)
                 .or_else(|| user_data_dir.as_ref().map(PathBuf::from))
                 .unwrap_or_else(veclayer::default_data_dir);
 
-            (data_dir, project, git_info.branch.clone())
+            (
+                data_dir,
+                project,
+                git_info.branch.clone(),
+                scopes,
+                storage,
+                push,
+            )
         }
     };
+
+    let resolved_scopes = user_config.resolve_scopes(
+        &project_scopes,
+        &user_resolved
+            .scopes
+            .iter()
+            .map(|s| s.name.clone())
+            .collect::<Vec<_>>(),
+    );
 
     let is_mcp_stdio = matches!(
         &cli.command,
@@ -564,10 +641,11 @@ async fn main() -> Result<()> {
                 &user_config,
                 &user_resolved,
                 git_info.remote.as_deref(),
+                git_info.branch.as_deref(),
             )?;
         }
-        Commands::Init => {
-            init(&data_dir)?;
+        Commands::Init { share } => {
+            init(&cwd, &data_dir, share)?;
         }
         Commands::Store {
             input,
@@ -610,7 +688,20 @@ async fn main() -> Result<()> {
                 rel_version_of,
                 rel_custom,
             };
-            add(&data_dir, &input, options).await?;
+            let git_store = if project_storage.as_deref() == Some("git") {
+                veclayer::git::detect::find_git_dir(&cwd).and_then(|git_dir| {
+                    match veclayer::git::memory_store::MemoryStore::open(&git_dir, None) {
+                        Ok(s) => Some(s),
+                        Err(e) => {
+                            tracing::warn!("Failed to open git memory store: {e}");
+                            None
+                        }
+                    }
+                })
+            } else {
+                None
+            };
+            add(&data_dir, &input, options, git_store.as_ref()).await?;
         }
         Commands::Recall {
             query,
@@ -683,6 +774,8 @@ async fn main() -> Result<()> {
                 auto_approve: auto_approve || auth_config.auto_approve,
                 token_expiry_secs: auth_config.token_expiry_secs,
                 refresh_expiry_secs: auth_config.refresh_expiry_secs,
+                storage: project_storage.clone(),
+                push: project_push.clone(),
             };
             serve(&data_dir, &options).await?;
         }
@@ -816,6 +909,74 @@ async fn main() -> Result<()> {
                 }
             },
         },
+        Commands::Sync {
+            scope,
+            migrate,
+            pending,
+            push,
+            stage,
+            reject,
+            perspective,
+            exclude_perspective,
+            since,
+        } => {
+            if pending {
+                veclayer::commands::sync::show_pending().await?;
+                return Ok(());
+            }
+
+            if push {
+                veclayer::commands::sync::push_to_remote().await?;
+                return Ok(());
+            }
+
+            if let Some(ref id) = stage {
+                veclayer::commands::sync::stage_entry(&data_dir, id).await?;
+                return Ok(());
+            }
+
+            if let Some(ref id) = reject {
+                veclayer::commands::sync::reject_entry(id).await?;
+                return Ok(());
+            }
+
+            if migrate {
+                let since_ts = since.as_deref().and_then(veclayer::resolve::parse_temporal);
+                let filters = veclayer::commands::sync::MigrateFilters {
+                    perspective,
+                    exclude_perspective,
+                    since: since_ts,
+                };
+                veclayer::commands::sync::migrate(&data_dir, &filters).await?;
+                return Ok(());
+            }
+
+            let mut scopes = resolved_scopes;
+
+            // Inject implicit "project" scope when the project config uses git storage
+            // and it isn't already present from the named-scope resolution.
+            if let Some(ref storage) = project_storage {
+                if storage == "git" && !scopes.iter().any(|s| s.name == "project") {
+                    scopes.insert(
+                        0,
+                        veclayer::config::ResolvedScope {
+                            name: "project".to_string(),
+                            storage: "git".to_string(),
+                            branch: "veclayer-memory".to_string(),
+                            push: project_push.unwrap_or_else(|| {
+                                veclayer::git::branch_config::PushMode::default().to_string()
+                            }),
+                        },
+                    );
+                }
+            }
+
+            if let Some(ref name) = scope {
+                scopes.retain(|s| s.name == *name);
+            }
+
+            veclayer::commands::sync::sync(&data_dir, &scopes).await?;
+        }
     }
 
     Ok(())

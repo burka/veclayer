@@ -3,7 +3,10 @@
 use super::*;
 
 /// Initialize a new VecLayer store in the given directory.
-pub fn init(data_dir: &Path) -> Result<()> {
+///
+/// When `share` is `true`, also creates a git memory branch and configures
+/// `storage = "git"` in the project config, enabling team memory sharing.
+pub fn init(cwd: &Path, data_dir: &Path, share: bool) -> Result<()> {
     if data_dir.exists() {
         println!("VecLayer store already exists at {}", data_dir.display());
         println!("  use `veclayer add` to add knowledge");
@@ -12,10 +15,67 @@ pub fn init(data_dir: &Path) -> Result<()> {
         println!("Initialized VecLayer store at {}", data_dir.display());
     }
     crate::perspective::init(data_dir)?;
+
+    if share {
+        init_share(cwd)?;
+        return Ok(());
+    }
+
     println!("\nNext steps:");
     println!("  veclayer store ./docs      # Store files");
     println!("  veclayer store \"text\"      # Store inline text");
     println!("  veclayer recall \"query\"    # Recall knowledge");
+    Ok(())
+}
+
+/// Set up git-based memory sharing: create orphan branch and write project config.
+fn init_share(cwd: &Path) -> Result<()> {
+    let git_dir = crate::git::detect::find_git_dir(cwd).ok_or_else(|| {
+        crate::Error::InvalidOperation(
+            "Not a git project. Run from inside a git repository.".into(),
+        )
+    })?;
+
+    let branch = crate::git::GitMemoryBranch::open(&git_dir, None).map_err(|e| {
+        crate::Error::InvalidOperation(format!("Failed to open memory branch: {e}"))
+    })?;
+    branch.create_orphan_branch().map_err(|e| {
+        crate::Error::InvalidOperation(format!("Failed to create orphan branch: {e}"))
+    })?;
+
+    println!("  Created memory branch 'veclayer-memory'");
+
+    let project_veclayer_dir = cwd.join(".veclayer");
+    std::fs::create_dir_all(&project_veclayer_dir)?;
+    write_git_storage_config(&project_veclayer_dir)?;
+    println!("  Updated .veclayer/config.toml");
+    println!();
+    println!("Commit .veclayer/config.toml to share with your team.");
+    println!("Team members run: veclayer sync");
+
+    Ok(())
+}
+
+/// Write `storage = "git"` and `push = "auto"` into `.veclayer/config.toml`.
+///
+/// If the file already exists, adds the fields without overwriting existing content.
+/// If it does not exist, creates it with both fields.
+fn write_git_storage_config(data_dir: &Path) -> Result<()> {
+    let config_path = data_dir.join("config.toml");
+
+    if config_path.exists() {
+        let mut content = std::fs::read_to_string(&config_path)?;
+        if !content.contains("storage") {
+            content.push_str("\nstorage = \"git\"\n");
+        }
+        if !content.contains("push") {
+            content.push_str("push = \"review\"\n");
+        }
+        std::fs::write(&config_path, content)?;
+    } else {
+        std::fs::write(&config_path, "storage = \"git\"\npush = \"review\"\n")?;
+    }
+
     Ok(())
 }
 
@@ -203,6 +263,7 @@ pub fn show_config(
     user_config: &crate::config::UserConfig,
     resolved: &crate::config::ResolvedConfig,
     git_remote: Option<&str>,
+    git_branch: Option<&str>,
 ) -> Result<()> {
     println!("Configuration for: {}", cwd.display().cyan());
 
@@ -294,6 +355,34 @@ pub fn show_config(
         }
     );
 
+    println!("\n{}", "[Git]".bold());
+    println!(
+        "  remote: {}",
+        git_remote
+            .unwrap_or("(none)")
+            .if_supports_color(Stream::Stdout, |s| s.cyan())
+    );
+    println!(
+        "  branch: {}",
+        git_branch
+            .unwrap_or("(none)")
+            .if_supports_color(Stream::Stdout, |s| s.cyan())
+    );
+
+    if !resolved.scopes.is_empty() {
+        println!("\n{}", "[Scopes]".bold());
+        for scope in &resolved.scopes {
+            println!(
+                "  {:<18} {:<30} {}",
+                scope.name.if_supports_color(Stream::Stdout, |s| s.yellow()),
+                scope
+                    .storage
+                    .if_supports_color(Stream::Stdout, |s| s.cyan()),
+                scope.push.if_supports_color(Stream::Stdout, |s| s.dimmed()),
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -369,6 +458,25 @@ pub async fn orientation(data_dir: &Path) -> Result<()> {
 
     println!("\nTry: recall, reflect, think, reflect salience");
 
+    let cwd = std::env::current_dir().unwrap_or_default();
+    if crate::git::detect::find_git_dir(&cwd).is_some() {
+        let project_config_path = cwd.join(".veclayer/config.toml");
+        let has_git_storage = project_config_path.exists() && {
+            let content = std::fs::read_to_string(&project_config_path).unwrap_or_default();
+            content.contains("storage") && content.contains("git")
+        };
+
+        if !has_git_storage {
+            println!();
+            println!(
+                "{}",
+                "This is a git project. Store memory in git:"
+                    .if_supports_color(Stream::Stdout, |s| s.dimmed())
+            );
+            println!("  veclayer init --share");
+        }
+    }
+
     Ok(())
 }
 
@@ -382,7 +490,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let store_dir = temp_dir.path().join("new-store");
 
-        init(&store_dir)?;
+        init(temp_dir.path(), &store_dir, false)?;
 
         assert!(store_dir.exists());
         Ok(())
@@ -392,7 +500,7 @@ mod tests {
     fn test_init_existing_directory() -> Result<()> {
         let temp_dir = TempDir::new()?;
 
-        init(temp_dir.path())?;
+        init(temp_dir.path(), temp_dir.path(), false)?;
         Ok(())
     }
 

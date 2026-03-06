@@ -5,11 +5,16 @@ use crate::parser::DocumentParser;
 
 /// Backwards-compatible alias
 pub async fn ingest(data_dir: &Path, path: &Path, options: &AddOptions) -> Result<AddResult> {
-    add_files(data_dir, path, options).await
+    add_files(data_dir, path, options, None).await
 }
 
 /// Add knowledge to the store (files, directories, or inline text).
-pub async fn add(data_dir: &Path, input: &str, mut options: AddOptions) -> Result<AddResult> {
+pub async fn add(
+    data_dir: &Path,
+    input: &str,
+    mut options: AddOptions,
+    git_store: Option<&crate::git::memory_store::MemoryStore>,
+) -> Result<AddResult> {
     options.perspectives = options
         .perspectives
         .iter()
@@ -24,14 +29,19 @@ pub async fn add(data_dir: &Path, input: &str, mut options: AddOptions) -> Resul
     let input_path = Path::new(input);
 
     if input_path.exists() {
-        add_files(data_dir, input_path, &options).await
+        add_files(data_dir, input_path, &options, git_store).await
     } else {
-        add_text(data_dir, input, &options).await
+        add_text(data_dir, input, &options, git_store).await
     }
 }
 
 /// Add files from a path to the store.
-async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result<AddResult> {
+async fn add_files(
+    data_dir: &Path,
+    path: &Path,
+    options: &AddOptions,
+    git_store: Option<&crate::git::memory_store::MemoryStore>,
+) -> Result<AddResult> {
     debug!("Opening store at {:?}...", data_dir);
     let (config, embedder, store, blob_store) = super::open_store(data_dir).await?;
 
@@ -83,6 +93,19 @@ async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result
 
         store.insert_chunks(chunks.clone()).await?;
         debug!("  Indexed successfully");
+
+        if let Some(gs) = git_store {
+            for chunk in &chunks {
+                let entry = crate::entry::Entry::from_chunk(chunk);
+                if let Err(e) = gs.store_entry(&entry) {
+                    warn!("Failed to commit entry to git: {e}");
+                } else if let Some(emb) = chunk.embedding.as_deref() {
+                    if let Err(e) = gs.store_embedding(&entry, embedder.name(), emb) {
+                        warn!("Failed to cache embedding in git: {e}");
+                    }
+                }
+            }
+        }
 
         all_chunks.extend(chunks);
     }
@@ -153,7 +176,12 @@ async fn add_files(data_dir: &Path, path: &Path, options: &AddOptions) -> Result
 }
 
 /// Add inline text as a single entry.
-async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<AddResult> {
+async fn add_text(
+    data_dir: &Path,
+    text: &str,
+    options: &AddOptions,
+    git_store: Option<&crate::git::memory_store::MemoryStore>,
+) -> Result<AddResult> {
     let (_config, embedder, store, blob_store) = super::open_store(data_dir).await?;
 
     let entry_type = match options.entry_type.as_str() {
@@ -210,8 +238,21 @@ async fn add_text(data_dir: &Path, text: &str, options: &AddOptions) -> Result<A
     blob_store.put(&blob)?;
 
     let id = chunk.id.clone();
+    let git_entry = crate::entry::Entry::from_chunk(&chunk);
+    let git_embedding = chunk.embedding.clone();
+    let embedder_name = embedder.name().to_string();
     let store = std::sync::Arc::new(store);
     store.insert_chunks(vec![chunk]).await?;
+
+    if let Some(gs) = git_store {
+        if let Err(e) = gs.store_entry(&git_entry) {
+            warn!("Failed to commit entry to git: {e}");
+        } else if let Some(emb) = git_embedding.as_deref() {
+            if let Err(e) = gs.store_embedding(&git_entry, &embedder_name, emb) {
+                warn!("Failed to cache embedding in git: {e}");
+            }
+        }
+    }
 
     let mut raw_relations = Vec::new();
     for target in &options.rel_supersedes {

@@ -25,7 +25,7 @@ pub async fn merge(data_dir: &Path, source: &Path, options: &MergeOptions) -> Re
     }
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| data_dir.to_path_buf());
-    let git_info = crate::git_detect::detect(&cwd);
+    let git_info = crate::git::detect::detect(&cwd);
     let user_config = crate::config::UserConfig::discover();
     let resolved = user_config.resolve(&cwd, git_info.remote.as_deref());
 

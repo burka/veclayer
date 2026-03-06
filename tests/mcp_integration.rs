@@ -27,6 +27,8 @@ async fn spawn_server_with(project: Option<String>, branch: Option<String>) -> (
         project,
         branch,
         auth: None,
+        git_store: None,
+        push_mode: veclayer::git::branch_config::PushMode::Off,
     };
 
     let app = build_app(state);

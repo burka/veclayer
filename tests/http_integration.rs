@@ -20,6 +20,8 @@ async fn open_state(tmp: &TempDir) -> AppState {
         project: None,
         branch: None,
         auth: None,
+        git_store: None,
+        push_mode: veclayer::git::branch_config::PushMode::Off,
     }
 }
 
@@ -292,8 +294,11 @@ mod auth {
             branch: None,
             auth: Some(AuthSetup {
                 auth_state,
+
                 oauth_state,
             }),
+            git_store: None,
+            push_mode: veclayer::git::branch_config::PushMode::Off,
         };
 
         let app = veclayer::mcp::http::build_app(state);

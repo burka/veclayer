@@ -18,7 +18,9 @@ pub fn detect(start_dir: &Path) -> GitProject {
     GitProject { remote, branch }
 }
 
-fn find_git_root(start_dir: &Path) -> Option<std::path::PathBuf> {
+/// Walk upward from `start_dir` to find the nearest `.git` directory.
+/// Returns the repository root (parent of `.git`).
+pub fn find_git_root(start_dir: &Path) -> Option<std::path::PathBuf> {
     let mut dir = start_dir.canonicalize().ok()?;
     loop {
         let git_path = dir.join(".git");
@@ -26,6 +28,27 @@ fn find_git_root(start_dir: &Path) -> Option<std::path::PathBuf> {
             return Some(dir.to_path_buf());
         }
         dir = dir.parent()?.to_path_buf();
+    }
+}
+
+/// Resolve the `.git` directory itself (handles both normal repos and worktrees).
+pub fn find_git_dir(start_dir: &Path) -> Option<std::path::PathBuf> {
+    let root = find_git_root(start_dir)?;
+    let git_path = root.join(".git");
+    if git_path.is_dir() {
+        Some(git_path)
+    } else if git_path.is_file() {
+        // Worktree: .git is a file pointing to the actual git dir
+        let content = std::fs::read_to_string(&git_path).ok()?;
+        let gitdir = content.strip_prefix("gitdir: ")?.trim();
+        let resolved = if Path::new(gitdir).is_absolute() {
+            std::path::PathBuf::from(gitdir)
+        } else {
+            root.join(gitdir).canonicalize().ok()?
+        };
+        Some(resolved)
+    } else {
+        None
     }
 }
 

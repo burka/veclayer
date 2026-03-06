@@ -28,9 +28,15 @@ pub async fn resolve_entry(store: &impl VectorStore, id: &str) -> Result<crate::
         .ok_or_else(|| crate::Error::not_found(format!("Entry '{}' not found", id)))
 }
 
-/// Parse a temporal string (ISO 8601 date "2026-02-20" or epoch seconds "1740000000") to epoch seconds.
+/// Parse a temporal string to a Unix epoch seconds timestamp.
 ///
-/// Returns `None` if the string cannot be parsed as either format.
+/// Supported formats:
+/// - Epoch seconds: `"1740000000"`
+/// - ISO 8601 date: `"2026-02-20"`
+/// - Relative duration (ago from now): `"7d"`, `"2w"`, `"1m"`, `"3h"`
+///   - `d` = days, `w` = weeks, `m` = months (approx 30 days), `h` = hours
+///
+/// Returns `None` if the string cannot be parsed in any format.
 pub fn parse_temporal(s: &str) -> Option<i64> {
     // Try epoch seconds first
     if let Ok(epoch) = s.parse::<i64>() {
@@ -44,7 +50,32 @@ pub fn parse_temporal(s: &str) -> Option<i64> {
         let days = days_since_epoch(year, month, day)?;
         return Some(days * 86400);
     }
-    None
+    // Try relative duration (e.g. "7d", "2w", "1m", "3h")
+    parse_relative_duration(s)
+}
+
+/// Parse a relative duration string like "7d", "2w", "1m", "3h" to an epoch
+/// timestamp representing that duration ago from now.
+///
+/// Suffixes: `d` = days, `w` = weeks, `m` = months (~30 days), `h` = hours
+fn parse_relative_duration(s: &str) -> Option<i64> {
+    if s.is_empty() {
+        return None;
+    }
+    let (num_part, unit) = s.split_at(s.len() - 1);
+    let count: i64 = num_part.parse().ok()?;
+    if count < 0 {
+        return None;
+    }
+    let seconds_ago = match unit {
+        "h" => count * 3600,
+        "d" => count * 86400,
+        "w" => count * 7 * 86400,
+        "m" => count * 30 * 86400,
+        _ => return None,
+    };
+    let now = crate::chunk::now_epoch_secs();
+    Some(now - seconds_ago)
 }
 
 /// Convert a calendar date to days since Unix epoch (1970-01-01).
@@ -93,6 +124,27 @@ mod tests {
         assert_eq!(parse_temporal(""), None);
         // "20260220" is a valid integer epoch, not invalid
         assert!(parse_temporal("20260220").is_some());
+    }
+
+    #[test]
+    fn test_parse_temporal_relative_duration() {
+        let now = crate::chunk::now_epoch_secs();
+        let day = parse_temporal("1d").unwrap();
+        assert!((day - (now - 86400)).abs() <= 2, "1d should be ~1 day ago");
+
+        let week = parse_temporal("7d").unwrap();
+        assert!((week - (now - 7 * 86400)).abs() <= 2);
+
+        let month = parse_temporal("1m").unwrap();
+        assert!((month - (now - 30 * 86400)).abs() <= 2);
+
+        let hour = parse_temporal("3h").unwrap();
+        assert!((hour - (now - 3 * 3600)).abs() <= 2);
+
+        // Unknown suffix → None
+        assert_eq!(parse_temporal("5x"), None);
+        // Negative → None
+        assert_eq!(parse_temporal("-1d"), None);
     }
 
     #[tokio::test]

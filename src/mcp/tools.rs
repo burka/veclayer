@@ -96,8 +96,41 @@ struct StoreSingleInput {
     scope: String,
 }
 
-/// Store a single entry and return its chunk ID.
+/// Write the entry and its embedding to the git memory branch.
+///
+/// Returns a status message describing what happened. Git failures are non-fatal —
+/// they return an error description but don't block the main store operation.
+fn commit_to_git(
+    entry: &crate::entry::Entry,
+    embedding: Option<&[f32]>,
+    embedder_name: &str,
+    git_store: Option<&crate::git::memory_store::MemoryStore>,
+    push_mode: crate::git::branch_config::PushMode,
+) -> Option<String> {
+    let store = git_store?;
+
+    if let Err(e) = store.store_entry(entry) {
+        let msg = format!("Git staging failed: {e}");
+        tracing::warn!("{msg}");
+        return Some(msg);
+    }
+
+    if let Some(emb) = embedding {
+        if let Err(e) = store.store_embedding(entry, embedder_name, emb) {
+            tracing::warn!("Failed to cache embedding in git: {e}");
+        }
+    }
+
+    if push_mode.auto_pushes() {
+        Some("Shared via git.".to_string())
+    } else {
+        Some("Staged for sharing (pending review). Ask the user if ready to push.".to_string())
+    }
+}
+
+/// Store a single entry and return (chunk_id, git_status).
 /// Pass `Some(embedding)` for immediate embedding, or `None` for deferred (pending).
+#[allow(clippy::too_many_arguments)]
 async fn store_single_entry(
     store: &Arc<StoreBackend>,
     embedder: &Arc<dyn Embedder + Send + Sync>,
@@ -106,7 +139,9 @@ async fn store_single_entry(
     embedding: Option<Vec<f32>>,
     project: Option<&str>,
     branch: Option<&str>,
-) -> Result<String> {
+    git_store: Option<&crate::git::memory_store::MemoryStore>,
+    push_mode: crate::git::branch_config::PushMode,
+) -> Result<(String, Option<String>)> {
     let parent_id = input.parent_id.as_deref().filter(|s| !s.is_empty());
 
     let (level, path) = if let Some(pid) = parent_id {
@@ -195,7 +230,21 @@ async fn store_single_entry(
     let blob = crate::entry::StoredBlob::from_chunk_and_embedding(&chunk, embedder.name());
     blob_store.put(&blob)?;
 
-    store.insert_chunks(vec![chunk]).await?;
+    store.insert_chunks(vec![chunk.clone()]).await?;
+
+    // Write to git memory branch only for project-scoped entries.
+    let git_status = if input.scope == "project" {
+        let entry = crate::entry::Entry::from_chunk(&chunk);
+        commit_to_git(
+            &entry,
+            chunk.embedding.as_deref(),
+            embedder.name(),
+            git_store,
+            push_mode,
+        )
+    } else {
+        None
+    };
 
     // Process relations via shared module (resolves IDs, writes inverses, auto-demotes)
     let raw_relations: Vec<crate::relations::RawRelation> = input
@@ -208,7 +257,7 @@ async fn store_single_entry(
         .collect();
     crate::relations::process_relations(store, &chunk_id, raw_relations).await?;
 
-    Ok(chunk_id)
+    Ok((chunk_id, git_status))
 }
 
 pub async fn execute_recall(
@@ -385,6 +434,7 @@ pub async fn execute_focus(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn execute_store(
     store: &Arc<StoreBackend>,
     embedder: &Arc<dyn Embedder + Send + Sync>,
@@ -392,13 +442,16 @@ pub async fn execute_store(
     input: StoreInput,
     project: Option<&str>,
     branch: Option<&str>,
+    git_store: Option<&crate::git::memory_store::MemoryStore>,
+    push_mode: crate::git::branch_config::PushMode,
 ) -> Result<serde_json::Value> {
     if !input.items.is_empty() {
         let mut ids = Vec::new();
         let mut long_entries = 0usize;
+        let mut git_statuses: Vec<String> = Vec::new();
         for item in input.items {
             let content_len = item.content.len();
-            let id = store_single_entry(
+            let (id, git_status) = store_single_entry(
                 store,
                 embedder,
                 blob_store,
@@ -418,9 +471,14 @@ pub async fn execute_store(
                 None, // deferred — background worker will embed
                 project,
                 branch,
+                git_store,
+                push_mode,
             )
             .await?;
             ids.push(crate::short_id(&id).to_string());
+            if let Some(status) = git_status {
+                git_statuses.push(status);
+            }
             if content_len > 2000 {
                 long_entries += 1;
             }
@@ -431,6 +489,17 @@ pub async fn execute_store(
             ids.len(),
             ids.join(", ")
         );
+        // Deduplicate git statuses (typically all identical for the same push mode)
+        git_statuses.dedup();
+        if git_statuses.len() == 1 {
+            msg.push_str(&format!(" {}", git_statuses[0]));
+        } else if !git_statuses.is_empty() {
+            // Mixed results — summarize
+            let failures = git_statuses.iter().filter(|s| s.contains("failed")).count();
+            if failures > 0 {
+                msg.push_str(&format!(" Git staging: {failures} failed."));
+            }
+        }
         if long_entries > 0 {
             msg.push_str(&format!(
                 "\n\nNote: {} entr{} exceeded 2000 chars. Long content embeds less precisely — \
@@ -447,7 +516,7 @@ pub async fn execute_store(
             .into_iter()
             .next()
             .ok_or_else(|| crate::Error::embedding("Failed to generate embedding"))?;
-        let id = store_single_entry(
+        let (id, git_status) = store_single_entry(
             store,
             embedder,
             blob_store,
@@ -467,9 +536,14 @@ pub async fn execute_store(
             Some(embedding),
             project,
             branch,
+            git_store,
+            push_mode,
         )
         .await?;
         let mut msg = format!("Stored. ID: {}", crate::short_id(&id));
+        if let Some(status) = git_status {
+            msg.push_str(&format!(" {status}"));
+        }
         if content_len > 2000 {
             msg.push_str(
                 "\n\nNote: Content exceeded 2000 chars. Long entries embed less precisely — \

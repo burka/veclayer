@@ -41,7 +41,7 @@ pub mod embedder;
 pub mod entry;
 pub mod error;
 #[doc(hidden)]
-pub mod git_detect;
+pub mod git;
 pub mod identity;
 #[cfg(feature = "llm")]
 #[doc(hidden)]

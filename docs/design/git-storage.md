@@ -183,7 +183,7 @@ ensures entries are always findable by ID regardless of slug.
 First perspective determines directory. No perspectives → `_unsorted/`.
 
 ```
-backlayer-memory/              # orphan branch or separate repo
+veclayer-memory/              # orphan branch or separate repo
 ├── config.toml
 ├── decisions/
 │   ├── dual-id-scheme-2b0bd4c.md
@@ -291,22 +291,22 @@ These never leave the machine:
 Lives in the branch root. Versioned and shared with the team.
 
 ```toml
-[backlayer]
+[memory]
 version = "1"
 
 # Embedding model for local index rebuilds
 embedding_model = "bge-small-en-v1.5"
 
-[backlayer.sync]
-push_mode = "auto"            # auto | pr | manual
-branch = "backlayer-memory"
+[memory.sync]
+push_mode = "auto"            # auto | review | manual
+branch = "veclayer-memory"
 
-[backlayer.company]
+[memory.company]
 remote = "git@github.com:acme/shared-memory.git"
-branch = "backlayer-memory"
-push_mode = "pr"
+branch = "veclayer-memory"
+push_mode = "review"
 
-[backlayer.prompts]
+[memory.prompts]
 # Override MCP tool descriptions
 recall = "Search the team's shared knowledge base..."
 store = "Always tag decisions with project name..."
@@ -318,7 +318,7 @@ Check recall before starting new work.
 Store decisions and rationale as you make them.
 """
 
-[backlayer.prompts.perspectives]
+[memory.prompts.perspectives]
 # Custom perspective descriptions
 decisions = "Architectural and design choices with rationale"
 playbook = "Team-specific patterns and conventions"
@@ -330,7 +330,7 @@ onboarding = "Context for new team members"
 | Mode | Behavior | Use case |
 |---|---|---|
 | `auto` | Commit and push on every store | Session/project memory, no review needed |
-| `pr` | Commit locally, open PR for review | Company memory, canonical knowledge |
+| `review` | Commit locally, open PR for review | Company memory, canonical knowledge |
 | `manual` | Commit locally, push only on instruction | Explicit control |
 
 Defaults are recommendations. The agent can deviate per interaction when the user
@@ -341,7 +341,7 @@ instructs it:
 
 ### Prompt Configuration
 
-The `[backlayer.prompts]` section allows teams to customize how agents interact with
+The `[memory.prompts]` section allows teams to customize how agents interact with
 memory without code changes. This includes:
 
 - **Tool descriptions** — override the default `recall`, `store`, `focus`, `think`
@@ -358,7 +358,7 @@ memory without code changes. This includes:
 │  Company Repo (shared-memory.git)           │
 │  PR-reviewed, canonical knowledge           │
 ├─────────────────────────────────────────────┤
-│  Project Branch (backlayer-memory)          │
+│  Project Branch (veclayer-memory)           │
 │  Auto-pushed, team-level knowledge          │
 ├─────────────────────────────────────────────┤
 │  Local Store (current VecLayer)             │
@@ -391,7 +391,7 @@ On `store`:
 1. Write entry as Markdown file to the branch working tree
 2. `git add` + `git commit` (always)
 3. If `push_mode == "auto"`: `git pull --rebase && git push`
-4. If `push_mode == "pr"`: accumulate commits, open PR on threshold
+4. If `push_mode == "review"`: accumulate commits, open PR on threshold
 5. If `push_mode == "manual"`: do nothing until instructed
 
 On session start (or `recall`):

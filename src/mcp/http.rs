@@ -56,6 +56,10 @@ pub struct AppState {
     pub branch: Option<String>,
     /// Present when authentication is enabled.
     pub auth: Option<AuthSetup>,
+    /// Git memory store for persisting entries to the memory branch, if configured.
+    pub git_store: Option<Arc<crate::git::memory_store::MemoryStore>>,
+    /// Push mode for git storage.
+    pub push_mode: crate::git::branch_config::PushMode,
 }
 
 // ─── Error types ──────────────────────────────────────────────────────────────
@@ -182,6 +186,8 @@ pub fn build_app(state: AppState) -> Router {
                 mcp_state.branch.clone(),
                 instructions,
                 mcp_capability,
+                mcp_state.git_store.clone(),
+                mcp_state.push_mode,
             ))
         },
         LocalSessionManager::default().into(),
@@ -299,6 +305,13 @@ pub async fn run_http(config: Config) -> Result<()> {
 
     let auth = build_auth_setup(&config)?;
 
+    let push_mode = config.push_mode;
+    let git_store = if push_mode.uses_git() {
+        open_git_store(&config)
+    } else {
+        None
+    };
+
     let state = AppState {
         store,
         embedder,
@@ -307,6 +320,8 @@ pub async fn run_http(config: Config) -> Result<()> {
         project: config.project.clone(),
         branch: config.branch.clone(),
         auth,
+        git_store,
+        push_mode,
     };
 
     let app = build_app(state);
@@ -326,6 +341,31 @@ pub async fn run_http(config: Config) -> Result<()> {
         .map_err(|e| crate::Error::InvalidOperation(format!("Server error: {}", e)))?;
 
     Ok(())
+}
+
+/// Try to open the git memory store for the current project.
+///
+/// Returns `None` when git storage is not configured or the git dir cannot be found.
+pub(super) fn open_git_store(
+    config: &Config,
+) -> Option<Arc<crate::git::memory_store::MemoryStore>> {
+    if config.storage.as_deref() != Some("git") {
+        return None;
+    }
+
+    let cwd = std::env::current_dir().ok()?;
+    let git_dir = crate::git::detect::find_git_dir(&cwd)?;
+
+    match crate::git::memory_store::MemoryStore::open(&git_dir, None) {
+        Ok(store) => {
+            tracing::info!("Git memory store opened for MCP sessions");
+            Some(Arc::new(store))
+        }
+        Err(e) => {
+            tracing::warn!("Failed to open git memory store: {e}");
+            None
+        }
+    }
 }
 
 /// Load the keystore and build auth state, or return `None` when auth is
@@ -447,17 +487,24 @@ async fn api_store(
     if input.content.is_empty() {
         return Err(AppError::bad_request("content is required"));
     }
-    let chunk_id = tools::execute_store(
+    let effective_git_store = if state.push_mode.auto_stages() {
+        state.git_store.as_deref()
+    } else {
+        None
+    };
+    let result = tools::execute_store(
         &state.store,
         &state.embedder,
         &state.blob_store,
         input,
         state.project.as_deref(),
         state.branch.as_deref(),
+        effective_git_store,
+        state.push_mode,
     )
     .await
     .map_err(warn_and_convert("Store"))?;
-    Ok(Json(format!("Stored. ID: {}", chunk_id)))
+    Ok(Json(result.as_str().unwrap_or_default().to_string()))
 }
 
 async fn api_think(

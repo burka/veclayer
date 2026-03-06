@@ -43,6 +43,13 @@ pub async fn run_stdio(config: Config) -> Result<()> {
     )
     .await;
 
+    let push_mode = config.push_mode;
+    let git_store = if push_mode.uses_git() {
+        super::http::open_git_store(&config)
+    } else {
+        None
+    };
+
     // Create handler and serve via rmcp stdio transport.
     // Stdio transport is trusted (local process), so it always gets Admin capability.
     let handler = McpHandler::new(
@@ -54,6 +61,8 @@ pub async fn run_stdio(config: Config) -> Result<()> {
         config.branch.clone(),
         instructions,
         Capability::Admin,
+        git_store,
+        push_mode,
     );
 
     let service = handler

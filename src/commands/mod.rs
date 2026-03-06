@@ -33,6 +33,7 @@ pub mod reflect;
 pub mod search;
 pub mod serve;
 pub mod store_ops;
+pub mod sync;
 pub mod think;
 
 // Over-fetch when temporal filters are active, then filter client-side
@@ -204,6 +205,8 @@ pub struct ServeOptions {
     pub auto_approve: bool,
     pub token_expiry_secs: u64,
     pub refresh_expiry_secs: u64,
+    pub storage: Option<String>,
+    pub push: Option<String>,
 }
 
 impl Default for ServeOptions {
@@ -220,6 +223,8 @@ impl Default for ServeOptions {
             auto_approve: false,
             token_expiry_secs: 3600,
             refresh_expiry_secs: 2_592_000,
+            storage: None,
+            push: None,
         }
     }
 }
