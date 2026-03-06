@@ -53,8 +53,12 @@ impl MemoryStore {
     pub fn open(git_dir: &Path, branch_name: Option<&str>) -> Result<Self, GitError> {
         let branch = GitMemoryBranch::open(git_dir, branch_name)?;
 
-        if !branch.branch_exists()? {
-            branch.create_orphan_branch()?;
+        // `create_orphan_branch` is idempotent — no need to guard it with a
+        // `branch_exists()` check; it handles the existing-branch case itself.
+        // We only inspect existence once to decide whether to seed the default config.
+        let is_new_branch = !branch.branch_exists()?;
+        branch.create_orphan_branch()?;
+        if is_new_branch {
             write_default_config(&branch)?;
         }
 
@@ -658,5 +662,134 @@ mod tests {
                 "embedding value mismatch: got {got}, expected {expected}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // test_gc_removes_orphaned_embeddings
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_gc_removes_orphaned_embeddings() {
+        let (_dir, git_dir) = setup_test_repo();
+        let store = MemoryStore::open(&git_dir, Some("test-memory")).unwrap();
+
+        let entry = sample_entry();
+        store.store_entry(&entry).unwrap();
+
+        let model = "gc-model";
+        let vector: Vec<f32> = (0..4).map(|i| i as f32 * 0.5).collect();
+        store.store_embedding(&entry, model, &vector).unwrap();
+
+        // Compute the short ID so we can verify the embedding is gone afterwards.
+        let id = entry.content_id();
+        let short = crate::chunk::short_id(&id).to_string();
+
+        // Confirm the embedding exists before GC.
+        let before = store
+            .branch()
+            .read_embedding(&short, model)
+            .expect("read_embedding should not error before gc");
+        assert!(before.is_some(), "embedding should exist before gc");
+
+        // Run GC with an empty live-ids list — every embedding is orphaned.
+        let deleted = store.gc(&[], model).unwrap();
+        assert_eq!(deleted, 1, "gc should report one deleted embedding");
+
+        // The embedding file must be gone.
+        let after = store
+            .branch()
+            .read_embedding(&short, model)
+            .expect("read_embedding should not error after gc");
+        assert!(after.is_none(), "embedding should be absent after gc");
+
+        // A cleanup commit must exist on the branch.
+        let log_output = run_git_with_gitdir(
+            &git_dir,
+            &["log", "--oneline", "--grep=gc:", "test-memory"],
+        )
+        .expect("git log should succeed");
+        let log = String::from_utf8_lossy(&log_output.stdout);
+        assert!(
+            !log.trim().is_empty(),
+            "a gc: commit should appear in the branch log"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // test_unpushed_commit_count_with_remote
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_unpushed_commit_count_with_remote() {
+        // Create a bare repository to act as the remote.
+        let remote_dir = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(remote_dir.path())
+            .output()
+            .unwrap();
+
+        let (local_dir, git_dir) = setup_test_repo();
+
+        // Configure the bare repo as origin.
+        std::process::Command::new("git")
+            .args([
+                "--git-dir",
+                &git_dir.to_string_lossy(),
+                "remote",
+                "add",
+                "origin",
+                &remote_dir.path().to_string_lossy(),
+            ])
+            .output()
+            .unwrap();
+
+        let store = MemoryStore::open(&git_dir, Some("test-memory")).unwrap();
+
+        // Store an entry to create a local commit.
+        store.store_entry(&sample_entry()).unwrap();
+
+        // Push and set up the remote tracking branch so git log origin/..local works.
+        std::process::Command::new("git")
+            .args([
+                "--git-dir",
+                &git_dir.to_string_lossy(),
+                "push",
+                "--set-upstream",
+                "origin",
+                "test-memory",
+            ])
+            .output()
+            .unwrap();
+
+        // After the push the local branch is in sync with the remote.
+        let count_after_push = store
+            .unpushed_commit_count()
+            .expect("unpushed_commit_count should succeed");
+        assert_eq!(
+            count_after_push, 0,
+            "no unpushed commits expected immediately after push"
+        );
+
+        // Add another local commit with distinct content so git sees a real change.
+        let second_entry = Entry {
+            content: "A second architectural decision, distinct from the first.".to_string(),
+            heading: Some("Second Decision".to_string()),
+            ..sample_entry()
+        };
+        store.store_entry(&second_entry).unwrap();
+
+        // Now there should be exactly one commit ahead of the remote.
+        let count_with_new = store
+            .unpushed_commit_count()
+            .expect("unpushed_commit_count should succeed");
+        assert_eq!(
+            count_with_new, 1,
+            "one unpushed commit expected after storing a second entry"
+        );
+
+        // Keep temp dirs alive until end of test.
+        drop(local_dir);
+        drop(remote_dir);
     }
 }

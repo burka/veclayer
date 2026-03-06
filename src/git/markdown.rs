@@ -121,7 +121,9 @@ fn is_normal_visibility(v: &Option<String>) -> bool {
 
 fn skip_impression_strength(v: &Option<f32>) -> bool {
     match v {
-        Some(s) => (*s - 1.0_f32).abs() < f32::EPSILON,
+        // Use exact equality: values very close to but not equal to 1.0
+        // (e.g. from float arithmetic) should still be serialized.
+        Some(s) => *s == 1.0_f32,
         None => true,
     }
 }
@@ -200,9 +202,9 @@ fn entry_to_frontmatter(entry: &Entry) -> Result<Frontmatter, GitError> {
     let expires = entry.expires_at.map(unix_to_iso8601).transpose()?;
 
     // Impression strength is only meaningful when an impression hint exists.
-    // Omit when at the default (1.0) or when there's no hint.
+    // Omit when at the default (exactly 1.0) or when there's no hint.
     let impression_strength = if entry.impression_hint.is_some()
-        && (entry.impression_strength - 1.0_f32).abs() >= f32::EPSILON
+        && entry.impression_strength != 1.0_f32
     {
         Some(entry.impression_strength)
     } else {
@@ -383,23 +385,38 @@ pub fn render(entry: &Entry) -> Result<String, GitError> {
 /// Generate the filename for an entry: `slug-shortid.md`.
 ///
 /// Slug is derived from the heading (preferred) or the first ~50 chars of content.
+/// When both are empty or yield only non-alphanumeric characters the file is named
+/// `shortid.md` (no leading hyphen).
 pub fn entry_filename(entry: &Entry) -> String {
     let source = entry.heading.as_deref().unwrap_or(&entry.content);
     let slug = slugify(source, 50);
     let hash = entry.content_id();
     let id = short_id(&hash);
-    format!("{slug}-{id}.md")
+    if slug.is_empty() {
+        format!("{id}.md")
+    } else {
+        format!("{slug}-{id}.md")
+    }
 }
 
 /// Return the directory for an entry based on its first perspective.
 ///
-/// Falls back to `_unsorted` if no perspectives are set.
+/// The perspective name is sanitized via `slugify` to ensure it is safe as a
+/// filesystem directory component (no `/`, `\0`, spaces, or other special chars).
+/// Falls back to `_unsorted` if no perspectives are set or if sanitization yields
+/// an empty string.
 pub fn entry_directory(entry: &Entry) -> String {
-    entry
-        .perspectives
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "_unsorted".to_string())
+    match entry.perspectives.first() {
+        Some(perspective) => {
+            let sanitized = slugify(perspective, 64);
+            if sanitized.is_empty() {
+                "_unsorted".to_string()
+            } else {
+                sanitized
+            }
+        }
+        None => "_unsorted".to_string(),
+    }
 }
 
 /// Return the full relative path for an entry: `directory/filename`.
@@ -412,12 +429,25 @@ pub fn entry_path(entry: &Entry) -> String {
 // ---------------------------------------------------------------------------
 
 /// Split a document into `(yaml, body)` at the `---` frontmatter delimiters.
+///
+/// CRLF is normalized to LF by the caller before this function is invoked,
+/// so only LF line endings appear here.
+///
+/// # Delimiter assumption
+///
+/// The closing delimiter is found by searching for the literal byte sequence
+/// `\n---\n`, which is the standard frontmatter convention used by Jekyll,
+/// Hugo, and most static-site generators.  This approach assumes that no YAML
+/// *value* inside the frontmatter block itself contains a bare `\n---\n`
+/// sequence.  That assumption is safe in practice because `serde_yml` always
+/// quotes or block-indents multi-line strings, so any value that contains
+/// `---` on its own line will be wrapped in quotes or indented, preventing a
+/// false match.
 fn split_frontmatter(text: &str) -> Result<(&str, &str), GitError> {
     let text = text.trim_start();
 
     let after_open = text
         .strip_prefix("---\n")
-        .or_else(|| text.strip_prefix("---\r\n"))
         .ok_or_else(|| GitError::CommandFailed {
             command: "parse frontmatter".to_string(),
             stderr: "missing opening '---' delimiter".to_string(),
@@ -425,15 +455,11 @@ fn split_frontmatter(text: &str) -> Result<(&str, &str), GitError> {
         })?;
 
     // Find the closing `---` delimiter. Handles both mid-file and end-of-file.
-    if let Some((close_pos, delim_len)) = after_open
-        .find("\n---\r\n")
-        .map(|p| (p, "\n---\r\n".len()))
-        .or_else(|| after_open.find("\n---\n").map(|p| (p, "\n---\n".len())))
-    {
+    if let Some(close_pos) = after_open.find("\n---\n") {
         let yaml = &after_open[..close_pos];
-        let body = after_open[close_pos + delim_len..].trim_start_matches(['\r', '\n']);
+        let body = after_open[close_pos + "\n---\n".len()..].trim_start_matches('\n');
         Ok((yaml, body))
-    } else if after_open.ends_with("\n---") || after_open.ends_with("\n---\r") {
+    } else if after_open.ends_with("\n---") {
         // Closing delimiter at EOF with no trailing newline
         let yaml_end = after_open.rfind("\n---").unwrap();
         let yaml = &after_open[..yaml_end];
@@ -768,6 +794,42 @@ mod tests {
         assert_eq!(entry_directory(&entry), "_unsorted");
     }
 
+    #[test]
+    fn test_entry_directory_special_chars() {
+        // Slash: must not appear in directory name — slugified away.
+        let entry_slash = Entry {
+            perspectives: vec!["foo/bar".to_string()],
+            ..minimal_entry()
+        };
+        let dir = entry_directory(&entry_slash);
+        assert!(
+            !dir.contains('/'),
+            "directory must not contain '/': got '{dir}'"
+        );
+        assert!(!dir.is_empty(), "directory must not be empty");
+
+        // Spaces: converted to hyphens.
+        let entry_space = Entry {
+            perspectives: vec!["my decisions".to_string()],
+            ..minimal_entry()
+        };
+        let dir = entry_directory(&entry_space);
+        assert!(!dir.contains(' '), "directory must not contain spaces");
+
+        // Unicode: non-alphanumeric Unicode characters become hyphens; alphanumeric
+        // Unicode chars (e.g. letters in other scripts) are kept.
+        let entry_unicode = Entry {
+            perspectives: vec!["déci/sions".to_string()],
+            ..minimal_entry()
+        };
+        let dir = entry_directory(&entry_unicode);
+        assert!(
+            !dir.contains('/'),
+            "directory must not contain '/': got '{dir}'"
+        );
+        assert!(!dir.is_empty(), "directory must not be empty");
+    }
+
     // -----------------------------------------------------------------------
     // relations compact format
     // -----------------------------------------------------------------------
@@ -900,5 +962,106 @@ mod tests {
         assert_eq!(parsed.heading, original.heading);
         assert_eq!(parsed.perspectives, original.perspectives);
         assert_eq!(parsed.visibility, original.visibility);
+    }
+
+    // -----------------------------------------------------------------------
+    // T13: Empty content / heading edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_entry_filename_empty_content_no_heading() {
+        // Entry with empty content and no heading: slug is empty, so the
+        // filename must degenerate gracefully to just `<id>.md` — no leading
+        // hyphen and a non-empty result.
+        let entry = Entry {
+            content: String::new(),
+            heading: None,
+            ..minimal_entry()
+        };
+        let filename = entry_filename(&entry);
+        assert!(!filename.is_empty(), "filename must not be empty");
+        assert!(!filename.starts_with('-'), "filename must not start with '-'");
+        assert!(filename.ends_with(".md"), "filename must end with .md");
+    }
+
+    #[test]
+    fn test_entry_filename_empty_heading() {
+        // Entry with an empty heading string: `slugify("")` returns `""`, so
+        // `entry_filename` falls back to the empty slug path.  The filename
+        // must not start with a hyphen.
+        let entry = Entry {
+            content: "Some content.".to_string(),
+            heading: Some(String::new()),
+            ..minimal_entry()
+        };
+        let filename = entry_filename(&entry);
+        assert!(!filename.is_empty(), "filename must not be empty");
+        assert!(!filename.starts_with('-'), "filename must not start with '-'");
+        assert!(filename.ends_with(".md"), "filename must end with .md");
+    }
+
+    #[test]
+    fn test_roundtrip_empty_content() {
+        // An entry with empty content must survive a render → parse cycle.
+        // The heading is preserved and the content field round-trips as empty.
+        // Note: `parse` returns the *raw* post-frontmatter body (which includes
+        // the heading line), so we only check `parsed.content`.
+        let entry = Entry {
+            content: String::new(),
+            heading: Some("Empty Body".to_string()),
+            ..minimal_entry()
+        };
+        let rendered = render(&entry).unwrap();
+        let (parsed, _body) = parse(rendered.as_bytes()).unwrap();
+
+        assert_eq!(parsed.heading, entry.heading);
+        assert_eq!(parsed.content, "");
+    }
+
+    #[test]
+    fn test_roundtrip_whitespace_only_content() {
+        // Whitespace-only content is trimmed on parse (`trim_end`), so the
+        // round-tripped content will be empty rather than `"   \n  "`.
+        let entry = Entry {
+            content: "   \n  ".to_string(),
+            heading: Some("Whitespace Only".to_string()),
+            ..minimal_entry()
+        };
+        let rendered = render(&entry).unwrap();
+        let (parsed, _body) = parse(rendered.as_bytes()).unwrap();
+
+        assert_eq!(parsed.heading, entry.heading);
+        // `trim_end` is applied on parse; the whitespace is gone.
+        assert_eq!(parsed.content, "");
+    }
+
+    // -----------------------------------------------------------------------
+    // F13: serde_yml quotes multi-line strings — no bare \n---\n in YAML
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_serde_yml_quotes_multiline_strings() {
+        // If serde_yml did NOT quote multi-line values, a Frontmatter whose
+        // `impression` field contained `\n---\n` would fool `split_frontmatter`
+        // into treating it as the closing delimiter.  Verify that does not happen.
+        let fm = Frontmatter {
+            id: "abc1234".to_string(),
+            created: "2026-02-21T10:15:00Z".to_string(),
+            perspectives: vec![],
+            visibility: None,
+            relations: BTreeMap::new(),
+            parent: None,
+            expires: None,
+            impression: Some("line one\n---\nline two".to_string()),
+            impression_strength: None,
+            summarizes: vec![],
+        };
+
+        let yaml = serde_yml::to_string(&fm).unwrap();
+        // The bare sequence that would fool the parser must not appear verbatim.
+        assert!(
+            !yaml.contains("\n---\n"),
+            "serde_yml must quote the multi-line value; bare \\n---\\n found in: {yaml}"
+        );
     }
 }

@@ -3,7 +3,9 @@
 //! All methods operate directly on the git object store via `--git-dir` — no
 //! worktree checkout is required for reads.
 
-use super::{check_output, map_io_error, run_git_with_gitdir, GitError, GitMemoryBranch};
+use super::{
+    apply_git_env, check_output, map_io_error, run_git_with_gitdir, GitError, GitMemoryBranch,
+};
 
 impl GitMemoryBranch {
     /// Read the raw bytes of a file on the memory branch.
@@ -164,6 +166,13 @@ fn parse_object_size(header: &str) -> Option<usize> {
 // ---------------------------------------------------------------------------
 
 /// Run a git command with `--git-dir` and data written to its stdin.
+///
+/// The `git_dir` path is passed directly to `Command::arg()` without string
+/// conversion, preserving non-UTF-8 bytes on Unix systems.
+///
+/// Adds `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=echo`, and `LC_ALL=C` — consistent
+/// with [`run_git_with_gitdir`] — to prevent credential prompts and locale-dependent
+/// output.
 fn run_git_with_gitdir_stdin(
     git_dir: &std::path::Path,
     args: &[&str],
@@ -172,27 +181,26 @@ fn run_git_with_gitdir_stdin(
     use std::io::Write as _;
     use std::process::{Command, Stdio};
 
-    let git_dir_str = git_dir.to_string_lossy();
-    let mut full_args = vec!["--git-dir", &git_dir_str];
-    full_args.extend_from_slice(args);
-
-    let mut child = Command::new("git")
-        .args(&full_args)
+    let mut cmd = Command::new("git");
+    cmd.arg("--git-dir")
+        .arg(git_dir)
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| map_io_error(e, &full_args))?;
+        .stderr(Stdio::piped());
+    apply_git_env(&mut cmd);
+    let mut child = cmd.spawn().map_err(map_io_error)?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(stdin_data)
-            .map_err(|e| map_io_error(e, &full_args))?;
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| GitError::WorktreeError("stdin pipe not established".into()))?;
+        stdin.write_all(stdin_data).map_err(map_io_error)?;
+        // stdin is dropped here, sending EOF to the child process
     }
 
-    child
-        .wait_with_output()
-        .map_err(|e| map_io_error(e, &full_args))
+    child.wait_with_output().map_err(map_io_error)
 }
 
 // ---------------------------------------------------------------------------

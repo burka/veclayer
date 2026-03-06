@@ -56,7 +56,7 @@ fn init_share(cwd: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write `storage = "git"` and `push = "auto"` into `.veclayer/config.toml`.
+/// Write `storage = "git"` and `push = "review"` into `.veclayer/config.toml`.
 ///
 /// If the file already exists, adds the fields without overwriting existing content.
 /// If it does not exist, creates it with both fields.
@@ -65,10 +65,12 @@ fn write_git_storage_config(data_dir: &Path) -> Result<()> {
 
     if config_path.exists() {
         let mut content = std::fs::read_to_string(&config_path)?;
-        if !content.contains("storage") {
+        let existing: toml::Value =
+            toml::from_str(&content).unwrap_or(toml::Value::Table(Default::default()));
+        if existing.get("storage").is_none() {
             content.push_str("\nstorage = \"git\"\n");
         }
-        if !content.contains("push") {
+        if existing.get("push").is_none() {
             content.push_str("push = \"review\"\n");
         }
         std::fs::write(&config_path, content)?;
@@ -463,7 +465,9 @@ pub async fn orientation(data_dir: &Path) -> Result<()> {
         let project_config_path = cwd.join(".veclayer/config.toml");
         let has_git_storage = project_config_path.exists() && {
             let content = std::fs::read_to_string(&project_config_path).unwrap_or_default();
-            content.contains("storage") && content.contains("git")
+            let parsed: toml::Value =
+                toml::from_str(&content).unwrap_or(toml::Value::Table(Default::default()));
+            parsed.get("storage").and_then(|v| v.as_str()) == Some("git")
         };
 
         if !has_git_storage {

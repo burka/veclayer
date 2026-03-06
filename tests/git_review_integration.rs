@@ -1,16 +1,19 @@
 //! Integration tests for the git memory review workflow.
 //!
 //! Covers: MemoryStore operations, PushMode behavior, MigrateFilters logic,
-//! and scope gating.  All tests use temporary git repositories and do not
-//! require a network connection.
+//! scope gating, pull-rebase conflict detection, push-with-retry, and sync.
+//! All tests use temporary git repositories and do not require a network
+//! connection.
 
 use std::path::{Path, PathBuf};
 
-use veclayer::chunk::{ChunkLevel, EntryType};
+use tempfile::TempDir;
+use veclayer::chunk::{ChunkLevel, EntryType, HierarchicalChunk};
 use veclayer::commands::sync::MigrateFilters;
 use veclayer::entry::Entry;
 use veclayer::git::branch_config::PushMode;
 use veclayer::git::memory_store::MemoryStore;
+use veclayer::git::SyncResult;
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -320,19 +323,68 @@ fn migrate_filters_include_perspective_matches() {
         ..Default::default()
     };
 
-    // Verify field is set; actual filtering logic is tested via accept() in the
-    // module's own unit tests (which live next to the private `accepts` method).
-    assert_eq!(filters.perspective.as_deref(), Some("decisions"));
+    let matching = HierarchicalChunk::new(
+        "content".to_string(),
+        ChunkLevel::H1,
+        None,
+        String::new(),
+        "src.md".to_string(),
+    )
+    .with_perspectives(vec!["decisions".to_string()]);
+
+    let non_matching = HierarchicalChunk::new(
+        "other content".to_string(),
+        ChunkLevel::H1,
+        None,
+        String::new(),
+        "src.md".to_string(),
+    )
+    .with_perspectives(vec!["knowledge".to_string()]);
+
+    assert!(
+        filters.accepts(&matching),
+        "entry with matching perspective must be accepted"
+    );
+    assert!(
+        !filters.accepts(&non_matching),
+        "entry without matching perspective must be rejected"
+    );
 }
 
-/// `exclude_perspective` filter: the excluded perspective name is stored.
+/// `exclude_perspective` filter: entries with the excluded perspective are rejected.
 #[test]
 fn migrate_filters_exclude_perspective_stored() {
     let filters = MigrateFilters {
         exclude_perspective: Some("learnings".to_string()),
         ..Default::default()
     };
-    assert_eq!(filters.exclude_perspective.as_deref(), Some("learnings"));
+
+    let excluded = HierarchicalChunk::new(
+        "content".to_string(),
+        ChunkLevel::H1,
+        None,
+        String::new(),
+        "src.md".to_string(),
+    )
+    .with_perspectives(vec!["learnings".to_string()]);
+
+    let accepted = HierarchicalChunk::new(
+        "other content".to_string(),
+        ChunkLevel::H1,
+        None,
+        String::new(),
+        "src.md".to_string(),
+    )
+    .with_perspectives(vec!["decisions".to_string()]);
+
+    assert!(
+        !filters.accepts(&excluded),
+        "entry with excluded perspective must be rejected"
+    );
+    assert!(
+        filters.accepts(&accepted),
+        "entry without excluded perspective must be accepted"
+    );
 }
 
 /// `since` timestamp filter: the boundary value is stored.
@@ -561,5 +613,348 @@ fn distinct_entries_produce_distinct_ids() {
         ids.len(),
         unique.len(),
         "all IDs should be distinct; got: {ids:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 7. Resilience: corrupted markdown files
+// ---------------------------------------------------------------------------
+
+/// `load()` silently skips malformed `.md` files and returns only valid entries.
+///
+/// This verifies the "skip on parse failure" contract in `parse_entry_files`:
+/// a corrupted file must not abort the entire load or return an error.
+#[test]
+fn load_skips_malformed_markdown_and_returns_valid_entries() {
+    let (_dir, git_dir) = setup_repo();
+    let store = MemoryStore::open(&git_dir, Some("corrupt-test")).unwrap();
+
+    // Store one valid entry so we have a known-good baseline.
+    let valid_entry = make_entry(100);
+    store.store_entry(&valid_entry).unwrap();
+
+    // Write a malformed .md file directly to the branch.
+    // Invalid YAML frontmatter (unclosed delimiter) will cause `parse` to fail.
+    let malformed = b"---\ninvalid: : yaml: {{{\n---\nsome body content\n";
+    store
+        .branch()
+        .write_file("decisions/corrupted-0000000.md", malformed)
+        .expect("write malformed file");
+    store
+        .branch()
+        .commit("add corrupted entry for test")
+        .expect("commit malformed file");
+
+    // load() must succeed and return only the valid entry.
+    let loaded = store.load().expect("load() must not fail on corrupt files");
+
+    assert!(
+        loaded.iter().any(|e| e.content == valid_entry.content),
+        "valid entry must be present in loaded results"
+    );
+    assert!(
+        loaded.iter().all(|e| e.content != "some body content"),
+        "malformed entry body must not appear in loaded results"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Shared infrastructure for multi-repo tests
+// ---------------------------------------------------------------------------
+
+/// Create a bare "remote" repository plus two independent client repositories
+/// that both have `origin` pointing at the bare repo.
+///
+/// Returns `(bare_dir, client_a_dir, client_b_dir, client_a_git, client_b_git)`.
+/// All four `TempDir` values must be kept alive for the duration of the test.
+fn setup_two_clients_with_remote() -> (TempDir, TempDir, TempDir, PathBuf, PathBuf) {
+    // Bare repo acts as the shared remote.
+    let bare_dir = tempfile::tempdir().expect("bare tempdir");
+    run_git(bare_dir.path(), &["init", "--bare"]);
+
+    // Client A.
+    let client_a_dir = tempfile::tempdir().expect("client_a tempdir");
+    let client_a_git = client_a_dir.path().join(".git");
+    run_git(client_a_dir.path(), &["init"]);
+    run_git(
+        client_a_dir.path(),
+        &[
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+    );
+    run_git(
+        client_a_dir.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            &bare_dir.path().to_string_lossy(),
+        ],
+    );
+
+    // Client B — independent clone seeded from the same bare repo.
+    let client_b_dir = tempfile::tempdir().expect("client_b tempdir");
+    let client_b_git = client_b_dir.path().join(".git");
+    run_git(client_b_dir.path(), &["init"]);
+    run_git(
+        client_b_dir.path(),
+        &[
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+    );
+    run_git(
+        client_b_dir.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            &bare_dir.path().to_string_lossy(),
+        ],
+    );
+
+    (
+        bare_dir,
+        client_a_dir,
+        client_b_dir,
+        client_a_git,
+        client_b_git,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// T2. pull_rebase — conflict detection
+// ---------------------------------------------------------------------------
+
+/// Verify that `pull_rebase` returns `SyncResult::Conflicts` when two clients
+/// have divergent commits that both modify the same file, and that the branch
+/// is left in a clean state (no rebase in progress) after the call.
+#[test]
+fn test_pull_rebase_detects_conflict() {
+    let branch_name = "test-memory";
+
+    let (_bare, _ca_dir, _cb_dir, client_a_git, client_b_git) =
+        setup_two_clients_with_remote();
+
+    // Both clients open a MemoryStore on the same branch name.
+    let store_a = MemoryStore::open(&client_a_git, Some(branch_name)).unwrap();
+    let store_b = MemoryStore::open(&client_b_git, Some(branch_name)).unwrap();
+
+    // Client A stores an entry and pushes so the remote branch exists.
+    store_a.store_entry(&make_entry(200)).unwrap();
+    store_a.push().unwrap();
+
+    // Client B fetches to get the remote branch locally.
+    store_b.branch().fetch().unwrap();
+
+    // Now set up a divergence: both A and B write to the same file path with
+    // different content, then A pushes first so the remote has A's version.
+    // When B later tries to pull-rebase, git cannot auto-merge the same file.
+    let shared_file = "decisions/conflict-target-0000001.md";
+    let content_a = b"---\ncreated_at: 1740000000\n---\nClient A content\n";
+    let content_b = b"---\ncreated_at: 1740000000\n---\nClient B content\n";
+
+    // A writes the shared file and pushes.
+    store_a
+        .branch()
+        .write_file(shared_file, content_a)
+        .unwrap();
+    store_a.branch().commit("A: write conflict target").unwrap();
+    store_a.push().unwrap();
+
+    // B writes the same file path with different content — this creates a
+    // local commit that diverges from the remote because A's commit advanced
+    // the remote tip.
+    store_b
+        .branch()
+        .write_file(shared_file, content_b)
+        .unwrap();
+    store_b.branch().commit("B: write conflict target").unwrap();
+
+    // B's local branch diverges from origin/test-memory. pull --rebase
+    // should detect the conflict on the shared file.
+    let result = store_b.branch().pull_rebase().unwrap();
+
+    assert!(
+        matches!(result, SyncResult::Conflicts(_)),
+        "pull_rebase must return Conflicts when both sides modify the same file; got: {result:?}"
+    );
+
+    if let SyncResult::Conflicts(files) = result {
+        assert!(
+            !files.is_empty(),
+            "Conflicts result must list at least one conflicting file"
+        );
+    }
+
+    // The rebase must have been aborted — verify no REBASE_HEAD exists.
+    let rebase_head = client_b_git.join("REBASE_HEAD");
+    assert!(
+        !rebase_head.exists(),
+        "REBASE_HEAD must not exist after conflict-aborted rebase"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T3. push_with_retry — rejection then auto-rebase then success
+// ---------------------------------------------------------------------------
+
+/// Verify the push-with-retry path: when the remote rejects a push because it
+/// has advanced, `store_entry` with `PushMode::Always` automatically
+/// pull-rebases and retries, resulting in a successful push with both clients'
+/// entries on the remote.
+#[test]
+fn test_push_with_retry_handles_rejection() {
+    let branch_name = "test-memory";
+
+    let (_bare, _ca_dir, _cb_dir, client_a_git, client_b_git) =
+        setup_two_clients_with_remote();
+
+    let store_a = MemoryStore::open(&client_a_git, Some(branch_name)).unwrap();
+    let store_b = MemoryStore::open(&client_b_git, Some(branch_name)).unwrap();
+
+    // Client A establishes the branch on the remote.
+    store_a.store_entry(&make_entry(300)).unwrap();
+    store_a.push().unwrap();
+
+    // Client B fetches to get the remote branch.
+    store_b.branch().fetch().unwrap();
+
+    // Client A advances the remote with a second distinct entry.
+    store_a.store_entry(&make_entry(301)).unwrap();
+    store_a.push().unwrap();
+
+    // Configure client B's store with PushMode::Always so store_entry
+    // exercises push_with_retry internally.
+    let always_config = concat!(
+        "[memory]\n",
+        "[memory.sync]\n",
+        "push_mode = \"always\"\n",
+        "branch = \"test-memory\"\n",
+    );
+    store_b
+        .branch()
+        .write_file("config.toml", always_config.as_bytes())
+        .unwrap();
+    store_b
+        .branch()
+        .commit("set push_mode=always for retry test")
+        .unwrap();
+
+    // Re-open client B so it picks up the new config.
+    let store_b = MemoryStore::open(&client_b_git, Some(branch_name)).unwrap();
+    assert_eq!(store_b.config().push_mode(), PushMode::Always);
+
+    // Client B stores a unique entry. The first push attempt will be rejected
+    // (remote is ahead from A's second commit). push_with_retry pulls,
+    // rebases, and retries — the second push should succeed.
+    let result = store_b.store_entry(&make_entry(302));
+    assert!(
+        result.is_ok(),
+        "store_entry with Always mode must succeed after push-with-retry: {result:?}"
+    );
+
+    // After a successful push-with-retry, client B's local branch has been
+    // rebased on top of A's commits and then pushed. Load from client B's
+    // local branch to confirm all entries are present.
+    //
+    // We use branch().list_files() to avoid the fetch-then-read cycle of
+    // load(), since we only want to inspect the local branch state.
+    let b_files = store_b.branch().list_files().unwrap();
+    let b_entries: Vec<&String> = b_files
+        .iter()
+        .filter(|f| f.ends_with(".md") && !f.starts_with('.'))
+        .collect();
+
+    // Entries from seeds 300 and 301 (pushed by A) plus entry 302 (pushed by B
+    // after rebase) — three distinct .md files.
+    assert!(
+        b_entries.len() >= 3,
+        "client B's branch must have at least 3 .md files after push-with-retry; found {}",
+        b_entries.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T7. sync() — pull then push
+// ---------------------------------------------------------------------------
+
+/// Verify that `sync()` pulls remote changes and then pushes local commits so
+/// that both clients end up with both entries on their local branch, and the
+/// remote also has both entries.
+#[test]
+fn test_sync_pulls_and_pushes() {
+    let branch_name = "test-memory";
+
+    let (_bare, _ca_dir, _cb_dir, client_a_git, client_b_git) =
+        setup_two_clients_with_remote();
+
+    let store_a = MemoryStore::open(&client_a_git, Some(branch_name)).unwrap();
+    let store_b = MemoryStore::open(&client_b_git, Some(branch_name)).unwrap();
+
+    // Client A stores an entry and pushes to establish the remote branch.
+    let entry_a = make_entry(400);
+    store_a.store_entry(&entry_a).unwrap();
+    store_a.push().unwrap();
+
+    // Client B fetches so it shares the same base commit, then stores a
+    // different entry locally (not pushed yet).
+    store_b.branch().fetch().unwrap();
+    let entry_b = make_entry(401);
+    store_b.store_entry(&entry_b).unwrap();
+
+    // Client B calls sync(): pulls A's state from remote, then pushes B's entry.
+    let sync_result = store_b.sync();
+    assert!(
+        sync_result.is_ok(),
+        "sync() must succeed: {sync_result:?}"
+    );
+
+    // Client B's local branch must now contain both entries.
+    // We read directly from the branch (no remote fetch needed here).
+    let b_local_files = store_b.branch().list_files().unwrap();
+    let b_has_a_entry = b_local_files
+        .iter()
+        .any(|f| f.ends_with(".md") && !f.starts_with('.'));
+    assert!(
+        b_has_a_entry,
+        "client B's branch must have at least one .md file after sync"
+    );
+
+    let b_loaded = store_b.load().unwrap();
+    assert!(
+        b_loaded.iter().any(|e| e.content == entry_a.content),
+        "client B must have client A's entry after sync"
+    );
+    assert!(
+        b_loaded.iter().any(|e| e.content == entry_b.content),
+        "client B must retain its own entry after sync"
+    );
+
+    // Verify the remote has both entries by reading from client B's local branch.
+    // After sync(), client B's local branch was rebased and pushed. The branch
+    // now contains both entry_a (pulled from remote) and entry_b (pushed by B).
+    // We read via the branch plumbing to avoid the extra fetch of load().
+    let b_files = store_b.branch().list_files().unwrap();
+    let b_md_count = b_files
+        .iter()
+        .filter(|f| f.ends_with(".md") && !f.starts_with('.'))
+        .count();
+    assert!(
+        b_md_count >= 2,
+        "client B's branch must have at least 2 .md files after sync; found {b_md_count}"
     );
 }

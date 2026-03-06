@@ -267,8 +267,14 @@ pub async fn execute_recall(
     project: Option<&str>,
     branch: Option<&str>,
 ) -> Result<Vec<SearchResultResponse>> {
-    let since_epoch = input.since.as_deref().and_then(parse_temporal);
-    let until_epoch = input.until.as_deref().and_then(parse_temporal);
+    let since_epoch = input
+        .since
+        .as_deref()
+        .and_then(crate::resolve::parse_temporal);
+    let until_epoch = input
+        .until
+        .as_deref()
+        .and_then(crate::resolve::parse_temporal);
 
     let open_thread_ids =
         crate::identity::resolve_ongoing_filter(store.as_ref(), input.ongoing == Some(true))
@@ -1063,11 +1069,6 @@ pub fn build_share_token(input: ShareInput) -> serde_json::Value {
         "nonce": crate::chunk::content_hash(&format!("nonce-{}", crate::chunk::now_epoch_secs())),
         "_note": "Preview token. UCAN signing not yet implemented."
     })
-}
-
-/// Parse a temporal string — delegates to `resolve::parse_temporal`.
-fn parse_temporal(s: &str) -> Option<i64> {
-    crate::resolve::parse_temporal(s)
 }
 
 #[cfg(test)]

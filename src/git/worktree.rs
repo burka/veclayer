@@ -49,6 +49,12 @@ impl GitMemoryBranch {
     ///
     /// If the directory already exists and is a valid git worktree, returns
     /// immediately. Otherwise, adds a new worktree via `git worktree add`.
+    ///
+    /// NOTE: This method has a TOCTOU race: two concurrent callers could both pass the
+    /// is_valid_worktree check and race on removal/creation. This is acceptable because:
+    /// 1. MemoryStore is used single-threaded in practice (one MCP request at a time)
+    /// 2. The failure mode is a git error (not silent data corruption)
+    /// 3. If multi-process access becomes needed, add an advisory file lock here.
     pub fn ensure_worktree(&self) -> Result<&Path, GitError> {
         if is_valid_worktree(&self.worktree_path) {
             return Ok(&self.worktree_path);
@@ -114,7 +120,8 @@ impl GitMemoryBranch {
     pub fn delete_file(&self, path: &str) -> Result<(), GitError> {
         let worktree = self.ensure_worktree()?;
         validate_path(worktree, path)?;
-        let output = run_git_in(worktree, &["rm", path])?;
+        // Use `--` to prevent the path from being interpreted as a flag.
+        let output = run_git_in(worktree, &["rm", "--", path])?;
         check_output(&output, "rm")?;
         Ok(())
     }
@@ -180,30 +187,9 @@ fn is_valid_worktree(path: &Path) -> bool {
     path.is_dir() && path.join(".git").exists()
 }
 
-/// Create an empty tree object and return its hash.
-fn create_empty_tree(git_dir: &Path) -> Result<String, GitError> {
-    // `git mktree` reads entries from stdin; empty input produces the empty tree.
-    let output = std::process::Command::new("git")
-        .args(["--git-dir", &git_dir.to_string_lossy(), "mktree"])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| GitError::CommandFailed {
-            command: "mktree".to_string(),
-            stderr: e.to_string(),
-            exit_code: -1,
-        })?;
-
-    if output.status.success() {
-        let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !hash.is_empty() {
-            return Ok(hash);
-        }
-    }
-
-    // Fallback: hash-object with /dev/null
-    let fallback = run_git_with_gitdir(git_dir, &["hash-object", "-t", "tree", "/dev/null"])?;
-    check_output(&fallback, "hash-object -t tree")?;
-    Ok(String::from_utf8_lossy(&fallback.stdout).trim().to_string())
+/// Return the well-known empty tree SHA-1 (a git canonical constant).
+fn create_empty_tree(_git_dir: &Path) -> Result<String, GitError> {
+    Ok("4b825dc642cb6eb9a060e54bf8d69288fbee4904".to_string())
 }
 
 /// Create an initial commit on top of `tree_hash` and return the commit hash.
@@ -271,6 +257,44 @@ mod tests {
             .output()
             .unwrap();
         (dir, git_dir)
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_path_traversal_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = validate_path(dir.path(), "decisions/../../../etc/passwd");
+        assert!(result.is_err(), "path with .. should be rejected");
+    }
+
+    #[test]
+    fn test_validate_path_absolute_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = validate_path(dir.path(), "/etc/passwd");
+        assert!(result.is_err(), "absolute path should be rejected");
+    }
+
+    #[test]
+    fn test_validate_path_normal_relative_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = validate_path(dir.path(), "decisions/heading-abc1234.md");
+        assert!(result.is_ok(), "normal relative path should be accepted");
+    }
+
+    #[test]
+    fn test_validate_path_dash_prefix_accepted() {
+        // validate_path does NOT guard against paths starting with '-' — that
+        // guard is provided by the '--' separator in git commands. Document
+        // that the function itself accepts such paths (the git call is safe).
+        let dir = tempfile::tempdir().unwrap();
+        let result = validate_path(dir.path(), "-not-a-flag.md");
+        assert!(
+            result.is_ok(),
+            "validate_path allows dash-prefixed paths; git '--' separator protects the call"
+        );
     }
 
     #[test]

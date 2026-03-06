@@ -41,7 +41,7 @@ impl GitMemoryBranch {
         let path = Self::embedding_path(id, model);
 
         match self.read_file(&path) {
-            Ok(bytes) => Ok(Some(bytes_to_floats(&bytes))),
+            Ok(bytes) => bytes_to_floats(&bytes).map(Some),
             Err(GitError::CommandFailed { ref stderr, .. }) if is_file_not_found(stderr) => {
                 Ok(None)
             }
@@ -116,20 +116,21 @@ fn floats_to_bytes(floats: &[f32]) -> Vec<u8> {
 
 /// Decode a byte slice into a `Vec<f32>` using little-endian byte order.
 ///
-/// Logs a warning if the byte slice length is not a multiple of 4 (trailing
-/// bytes are discarded).
-fn bytes_to_floats(bytes: &[u8]) -> Vec<f32> {
+/// Returns `Err` when the byte slice length is not a multiple of 4, because a
+/// truncated blob would silently produce a shorter-than-expected embedding and
+/// corrupt similarity searches.
+fn bytes_to_floats(bytes: &[u8]) -> Result<Vec<f32>, GitError> {
     if !bytes.len().is_multiple_of(4) {
-        tracing::warn!(
-            "embedding blob has {} trailing bytes (total {} bytes, expected multiple of 4)",
-            bytes.len() % 4,
+        return Err(GitError::WorktreeError(format!(
+            "corrupt embedding: blob length {} is not a multiple of 4 ({} trailing bytes)",
             bytes.len(),
-        );
+            bytes.len() % 4,
+        )));
     }
-    bytes
+    Ok(bytes
         .chunks_exact(4)
         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-        .collect()
+        .collect())
 }
 
 /// Extract the entry ID from an embedding file path.
@@ -178,6 +179,35 @@ mod tests {
         branch.create_orphan_branch().unwrap();
 
         (dir, branch)
+    }
+
+    // -----------------------------------------------------------------------
+    // bytes_to_floats
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_bytes_to_floats_valid() {
+        let bytes: Vec<u8> = 1.0_f32
+            .to_le_bytes()
+            .iter()
+            .chain(2.0_f32.to_le_bytes().iter())
+            .copied()
+            .collect();
+        let result = bytes_to_floats(&bytes).unwrap();
+        assert_eq!(result.len(), 2);
+        assert!((result[0] - 1.0).abs() < f32::EPSILON);
+        assert!((result[1] - 2.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_bytes_to_floats_truncated_returns_error() {
+        // 5 bytes: not a multiple of 4 — must be Err.
+        let result = bytes_to_floats(&[0x00, 0x01, 0x02, 0x03, 0x04]);
+        assert!(result.is_err(), "5-byte slice should return Err");
+
+        // 7 bytes: not a multiple of 4 — must be Err.
+        let result = bytes_to_floats(&[0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        assert!(result.is_err(), "7-byte slice should return Err");
     }
 
     // -----------------------------------------------------------------------

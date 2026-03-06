@@ -71,6 +71,16 @@ pub struct Entry {
 
 impl Entry {
     /// Returns a content-addressed ID derived from the entry's content.
+    ///
+    /// # Design: heading is intentionally excluded from the hash
+    ///
+    /// The heading is *not* included in the hash so that IDs remain stable when a
+    /// heading is renamed.  Two entries with identical `content` but different
+    /// headings therefore share a `content_id`, but their git filenames diverge
+    /// because `entry_filename` derives the slug from the heading.
+    ///
+    /// Changing this contract would invalidate every persisted entry — do not
+    /// alter the hash function without a migration plan.
     pub fn content_id(&self) -> String {
         crate::chunk::content_hash(&self.content)
     }

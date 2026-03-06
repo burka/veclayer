@@ -346,23 +346,23 @@ enum Commands {
         scope: Option<String>,
 
         /// Export local entries to the git memory branch
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["pending", "push", "stage", "reject"])]
         migrate: bool,
 
         /// List entries on the local branch not yet pushed to remote
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["migrate", "push", "stage", "reject"])]
         pending: bool,
 
         /// Push the local git memory branch to remote
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["migrate", "pending", "stage", "reject"])]
         push: bool,
 
         /// Stage a LanceDB entry to the git branch by ID (for manual push mode)
-        #[arg(long, value_name = "ID")]
+        #[arg(long, value_name = "ID", conflicts_with_all = ["migrate", "pending", "push", "reject"])]
         stage: Option<String>,
 
         /// Remove an entry from the git branch by ID (unstage)
-        #[arg(long, value_name = "ID")]
+        #[arg(long, value_name = "ID", conflicts_with_all = ["migrate", "pending", "push", "stage"])]
         reject: Option<String>,
 
         /// Filter migrate to entries with this perspective

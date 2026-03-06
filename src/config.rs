@@ -765,6 +765,10 @@ impl Config {
 }
 
 /// Parse a push mode string, with backward-compatible mapping of "auto" → Always.
+/// NOTE: This intentionally falls back to PushMode::Review with a warning for unknown values,
+/// unlike branch_config.rs which returns a hard error. Project/user config is user-edited TOML
+/// where a hard error would be disruptive; the branch config is a committed, controlled file
+/// where typos should be caught immediately.
 pub fn parse_push_mode(s: &str) -> crate::git::branch_config::PushMode {
     use crate::git::branch_config::PushMode;
     match s {

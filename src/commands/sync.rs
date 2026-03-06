@@ -89,7 +89,7 @@ pub struct MigrateFilters {
 
 impl MigrateFilters {
     /// Return `true` if `entry` passes all active filters.
-    fn accepts(&self, entry: &crate::HierarchicalChunk) -> bool {
+    pub fn accepts(&self, entry: &crate::HierarchicalChunk) -> bool {
         if let Some(ref p) = self.perspective {
             if !entry.perspectives.contains(p) {
                 return false;
@@ -216,7 +216,7 @@ pub async fn show_pending() -> crate::Result<()> {
         .load()
         .map_err(|e| crate::Error::InvalidOperation(format!("Failed to load entries: {e}")))?;
 
-    println!("{count} unpushed commit(s) on veclayer-memory branch.");
+    println!("{count} commit(s) not yet pushed to remote. Entries on branch:");
     println!();
 
     // Display all entries on the branch (we can't easily map commits to entries
