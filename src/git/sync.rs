@@ -81,7 +81,8 @@ impl GitMemoryBranch {
 
     /// Fetch the memory branch from `origin`.
     ///
-    /// Silently succeeds when no remote is configured (local-only repository).
+    /// Silently succeeds when no remote is configured (local-only repository)
+    /// or when the branch does not exist on the remote yet (first use).
     pub fn fetch(&self) -> Result<(), GitError> {
         if !self.has_remote()? {
             return Ok(());
@@ -94,6 +95,12 @@ impl GitMemoryBranch {
         }
 
         let stderr = String::from_utf8_lossy(&output.stderr);
+
+        // Branch doesn't exist on remote yet — nothing to fetch (first push pending).
+        if stderr.contains("couldn't find remote ref") {
+            return Ok(());
+        }
+
         let cmd = format!("fetch {REMOTE} {}", self.branch);
         if is_auth_failure(&stderr) || is_network_failure(&stderr) {
             return Err(classified_connection_error(&stderr, &cmd));

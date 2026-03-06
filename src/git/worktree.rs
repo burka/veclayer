@@ -57,7 +57,13 @@ impl GitMemoryBranch {
     /// 3. If multi-process access becomes needed, add an advisory file lock here.
     pub fn ensure_worktree(&self) -> Result<&Path, GitError> {
         if is_valid_worktree(&self.worktree_path) {
-            return Ok(&self.worktree_path);
+            // Verify the worktree actually works (catches stale .git pointers
+            // from deleted repos that shared the same cache hash).
+            let probe = run_git_in(&self.worktree_path, &["rev-parse", "--git-dir"]);
+            if probe.as_ref().is_ok_and(|o| o.status.success()) {
+                return Ok(&self.worktree_path);
+            }
+            // Worktree is broken — fall through to recreate it.
         }
 
         // Remove a stale/incomplete directory that is not a valid worktree.

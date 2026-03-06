@@ -75,6 +75,25 @@ async fn sync_local_git_scope(
         }
     };
 
+    // Pull latest from remote before reading entries.
+    match git_store.pull() {
+        Ok(crate::git::SyncResult::Success) => {
+            println!("  {} — pulled new changes from remote", scope.name);
+        }
+        Ok(crate::git::SyncResult::NothingToSync) => {}
+        Ok(crate::git::SyncResult::Conflicts(files)) => {
+            println!(
+                "  {} — conflict during pull (files: {}). Resolve manually.",
+                scope.name,
+                files.join(", ")
+            );
+            return;
+        }
+        Err(e) => {
+            tracing::warn!("Pull failed for scope '{}': {e}", scope.name);
+        }
+    }
+
     let entries = match git_store.load() {
         Ok(e) => e,
         Err(e) => {

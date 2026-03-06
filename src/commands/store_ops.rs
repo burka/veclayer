@@ -29,6 +29,9 @@ pub fn init(cwd: &Path, data_dir: &Path, share: bool) -> Result<()> {
 }
 
 /// Set up git-based memory sharing: create orphan branch and write project config.
+///
+/// If the memory branch already exists on the remote (a teammate already shared),
+/// we track that branch instead of creating a new orphan — this avoids divergence.
 fn init_share(cwd: &Path) -> Result<()> {
     let git_dir = crate::git::detect::find_git_dir(cwd).ok_or_else(|| {
         crate::Error::InvalidOperation(
@@ -36,11 +39,9 @@ fn init_share(cwd: &Path) -> Result<()> {
         )
     })?;
 
-    let branch = crate::git::GitMemoryBranch::open(&git_dir, None).map_err(|e| {
+    // Use MemoryStore::open which handles remote tracking branch detection.
+    crate::git::memory_store::MemoryStore::open(&git_dir, None).map_err(|e| {
         crate::Error::InvalidOperation(format!("Failed to open memory branch: {e}"))
-    })?;
-    branch.create_orphan_branch().map_err(|e| {
-        crate::Error::InvalidOperation(format!("Failed to create orphan branch: {e}"))
     })?;
 
     println!("  Created memory branch 'veclayer-memory'");

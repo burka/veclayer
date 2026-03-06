@@ -47,19 +47,27 @@ pub struct MemoryStore {
 impl MemoryStore {
     /// Open the git memory branch and load its configuration.
     ///
-    /// If the branch does not exist, an orphan branch is created and a default
-    /// `config.toml` is written and committed. If `config.toml` is absent on
-    /// an existing branch, defaults are used.
+    /// If the branch does not exist locally but exists on the remote, fetches it
+    /// and creates a local tracking branch. If it doesn't exist anywhere, an
+    /// orphan branch is created with a default `config.toml`.
     pub fn open(git_dir: &Path, branch_name: Option<&str>) -> Result<Self, GitError> {
         let branch = GitMemoryBranch::open(git_dir, branch_name)?;
 
-        // `create_orphan_branch` is idempotent — no need to guard it with a
-        // `branch_exists()` check; it handles the existing-branch case itself.
-        // We only inspect existence once to decide whether to seed the default config.
-        let is_new_branch = !branch.branch_exists()?;
-        branch.create_orphan_branch()?;
-        if is_new_branch {
+        if !branch.branch_exists()? {
+            // Try to pick up the branch from the remote before creating a new orphan.
+            if branch.has_remote().unwrap_or(false) {
+                let _ = branch.fetch(); // best-effort; may fail if branch not on remote yet
+                if try_create_from_remote(&branch)? {
+                    let config = load_config(&branch)?;
+                    return Ok(Self { branch, config });
+                }
+            }
+
+            // No remote branch found — create a fresh orphan.
+            branch.create_orphan_branch()?;
             write_default_config(&branch)?;
+        } else {
+            branch.create_orphan_branch()?; // idempotent — just ensures worktree
         }
 
         let config = load_config(&branch)?;
@@ -447,6 +455,35 @@ fn commit_message_for_entry(entry: &Entry) -> String {
     } else {
         format!("store: {preview}")
     }
+}
+
+/// Try to create a local branch from the remote tracking ref.
+///
+/// Returns `true` if the local branch was successfully created from
+/// `origin/<branch>`, `false` if the remote ref doesn't exist.
+fn try_create_from_remote(branch: &GitMemoryBranch) -> Result<bool, GitError> {
+    let remote_ref = format!("{REMOTE}/{}", branch.branch);
+    let output = run_git_with_gitdir(&branch.git_dir, &["rev-parse", "--verify", &remote_ref])?;
+
+    if !output.status.success() {
+        return Ok(false); // Remote ref doesn't exist
+    }
+
+    let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if commit.is_empty() {
+        return Ok(false);
+    }
+
+    // Create local branch pointing at the remote commit.
+    let output = run_git_with_gitdir(&branch.git_dir, &["branch", &branch.branch, &commit])?;
+
+    if !output.status.success() {
+        return Ok(false);
+    }
+
+    // Set up the worktree so subsequent operations work.
+    branch.ensure_worktree()?;
+    Ok(true)
 }
 
 /// Fetch from the remote when one is configured; silently succeed otherwise.
