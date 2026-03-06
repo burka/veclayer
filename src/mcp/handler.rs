@@ -155,6 +155,8 @@ impl McpHandler {
             input,
             self.project.as_deref(),
             self.branch.as_deref(),
+            self.git_store.as_deref(),
+            Some(self.push_mode),
         )
         .await
         {

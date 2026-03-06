@@ -261,13 +261,39 @@ async fn store_single_entry(
     Ok((chunk_id, git_status))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn execute_recall(
     store: &Arc<StoreBackend>,
     embedder: &Arc<dyn Embedder + Send + Sync>,
     input: RecallInput,
     project: Option<&str>,
     branch: Option<&str>,
+    git_store: Option<&crate::git::memory_store::MemoryStore>,
+    push_mode: Option<crate::git::branch_config::PushMode>,
 ) -> Result<Vec<SearchResultResponse>> {
+    // PushMode::Always implies bidirectional continuous sync — pull before
+    // recall to serve the freshest data. Non-blocking: recall proceeds with
+    // local data if the pull fails or conflicts.
+    if let (Some(git), Some(pm)) = (git_store, push_mode) {
+        if pm.auto_pushes() {
+            match git.pull() {
+                Ok(crate::git::SyncResult::Success) => {
+                    tracing::debug!("Pre-recall pull: fetched new entries from remote");
+                }
+                Ok(crate::git::SyncResult::NothingToSync) => {}
+                Ok(crate::git::SyncResult::Conflicts(files)) => {
+                    tracing::warn!(
+                        "Pre-recall pull: rebase conflict in {}; continuing with local data",
+                        files.join(", ")
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("Pre-recall pull failed (continuing with local data): {e}");
+                }
+            }
+        }
+    }
+
     let since_epoch = input
         .since
         .as_deref()
@@ -1734,9 +1760,10 @@ mod tests {
             until: None,
             ongoing: Some(true),
         };
-        let ongoing_results = execute_recall(&store, &embedder, input_ongoing, None, None)
-            .await
-            .unwrap();
+        let ongoing_results =
+            execute_recall(&store, &embedder, input_ongoing, None, None, None, None)
+                .await
+                .unwrap();
         assert_eq!(
             ongoing_results.len(),
             1,
@@ -1765,7 +1792,7 @@ mod tests {
             until: None,
             ongoing: None,
         };
-        let all_results = execute_recall(&store, &embedder, input_all, None, None)
+        let all_results = execute_recall(&store, &embedder, input_all, None, None, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1810,7 +1837,7 @@ mod tests {
             until: None,
             ongoing: None,
         };
-        let all_results = execute_recall(&store, &embedder, input_all, None, None)
+        let all_results = execute_recall(&store, &embedder, input_all, None, None, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1833,9 +1860,10 @@ mod tests {
             until: None,
             ongoing: Some(true),
         };
-        let ongoing_results = execute_recall(&store, &embedder, input_ongoing, None, None)
-            .await
-            .unwrap();
+        let ongoing_results =
+            execute_recall(&store, &embedder, input_ongoing, None, None, None, None)
+                .await
+                .unwrap();
         assert_eq!(
             ongoing_results.len(),
             1,
@@ -1860,9 +1888,10 @@ mod tests {
             until: None,
             ongoing: Some(false),
         };
-        let not_ongoing_results = execute_recall(&store, &embedder, input_not_ongoing, None, None)
-            .await
-            .unwrap();
+        let not_ongoing_results =
+            execute_recall(&store, &embedder, input_not_ongoing, None, None, None, None)
+                .await
+                .unwrap();
         assert_eq!(
             not_ongoing_results.len(),
             2,

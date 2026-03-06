@@ -26,33 +26,32 @@ pub async fn sync(data_dir: &Path, scopes: &[ResolvedScope], dry_run: bool) -> c
     println!("Checking {} scope(s)...", scopes.len());
 
     let cwd = std::env::current_dir()?;
-    let (_config, embedder, store, blob_store) = crate::commands::open_store(data_dir).await?;
+    let mut store_and_embedder: Option<(
+        Box<dyn crate::Embedder + Send + Sync>,
+        crate::store::StoreBackend,
+        crate::blob_store::BlobStore,
+    )> = None;
 
     for scope in scopes {
-        sync_scope(&cwd, scope, &embedder, &store, &blob_store, dry_run).await;
+        if scope.storage == "git" {
+            if store_and_embedder.is_none() {
+                let (_config, embedder, store, blob_store) =
+                    crate::commands::open_store(data_dir).await?;
+                store_and_embedder = Some((embedder, store, blob_store));
+            }
+            let (embedder, store, blob_store) = store_and_embedder.as_ref().unwrap();
+            sync_local_git_scope(&cwd, scope, embedder.as_ref(), store, blob_store, dry_run).await;
+        } else if is_remote_git_url(&scope.storage) {
+            println!(
+                "  {} — remote storage not yet supported ({})",
+                scope.name, scope.storage
+            );
+        } else {
+            println!("  {} — unknown storage type: {}", scope.name, scope.storage);
+        }
     }
 
     Ok(())
-}
-
-async fn sync_scope(
-    cwd: &Path,
-    scope: &ResolvedScope,
-    embedder: &dyn crate::Embedder,
-    store: &impl crate::store::VectorStore,
-    blob_store: &crate::blob_store::BlobStore,
-    dry_run: bool,
-) {
-    if scope.storage == "git" {
-        sync_local_git_scope(cwd, scope, embedder, store, blob_store, dry_run).await;
-    } else if is_remote_git_url(&scope.storage) {
-        println!(
-            "  {} — remote storage not yet supported ({})",
-            scope.name, scope.storage
-        );
-    } else {
-        println!("  {} — unknown storage type: {}", scope.name, scope.storage);
-    }
 }
 
 async fn sync_local_git_scope(
@@ -102,24 +101,22 @@ async fn index_entries(
     dry_run: bool,
 ) {
     let mut indexed = 0usize;
-    let mut skipped = 0usize;
+    let mut existing = 0usize;
+    let mut failed = 0usize;
 
     for entry in entries {
         let content_id = entry.content_id();
+        let short = &content_id[..7.min(content_id.len())];
 
         match store.get_by_id(&content_id).await {
             Ok(Some(_)) => {
-                skipped += 1;
+                existing += 1;
                 continue;
             }
             Ok(None) => {}
             Err(e) => {
-                tracing::warn!(
-                    "Failed to check entry {} in store: {}",
-                    &content_id[..7.min(content_id.len())],
-                    e
-                );
-                skipped += 1;
+                tracing::warn!("Failed to check entry {} in store: {}", short, e);
+                failed += 1;
                 continue;
             }
         }
@@ -130,14 +127,17 @@ async fn index_entries(
         }
 
         let embedding = match embedder.embed(&[entry.content.as_str()]) {
-            Ok(vecs) => vecs.into_iter().next().unwrap_or_default(),
+            Ok(vecs) => match vecs.into_iter().next() {
+                Some(emb) if !emb.is_empty() => emb,
+                _ => {
+                    tracing::warn!("Skipping entry {short}: embedder returned empty vector");
+                    failed += 1;
+                    continue;
+                }
+            },
             Err(e) => {
-                tracing::warn!(
-                    "Failed to embed entry {}: {}",
-                    &content_id[..7.min(content_id.len())],
-                    e
-                );
-                skipped += 1;
+                tracing::warn!("Failed to embed entry {}: {}", short, e);
+                failed += 1;
                 continue;
             }
         };
@@ -146,24 +146,16 @@ async fn index_entries(
         let blob = crate::entry::StoredBlob::from_chunk_and_embedding(&chunk, embedder.name());
 
         if let Err(e) = blob_store.put(&blob) {
-            tracing::warn!(
-                "Failed to persist blob for entry {}: {}",
-                &content_id[..7.min(content_id.len())],
-                e
-            );
-            skipped += 1;
+            tracing::warn!("Failed to persist blob for entry {}: {}", short, e);
+            failed += 1;
             continue;
         }
 
         match store.insert_chunks(vec![chunk]).await {
             Ok(_) => indexed += 1,
             Err(e) => {
-                tracing::warn!(
-                    "Failed to insert entry {} into store: {}",
-                    &content_id[..7.min(content_id.len())],
-                    e
-                );
-                skipped += 1;
+                tracing::warn!("Failed to insert entry {} into store: {}", short, e);
+                failed += 1;
             }
         }
     }
@@ -171,12 +163,17 @@ async fn index_entries(
     if dry_run {
         println!(
             "    {} new entries would be indexed (dry run), {} already in local store",
-            indexed, skipped
+            indexed, existing
+        );
+    } else if failed > 0 {
+        println!(
+            "    {} new entries indexed, {} already in local store, {} failed",
+            indexed, existing, failed
         );
     } else {
         println!(
             "    {} new entries indexed, {} already in local store",
-            indexed, skipped
+            indexed, existing
         );
     }
 }
@@ -398,7 +395,11 @@ pub async fn push_to_remote() -> crate::Result<()> {
         }
         Ok(PushResult::Rejected) => {
             return Err(crate::Error::InvalidOperation(
-                "Push rejected: remote has diverged. Fetch and rebase first.".into(),
+                "Push rejected: remote has diverged. To resolve:\n  \
+                 1. Run `veclayer sync` to pull and rebase\n  \
+                 2. Resolve any conflicts if prompted\n  \
+                 3. Run `veclayer sync --push` again"
+                    .into(),
             ));
         }
         Err(crate::git::GitError::AuthFailed(msg)) => {
