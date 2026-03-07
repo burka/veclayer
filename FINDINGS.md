@@ -10,22 +10,25 @@ error handling, and data portability. Results:
 
 - **Bugs found: 26 distinct bugs** (8 high severity, 9 medium, 9 low)
 - **Fixed in c38849f: 12 bugs** (B01, B02, B04, B06, B08, B12, B13, B16, B20, B23, B25, B26)
-- **Remaining: 14 bugs** (B03, B05, B07✓already-fixed, B09, B10, B11, B14, B15, B17, B18, B19, B21, B22, B24)
+- **Fixed in 550de70: 8 bugs** (B05, B09, B10, B14, B16, B17, B21, B23/B24)
+- **Already implemented: 2** (B07✓relations in frontmatter, B19✓config on branch)
+- **Not a bug: 1** (B11 — focus --question works correctly with children)
+- **Remaining: 3 bugs** (B03 external dep, B15 cosmetic, B22 needs investigation)
 - **UX issues: 23** (usability problems that confuse agents)
 - **Suggestions: 10** (improvements for production readiness)
 
 ### Critical Bugs (Must Fix)
 
-| ID | Severity | Summary |
-|----|----------|---------|
-| B01 | HIGH | Panic on malformed `.veclayer/config.toml` (exit 101, not graceful error) |
-| B02 | HIGH | Stale worktree not auto-pruned → all git ops fail after cache cleanup |
-| B03 | HIGH | Concurrent stores fail 4/5 due to FastEmbed ONNX model contention |
-| B04 | HIGH | Silent global-store fallback when no local `.veclayer/` exists |
-| B05 | HIGH | Identical content from 2 clients causes unresolvable merge conflict |
-| B06 | HIGH | `--dry-run` still executes `git pull` (side effect in read-only mode) |
-| B23 | HIGH | `entry_type` lost through git sync roundtrip (meta→raw) |
-| B26 | HIGH | Import/merge silently targets global store (same root cause as B04) |
+| ID | Severity | Summary | Status |
+|----|----------|---------|--------|
+| B01 | HIGH | Panic on malformed `.veclayer/config.toml` (exit 101, not graceful error) | ✅ c38849f |
+| B02 | HIGH | Stale worktree not auto-pruned → all git ops fail after cache cleanup | ✅ c38849f |
+| B03 | HIGH | Concurrent stores fail 4/5 due to FastEmbed ONNX model contention | ⏳ External dep |
+| B04 | HIGH | Silent global-store fallback when no local `.veclayer/` exists | ✅ c38849f |
+| B05 | HIGH | Identical content from 2 clients causes unresolvable merge conflict | ✅ 550de70 |
+| B06 | HIGH | `--dry-run` still executes `git pull` (side effect in read-only mode) | ✅ c38849f |
+| B23 | HIGH | `entry_type` lost through git sync roundtrip (meta→raw) | ✅ 550de70 |
+| B26 | HIGH | Import/merge silently targets global store (same root cause as B04) | ✅ c38849f |
 
 ---
 
@@ -77,7 +80,7 @@ Error: InvalidOperation("Failed to open memory branch: git worktree add failed (
 ("using global store at ...").
 **Impact:** Agent accidentally pollutes global store or reads stale cross-project data.
 
-### B05 — Identical content causes unresolvable conflict [HIGH]
+### B05 — Identical content causes unresolvable conflict [HIGH] ✅ Fixed in 550de70
 
 **Location:** `src/git/sync.rs` pull_rebase path
 **Trigger:** Two clients store identical content (same content-hash → same filename),
@@ -95,7 +98,7 @@ automatically. Or use a merge strategy that handles this.
 **Behavior:** Executes `git pull` (modifies local state) before reporting dry-run results.
 **Expected:** No side effects in dry-run mode.
 
-### B07 — Relations not persisted in git frontmatter [MEDIUM]
+### B07 — Relations not persisted in git frontmatter [MEDIUM] ✅ Already implemented
 
 **Location:** `src/git/markdown.rs` render/parse
 **Trigger:** Store entry with `--rel-supersedes`, `--rel-to`, `--rel-derived-from`.
@@ -112,21 +115,21 @@ relation fields (except `parent`). Rebuilding from git loses all relations.
 **Expected:** Either process the file or give a clear error ("unsupported file type: .txt").
 **Impact:** Agent thinks file was stored when it wasn't.
 
-### B09 — Duplicate files on git branch for same entry ID [MEDIUM]
+### B09 — Duplicate files on git branch for same entry ID [MEDIUM] ✅ Fixed in 550de70
 
 **Location:** `src/git/memory_store.rs` store_entry
 **Trigger:** Store entry inline, then store a file whose content produces the same hash.
 **Behavior:** Two `.md` files with the same 7-char ID exist on the branch.
 **Expected:** One file per content ID; second store overwrites or skips.
 
-### B10 — Duplicate recall results [MEDIUM]
+### B10 — Duplicate recall results [MEDIUM] ✅ Fixed in 550de70
 
 **Location:** Vector search deduplication
 **Trigger:** Entry stored from a file (creates LanceDB entry from file + possibly inline).
 **Behavior:** Same entry ID appears twice in recall results with identical scores.
 **Expected:** Deduplication before display.
 
-### B11 — `focus --question` is a no-op [MEDIUM]
+### B11 — `focus --question` is a no-op [MEDIUM] ❌ Not a bug (works with children)
 
 **Location:** `src/commands/` focus handler
 **Trigger:** `veclayer focus <id> --question "What was the rationale?"`
@@ -148,7 +151,7 @@ relation fields (except `parent`). Rebuilding from git loses all relations.
 **Expected:** Logs to stderr (only MCP mode correctly uses stderr).
 **Impact:** Breaks `veclayer export > file.jsonl` and any script parsing stdout.
 
-### B14 — `veclayer config` doesn't show storage/push settings [MEDIUM]
+### B14 — `veclayer config` doesn't show storage/push settings [MEDIUM] ✅ Fixed in 550de70
 
 **Location:** `src/commands/` config display
 **Trigger:** `veclayer config` after `init --share`.
@@ -161,7 +164,7 @@ relation fields (except `parent`). Rebuilding from git loses all relations.
 **Trigger:** `veclayer config` with project-local `.veclayer/`.
 **Behavior:** Shows `data_dir: (default)` even when `.veclayer/` is actively used.
 
-### B16 — Sync --pending shows commit count, not entry count [LOW]
+### B16 — Sync --pending shows commit count, not entry count [LOW] ✅ Fixed in 550de70
 
 **Location:** `src/commands/sync.rs`
 **Trigger:** `veclayer sync --pending`
@@ -169,21 +172,21 @@ relation fields (except `parent`). Rebuilding from git loses all relations.
 embedding cache commits).
 **Expected:** Show entry count, or explain the commit vs entry distinction.
 
-### B17 — Sync --reject increases pending count [LOW]
+### B17 — Sync --reject increases pending count [LOW] ✅ Fixed in 550de70
 
 **Location:** `src/commands/sync.rs`
 **Trigger:** `veclayer sync --reject <id>`
 **Behavior:** Pending count goes from 7 to 8 (removal commit added).
 **Expected:** Count decreases or stays same. Counterintuitive to users.
 
-### B18 — Scope filter wrong error message [LOW]
+### B18 — Scope filter wrong error message [LOW] ✅ Fixed in c38849f
 
 **Location:** `src/commands/sync.rs`
 **Trigger:** `veclayer sync --scope nonexistent`
 **Behavior:** "No scopes configured" (implies no config at all).
 **Expected:** "Scope 'nonexistent' not found. Available scopes: project"
 
-### B19 — Config.toml not written to git branch on init [LOW]
+### B19 — Config.toml not written to git branch on init [LOW] ✅ Already implemented
 
 **Location:** `src/commands/store_ops.rs` init_share
 **Trigger:** `init --share` when veclayer-memory branch already exists (created manually).
@@ -197,7 +200,7 @@ embedding cache commits).
 **Behavior:** `sync` exits 0 ("No scopes"), `sync --push` exits 1, `sync --migrate` exits 1.
 **Expected:** Consistent exit codes for equivalent situations.
 
-### B21 — Misleading "already exists" on first init --share [LOW]
+### B21 — Misleading "already exists" on first init --share [LOW] ✅ Fixed in 550de70
 
 **Location:** `src/commands/store_ops.rs`
 **Trigger:** First `init --share` in a fresh project directory.
@@ -344,7 +347,7 @@ Should use a centralized cache location.
 
 ## Additional Bugs from Data Portability Testing
 
-### B23 — entry_type lost through git sync roundtrip [HIGH]
+### B23 — entry_type lost through git sync roundtrip [HIGH] ✅ Fixed in 550de70
 
 **Location:** `src/git/markdown.rs` frontmatter serialization
 **Trigger:** Store entry with `--entry-type meta`, sync via git to another store.
@@ -352,7 +355,7 @@ Should use a centralized cache location.
 **Expected:** `entry_type` preserved in frontmatter and restored on sync.
 **Impact:** AI agents lose type annotations (meta/summary/impression) when sharing knowledge via git.
 
-### B24 — Level changes from Content to H1 after git sync [LOW]
+### B24 — Level changes from Content to H1 after git sync [LOW] ✅ Fixed in 550de70
 
 **Location:** `src/git/markdown.rs` re-ingestion
 **Trigger:** Inline-stored entry (Content level) synced via git.
