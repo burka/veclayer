@@ -10,6 +10,7 @@ use crate::embedder::Embedder;
 use crate::salience::{self, SalienceWeights};
 use crate::store::{SearchResult, VectorStore};
 use crate::{ChunkLevel, HierarchicalChunk, RecencyWindow, Result};
+use std::collections::HashSet;
 
 /// Over-fetch factor when temporal filters will reduce the result set.
 pub const TEMPORAL_PREFETCH_FACTOR: usize = 3;
@@ -255,6 +256,7 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
 
         let mut hierarchical_results = Vec::new();
         let mut access_updates = Vec::new();
+        let mut seen_ids: HashSet<String> = HashSet::new();
 
         for result in top_results {
             if result.score < self.config.min_score {
@@ -263,6 +265,12 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
 
             // Step 2: Visibility filter (skip unless deep mode)
             if !self.config.deep && !result.chunk.is_visible_standard() {
+                continue;
+            }
+
+            // Deduplicate: the same entry can have multiple vectors in the index
+            // (e.g., inline text and from a file). Keep the first (highest-scoring) hit.
+            if !seen_ids.insert(result.chunk.id.clone()) {
                 continue;
             }
 
@@ -345,6 +353,7 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
 
         let mut hierarchical_results = Vec::new();
         let mut access_updates = Vec::new();
+        let mut seen_ids: HashSet<String> = HashSet::new();
 
         for result in top_results {
             if result.chunk.id == target_full_id {
@@ -356,6 +365,12 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
             }
 
             if !self.config.deep && !result.chunk.is_visible_standard() {
+                continue;
+            }
+
+            // Deduplicate: the same entry can have multiple vectors in the index.
+            // Keep the first (highest-scoring) hit.
+            if !seen_ids.insert(result.chunk.id.clone()) {
                 continue;
             }
 
@@ -1176,6 +1191,52 @@ mod tests {
         assert_eq!(search_results.len(), 1);
         // Score is blended: vector_score * (1 - alpha) + relevancy * alpha
         assert!(search_results[0].score > 0.5);
+    }
+
+    #[tokio::test]
+    async fn test_search_deduplicates_by_chunk_id() {
+        // Simulate an entry with multiple vectors in the index (e.g., inline text + from file).
+        // The store returns the same chunk ID twice; the search engine must return it only once.
+        let store = MockStore::new();
+
+        let chunk = HierarchicalChunk::new(
+            "duplicate entry".to_string(),
+            ChunkLevel::H1,
+            None,
+            "path".to_string(),
+            "test.md".to_string(),
+        )
+        .with_embedding(vec![1.0, 0.0, 0.0]);
+
+        // Use the same chunk ID but pretend there are two vector rows for it.
+        let duplicate = chunk.clone();
+        let results = vec![
+            SearchResult {
+                chunk: chunk.clone(),
+                score: 0.95,
+            },
+            SearchResult {
+                chunk: duplicate,
+                score: 0.90,
+            },
+        ];
+
+        store.set_search_results(results);
+
+        let embedder = MockEmbedder::new(3);
+        let config = SearchConfig {
+            top_k: 5,
+            ..Default::default()
+        };
+        let search = HierarchicalSearch::new(store, embedder).with_config(config);
+
+        let search_results = search.search("test query").await.unwrap();
+
+        // Must return only one result, with the higher score.
+        assert_eq!(search_results.len(), 1);
+        assert_eq!(search_results[0].chunk.id, chunk.id);
+        // Score is blended from 0.95, so it should be > 0 (exact value depends on alpha).
+        assert!(search_results[0].score > 0.0);
     }
 
     #[tokio::test]

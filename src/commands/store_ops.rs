@@ -8,8 +8,15 @@ use super::*;
 /// `storage = "git"` in the project config, enabling team memory sharing.
 pub fn init(cwd: &Path, data_dir: &Path, share: bool) -> Result<()> {
     if data_dir.exists() {
-        println!("VecLayer store already exists at {}", data_dir.display());
-        println!("  use `veclayer add` to add knowledge");
+        // When `--share` is requested the user is setting up team-sharing for the
+        // current project.  The global platform store pre-existing is expected and
+        // irrelevant — printing "already exists" for it misleads the user into
+        // thinking the project store was already configured.
+        let is_global_store = data_dir == crate::default_data_dir();
+        if !(share && is_global_store) {
+            println!("VecLayer store already exists at {}", data_dir.display());
+            println!("  use `veclayer add` to add knowledge");
+        }
     } else {
         std::fs::create_dir_all(data_dir)?;
         println!("Initialized VecLayer store at {}", data_dir.display());
@@ -333,6 +340,10 @@ pub fn show_config(
         "  project: {}",
         resolved.project.as_deref().unwrap_or("(none)").yellow()
     );
+    // Note: resolved.data_dir only reflects user-config match overrides.
+    // The project-local data_dir (from .veclayer/ discovery) is resolved in
+    // main() and is not threaded through ResolvedConfig, so it always appears
+    // as "(default)" here even when a project-local store is active.
     println!(
         "  data_dir: {}",
         resolved.data_dir.as_deref().unwrap_or("(default)").cyan()
@@ -357,6 +368,12 @@ pub fn show_config(
             None => "(default)".to_string().dimmed().to_string(),
         }
     );
+    if let Some(ref storage) = resolved.storage {
+        println!("  storage: {}", storage.cyan());
+    }
+    if let Some(ref push) = resolved.push {
+        println!("  push: {}", push.cyan());
+    }
 
     println!("\n{}", "[Git]".bold());
     println!(

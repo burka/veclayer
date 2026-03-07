@@ -985,11 +985,7 @@ async fn main() -> Result<()> {
                 }
             }
 
-            if let Some(ref name) = scope {
-                scopes.retain(|s| s.name == *name);
-            }
-
-            veclayer::commands::sync::sync(&data_dir, &scopes, dry_run).await?;
+            veclayer::commands::sync::sync(&data_dir, &scopes, scope.as_deref(), dry_run).await?;
         }
     }
 

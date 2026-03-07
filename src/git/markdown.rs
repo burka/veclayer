@@ -28,6 +28,8 @@
 //! - Fields at their defaults are omitted (empty perspectives, "normal" visibility, etc.).
 //! - Relations use compact form: single target → string, multiple → array.
 //! - `entry_type` is omitted when `raw` (the default). Old files without the field parse as `raw`.
+//! - `level` is omitted when `h1` (the default for headed entries). Old files without the field
+//!   fall back to heading-based inference: heading present → H1, no heading → Content.
 
 use std::collections::BTreeMap;
 
@@ -132,6 +134,56 @@ fn is_raw_entry_type(t: &EntryType) -> bool {
     *t == EntryType::Raw
 }
 
+fn is_h1_level(l: &FrontmatterLevel) -> bool {
+    *l == FrontmatterLevel::H1
+}
+
+/// Human-readable level representation for YAML frontmatter.
+///
+/// `H1` is the default (omitted when serializing) for backwards compatibility
+/// with old files that relied on heading-based inference. Variants mirror the
+/// `ChunkLevel` constants that are meaningful for git-stored entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+enum FrontmatterLevel {
+    #[default]
+    H1,
+    H2,
+    H3,
+    H4,
+    H5,
+    H6,
+    Content,
+}
+
+impl From<ChunkLevel> for FrontmatterLevel {
+    fn from(level: ChunkLevel) -> Self {
+        match level.0 {
+            1 => Self::H1,
+            2 => Self::H2,
+            3 => Self::H3,
+            4 => Self::H4,
+            5 => Self::H5,
+            6 => Self::H6,
+            _ => Self::Content,
+        }
+    }
+}
+
+impl From<FrontmatterLevel> for ChunkLevel {
+    fn from(level: FrontmatterLevel) -> Self {
+        match level {
+            FrontmatterLevel::H1 => ChunkLevel::H1,
+            FrontmatterLevel::H2 => ChunkLevel::H2,
+            FrontmatterLevel::H3 => ChunkLevel::H3,
+            FrontmatterLevel::H4 => ChunkLevel::H4,
+            FrontmatterLevel::H5 => ChunkLevel::H5,
+            FrontmatterLevel::H6 => ChunkLevel::H6,
+            FrontmatterLevel::Content => ChunkLevel::CONTENT,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Frontmatter struct
 // ---------------------------------------------------------------------------
@@ -161,6 +213,10 @@ struct Frontmatter {
     /// compatibility — old files without this field parse as `raw`.
     #[serde(default, skip_serializing_if = "is_raw_entry_type")]
     entry_type: EntryType,
+    /// Chunk level. Omitted when `h1` (the default) for backwards compatibility
+    /// — old files without this field fall back to heading-based inference.
+    #[serde(default, skip_serializing_if = "is_h1_level")]
+    level: FrontmatterLevel,
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +286,7 @@ fn entry_to_frontmatter(entry: &Entry) -> Result<Frontmatter, GitError> {
         impression_strength,
         summarizes: entry.summarizes.clone(),
         entry_type: entry.entry_type,
+        level: FrontmatterLevel::from(entry.level),
     })
 }
 
@@ -254,7 +311,12 @@ fn frontmatter_to_entry(fm: Frontmatter, body: &str) -> Result<Entry, GitError> 
         EntryType::Raw
     };
 
-    let level = if heading.is_some() {
+    // Use the explicit level when set (not the default H1). For old files that
+    // lack the field, `serde(default)` produces `FrontmatterLevel::H1`; fall
+    // back to heading-based inference so those files still parse correctly.
+    let level = if fm.level != FrontmatterLevel::H1 {
+        ChunkLevel::from(fm.level)
+    } else if heading.is_some() {
         ChunkLevel::H1
     } else {
         ChunkLevel::CONTENT
@@ -1152,6 +1214,7 @@ mod tests {
             impression_strength: None,
             summarizes: vec![],
             entry_type: EntryType::Raw,
+            level: FrontmatterLevel::H1,
         };
 
         let yaml = serde_yml::to_string(&fm).unwrap();
@@ -1159,6 +1222,104 @@ mod tests {
         assert!(
             !yaml.contains("\n---\n"),
             "serde_yml must quote the multi-line value; bare \\n---\\n found in: {yaml}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // B24: Level roundtrip — Content level must survive git sync
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_render_content_level_writes_level_field() {
+        // An inline-stored (Content level) entry must emit `level: content`
+        // so that re-ingestion via sync does not promote it to H1.
+        let entry = minimal_entry(); // level: ChunkLevel::CONTENT, no heading
+        let rendered = render(&entry).unwrap();
+        assert!(
+            rendered.contains("level: content"),
+            "expected 'level: content' in frontmatter; got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn test_parse_explicit_content_level() {
+        // A file with `level: content` must parse as ChunkLevel::CONTENT,
+        // regardless of whether a heading is present.
+        let markdown = concat!(
+            "---\n",
+            "id: abc1234\n",
+            "created: 2026-02-21T10:15:00Z\n",
+            "level: content\n",
+            "---\n",
+            "# Appears to have a heading\n",
+            "\n",
+            "But level is content.\n",
+        );
+        let (entry, _) = parse(markdown.as_bytes()).unwrap();
+        assert_eq!(
+            entry.level,
+            ChunkLevel::CONTENT,
+            "explicit 'level: content' must override heading-based inference"
+        );
+    }
+
+    #[test]
+    fn test_parse_old_file_without_level_falls_back_to_heading_inference() {
+        // Old files lack the `level` field. They must fall back to the
+        // heading-based heuristic: heading present → H1, no heading → Content.
+        let with_heading = concat!(
+            "---\n",
+            "id: abc1234\n",
+            "created: 2026-02-21T10:15:00Z\n",
+            "---\n",
+            "# A Heading\n",
+            "\n",
+            "Body.\n",
+        );
+        let (entry_h1, _) = parse(with_heading.as_bytes()).unwrap();
+        assert_eq!(
+            entry_h1.level,
+            ChunkLevel::H1,
+            "old file with heading must infer H1"
+        );
+
+        let without_heading = concat!(
+            "---\n",
+            "id: abc1234\n",
+            "created: 2026-02-21T10:15:00Z\n",
+            "---\n",
+            "No heading, just body.\n",
+        );
+        let (entry_content, _) = parse(without_heading.as_bytes()).unwrap();
+        assert_eq!(
+            entry_content.level,
+            ChunkLevel::CONTENT,
+            "old file without heading must infer Content"
+        );
+    }
+
+    #[test]
+    fn test_roundtrip_content_level_preserved() {
+        // A Content-level entry must survive a full render → parse cycle with
+        // its level intact.
+        let entry = minimal_entry(); // level: ChunkLevel::CONTENT
+        let rendered = render(&entry).unwrap();
+        let (parsed, _) = parse(rendered.as_bytes()).unwrap();
+        assert_eq!(
+            parsed.level,
+            ChunkLevel::CONTENT,
+            "Content level must survive render → parse roundtrip"
+        );
+    }
+
+    #[test]
+    fn test_h1_level_omitted_from_frontmatter() {
+        // H1 is the default; it must be omitted to keep old files clean.
+        let entry = full_entry(); // level: ChunkLevel::H1, has heading
+        let rendered = render(&entry).unwrap();
+        assert!(
+            !rendered.contains("level:"),
+            "H1 level must be omitted from frontmatter; got:\n{rendered}"
         );
     }
 }

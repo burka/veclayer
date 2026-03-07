@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::chunk::short_id;
 use crate::entry::Entry;
@@ -151,6 +151,7 @@ impl MemoryStore {
         let markdown_content = markdown::render(entry)?;
         let path = markdown::entry_path(entry);
 
+        self.remove_stale_duplicate(&path, entry)?;
         self.branch.write_file(&path, markdown_content.as_bytes())?;
 
         let commit_message = commit_message_for_entry(entry);
@@ -297,6 +298,34 @@ impl MemoryStore {
                 Ok(())
             }
         }
+    }
+
+    /// Delete any existing entry file that shares the same content ID but has a
+    /// different path than `new_path`.
+    ///
+    /// When the heading changes but the content (and thus the content hash) is
+    /// identical, `entry_path` produces a different filename for the same logical
+    /// entry. This method finds such stale files and removes them with `git rm`
+    /// so that `write_file` can then create the canonical new path without
+    /// leaving a duplicate behind.
+    fn remove_stale_duplicate(&self, new_path: &str, entry: &Entry) -> Result<(), GitError> {
+        let id = entry.content_id();
+        let short = short_id(&id);
+
+        let existing_files = match self.list_entry_files() {
+            Ok(files) => files,
+            Err(_) => return Ok(()), // branch may be empty; nothing to clean up
+        };
+
+        for stale_path in existing_files
+            .into_iter()
+            .filter(|p| p != new_path && path_matches_id(p, short))
+        {
+            debug!("removing stale duplicate {stale_path} (same id as {new_path})");
+            self.branch.delete_file(&stale_path)?;
+        }
+
+        Ok(())
     }
 
     /// Return the number of local commits not yet pushed to the remote.
@@ -836,5 +865,53 @@ mod tests {
         // Keep temp dirs alive until end of test.
         drop(local_dir);
         drop(remote_dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // test_store_same_content_different_heading_no_duplicate
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_store_same_content_different_heading_no_duplicate() {
+        let (_dir, git_dir) = setup_test_repo();
+        let store = MemoryStore::open(&git_dir, Some("test-memory")).unwrap();
+
+        // First store: heading "Alpha".
+        let entry_alpha = Entry {
+            content: "Shared body content for duplicate detection test.".to_string(),
+            heading: Some("Alpha".to_string()),
+            ..sample_entry()
+        };
+        store.store_entry(&entry_alpha).unwrap();
+
+        let files_after_first = store.list_entry_files().unwrap();
+        assert_eq!(
+            files_after_first.len(),
+            1,
+            "expected exactly one file after first store, got: {files_after_first:?}"
+        );
+
+        // Second store: same content, different heading "Beta".
+        // The content_id is identical, so only one file should remain.
+        let entry_beta = Entry {
+            content: "Shared body content for duplicate detection test.".to_string(),
+            heading: Some("Beta".to_string()),
+            ..sample_entry()
+        };
+        store.store_entry(&entry_beta).unwrap();
+
+        let files_after_second = store.list_entry_files().unwrap();
+        assert_eq!(
+            files_after_second.len(),
+            1,
+            "expected exactly one file after second store, got: {files_after_second:?}"
+        );
+
+        // The surviving file should use the new heading slug.
+        assert!(
+            files_after_second[0].contains("beta"),
+            "surviving file should use the new heading slug, got: {:?}",
+            files_after_second[0]
+        );
     }
 }
