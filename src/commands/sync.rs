@@ -16,14 +16,47 @@ use crate::store::VectorStore as _;
 /// embeds and inserts new ones. Remote git URLs are not yet supported.
 ///
 /// When `dry_run` is true, prints what would be indexed without making changes.
-pub async fn sync(data_dir: &Path, scopes: &[ResolvedScope], dry_run: bool) -> crate::Result<()> {
-    if scopes.is_empty() {
-        // Exit 0 is intentional: no scopes is a valid "nothing to do" state, not an error.
-        // Print to stderr so scripts can distinguish advisory output from result output.
-        eprintln!("No scopes configured. Add scopes to your config:");
-        eprintln!("  veclayer init --share    # enable git memory for this project");
-        return Ok(());
-    }
+///
+/// `scope_filter` is the name passed via `--scope`. When provided and no scope
+/// with that name exists in `all_scopes`, the error message names the missing
+/// scope and lists available ones instead of claiming no scopes are configured.
+pub async fn sync(
+    data_dir: &Path,
+    all_scopes: &[ResolvedScope],
+    scope_filter: Option<&str>,
+    dry_run: bool,
+) -> crate::Result<()> {
+    let scopes: Vec<&ResolvedScope> = match scope_filter {
+        Some(name) => {
+            let matched: Vec<&ResolvedScope> =
+                all_scopes.iter().filter(|s| s.name == name).collect();
+            if matched.is_empty() {
+                if all_scopes.is_empty() {
+                    // No scopes at all — exit 0, advisory output to stderr.
+                    eprintln!("No scopes configured. Add scopes to your config:");
+                    eprintln!("  veclayer init --share    # enable git memory for this project");
+                } else {
+                    let available: Vec<&str> = all_scopes.iter().map(|s| s.name.as_str()).collect();
+                    eprintln!(
+                        "Scope '{name}' not found. Available scopes: {}",
+                        available.join(", ")
+                    );
+                }
+                return Ok(());
+            }
+            matched
+        }
+        None => {
+            if all_scopes.is_empty() {
+                // Exit 0 is intentional: no scopes is a valid "nothing to do" state, not an error.
+                // Print to stderr so scripts can distinguish advisory output from result output.
+                eprintln!("No scopes configured. Add scopes to your config:");
+                eprintln!("  veclayer init --share    # enable git memory for this project");
+                return Ok(());
+            }
+            all_scopes.iter().collect()
+        }
+    };
 
     println!("Checking {} scope(s)...", scopes.len());
 
@@ -483,7 +516,8 @@ pub async fn stage_entry(data_dir: &Path, id: &str) -> crate::Result<()> {
 /// Remove an entry from the git memory branch (unstage).
 ///
 /// Finds the entry file matching `id` (or ID prefix) on the memory branch,
-/// removes it via `git rm`, and commits the removal.
+/// removes it via `git rm`, and commits the removal. Note: the removal commit
+/// itself is unpushed — run `veclayer sync --push` to propagate the deletion.
 pub async fn reject_entry(id: &str) -> crate::Result<()> {
     let cwd = std::env::current_dir()?;
 
@@ -499,6 +533,7 @@ pub async fn reject_entry(id: &str) -> crate::Result<()> {
     })?;
 
     println!("Removed entry '{id}' from veclayer-memory branch.");
+    println!("Note: the removal commit is unpushed — run `veclayer sync --push` to propagate.");
 
     Ok(())
 }

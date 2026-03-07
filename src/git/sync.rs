@@ -157,6 +157,9 @@ impl GitMemoryBranch {
 
         if combined.contains("CONFLICT") || combined.contains("could not apply") {
             let files = extract_conflict_files(&combined);
+            if self.try_resolve_identical_conflicts(&files)? {
+                return Ok(SyncResult::Success);
+            }
             let _ = run_git_in(&self.worktree_path, &["rebase", "--abort"]);
             return Ok(SyncResult::Conflicts(files));
         }
@@ -171,6 +174,35 @@ impl GitMemoryBranch {
     // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------
+
+    /// Attempt to auto-resolve conflicts where every conflicting file is
+    /// byte-identical between ours (stage 2) and theirs (stage 3).
+    ///
+    /// Returns `true` when all conflicts were resolved and the rebase was
+    /// continued successfully.  Returns `false` when at least one file has
+    /// genuinely different content — the caller must abort the rebase.
+    fn try_resolve_identical_conflicts(&self, files: &[String]) -> Result<bool, GitError> {
+        if files.is_empty() {
+            return Ok(false);
+        }
+
+        for file in files {
+            let ours = run_git_in(&self.worktree_path, &["show", &format!(":2:{file}")])?;
+            let theirs = run_git_in(&self.worktree_path, &["show", &format!(":3:{file}")])?;
+            if ours.stdout != theirs.stdout {
+                return Ok(false);
+            }
+        }
+
+        // All conflicting files are byte-identical — accept theirs and continue.
+        for file in files {
+            run_git_in(&self.worktree_path, &["checkout", "--theirs", file])?;
+            run_git_in(&self.worktree_path, &["add", file])?;
+        }
+
+        let continue_output = run_git_in(&self.worktree_path, &["rebase", "--continue"])?;
+        Ok(continue_output.status.success())
+    }
 
     fn run_push(&self, args: &[&str]) -> Result<PushResult, GitError> {
         let output = run_git_with_gitdir(&self.git_dir, args)?;

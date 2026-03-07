@@ -801,6 +801,43 @@ fn test_pull_rebase_detects_conflict() {
     );
 }
 
+/// Verify that `pull_rebase` auto-resolves conflicts when both sides added
+/// the same file with identical content (content-addressed dedup scenario).
+///
+/// Two clients independently store the same entry (same content hash → same
+/// filename). When B tries to pull-rebase after A pushed, git reports an
+/// add/add conflict. Since the files are byte-identical, `pull_rebase` should
+/// auto-resolve and return `SyncResult::Success`.
+#[test]
+fn test_pull_rebase_auto_resolves_identical_content_conflict() {
+    let branch_name = "test-memory";
+
+    let (_bare, _ca_dir, _cb_dir, client_a_git, client_b_git) = setup_two_clients_with_remote();
+
+    let store_a = MemoryStore::open(&client_a_git, Some(branch_name)).unwrap();
+    let store_b = MemoryStore::open(&client_b_git, Some(branch_name)).unwrap();
+
+    // Both clients store the exact same entry (same content → same file path).
+    let entry = make_entry(700);
+    store_a.store_entry(&entry).unwrap();
+    store_b.store_entry(&entry).unwrap();
+
+    // A pushes first.
+    store_a.push().unwrap();
+
+    // B fetches so it knows about the remote branch, then tries pull-rebase.
+    store_b.branch().fetch().unwrap();
+    let result = store_b.branch().pull_rebase().unwrap();
+
+    // Either Success (auto-resolved conflict) or NothingToSync (no divergence
+    // detected because identical content produces compatible branch tips) is
+    // acceptable — the key invariant is that it does NOT return Conflicts.
+    assert!(
+        !matches!(result, SyncResult::Conflicts(_)),
+        "pull_rebase must not report conflicts for identical-content entries; got: {result:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // T3. push_with_retry — rejection then auto-rebase then success
 // ---------------------------------------------------------------------------
