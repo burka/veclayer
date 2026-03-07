@@ -401,6 +401,86 @@ Despite the bugs, the core design is solid:
 
 ---
 
+## Test Coverage Analysis
+
+### Bug Test Coverage (B01–B26)
+
+| Bug | Test | File |
+|-----|------|------|
+| B01 | ✅ `test_discover_project_bad_toml_returns_none` | src/config.rs |
+| B02 | ✅ `test_stale_worktree_is_detected_and_recreated` | tests/git_review_integration.rs |
+| B03 | ❌ No test (external dep) | — |
+| B04 | ❌ No test (code fix only) | — |
+| B05 | ✅ `test_pull_rebase_auto_resolves_identical_content_conflict` | tests/git_review_integration.rs |
+| B06 | ❌ No test (code fix only) | — |
+| B07 | ✅ `test_relations_compact_format_*` | src/git/markdown.rs |
+| B08 | ❌ No test (code fix only) | — |
+| B09 | ✅ `test_store_same_content_different_heading_no_duplicate` | src/git/memory_store.rs |
+| B10 | ✅ `test_search_deduplicates_by_chunk_id` | src/search/mod.rs |
+| B11 | ❌ Not a bug | — |
+| B12 | ❌ No test (config change) | — |
+| B13 | ❌ No test (code fix only) | — |
+| B14 | ❌ No test (code fix only) | — |
+| B15 | ❌ Not fixed (cosmetic) | — |
+| B16 | ❌ No test (message change) | — |
+| B17 | ❌ No test (message change) | — |
+| B18 | ❌ No test (code fix only) | — |
+| B19 | ✅ Already implemented | — |
+| B20 | ❌ No test (code fix only) | — |
+| B21 | ❌ No test (code fix only) | — |
+| B22 | ❌ Not fixed (needs investigation) | — |
+| B23 | ✅ `test_roundtrip_meta_entry_type` + 3 more | src/git/markdown.rs |
+| B24 | ✅ `test_roundtrip_content_level_preserved` + 2 more | src/git/markdown.rs |
+| B25 | ✅ `test_build_skip_detail_*` (4 tests) | src/commands/data.rs |
+| B26 | ❌ No test (same fix as B04) | — |
+
+**Summary:** 13 bugs have regression tests. 12 bugs fixed without tests (mostly CLI output/messaging changes). 0 of 23 UX issues have tests.
+
+### UX Issues — Not Fixed
+
+None of the 23 UX issues (UX01–UX23) were fixed. They are usability improvements, not correctness bugs. Some overlap with bug fixes (UX01↔B04 warning, UX17↔B16 message).
+
+### Remaining Unfixed
+
+| ID | Severity | Summary | Reason |
+|----|----------|---------|--------|
+| B03 | HIGH | Concurrent FastEmbed ONNX model contention | External dependency (fastembed-rs) |
+| B15 | LOW | Config shows data_dir as "(default)" always | Cosmetic; ResolvedConfig lacks project-local discovery info |
+| B22 | LOW | veclayer-memory branch not orphan in some scenarios | Needs investigation |
+
+---
+
+## Embedding Architecture
+
+### What Exists
+- **Background worker** (`src/mcp/embed_worker.rs`): `tokio::spawn` task, polls 32 entries/batch, offloads to `spawn_blocking`
+- **Batch-capable trait**: `embed(&[&str]) -> Vec<Vec<f32>>` accepts multiple texts
+- **Two backends**: FastEmbed (ONNX, CPU) and Ollama (HTTP, behind `llm` feature)
+
+### What's Missing
+- **No ONNX thread tuning**: `intra_op_num_threads` / `inter_op_num_threads` not exposed by fastembed-rs
+- **No Rayon / data parallelism**: No `par_iter`, no parallel batches
+- **Single-text call sites**: `search.rs`, `sync.rs`, `think.rs` all call `embed(&[single_text])` sequentially
+- **No GPU support**: fastembed-rs is CPU-only
+
+### Suggested Improvements
+1. Expose ONNX thread config via fastembed-rs or switch to ort directly
+2. Batch sequential `embed(&[text])` calls into `embed(&[text1, text2, ...])` where possible
+3. Centralize `.fastembed_cache` to `~/.cache/fastembed/` (currently 128MB per working directory)
+
+---
+
+## Recommended UX Improvements (Priority Order)
+
+1. **UX11 — Human-readable errors**: Replace raw `Os { code: 13, kind: PermissionDenied }` with clean messages. Low effort, high impact.
+2. **UX06/UX07 — Recall cap transparency**: Show "5 of N results" when capping. Agents think there are only 5 entries.
+3. **UX12 — Empty ID guard**: `focus ""` → "Entry ID required" instead of "Entry  not found".
+4. **UX14 — `sync --list-scopes`**: Agents can't discover scope names without reading config files.
+5. **UX04 — Show impression fields in focus**: Display `impression_hint`/`strength` if stored.
+6. **UX23 — Centralize `.fastembed_cache`**: 128MB per working directory is wasteful.
+
+---
+
 ## Test Environment
 
 - Binary: `/home/flob/work/veclayer/target/debug/veclayer`
