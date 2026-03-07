@@ -9,6 +9,8 @@
 error handling, and data portability. Results:
 
 - **Bugs found: 26 distinct bugs** (8 high severity, 9 medium, 9 low)
+- **Fixed in c38849f: 12 bugs** (B01, B02, B04, B06, B08, B12, B13, B16, B20, B23, B25, B26)
+- **Remaining: 14 bugs** (B03, B05, B07✓already-fixed, B09, B10, B11, B14, B15, B17, B18, B19, B21, B22, B24)
 - **UX issues: 23** (usability problems that confuse agents)
 - **Suggestions: 10** (improvements for production readiness)
 
