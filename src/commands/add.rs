@@ -329,6 +329,15 @@ pub fn collect_files(
     if path.is_file() {
         if parser.can_parse(path) {
             files.push(path.to_path_buf());
+        } else {
+            let supported = parser.supported_extensions().join(", .");
+            eprintln!(
+                "Skipped '{}': unsupported file type (supported: .{}). \
+                 Use inline text instead: veclayer store \"$(cat '{}')\"",
+                path.display(),
+                supported,
+                path.display()
+            );
         }
     } else if path.is_dir() {
         if recursive {

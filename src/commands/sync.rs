@@ -18,8 +18,10 @@ use crate::store::VectorStore as _;
 /// When `dry_run` is true, prints what would be indexed without making changes.
 pub async fn sync(data_dir: &Path, scopes: &[ResolvedScope], dry_run: bool) -> crate::Result<()> {
     if scopes.is_empty() {
-        println!("No scopes configured. Add scopes to your config:");
-        println!("  veclayer init --share    # enable git memory for this project");
+        // Exit 0 is intentional: no scopes is a valid "nothing to do" state, not an error.
+        // Print to stderr so scripts can distinguish advisory output from result output.
+        eprintln!("No scopes configured. Add scopes to your config:");
+        eprintln!("  veclayer init --share    # enable git memory for this project");
         return Ok(());
     }
 
@@ -76,21 +78,26 @@ async fn sync_local_git_scope(
     };
 
     // Pull latest from remote before reading entries.
-    match git_store.pull() {
-        Ok(crate::git::SyncResult::Success) => {
-            println!("  {} — pulled new changes from remote", scope.name);
-        }
-        Ok(crate::git::SyncResult::NothingToSync) => {}
-        Ok(crate::git::SyncResult::Conflicts(files)) => {
-            println!(
-                "  {} — conflict during pull (files: {}). Resolve manually.",
-                scope.name,
-                files.join(", ")
-            );
-            return;
-        }
-        Err(e) => {
-            tracing::warn!("Pull failed for scope '{}': {e}", scope.name);
+    // Skip the pull in dry-run mode: a dry run must have no side effects.
+    if dry_run {
+        println!("  {} — would pull from remote (dry run)", scope.name);
+    } else {
+        match git_store.pull() {
+            Ok(crate::git::SyncResult::Success) => {
+                println!("  {} — pulled new changes from remote", scope.name);
+            }
+            Ok(crate::git::SyncResult::NothingToSync) => {}
+            Ok(crate::git::SyncResult::Conflicts(files)) => {
+                println!(
+                    "  {} — conflict during pull (files: {}). Resolve manually.",
+                    scope.name,
+                    files.join(", ")
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::warn!("Pull failed for scope '{}': {e}", scope.name);
+            }
         }
     }
 
@@ -341,7 +348,8 @@ pub async fn show_pending() -> crate::Result<()> {
         .load()
         .map_err(|e| crate::Error::InvalidOperation(format!("Failed to load entries: {e}")))?;
 
-    println!("{count} commit(s) not yet pushed to remote. Entries on branch:");
+    let entry_count = entries.len();
+    println!("{entry_count} entries on branch ({count} unpushed commit(s)):");
     println!();
 
     // Display all entries on the branch (we can't easily map commits to entries

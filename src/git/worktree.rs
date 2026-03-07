@@ -71,8 +71,13 @@ impl GitMemoryBranch {
             std::fs::remove_dir_all(&self.worktree_path).map_err(|e| {
                 GitError::WorktreeError(format!("failed to remove stale worktree directory: {e}"))
             })?;
-            // Clean up stale worktree metadata in .git/worktrees/
-            let _ = run_git_with_gitdir(&self.git_dir, &["worktree", "prune"]);
+        }
+
+        // Always prune stale worktree metadata before adding a new one.
+        // This handles the case where the cache dir was deleted externally
+        // (OS cleanup, manual rm) but git's .git/worktrees/ still references it.
+        if let Err(e) = run_git_with_gitdir(&self.git_dir, &["worktree", "prune"]) {
+            tracing::warn!("Failed to prune stale worktrees: {e}");
         }
 
         let path_str = self.worktree_path.to_string_lossy();

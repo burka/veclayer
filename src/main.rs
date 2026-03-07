@@ -568,6 +568,7 @@ async fn main() -> Result<()> {
         project_scopes,
         project_storage,
         project_push,
+        using_global_store_fallback,
     ) = match cli.data_dir {
         Some(dir) => (
             dir,
@@ -576,6 +577,7 @@ async fn main() -> Result<()> {
             Vec::<String>::new(),
             None::<String>,
             None::<String>,
+            false,
         ),
         None => {
             let project_local = veclayer::config::discover_project(&cwd);
@@ -595,6 +597,7 @@ async fn main() -> Result<()> {
                 .and_then(|(_, pc)| pc.storage.clone());
             let push = project_local.as_ref().and_then(|(_, pc)| pc.push.clone());
 
+            let fallback = project_local.is_none() && user_data_dir.is_none();
             let data_dir = project_local
                 .map(|(d, _)| d)
                 .or_else(|| user_data_dir.as_ref().map(PathBuf::from))
@@ -607,6 +610,7 @@ async fn main() -> Result<()> {
                 scopes,
                 storage,
                 push,
+                fallback,
             )
         }
     };
@@ -620,23 +624,28 @@ async fn main() -> Result<()> {
             .collect::<Vec<_>>(),
     );
 
-    let is_mcp_stdio = matches!(
-        &cli.command,
-        Some(Commands::Serve {
-            mcp_stdio: true,
-            ..
-        })
-    );
-
-    init_logging(cli.verbose, cli.quiet, is_mcp_stdio);
+    init_logging(cli.verbose, cli.quiet);
 
     let command = match cli.command {
         Some(cmd) => cmd,
         None => {
+            if using_global_store_fallback {
+                eprintln!(
+                    "Warning: no local store found, using global store at {}. Run 'veclayer init' to create a project store.",
+                    data_dir.display()
+                );
+            }
             orientation(&data_dir).await?;
             return Ok(());
         }
     };
+
+    if using_global_store_fallback && !matches!(command, Commands::Init { .. }) {
+        eprintln!(
+            "Warning: no local store found, using global store at {}. Run 'veclayer init' to create a project store.",
+            data_dir.display()
+        );
+    }
 
     match command {
         Commands::Config => {
@@ -987,11 +996,12 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn init_logging(verbose: bool, quiet: bool, use_stderr: bool) {
+fn init_logging(verbose: bool, quiet: bool) {
     // Respect RUST_LOG env if set; otherwise use flag-based defaults.
     // Default: only show warnings. --verbose enables veclayer DEBUG.
     // --quiet suppresses everything except errors.
     // Dependency crates (lancedb, lance, ort, etc.) stay at WARN unless --verbose.
+    // Always write to stderr so logs never pollute stdout (e.g. `veclayer export > file.jsonl`).
     let filter = if std::env::var("RUST_LOG").is_ok() {
         EnvFilter::from_default_env()
     } else if quiet {
@@ -1002,13 +1012,9 @@ fn init_logging(verbose: bool, quiet: bool, use_stderr: bool) {
         EnvFilter::new("warn")
     };
 
-    let builder = tracing_subscriber::fmt()
+    tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_target(false);
-
-    if use_stderr {
-        builder.with_writer(std::io::stderr).init();
-    } else {
-        builder.init();
-    }
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .init();
 }

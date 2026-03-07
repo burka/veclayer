@@ -938,15 +938,11 @@ fn test_open_tracks_remote_branch_instead_of_new_orphan() {
         loaded.len()
     );
     assert!(
-        loaded
-            .iter()
-            .any(|e| e.content.contains("seed 500")),
+        loaded.iter().any(|e| e.content.contains("seed 500")),
         "client B must see entry 500 from client A"
     );
     assert!(
-        loaded
-            .iter()
-            .any(|e| e.content.contains("seed 501")),
+        loaded.iter().any(|e| e.content.contains("seed 501")),
         "client B must see entry 501 from client A"
     );
 }
@@ -997,8 +993,7 @@ fn test_pull_integrates_remote_entries_before_load() {
 fn test_stale_worktree_is_detected_and_recreated() {
     let (_dir, git_dir) = setup_repo();
 
-    let branch =
-        veclayer::git::GitMemoryBranch::open(&git_dir, Some("stale-wt-test")).unwrap();
+    let branch = veclayer::git::GitMemoryBranch::open(&git_dir, Some("stale-wt-test")).unwrap();
     branch.create_orphan_branch().unwrap();
 
     // Verify worktree was created and works.
