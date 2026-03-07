@@ -27,7 +27,7 @@
 //! - `id` is the 7-char short hash of content.
 //! - Fields at their defaults are omitted (empty perspectives, "normal" visibility, etc.).
 //! - Relations use compact form: single target → string, multiple → array.
-//! - `entry_type` is inferred from the presence of `impression` or `summarizes`.
+//! - `entry_type` is omitted when `raw` (the default). Old files without the field parse as `raw`.
 
 use std::collections::BTreeMap;
 
@@ -128,6 +128,10 @@ fn skip_impression_strength(v: &Option<f32>) -> bool {
     }
 }
 
+fn is_raw_entry_type(t: &EntryType) -> bool {
+    *t == EntryType::Raw
+}
+
 // ---------------------------------------------------------------------------
 // Frontmatter struct
 // ---------------------------------------------------------------------------
@@ -153,6 +157,10 @@ struct Frontmatter {
     impression_strength: Option<f32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     summarizes: Vec<String>,
+    /// Entry type annotation. Omitted when `raw` (the default) for backwards
+    /// compatibility — old files without this field parse as `raw`.
+    #[serde(default, skip_serializing_if = "is_raw_entry_type")]
+    entry_type: EntryType,
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +229,7 @@ fn entry_to_frontmatter(entry: &Entry) -> Result<Frontmatter, GitError> {
         impression: entry.impression_hint.clone(),
         impression_strength,
         summarizes: entry.summarizes.clone(),
+        entry_type: entry.entry_type,
     })
 }
 
@@ -232,7 +241,12 @@ fn frontmatter_to_entry(fm: Frontmatter, body: &str) -> Result<Entry, GitError> 
     let (heading, raw_content) = extract_heading(body);
     let content = raw_content.trim_end().to_string();
 
-    let entry_type = if fm.impression.is_some() {
+    // Use the explicit entry_type when set. For old files that lack the field,
+    // `serde(default)` produces `EntryType::Raw`; fall back to heuristic
+    // inference so those files still parse correctly.
+    let entry_type = if fm.entry_type != EntryType::Raw {
+        fm.entry_type
+    } else if fm.impression.is_some() {
         EntryType::Impression
     } else if !fm.summarizes.is_empty() {
         EntryType::Summary
@@ -580,6 +594,8 @@ mod tests {
         assert!(!rendered.contains("impression:"));
         assert!(!rendered.contains("impression_strength:"));
         assert!(!rendered.contains("summarizes:"));
+        // entry_type: raw is the default and must be omitted
+        assert!(!rendered.contains("entry_type:"));
         // Body appears after closing ---
         assert!(rendered.contains("Just some content here."));
     }
@@ -625,6 +641,22 @@ mod tests {
         let rendered = render(&entry).unwrap();
         assert!(rendered.contains("impression_strength:"));
         assert!(rendered.contains("0.6"));
+    }
+
+    #[test]
+    fn test_render_meta_entry_type() {
+        let mut entry = minimal_entry();
+        entry.entry_type = EntryType::Meta;
+        let rendered = render(&entry).unwrap();
+        assert!(rendered.contains("entry_type: meta"));
+    }
+
+    #[test]
+    fn test_render_summary_entry_type() {
+        let mut entry = minimal_entry();
+        entry.entry_type = EntryType::Summary;
+        let rendered = render(&entry).unwrap();
+        assert!(rendered.contains("entry_type: summary"));
     }
 
     // -----------------------------------------------------------------------
@@ -688,6 +720,42 @@ mod tests {
         assert!(kinds.contains(&"supersedes"));
     }
 
+    #[test]
+    fn test_parse_explicit_entry_type_meta() {
+        let markdown = concat!(
+            "---\n",
+            "id: abc1234\n",
+            "created: 2026-02-21T10:15:00Z\n",
+            "entry_type: meta\n",
+            "---\n",
+            "Meta entry body.\n",
+        );
+        let (entry, _) = parse(markdown.as_bytes()).unwrap();
+        assert_eq!(entry.entry_type, EntryType::Meta);
+    }
+
+    #[test]
+    fn test_parse_explicit_entry_type_summary() {
+        let markdown = concat!(
+            "---\n",
+            "id: abc1234\n",
+            "created: 2026-02-21T10:15:00Z\n",
+            "entry_type: summary\n",
+            "---\n",
+            "Summary entry body.\n",
+        );
+        let (entry, _) = parse(markdown.as_bytes()).unwrap();
+        assert_eq!(entry.entry_type, EntryType::Summary);
+    }
+
+    #[test]
+    fn test_parse_missing_entry_type_defaults_to_raw() {
+        // Old files without entry_type must parse as Raw.
+        let markdown = b"---\nid: abc1234\ncreated: 2026-02-21T10:15:00Z\n---\nContent.\n";
+        let (entry, _) = parse(markdown).unwrap();
+        assert_eq!(entry.entry_type, EntryType::Raw);
+    }
+
     // -----------------------------------------------------------------------
     // Roundtrip
     // -----------------------------------------------------------------------
@@ -724,6 +792,29 @@ mod tests {
         assert_eq!(parsed.impression_hint, Some("curious".to_string()));
         assert!((parsed.impression_strength - 0.4).abs() < 0.001);
         assert_eq!(parsed.entry_type, EntryType::Impression);
+    }
+
+    #[test]
+    fn test_roundtrip_meta_entry_type() {
+        let mut entry = minimal_entry();
+        entry.entry_type = EntryType::Meta;
+
+        let rendered = render(&entry).unwrap();
+        let (parsed, _) = parse(rendered.as_bytes()).unwrap();
+
+        assert_eq!(parsed.entry_type, EntryType::Meta);
+    }
+
+    #[test]
+    fn test_roundtrip_summary_entry_type() {
+        let mut entry = minimal_entry();
+        entry.entry_type = EntryType::Summary;
+        entry.summarizes = vec!["abc1234".to_string()];
+
+        let rendered = render(&entry).unwrap();
+        let (parsed, _) = parse(rendered.as_bytes()).unwrap();
+
+        assert_eq!(parsed.entry_type, EntryType::Summary);
     }
 
     // -----------------------------------------------------------------------
@@ -1060,6 +1151,7 @@ mod tests {
             impression: Some("line one\n---\nline two".to_string()),
             impression_strength: None,
             summarizes: vec![],
+            entry_type: EntryType::Raw,
         };
 
         let yaml = serde_yml::to_string(&fm).unwrap();

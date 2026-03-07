@@ -534,7 +534,7 @@ const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_SEARCH_TOP_K: usize = 5;
 const DEFAULT_SEARCH_CHILDREN_K: usize = 3;
-const DEFAULT_FASTEMBED_MODEL: &str = "BAAI/bge-small-en-v1.5";
+const DEFAULT_FASTEMBED_MODEL: &str = "Xenova/bge-small-en-v1.5";
 const DEFAULT_OLLAMA_MODEL: &str = "nomic-embed-text";
 const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 const DEFAULT_OLLAMA_DIMENSION: usize = 768;
@@ -890,20 +890,28 @@ pub fn discover_project(start_dir: &Path) -> Option<(PathBuf, ProjectConfig)> {
         if candidate.is_dir() {
             let config_path = candidate.join("config.toml");
             let mut project_config = if config_path.exists() {
-                let contents = std::fs::read_to_string(&config_path).unwrap_or_else(|e| {
-                    panic!(
-                        "Failed to read {}: {} — fix or remove the file",
-                        config_path.display(),
-                        e
-                    )
-                });
-                toml::from_str(&contents).unwrap_or_else(|e| {
-                    panic!(
-                        "Invalid TOML in {}: {} — fix the syntax",
-                        config_path.display(),
-                        e
-                    )
-                })
+                let contents = match std::fs::read_to_string(&config_path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!(
+                            "veclayer: Failed to read {}: {} — fix or remove the file",
+                            config_path.display(),
+                            e
+                        );
+                        return None;
+                    }
+                };
+                match toml::from_str(&contents) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!(
+                            "veclayer: Invalid TOML in {}: {} — fix the syntax",
+                            config_path.display(),
+                            e
+                        );
+                        return None;
+                    }
+                }
             } else {
                 ProjectConfig::default()
             };
@@ -1198,15 +1206,15 @@ base_url = "http://gpu:11434"
     }
 
     #[test]
-    #[should_panic(expected = "Invalid TOML")]
-    fn test_discover_project_bad_toml_panics() {
+    fn test_discover_project_bad_toml_returns_none() {
         let dir = tempfile::TempDir::new().unwrap();
         let veclayer_dir = dir.path().join(".veclayer");
         std::fs::create_dir_all(&veclayer_dir).unwrap();
         std::fs::write(veclayer_dir.join("config.toml"), "not valid {{{ toml").unwrap();
 
-        // Must panic — fail fast, fail loud
-        discover_project(dir.path());
+        // Malformed config.toml must return None gracefully, not panic
+        let result = discover_project(dir.path());
+        assert!(result.is_none());
     }
 
     #[test]

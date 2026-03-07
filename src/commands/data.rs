@@ -33,24 +33,41 @@ pub async fn import_entries(data_dir: &Path, options: &ImportOptions) -> Result<
     let lines = read_jsonl_lines(&options.path)?;
 
     let mut imported = 0usize;
-    let mut skipped = 0usize;
+    let mut skipped_duplicates = 0usize;
+    let mut skipped_parse_errors = 0usize;
 
     for (line_number, line) in lines.into_iter().enumerate() {
         match import_one_entry(&embedder, &store, &blob_store, &line).await {
             Ok(true) => imported += 1,
-            Ok(false) => skipped += 1,
+            Ok(false) => skipped_duplicates += 1,
             Err(e) => {
                 warn!("Skipping line {}: {}", line_number + 1, e);
-                skipped += 1;
+                skipped_parse_errors += 1;
             }
         }
     }
 
+    let skipped = skipped_duplicates + skipped_parse_errors;
+    let skip_detail = build_skip_detail(skipped_parse_errors, skipped_duplicates);
     eprintln!(
-        "Imported {} entries, {} skipped (already exist).",
-        imported, skipped
+        "Imported {} entries, {} skipped{}.",
+        imported, skipped, skip_detail
     );
     Ok(ImportResult { imported, skipped })
+}
+
+/// Build a parenthetical breakdown of skip reasons for the import summary.
+/// Returns an empty string when there are no skips.
+pub(crate) fn build_skip_detail(parse_errors: usize, duplicates: usize) -> String {
+    match (parse_errors, duplicates) {
+        (0, 0) => String::new(),
+        (0, _) => " (already exist)".to_string(),
+        (_, 0) => format!(" ({} parse errors)", parse_errors),
+        _ => format!(
+            " ({} parse errors, {} already exist)",
+            parse_errors, duplicates
+        ),
+    }
 }
 
 /// Rebuild the Lance vector index from the blob store.
@@ -276,6 +293,29 @@ mod tests {
         assert_eq!(result.imported, 1);
         assert_eq!(result.skipped, 1);
         Ok(())
+    }
+
+    #[test]
+    fn test_build_skip_detail_no_skips() {
+        assert_eq!(build_skip_detail(0, 0), "");
+    }
+
+    #[test]
+    fn test_build_skip_detail_duplicates_only() {
+        assert_eq!(build_skip_detail(0, 3), " (already exist)");
+    }
+
+    #[test]
+    fn test_build_skip_detail_parse_errors_only() {
+        assert_eq!(build_skip_detail(2, 0), " (2 parse errors)");
+    }
+
+    #[test]
+    fn test_build_skip_detail_mixed() {
+        assert_eq!(
+            build_skip_detail(2, 3),
+            " (2 parse errors, 3 already exist)"
+        );
     }
 
     #[tokio::test]
