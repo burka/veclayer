@@ -19,7 +19,12 @@
 //! ## Feature Flags
 //!
 //! - `llm` (default): Enables LLM-powered summarization and clustering
+//! - `http` (default): Enables HTTP REST API, Streamable HTTP MCP transport, and OAuth
+//! - `auth` (default): Enables cryptographic identity (Ed25519), JWT tokens, and keystore
 //! - `sync`: Enables cross-store synchronization
+//!
+//! Without `http`, only the stdio MCP transport is available — no network listener.
+//! Without `auth`, identity/token CLI commands are unavailable.
 
 #![recursion_limit = "256"]
 
@@ -36,6 +41,7 @@ pub mod cluster;
 #[doc(hidden)]
 pub mod commands;
 pub mod config;
+#[cfg(feature = "auth")]
 pub mod crypto;
 pub mod embedder;
 pub mod entry;
