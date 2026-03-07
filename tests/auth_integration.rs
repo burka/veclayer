@@ -1,3 +1,5 @@
+#![cfg(feature = "http")]
+
 //! End-to-end OAuth chain integration tests.
 //!
 //! These tests exercise the complete auth chain through the full application

@@ -14,8 +14,10 @@ exclude = [".claude/", ".mcp.json", "opencode.json"]
 rust-version = "1.91"
 
 [features]
-default = ["llm"]
+default = ["llm", "http", "auth"]
 llm = ["dep:reqwest", "dep:linfa", "dep:linfa-clustering", "dep:ndarray"]
+http = ["auth", "dep:axum", "dep:tower", "dep:tower-http", "rmcp/transport-streamable-http-server"]
+auth = ["dep:ed25519-dalek", "dep:jsonwebtoken", "dep:aes-gcm", "dep:argon2", "dep:rpassword", "dep:uuid", "dep:zeroize", "dep:bs58", "dep:base64", "dep:percent-encoding"]
 sync = []
 
 [dependencies]
@@ -34,12 +36,13 @@ fastembed = "4"
 pulldown-cmark = "0.13"
 
 # MCP Server (rmcp — official Rust MCP SDK)
-rmcp = { version = "1.1", features = ["server", "macros", "transport-io", "transport-streamable-http-server", "schemars"] }
+# transport-io is always available; transport-streamable-http-server requires the "http" feature
+rmcp = { version = "1.1", features = ["server", "macros", "transport-io", "schemars"] }
 
-# Web server
-axum = "0.8"
-tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "limit", "trace"] }
+# Web server (gated behind "http" feature)
+axum = { version = "0.8", optional = true }
+tower = { version = "0.5", optional = true }
+tower-http = { version = "0.6", features = ["cors", "limit", "trace"], optional = true }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -62,19 +65,20 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sha2 = "0.10"
 blake3 = "1"
 
-# Cryptographic identity (Phase 6a)
-ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
+# Cryptographic identity (gated behind "auth" feature)
+ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"], optional = true }
 
-# Auth — JWT tokens and capability model (Phase 6b)
-jsonwebtoken = { version = "10", features = ["ed25519-dalek", "rust_crypto"] }
-uuid = { version = "1", features = ["v4"] }
-zeroize = "1"
-aes-gcm = "0.10"
-argon2 = "0.5"
+# Auth — JWT tokens and capability model (gated behind "auth" feature)
+jsonwebtoken = { version = "10", features = ["ed25519-dalek", "rust_crypto"], optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+zeroize = { version = "1", optional = true }
+aes-gcm = { version = "0.10", optional = true }
+argon2 = { version = "0.5", optional = true }
 rand = "0.8"
-rpassword = "7"
-bs58 = "0.5"
-base64 = "0.22"
+rpassword = { version = "7", optional = true }
+bs58 = { version = "0.5", optional = true }
+base64 = { version = "0.22", optional = true }
+percent-encoding = { version = "2", optional = true }
 
 # Binary serialization
 postcard = { version = "1", default-features = false, features = ["alloc"] }
@@ -98,7 +102,6 @@ linfa = { version = "0.7", optional = true }
 linfa-clustering = { version = "0.7", optional = true }
 ndarray = { version = "0.15", optional = true }
 owo-colors = { version = "4.2.3", features = ["supports-colors"] }
-percent-encoding = "2"
 serde_yml = "0.0.12"
 
 [dev-dependencies]

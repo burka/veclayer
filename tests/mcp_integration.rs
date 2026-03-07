@@ -1,3 +1,5 @@
+#![cfg(feature = "http")]
+
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::net::TcpListener;

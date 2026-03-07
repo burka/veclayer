@@ -307,7 +307,7 @@ pub async fn run_http(config: Config) -> Result<()> {
 
     let push_mode = config.push_mode;
     let git_store = if push_mode.uses_git() {
-        open_git_store(&config)
+        super::open_git_store(&config)
     } else {
         None
     };
@@ -341,31 +341,6 @@ pub async fn run_http(config: Config) -> Result<()> {
         .map_err(|e| crate::Error::InvalidOperation(format!("Server error: {}", e)))?;
 
     Ok(())
-}
-
-/// Try to open the git memory store for the current project.
-///
-/// Returns `None` when git storage is not configured or the git dir cannot be found.
-pub(super) fn open_git_store(
-    config: &Config,
-) -> Option<Arc<crate::git::memory_store::MemoryStore>> {
-    if config.storage.as_deref() != Some("git") {
-        return None;
-    }
-
-    let cwd = std::env::current_dir().ok()?;
-    let git_dir = crate::git::detect::find_git_dir(&cwd)?;
-
-    match crate::git::memory_store::MemoryStore::open(&git_dir, None) {
-        Ok(store) => {
-            tracing::info!("Git memory store opened for MCP sessions");
-            Some(Arc::new(store))
-        }
-        Err(e) => {
-            tracing::warn!("Failed to open git memory store: {e}");
-            None
-        }
-    }
 }
 
 /// Load the keystore and build auth state, or return `None` when auth is

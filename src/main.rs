@@ -6,13 +6,15 @@ use tracing_subscriber::EnvFilter;
 
 #[cfg(feature = "llm")]
 use veclayer::commands::think;
+#[cfg(feature = "auth")]
+use veclayer::commands::{auth_login, auth_status, auth_token, identity_init, identity_show};
 use veclayer::commands::{
-    add, archive, auth_login, auth_status, auth_token, browse, compact, export_entries, focus,
-    history, identity_init, identity_show, import_entries, init, merge, orientation,
-    perspective_add, perspective_list, perspective_remove, print_sources, rebuild_index, reflect,
-    search, serve, show_config, status, think_aging_apply, think_aging_configure, think_demote,
-    think_discover, think_promote, think_relate, AddOptions, CompactAction, CompactOptions,
-    ExportOptions, FocusOptions, ImportOptions, MergeOptions, SearchOptions, ServeOptions,
+    add, archive, browse, compact, export_entries, focus, history, import_entries, init, merge,
+    orientation, perspective_add, perspective_list, perspective_remove, print_sources,
+    rebuild_index, reflect, search, serve, show_config, status, think_aging_apply,
+    think_aging_configure, think_demote, think_discover, think_promote, think_relate, AddOptions,
+    CompactAction, CompactOptions, ExportOptions, FocusOptions, ImportOptions, MergeOptions,
+    SearchOptions, ServeOptions,
 };
 use veclayer::Result;
 
@@ -839,29 +841,49 @@ async fn main() -> Result<()> {
             };
             merge(&data_dir, &source, &options).await?;
         }
-        Commands::Identity { action } => match action {
-            IdentityAction::Init { force } => {
-                identity_init(&data_dir, force).await?;
+        Commands::Identity { action } => {
+            #[cfg(feature = "auth")]
+            match action {
+                IdentityAction::Init { force } => {
+                    identity_init(&data_dir, force).await?;
+                }
+                IdentityAction::Show => {
+                    identity_show(&data_dir).await?;
+                }
             }
-            IdentityAction::Show => {
-                identity_show(&data_dir).await?;
+            #[cfg(not(feature = "auth"))]
+            {
+                let _ = action;
+                eprintln!("Error: `identity` commands require the 'auth' feature.");
+                eprintln!("Build with `cargo build` (default features) or `cargo build --features auth`.");
+                std::process::exit(1);
             }
-        },
-        Commands::Auth { action } => match action {
-            AuthAction::Token {
-                can,
-                expires,
-                audience,
-            } => {
-                auth_token(&data_dir, &can, &expires, audience.as_deref()).await?;
+        }
+        Commands::Auth { action } => {
+            #[cfg(feature = "auth")]
+            match action {
+                AuthAction::Token {
+                    can,
+                    expires,
+                    audience,
+                } => {
+                    auth_token(&data_dir, &can, &expires, audience.as_deref()).await?;
+                }
+                AuthAction::Login { server } => {
+                    auth_login(&data_dir, &server).await?;
+                }
+                AuthAction::Status => {
+                    auth_status(&data_dir).await?;
+                }
             }
-            AuthAction::Login { server } => {
-                auth_login(&data_dir, &server).await?;
+            #[cfg(not(feature = "auth"))]
+            {
+                let _ = action;
+                eprintln!("Error: `auth` commands require the 'auth' feature.");
+                eprintln!("Build with `cargo build` (default features) or `cargo build --features auth`.");
+                std::process::exit(1);
             }
-            AuthAction::Status => {
-                auth_status(&data_dir).await?;
-            }
-        },
+        }
         Commands::Reflect { action } => match action {
             None => {
                 reflect(&data_dir).await?;

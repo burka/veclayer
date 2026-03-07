@@ -45,7 +45,7 @@ pub async fn run_stdio(config: Config) -> Result<()> {
 
     let push_mode = config.push_mode;
     let git_store = if push_mode.uses_git() {
-        super::http::open_git_store(&config)
+        super::open_git_store(&config)
     } else {
         None
     };

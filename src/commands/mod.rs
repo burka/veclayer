@@ -24,8 +24,10 @@ use crate::summarizer::OllamaSummarizer;
 use crate::{Config, Embedder, Result, VectorStore};
 
 pub mod add;
+#[cfg(feature = "auth")]
 pub mod auth;
 pub mod data;
+#[cfg(feature = "auth")]
 pub mod identity;
 pub mod merge;
 pub mod perspective_ops;
@@ -310,8 +312,10 @@ pub async fn resolve_entry(store: &impl VectorStore, id: &str) -> Result<crate::
 // --- Re-exports for external API ---
 
 pub use add::{add, ingest};
+#[cfg(feature = "auth")]
 pub use auth::{auth_login, auth_status, auth_token, cache_path, CachedToken};
 pub use data::{export_entries, import_entries, rebuild_index};
+#[cfg(feature = "auth")]
 pub use identity::{identity_init, identity_show};
 pub use merge::merge;
 pub use perspective_ops::{perspective_add, perspective_list, perspective_remove};

@@ -10,6 +10,7 @@
 pub mod embed_worker;
 pub mod format;
 pub mod handler;
+#[cfg(feature = "http")]
 pub mod http;
 pub mod resources;
 pub mod stdio;
@@ -17,8 +18,34 @@ pub mod tools;
 pub mod types;
 
 pub use handler::McpHandler;
+#[cfg(feature = "http")]
 pub use http::{build_app, run_http, AppState, AuthSetup};
 pub use stdio::run_stdio;
+
+/// Try to open the git memory store for the current project.
+///
+/// Returns `None` when git storage is not configured or the git dir cannot be found.
+pub(crate) fn open_git_store(
+    config: &crate::Config,
+) -> Option<std::sync::Arc<crate::git::memory_store::MemoryStore>> {
+    if config.storage.as_deref() != Some("git") {
+        return None;
+    }
+
+    let cwd = std::env::current_dir().ok()?;
+    let git_dir = crate::git::detect::find_git_dir(&cwd)?;
+
+    match crate::git::memory_store::MemoryStore::open(&git_dir, None) {
+        Ok(store) => {
+            tracing::info!("Git memory store opened for MCP sessions");
+            Some(std::sync::Arc::new(store))
+        }
+        Err(e) => {
+            tracing::warn!("Failed to open git memory store: {e}");
+            None
+        }
+    }
+}
 
 /// Instructions provided to agents on first connection.
 pub const MCP_INSTRUCTIONS: &str = "\
