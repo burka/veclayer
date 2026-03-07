@@ -884,6 +884,150 @@ fn test_push_with_retry_handles_rejection() {
 // T7. sync() — pull then push
 // ---------------------------------------------------------------------------
 
+/// Verify that `fetch()` succeeds when the remote branch does not exist yet.
+///
+/// This covers the "first use before first push" scenario: the remote has no
+/// `veclayer-memory` branch. `fetch()` should return `Ok(())` instead of
+/// failing with "couldn't find remote ref".
+#[test]
+fn test_fetch_succeeds_when_remote_branch_missing() {
+    let branch_name = "test-memory";
+
+    let (_bare, _ca_dir, _cb_dir, _client_a_git, client_b_git) = setup_two_clients_with_remote();
+
+    // Neither client has pushed the branch — it doesn't exist on the remote.
+    let branch = veclayer::git::GitMemoryBranch::open(&client_b_git, Some(branch_name)).unwrap();
+    assert!(branch.has_remote().unwrap(), "remote must be configured");
+
+    // fetch() must succeed silently (not error out on missing remote ref).
+    let result = branch.fetch();
+    assert!(
+        result.is_ok(),
+        "fetch() must succeed when the remote branch doesn't exist yet: {result:?}"
+    );
+}
+
+/// Verify that `MemoryStore::open()` tracks an existing remote branch instead
+/// of creating a divergent orphan.
+///
+/// Scenario: Client A creates the memory branch and pushes entries. Client B
+/// opens a MemoryStore on the same branch name. Client B should see A's entries
+/// (pulled from remote), not an empty orphan.
+#[test]
+fn test_open_tracks_remote_branch_instead_of_new_orphan() {
+    let branch_name = "test-memory";
+
+    let (_bare, _ca_dir, _cb_dir, client_a_git, client_b_git) = setup_two_clients_with_remote();
+
+    // Client A creates the branch, stores entries, and pushes.
+    let store_a = MemoryStore::open(&client_a_git, Some(branch_name)).unwrap();
+    store_a.store_entry(&make_entry(500)).unwrap();
+    store_a.store_entry(&make_entry(501)).unwrap();
+    store_a.push().unwrap();
+
+    // Client B opens a MemoryStore for the same branch name. It should detect
+    // the remote branch and create a local tracking branch from it (NOT a
+    // divergent orphan).
+    let store_b = MemoryStore::open(&client_b_git, Some(branch_name)).unwrap();
+
+    // Client B's local branch should already have A's entries.
+    let loaded = store_b.load().unwrap();
+    assert!(
+        loaded.len() >= 2,
+        "client B must see client A's entries after open(); got {} entries",
+        loaded.len()
+    );
+    assert!(
+        loaded
+            .iter()
+            .any(|e| e.content.contains("seed 500")),
+        "client B must see entry 500 from client A"
+    );
+    assert!(
+        loaded
+            .iter()
+            .any(|e| e.content.contains("seed 501")),
+        "client B must see entry 501 from client A"
+    );
+}
+
+/// Verify that the two-client sync workflow works end-to-end: Client A pushes,
+/// Client B pulls via `pull()`, and then sees A's entries.
+///
+/// This is the inverse of `test_sync_pulls_and_pushes` — it focuses on the
+/// pull path alone (no push from B), testing that `pull()` integrates remote
+/// changes before `load()`.
+#[test]
+fn test_pull_integrates_remote_entries_before_load() {
+    let branch_name = "test-memory";
+
+    let (_bare, _ca_dir, _cb_dir, client_a_git, client_b_git) = setup_two_clients_with_remote();
+
+    // Client A creates the branch and pushes some entries.
+    let store_a = MemoryStore::open(&client_a_git, Some(branch_name)).unwrap();
+    store_a.store_entry(&make_entry(600)).unwrap();
+    store_a.push().unwrap();
+
+    // Client B opens a MemoryStore (creates the branch from remote).
+    let store_b = MemoryStore::open(&client_b_git, Some(branch_name)).unwrap();
+
+    // Client A pushes more entries after B has opened.
+    store_a.store_entry(&make_entry(601)).unwrap();
+    store_a.push().unwrap();
+
+    // Client B pulls to get the new entries.
+    let pull_result = store_b.pull();
+    assert!(pull_result.is_ok(), "pull() must succeed: {pull_result:?}");
+
+    // After pulling, load() should return all entries (including 601).
+    let loaded = store_b.load().unwrap();
+    assert!(
+        loaded.iter().any(|e| e.content.contains("seed 601")),
+        "client B must see entry 601 after pull(); entries: {:?}",
+        loaded.iter().map(|e| &e.content).collect::<Vec<_>>()
+    );
+}
+
+/// Verify that `ensure_worktree()` detects and recovers from a stale worktree.
+///
+/// Scenario: A worktree directory exists with a `.git` file, but the backing
+/// repository has been deleted. `ensure_worktree()` should detect the broken
+/// state, remove the stale directory, and recreate it.
+#[test]
+fn test_stale_worktree_is_detected_and_recreated() {
+    let (_dir, git_dir) = setup_repo();
+
+    let branch =
+        veclayer::git::GitMemoryBranch::open(&git_dir, Some("stale-wt-test")).unwrap();
+    branch.create_orphan_branch().unwrap();
+
+    // Verify worktree was created and works.
+    let wt_path = branch.ensure_worktree().unwrap().to_path_buf();
+    assert!(wt_path.is_dir(), "worktree must exist");
+    assert!(wt_path.join(".git").exists(), "worktree .git must exist");
+
+    // Corrupt the worktree by overwriting the .git file with invalid content.
+    // This simulates a stale worktree whose backing repo was deleted.
+    std::fs::write(wt_path.join(".git"), b"gitdir: /nonexistent/path/.git")
+        .expect("write corrupt .git file");
+
+    // ensure_worktree() should detect the broken state, remove the stale
+    // directory, and recreate a working worktree.
+    let result = branch.ensure_worktree();
+    assert!(
+        result.is_ok(),
+        "ensure_worktree() must recover from stale worktree: {result:?}"
+    );
+
+    // The recovered worktree must be functional — verify with a write + commit.
+    branch
+        .write_file("test.txt", b"recovery test")
+        .expect("write after recovery");
+    branch
+        .commit("test commit after recovery")
+        .expect("commit after recovery");
+}
+
 /// Verify that `sync()` pulls remote changes and then pushes local commits so
 /// that both clients end up with both entries on their local branch, and the
 /// remote also has both entries.
