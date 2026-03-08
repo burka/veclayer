@@ -82,6 +82,15 @@ pub fn format_recall(query: Option<&str>, results: &[SearchResultResponse]) -> S
                 out.push_str(&format!("- {} `{}`\n", child_title, short_id(&child.id)));
             }
         }
+
+        // Contradiction warning
+        if !r.contradicted_by.is_empty() {
+            let ids: Vec<&str> = r.contradicted_by.iter().map(|id| short_id(id)).collect();
+            out.push_str(&format!(
+                "\n> **Contradicted by:** {}\n",
+                ids.join(", ")
+            ));
+        }
     }
 
     // Footer
@@ -396,6 +405,7 @@ mod tests {
             relevance: "strong".to_string(),
             hierarchy_path: vec![],
             children: vec![],
+            contradicted_by: vec![],
         }];
         let out = format_recall(Some("architecture"), &results);
         assert!(out.contains("### 1. Design (strong)"));
@@ -414,6 +424,7 @@ mod tests {
             relevance: "moderate".to_string(),
             hierarchy_path: vec![],
             children: vec![child],
+            contradicted_by: vec![],
         }];
         let out = format_recall(Some("query"), &results);
         assert!(out.contains("**Children:**"));
@@ -455,6 +466,7 @@ mod tests {
             relevance: "strong".to_string(),
             hierarchy_path: vec![],
             children: vec![],
+            contradicted_by: vec![],
         }];
         let out = format_recall(Some("q"), &results);
         assert!(out.contains("> `abc1234` · decisions, learnings · 0.50"));
@@ -495,6 +507,7 @@ mod tests {
             relevance: "strong".to_string(),
             hierarchy_path: vec![ancestor, parent],
             children: vec![],
+            contradicted_by: vec![],
         }];
         let out = format_recall(Some("q"), &results);
         assert!(out.contains("> Root › Parent")); // Breadcrumb line
@@ -509,6 +522,7 @@ mod tests {
             relevance: "strong".to_string(),
             hierarchy_path: vec![],
             children: vec![],
+            contradicted_by: vec![],
         }];
         let out = format_recall(Some("q"), &results);
         assert!(!out.contains("›")); // No breadcrumb separator
@@ -522,6 +536,7 @@ mod tests {
             relevance: "moderate".to_string(),
             hierarchy_path: vec![],
             children: vec![],
+            contradicted_by: vec![],
         }];
         let out = format_recall(Some("q"), &results);
         assert!(out.contains("0.42"));
@@ -573,6 +588,7 @@ mod tests {
             relevance: "strong".to_string(),
             hierarchy_path: vec![],
             children: vec![],
+            contradicted_by: vec![],
         }];
         let out = format_recall(Some("q"), &results);
         assert!(out.contains("embedding pending"));
@@ -588,6 +604,7 @@ mod tests {
             relevance: "strong".to_string(),
             hierarchy_path: vec![],
             children: vec![],
+            contradicted_by: vec![],
         }];
         let out = format_recall(Some("q"), &results);
         assert!(!out.contains("embedding pending"));

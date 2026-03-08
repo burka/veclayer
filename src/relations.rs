@@ -75,6 +75,14 @@ pub async fn process_relations(
                 let backward = ChunkRelation::related_to(source_id);
                 store.add_relation(&target, backward).await?;
             }
+            "contradicts" => {
+                // Bidirectional: both entries know about the contradiction
+                let forward = ChunkRelation::contradicts(&target);
+                store.add_relation(source_id, forward).await?;
+                let backward = ChunkRelation::contradicts(source_id);
+                store.add_relation(&target, backward).await?;
+                info!("Contradiction linked: {} <-> {}", source_id, target);
+            }
             "derived_from" => {
                 let forward = ChunkRelation::derived_from(&target);
                 store.add_relation(source_id, forward).await?;
@@ -106,9 +114,13 @@ mod tests {
     #[test]
     fn test_validate_custom_kind_passes() {
         // Far enough from any known kind → accepted as custom
-        assert!(validate_relation_kind("contradicts").is_ok());
         assert!(validate_relation_kind("inspired_by").is_ok());
         assert!(validate_relation_kind("blocks").is_ok());
+    }
+
+    #[test]
+    fn test_validate_contradicts_is_known() {
+        assert!(validate_relation_kind("contradicts").is_ok());
     }
 
     #[test]
@@ -232,7 +244,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_process_custom_kind_forward_only() {
+    async fn test_process_contradicts_bidirectional() {
         let dir = tempfile::tempdir().unwrap();
         let store = StoreBackend::open(dir.path(), 384, false).await.unwrap();
         let store = Arc::new(store);
@@ -255,6 +267,43 @@ mod tests {
                 .relations
                 .iter()
                 .any(|r| r.kind == "contradicts" && r.target_id == "2222000000000000"),
+            "expected contradicts forward relation on source"
+        );
+
+        let target_chunk = store.get_by_id("2222000000000000").await.unwrap().unwrap();
+        assert!(
+            target_chunk
+                .relations
+                .iter()
+                .any(|r| r.kind == "contradicts" && r.target_id == "1111000000000000"),
+            "expected contradicts backward relation on target"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_custom_kind_forward_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StoreBackend::open(dir.path(), 384, false).await.unwrap();
+        let store = Arc::new(store);
+
+        let a = make_test_chunk("1111000000000000", "source");
+        let b = make_test_chunk("2222000000000000", "target");
+        store.insert_chunks(vec![a, b]).await.unwrap();
+
+        let relations = vec![RawRelation {
+            kind: "inspired_by".to_string(),
+            target_id: "22220000".to_string(),
+        }];
+        process_relations(&store, "1111000000000000", relations)
+            .await
+            .unwrap();
+
+        let source_chunk = store.get_by_id("1111000000000000").await.unwrap().unwrap();
+        assert!(
+            source_chunk
+                .relations
+                .iter()
+                .any(|r| r.kind == "inspired_by" && r.target_id == "2222000000000000"),
             "expected custom forward relation on source"
         );
 

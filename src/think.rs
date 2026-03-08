@@ -23,6 +23,8 @@ pub struct ThinkResult {
     pub consolidations_added: usize,
     /// Number of meta-learnings extracted.
     pub learnings_added: usize,
+    /// Number of contradictions detected and linked.
+    pub contradictions_found: usize,
     /// All entries created during this cycle.
     pub entries_created: Vec<ThinkEntry>,
 }
@@ -47,6 +49,15 @@ struct ThinkPlan {
     consolidations: Vec<Consolidation>,
     #[serde(default)]
     learnings: Vec<Learning>,
+    #[serde(default)]
+    contradictions: Vec<Contradiction>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct Contradiction {
+    entry_a: String,
+    entry_b: String,
+    reason: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -77,6 +88,7 @@ You will receive an identity briefing showing the current state of memory. Based
 1. Write a brief narrative (2-3 sentences, first person) capturing the essence of what this memory contains and what matters most.
 2. Identify groups of related core entries that should be consolidated into higher-level summaries.
 3. Extract meta-learnings: patterns, recurring themes, or insights that emerge from the memory as a whole.
+4. Detect contradictions: entries that claim conflicting or mutually exclusive facts. Flag them as contradiction pairs with both IDs and a brief reason.
 
 Respond ONLY with valid JSON (no markdown fences, no commentary):
 {
@@ -93,6 +105,13 @@ Respond ONLY with valid JSON (no markdown fences, no commentary):
       "content": "Pattern observed: ...",
       "perspectives": ["learnings"]
     }
+  ],
+  "contradictions": [
+    {
+      "entry_a": "full-64-char-hash-1",
+      "entry_b": "full-64-char-hash-2",
+      "reason": "Entry A claims X while entry B claims the opposite"
+    }
   ]
 }
 
@@ -101,7 +120,8 @@ Rules:
 - Narrative should be 2-3 sentences in first person
 - Only consolidate entries that genuinely belong together
 - Learnings should be genuine meta-observations, not repetitions of existing entries
-- If nothing needs consolidation, return empty arrays
+- Contradictions should flag genuinely conflicting facts, not mere differences in perspective
+- If nothing needs consolidation or no contradictions are found, return empty arrays
 - Keep each consolidation to 1-3 concise sentences
 - perspectives must use existing perspective IDs from the briefing"#;
 
@@ -125,6 +145,7 @@ pub async fn execute<L: LlmProvider>(
             narrative_id: None,
             consolidations_added: 0,
             learnings_added: 0,
+            contradictions_found: 0,
             entries_created: vec![],
         });
     }
@@ -233,14 +254,51 @@ pub async fn execute<L: LlmProvider>(
         learnings_added += 1;
     }
 
+    // Contradictions → write bidirectional `contradicts` relations
+    for contradiction in &plan.contradictions {
+        let valid_a = store
+            .get_by_id(&contradiction.entry_a)
+            .await
+            .ok()
+            .flatten()
+            .is_some();
+        let valid_b = store
+            .get_by_id(&contradiction.entry_b)
+            .await
+            .ok()
+            .flatten()
+            .is_some();
+        if valid_a && valid_b {
+            let forward = ChunkRelation::contradicts(&contradiction.entry_b);
+            store
+                .add_relation(&contradiction.entry_a, forward)
+                .await
+                .ok();
+            let backward = ChunkRelation::contradicts(&contradiction.entry_a);
+            store
+                .add_relation(&contradiction.entry_b, backward)
+                .await
+                .ok();
+            tracing::info!(
+                "Think: contradiction detected between {} and {}: {}",
+                &contradiction.entry_a[..8.min(contradiction.entry_a.len())],
+                &contradiction.entry_b[..8.min(contradiction.entry_b.len())],
+                contradiction.reason
+            );
+        }
+    }
+
     // 6. Compact: apply aging
     let aging_config = crate::aging::AgingConfig::load(data_dir);
     let _ = crate::aging::apply_aging(store, &aging_config).await;
+
+    let contradictions_found = plan.contradictions.len();
 
     Ok(ThinkResult {
         narrative_id,
         consolidations_added,
         learnings_added,
+        contradictions_found,
         entries_created,
     })
 }

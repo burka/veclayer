@@ -26,6 +26,10 @@ pub struct HierarchicalSearchResult {
     pub hierarchy_path: Vec<HierarchicalChunk>,
     /// Children of this chunk that also match
     pub relevant_children: Vec<SearchResult>,
+    /// IDs of entries that contradict this result (empty if none).
+    /// Enables contradiction-aware retrieval: callers can surface
+    /// conflicting knowledge instead of silently picking the "winner".
+    pub contradicted_by: Vec<String>,
 }
 
 /// Default blending factor when no recency window is active.
@@ -295,11 +299,17 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
 
             access_updates.push((chunk.id.clone(), chunk.access_profile.clone()));
 
+            let contradicted_by = chunk
+                .relations_of_kind(crate::relation::CONTRADICTS)
+                .iter()
+                .map(|r| r.target_id.clone())
+                .collect();
             hierarchical_results.push(HierarchicalSearchResult {
                 chunk,
                 score: final_score,
                 hierarchy_path,
                 relevant_children,
+                contradicted_by,
             });
         }
 
@@ -390,11 +400,17 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
 
             access_updates.push((chunk.id.clone(), chunk.access_profile.clone()));
 
+            let contradicted_by = chunk
+                .relations_of_kind(crate::relation::CONTRADICTS)
+                .iter()
+                .map(|r| r.target_id.clone())
+                .collect();
             hierarchical_results.push(HierarchicalSearchResult {
                 chunk,
                 score: final_score,
                 hierarchy_path,
                 relevant_children,
+                contradicted_by,
             });
         }
 
@@ -461,11 +477,17 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
 
             access_updates.push((chunk.id.clone(), chunk.access_profile.clone()));
 
+            let contradicted_by = chunk
+                .relations_of_kind(crate::relation::CONTRADICTS)
+                .iter()
+                .map(|r| r.target_id.clone())
+                .collect();
             results.push(HierarchicalSearchResult {
                 chunk,
                 score: final_score,
                 hierarchy_path,
                 relevant_children,
+                contradicted_by,
             });
         }
 

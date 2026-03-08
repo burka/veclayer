@@ -437,6 +437,24 @@ pub(crate) fn find_open_threads(chunks: &[HierarchicalChunk]) -> Vec<OpenThread>
             }
         }
 
+        // Entries with contradiction relations — always surface both sides
+        if chunk.is_contradicted() {
+            let contradiction_targets: Vec<_> = chunk
+                .relations_of_kind(crate::relation::CONTRADICTS)
+                .iter()
+                .map(|r| r.target_id.clone())
+                .collect();
+            reasons.push(format!(
+                "Contradicted by {} other entry/entries — needs resolution",
+                contradiction_targets.len()
+            ));
+            for id in contradiction_targets {
+                if !related.contains(&id) {
+                    related.push(id);
+                }
+            }
+        }
+
         // Entries with many relations suggest active deliberation
         if chunk.relations.len() >= 3 && chunk.visibility == "normal" {
             reasons.push(format!(

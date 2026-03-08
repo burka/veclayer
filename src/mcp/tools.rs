@@ -73,6 +73,7 @@ fn map_search_results(
             score: r.score,
             relevance: relevance_tier(r.score).to_string(),
             hierarchy_path: r.hierarchy_path.iter().map(ChunkResponse::from).collect(),
+            contradicted_by: r.contradicted_by,
             children: r
                 .relevant_children
                 .iter()
@@ -393,12 +394,20 @@ pub async fn execute_recall(
                         && crate::identity::passes_ongoing_filter(&open_thread_ids, &chunk.id)
                 })
                 .take(input.limit)
-                .map(|chunk| SearchResultResponse {
-                    chunk: ChunkResponse::from(chunk),
-                    score: 1.0,
-                    relevance: "browse".to_string(),
-                    hierarchy_path: vec![],
-                    children: vec![],
+                .map(|chunk| {
+                    let contradicted_by = chunk
+                        .relations_of_kind(crate::relation::CONTRADICTS)
+                        .iter()
+                        .map(|r| r.target_id.clone())
+                        .collect();
+                    SearchResultResponse {
+                        chunk: ChunkResponse::from(chunk),
+                        score: 1.0,
+                        relevance: "browse".to_string(),
+                        hierarchy_path: vec![],
+                        children: vec![],
+                        contradicted_by,
+                    }
                 })
                 .collect())
         }
@@ -702,10 +711,11 @@ pub async fn execute_think(
             }
 
             let mut report = format!(
-                "## Think Cycle Complete\n\n- Narrative: {}\n- Consolidations: {}\n- Learnings: {}\n\n",
+                "## Think Cycle Complete\n\n- Narrative: {}\n- Consolidations: {}\n- Learnings: {}\n- Contradictions detected: {}\n\n",
                 if result.narrative_id.is_some() { "yes" } else { "no" },
                 result.consolidations_added,
                 result.learnings_added,
+                result.contradictions_found,
             );
             report.push_str("### Entries Created\n\n");
             for entry in &result.entries_created {

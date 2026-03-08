@@ -62,10 +62,10 @@ pub fn compute(chunk: &HierarchicalChunk, weights: &SalienceWeights) -> Salience
         + perspective * weights.w_perspective
         + revision * weights.w_revision;
 
-    // Impressions are modulated by their strength (default 1.0 = full weight)
-    if chunk.entry_type == crate::chunk::EntryType::Impression {
-        composite *= chunk.impression_strength;
-    }
+    // Confidence modulates salience for all entry types (default 1.0 = full weight).
+    // This generalizes impression_strength to act as a universal confidence signal,
+    // allowing any entry to be explicitly downweighted when its accuracy is uncertain.
+    composite *= chunk.impression_strength;
 
     SalienceScore {
         interaction,
@@ -331,9 +331,9 @@ mod tests {
     }
 
     #[test]
-    fn test_non_impression_ignores_strength() {
+    fn test_confidence_modulates_all_entry_types() {
         let mut chunk = test_chunk("raw entry");
-        chunk.impression_strength = 0.5; // should be ignored for non-impression
+        chunk.impression_strength = 0.5; // acts as confidence for all types
         chunk.access_profile.record_access();
 
         let mut same = test_chunk("raw entry same");
@@ -344,8 +344,8 @@ mod tests {
         let score_half = compute(&chunk, &w);
         let score_full = compute(&same, &w);
 
-        // Non-impression entries ignore impression_strength
-        assert!((score_half.composite - score_full.composite).abs() < 0.001);
+        // Confidence now modulates all entry types, not just impressions
+        assert!((score_half.composite - score_full.composite * 0.5).abs() < 0.001);
     }
 
     #[test]

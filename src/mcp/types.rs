@@ -350,6 +350,9 @@ pub struct SearchResultResponse {
     pub hierarchy_path: Vec<ChunkResponse>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<ChunkResponse>,
+    /// IDs of entries that contradict this result. Non-empty signals conflicting knowledge.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub contradicted_by: Vec<String>,
 }
 
 /// Focus result: the node itself + its children

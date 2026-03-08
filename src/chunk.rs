@@ -124,6 +124,7 @@ pub mod relation {
     pub const SUPERSEDES: &str = "supersedes";
     pub const SUMMARIZES: &str = "summarizes";
     pub const VERSION_OF: &str = "version_of";
+    pub const CONTRADICTS: &str = "contradicts";
 
     /// All well-known relation kinds (for typo detection / validation).
     pub const KNOWN_KINDS: &[&str] = &[
@@ -134,6 +135,7 @@ pub mod relation {
         SUPERSEDES,
         SUMMARIZES,
         VERSION_OF,
+        CONTRADICTS,
     ];
 }
 
@@ -185,6 +187,10 @@ impl ChunkRelation {
 
     pub fn version_of(target_id: impl Into<String>) -> Self {
         Self::new(relation::VERSION_OF, target_id)
+    }
+
+    pub fn contradicts(target_id: impl Into<String>) -> Self {
+        Self::new(relation::CONTRADICTS, target_id)
     }
 }
 
@@ -325,14 +331,14 @@ pub struct HierarchicalChunk {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
 
-    /// Impression hint: qualitative label like "uncertain", "confident", "exploratory".
-    /// Only meaningful when `entry_type == Impression`.
+    /// Qualitative confidence label like "uncertain", "confident", "exploratory".
+    /// Originally only for impressions, but useful as a general annotation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub impression_hint: Option<String>,
 
-    /// Impression strength: [0.0, 1.0] modulating salience weight.
-    /// 1.0 = full weight (default), 0.0 = negligible.
-    /// Only meaningful when `entry_type == Impression`.
+    /// Confidence / impression strength: [0.0, 1.0] modulating salience weight.
+    /// 1.0 = full confidence (default), 0.0 = negligible.
+    /// Applies to ALL entry types — allows explicit downweighting of uncertain facts.
     #[serde(default = "default_impression_strength")]
     pub impression_strength: f32,
 }
@@ -514,6 +520,13 @@ impl HierarchicalChunk {
         self.relations
             .iter()
             .any(|r| r.kind == relation::SUPERSEDED_BY)
+    }
+
+    /// Check if this chunk has contradiction relations
+    pub fn is_contradicted(&self) -> bool {
+        self.relations
+            .iter()
+            .any(|r| r.kind == relation::CONTRADICTS)
     }
 
     /// Get primary cluster (highest probability)

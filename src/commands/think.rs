@@ -42,6 +42,13 @@ pub async fn think(data_dir: &Path) -> Result<()> {
         );
     }
 
+    if result.contradictions_found > 0 {
+        println!(
+            "  Contradictions: {} pairs detected and linked",
+            result.contradictions_found
+        );
+    }
+
     println!("\nEntries created:");
     for entry in &result.entries_created {
         let persp = if entry.perspectives.is_empty() {
@@ -162,8 +169,8 @@ pub async fn think_relate(data_dir: &Path, source: &str, target: &str, kind: &st
     let relation = crate::ChunkRelation::new(kind, &target_id);
     store.add_relation(&source_id, relation).await?;
 
-    if kind == "related_to" {
-        let backward = crate::ChunkRelation::new("related_to", &source_id);
+    if kind == "related_to" || kind == "contradicts" {
+        let backward = crate::ChunkRelation::new(kind, &source_id);
         store.add_relation(&target_id, backward).await?;
     }
 
