@@ -18,6 +18,9 @@ The roadmap is tracked as [GitHub Issues](https://github.com/burka/veclayer/issu
   - **6b:** Server Auth — UCAN tokens, Bearer middleware, capability scoping
   - **6c:** Sync + Multi-Embedding — S3 backend (LanceDB), BYOE, embedding queue, user embedding column, Lance-versioned sync
   - **6d:** Platform Integration — Hosted server (Fly.io, scale-to-zero), remote MCP for claude.ai/chatgpt.com, WebAuthn, device linking
+- **Graph-Aware Retrieval** (enhancement, post-5.5) — [design doc](docs/design/graph-aware-retrieval.md)
+  - Depth traversal on `recall` (`--depth N`): follow relations from top results with decaying score
+  - Connectivity term in salience: incoming relations + neighbor quality as scoring signal
 - **Phase 7:** Polish — aliases, multi-format parsing, alternative backends ([#9](https://github.com/burka/veclayer/issues/9))
 
 ## Success Criteria
