@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VecLayer</title>
+<style>
+:root {
+  --bg: #fdfdfd; --fg: #222; --muted: #666; --border: #ddd;
+  --accent: #2563eb; --accent-hover: #1d4ed8;
+  --code-bg: #f4f4f5; --card-bg: #fafafa;
+  --radius: 4px; --max-w: 48rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #18181b; --fg: #e4e4e7; --muted: #a1a1aa; --border: #3f3f46;
+    --accent: #60a5fa; --accent-hover: #93bbfc;
+    --code-bg: #27272a; --card-bg: #1f1f23;
+  }
+}
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  color: var(--fg); background: var(--bg);
+  max-width: var(--max-w); margin: 0 auto; padding: 1.5rem;
+  line-height: 1.6; font-size: 15px;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hover); text-decoration: underline; }
+h1 { font-size: 1.8rem; margin: 0 0 0.25rem; }
+h2 { font-size: 1.3rem; margin: 2rem 0 0.75rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+h3 { font-size: 1.1rem; margin: 1.5rem 0 0.5rem; }
+p, ul, ol { margin: 0.5rem 0; }
+code {
+  font-family: "SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace;
+  font-size: 0.88em; background: var(--code-bg); padding: 0.15em 0.35em; border-radius: var(--radius);
+}
+pre { background: var(--code-bg); padding: 0.75rem 1rem; border-radius: var(--radius); overflow-x: auto; }
+pre code { background: none; padding: 0; font-size: 0.85em; }
+table { border-collapse: collapse; width: 100%; margin: 0.75rem 0; font-size: 0.9em; }
+th, td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; text-align: left; }
+th { background: var(--code-bg); font-weight: 600; }
+hr { border: none; border-top: 1px solid var(--border); margin: 1.5rem 0; }
+blockquote { border-left: 3px solid var(--accent); margin: 1rem 0; padding: 0.25rem 1rem; color: var(--muted); }
+
+/* Navigation */
+nav {
+  display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;
+  padding: 0.5rem 0; margin-bottom: 1rem; border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+nav a { font-weight: 500; }
+nav .spacer { flex: 1; }
+
+/* Copy button */
+.copy-btn {
+  position: fixed; top: 1rem; right: 1rem;
+  background: var(--code-bg); border: 1px solid var(--border);
+  color: var(--muted); padding: 0.3rem 0.6rem; border-radius: var(--radius);
+  cursor: pointer; font-size: 0.78rem; font-family: inherit; z-index: 10;
+}
+.copy-btn:hover { color: var(--fg); border-color: var(--accent); }
+
+/* Micro UI */
+#explore {
+  display: none; margin-top: 2rem; padding-top: 1.5rem;
+  border-top: 2px solid var(--accent);
+}
+#explore.active { display: block; }
+#explore h2 { border-bottom-color: var(--accent); }
+.search-row {
+  display: flex; gap: 0.5rem; margin: 0.75rem 0;
+}
+.search-row input[type="text"] {
+  flex: 1; padding: 0.4rem 0.6rem; border: 1px solid var(--border);
+  border-radius: var(--radius); background: var(--bg); color: var(--fg);
+  font-family: inherit; font-size: 0.9em;
+}
+.search-row select {
+  padding: 0.4rem 0.5rem; border: 1px solid var(--border);
+  border-radius: var(--radius); background: var(--bg); color: var(--fg);
+  font-size: 0.9em;
+}
+.btn {
+  padding: 0.4rem 0.8rem; border: 1px solid var(--accent); border-radius: var(--radius);
+  background: var(--accent); color: #fff; cursor: pointer; font-size: 0.85em; font-family: inherit;
+}
+.btn:hover { background: var(--accent-hover); }
+.btn-secondary {
+  background: transparent; color: var(--accent); border: 1px solid var(--border);
+}
+.btn-secondary:hover { border-color: var(--accent); }
+#results { margin-top: 1rem; }
+.result-card {
+  background: var(--card-bg); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 0.75rem; margin: 0.5rem 0;
+}
+.result-card .path { font-size: 0.78rem; color: var(--muted); margin-bottom: 0.25rem; }
+.result-card .content { font-size: 0.88rem; white-space: pre-wrap; }
+.result-card .meta { font-size: 0.75rem; color: var(--muted); margin-top: 0.4rem; }
+.stats-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.5rem; margin: 0.75rem 0;
+}
+.stat-box {
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 0.6rem; text-align: center;
+}
+.stat-box .val { font-size: 1.4rem; font-weight: 700; color: var(--accent); }
+.stat-box .lbl { font-size: 0.75rem; color: var(--muted); }
+#status-msg { font-size: 0.82rem; color: var(--muted); margin: 0.5rem 0; }
+.hidden { display: none; }
+</style>
+</head>
+<body>
+
+<button class="copy-btn" onclick="copyMd()" title="Copy page as Markdown">Copy MD</button>
+
+<nav>
+  <a href="#" onclick="showSection('docs');return false"><strong>VecLayer</strong></a>
+  <a href="#" onclick="showSection('docs');return false">Docs</a>
+  <a href="#" onclick="toggleExplore();return false">Explore</a>
+  <span class="spacer"></span>
+  <a href="https://github.com/burka/veclayer" target="_blank">GitHub</a>
+</nav>
+
+<main id="docs">
+{{CONTENT}}
+</main>
+
+<section id="explore">
+  <h2>Explore Memory Store</h2>
+  <p id="status-msg">Enter the server's base URL to connect.</p>
+
+  <div class="search-row">
+    <input type="text" id="base-url" value="" placeholder="http://localhost:8080">
+    <button class="btn btn-secondary" onclick="loadStats()">Connect</button>
+  </div>
+
+  <div id="stats-panel" class="hidden">
+    <div class="stats-grid" id="stats-grid"></div>
+  </div>
+
+  <div id="search-panel" class="hidden">
+    <div class="search-row">
+      <input type="text" id="query" placeholder="Search memories..." onkeydown="if(event.key==='Enter')doRecall()">
+      <select id="perspective">
+        <option value="">all perspectives</option>
+        <option>intentions</option>
+        <option>people</option>
+        <option>temporal</option>
+        <option>knowledge</option>
+        <option>decisions</option>
+        <option>learnings</option>
+        <option>session</option>
+      </select>
+      <button class="btn" onclick="doRecall()">Recall</button>
+    </div>
+    <div id="results"></div>
+  </div>
+</section>
+
+<script>
+const MD_SOURCE = {{MD_SOURCE_JSON}};
+
+function copyMd() {
+  navigator.clipboard.writeText(MD_SOURCE).then(() => {
+    const btn = document.querySelector('.copy-btn');
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = 'Copy MD', 1500);
+  });
+}
+
+function showSection(s) {
+  document.getElementById('docs').style.display = s === 'docs' ? 'block' : 'none';
+  if (s === 'docs') document.getElementById('explore').classList.remove('active');
+}
+
+function toggleExplore() {
+  const el = document.getElementById('explore');
+  el.classList.toggle('active');
+  document.getElementById('docs').style.display = el.classList.contains('active') ? 'none' : 'block';
+  if (el.classList.contains('active') && !document.getElementById('base-url').value) {
+    document.getElementById('base-url').value = window.location.origin;
+  }
+}
+
+function baseUrl() {
+  return document.getElementById('base-url').value.replace(/\/+$/, '');
+}
+
+async function loadStats() {
+  const msg = document.getElementById('status-msg');
+  try {
+    msg.textContent = 'Connecting...';
+    const r = await fetch(baseUrl() + '/api/stats');
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    // ApiResponse uses serde untagged: success = bare value, error = {error: "..."}
+    const d = j;
+    const grid = document.getElementById('stats-grid');
+    grid.innerHTML = '';
+    for (const [k, v] of Object.entries(d)) {
+      const box = document.createElement('div');
+      box.className = 'stat-box';
+      const display = typeof v === 'object' ? JSON.stringify(v) : String(v);
+      box.innerHTML = '<div class="val">' + esc(display) + '</div><div class="lbl">' + esc(k.replace(/_/g, ' ')) + '</div>';
+      grid.appendChild(box);
+    }
+    document.getElementById('stats-panel').classList.remove('hidden');
+    document.getElementById('search-panel').classList.remove('hidden');
+    msg.textContent = 'Connected.';
+  } catch (e) {
+    msg.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function doRecall() {
+  const query = document.getElementById('query').value.trim();
+  const perspective = document.getElementById('perspective').value;
+  const results = document.getElementById('results');
+  if (!query) { results.innerHTML = '<p style="color:var(--muted)">Enter a search query.</p>'; return; }
+  results.innerHTML = '<p style="color:var(--muted)">Searching...</p>';
+  try {
+    const body = { query };
+    if (perspective) body.perspective = perspective;
+    const r = await fetch(baseUrl() + '/api/recall', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    const items = j;
+    if (!items.length) { results.innerHTML = '<p style="color:var(--muted)">No results.</p>'; return; }
+    results.innerHTML = items.map(it => {
+      const entry = it.entry || it;
+      const path = entry.path || '';
+      const content = entry.content || JSON.stringify(entry, null, 2);
+      const score = it.score != null ? 'score: ' + it.score.toFixed(3) : '';
+      const persp = (entry.perspectives || []).join(', ');
+      const meta = [score, persp].filter(Boolean).join(' | ');
+      return '<div class="result-card">'
+        + (path ? '<div class="path">' + esc(path) + '</div>' : '')
+        + '<div class="content">' + esc(content) + '</div>'
+        + (meta ? '<div class="meta">' + esc(meta) + '</div>' : '')
+        + '</div>';
+    }).join('');
+  } catch (e) {
+    results.innerHTML = '<p style="color:var(--muted)">Error: ' + esc(e.message) + '</p>';
+  }
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+</script>
+</body>
+</html>

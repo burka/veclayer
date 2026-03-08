@@ -33,6 +33,20 @@ use super::handler::McpHandler;
 use super::tools;
 use super::types::*;
 
+// ─── Landing page ─────────────────────────────────────────────────────────────
+
+/// Landing page HTML, compiled from website/index.md at build time.
+#[cfg(feature = "landing-page")]
+const INDEX_HTML: &str = include_str!(concat!(env!("OUT_DIR"), "/index.html"));
+
+#[cfg(feature = "landing-page")]
+async fn index_page() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        INDEX_HTML,
+    )
+}
+
 // ─── Auth setup ───────────────────────────────────────────────────────────────
 
 /// Pre-built auth state passed into [`build_app`] when authentication is
@@ -195,7 +209,7 @@ pub fn build_app(state: AppState) -> Router {
     );
 
     // Routes that require authorization.
-    let protected: Router<AppState> = Router::new()
+    let mut protected: Router<AppState> = Router::new()
         .route("/api/recall", post(api_recall))
         .route("/api/focus", post(api_focus))
         .route("/api/store", post(api_store))
@@ -205,6 +219,12 @@ pub fn build_app(state: AppState) -> Router {
         .route("/api/identity", get(api_identity))
         .route("/api/priming", get(api_priming))
         .nest_service("/mcp", mcp_service);
+
+    // Conditionally add the landing page route
+    #[cfg(feature = "landing-page")]
+    {
+        protected = protected.route("/", get(index_page));
+    }
 
     let base: Router<AppState> = Router::new().route("/health", get(|| async { "OK" }));
 

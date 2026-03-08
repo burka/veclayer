@@ -14,10 +14,11 @@ exclude = [".claude/", ".mcp.json", "opencode.json"]
 rust-version = "1.91"
 
 [features]
-default = ["llm", "http", "auth"]
+default = ["llm", "http", "auth", "landing-page"]
 llm = ["dep:reqwest", "dep:linfa", "dep:linfa-clustering", "dep:ndarray"]
 http = ["auth", "dep:axum", "dep:tower", "dep:tower-http", "rmcp/transport-streamable-http-server"]
 auth = ["dep:ed25519-dalek", "dep:jsonwebtoken", "dep:aes-gcm", "dep:argon2", "dep:rpassword", "dep:uuid", "dep:zeroize", "dep:bs58", "dep:base64", "dep:percent-encoding", "dep:rand"]
+landing-page = []
 sync = []
 
 [dependencies]
@@ -103,6 +104,10 @@ linfa-clustering = { version = "0.7", optional = true }
 ndarray = { version = "0.15", optional = true }
 owo-colors = { version = "4.2.3", features = ["supports-colors"] }
 serde_yml = "0.0.12"
+
+[build-dependencies]
+pulldown-cmark = "0.13"
+serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"
