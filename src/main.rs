@@ -854,9 +854,9 @@ async fn main() -> Result<()> {
             #[cfg(not(feature = "auth"))]
             {
                 let _ = action;
-                eprintln!("Error: `identity` commands require the 'auth' feature.");
-                eprintln!("Build with `cargo build` (default features) or `cargo build --features auth`.");
-                std::process::exit(1);
+                return Err(veclayer::Error::InvalidOperation(
+                    "`identity` commands require the 'auth' feature. Build with `cargo build` (default features) or `cargo build --features auth`.".into(),
+                ));
             }
         }
         Commands::Auth { action } => {
@@ -879,9 +879,9 @@ async fn main() -> Result<()> {
             #[cfg(not(feature = "auth"))]
             {
                 let _ = action;
-                eprintln!("Error: `auth` commands require the 'auth' feature.");
-                eprintln!("Build with `cargo build` (default features) or `cargo build --features auth`.");
-                std::process::exit(1);
+                return Err(veclayer::Error::InvalidOperation(
+                    "`auth` commands require the 'auth' feature. Build with `cargo build` (default features) or `cargo build --features auth`.".into(),
+                ));
             }
         }
         Commands::Reflect { action } => match action {
