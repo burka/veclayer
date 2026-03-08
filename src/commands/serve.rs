@@ -26,7 +26,17 @@ pub async fn serve(data_dir: &Path, options: &ServeOptions) -> Result<()> {
     if options.mcp_stdio {
         crate::mcp::run_stdio(config).await
     } else {
-        crate::mcp::run_http(config).await
+        #[cfg(feature = "http")]
+        {
+            crate::mcp::run_http(config).await
+        }
+        #[cfg(not(feature = "http"))]
+        {
+            let _ = config;
+            Err(crate::Error::InvalidOperation(
+                "HTTP server requires the 'http' feature. Build with `cargo build --features http` or use --mcp-stdio.".to_string(),
+            ))
+        }
     }
 }
 
