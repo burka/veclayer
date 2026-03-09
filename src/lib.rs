@@ -85,6 +85,17 @@ pub fn default_data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".veclayer"))
 }
 
+/// Returns the platform cache directory for VecLayer.
+///
+/// Returns `~/.cache/veclayer` on Linux, `~/Library/Caches/veclayer` on macOS,
+/// `AppData\Local\veclayer\cache` on Windows. Falls back to `.veclayer/cache` if
+/// platform directories cannot be determined.
+pub fn default_cache_dir() -> PathBuf {
+    directories::ProjectDirs::from("", "", "veclayer")
+        .map(|dirs| dirs.cache_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from(".veclayer").join("cache"))
+}
+
 pub use blob_store::BlobStore;
 pub use chunk::{
     content_hash, relation, short_id, visibility, AccessProfile, ChunkLevel, ChunkRelation,

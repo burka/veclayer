@@ -3,6 +3,11 @@ use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use super::Embedder;
 use crate::{Error, Result};
 
+/// Returns the fastembed model cache directory inside VecLayer's cache path.
+fn fastembed_cache_dir() -> std::path::PathBuf {
+    crate::default_cache_dir().join("fastembed")
+}
+
 /// FastEmbed-based embedder using local ONNX models.
 /// Runs entirely on CPU, no external API required.
 pub struct FastEmbedder {
@@ -22,7 +27,8 @@ impl FastEmbedder {
         let model_name = format!("{:?}", model_type);
         let dimension = Self::get_dimension(&model_type);
 
-        let model = TextEmbedding::try_new(InitOptions::new(model_type))
+        let options = InitOptions::new(model_type).with_cache_dir(fastembed_cache_dir());
+        let model = TextEmbedding::try_new(options)
             .map_err(|e| Error::embedding(format!("Failed to initialize FastEmbed: {}", e)))?;
 
         Ok(Self {

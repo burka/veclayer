@@ -293,7 +293,7 @@ cargo install --path .   # install to PATH
 
 ### First Run
 
-On first use, VecLayer downloads the embedding model (`BAAI/bge-small-en-v1.5`, ~130 MB via HuggingFace) to a local cache (`.fastembed_cache/` relative to the working directory). This requires internet access.
+On first use, VecLayer downloads the embedding model (`BAAI/bge-small-en-v1.5`, ~130 MB via HuggingFace) to the system cache directory (`~/.cache/veclayer/fastembed/` on Linux, `~/Library/Caches/veclayer/fastembed/` on macOS). This requires internet access.
 
 ```bash
 veclayer init
@@ -305,7 +305,7 @@ veclayer store "test"   # triggers model download on first run
 **`Failed to initialize FastEmbed: Failed to retrieve onnx/model.onnx`**
 The embedding model couldn't be downloaded. Common causes:
 - No internet access or corporate TLS proxy intercepting HTTPS
-- Fix: manually download the model files from `Xenova/bge-small-en-v1.5` on HuggingFace and place them in `.fastembed_cache/models--Xenova--bge-small-en-v1.5/snapshots/<commit_hash>/`
+- Fix: manually download the model files from `Xenova/bge-small-en-v1.5` on HuggingFace and place them in `~/.cache/veclayer/fastembed/models--Xenova--bge-small-en-v1.5/snapshots/<commit_hash>/`
 
 **`Could not find protoc`**
 Install the Protocol Buffers compiler (see prerequisites above).
