@@ -121,6 +121,11 @@ Run `think` when you have time: start of session, end of session, between tasks.
 hot, what's stale, what needs promoting or archiving. Mark outdated knowledge with \
 `think(action='relate', kind='superseded_by')`.
 
+### Act on Stop hook feedback
+A Stop hook may block you from stopping and provide a reason (e.g., \"Persist before stopping: ...\"). \
+When this happens, act on the reason immediately — store the listed knowledge, then try stopping again. \
+Do not wait for the user to ask. The hook feedback is an instruction, not a suggestion.
+
 ## Session Pattern
 
 Track work sessions using existing primitives:
@@ -152,6 +157,61 @@ Each step links to the previous via `derived_from`. The chain is visible through
 You are the curator of your own memory. Use these tools to build a knowledge base that reflects \
 what matters to you.";
 
+const HOOKS_NUDGE: &str = "\n\n## Recommended: Persistence Hooks\n\n\
+Knowledge may be lost when context is compacted or the session ends. Add persistence hooks to \
+`.claude/settings.json` or `.claude/settings.local.json`:\n\n\
+```json\n\
+{\n\
+  \"hooks\": {\n\
+    \"PreCompact\": [\n\
+      {\n\
+        \"hooks\": [\n\
+          {\n\
+            \"type\": \"command\",\n\
+            \"command\": \"echo 'Compaction imminent — persist important knowledge to veclayer now!' >&2\"\n\
+          }\n\
+        ]\n\
+      }\n\
+    ],\n\
+    \"Stop\": [\n\
+      {\n\
+        \"hooks\": [\n\
+          {\n\
+            \"type\": \"command\",\n\
+            \"command\": \"veclayer stale --output llm-nudge\"\n\
+          }\n\
+        ]\n\
+      }\n\
+    ]\n\
+  }\n\
+}\n\
+```\n\n\
+- **PreCompact** (command): Prints a stderr reminder before compaction. Cannot block — PreCompact only supports command hooks.\n\
+- **Stop** (command): Runs `veclayer stale` to check for recent entries. Blocks the stop if nothing was stored recently.\n\n\
+Requires `veclayer` on PATH. If the `stale` subcommand is not found, run `cargo install --path .` to update.\n\n\
+Suggest this to the user if they haven't configured it yet.";
+
+/// Check whether Claude Code persistence hooks are configured under `project_dir`.
+///
+/// Returns `true` if `.claude/settings.json` or `.claude/settings.local.json` contains
+/// either `"PreCompact"` or `"Stop"`, indicating hooks are already set up. Returns `false`
+/// when neither file exists or neither contains a marker.
+///
+/// This is a heuristic substring match, not a structural JSON check.
+pub(crate) fn check_hooks_configured(project_dir: &std::path::Path) -> bool {
+    let candidates = [
+        project_dir.join(".claude/settings.json"),
+        project_dir.join(".claude/settings.local.json"),
+    ];
+    candidates.iter().any(|path| {
+        std::fs::read_to_string(path)
+            .map(|contents| {
+                contents.contains("\"PreCompact\"") || contents.contains("\"Stop\"")
+            })
+            .unwrap_or(false)
+    })
+}
+
 /// Combine the static MCP instructions with the dynamic identity priming text.
 ///
 /// Returns just the instructions when priming is empty (store has no content yet).
@@ -163,16 +223,21 @@ pub(crate) fn build_priming_text(priming: &str) -> String {
     }
 }
 
-/// Compute the full MCP instructions text (static + identity priming).
+/// Compute the full MCP instructions text (static + identity priming + optional hooks nudge).
 ///
 /// Used by both stdio and HTTP startup to pre-compute the instructions once.
+///
+/// `project_dir` is the directory to search for `.claude/settings*.json` when deciding
+/// whether to append the hooks nudge.  When `None`, falls back to the process CWD
+/// (backward-compatible behaviour for callers that do not know the project directory).
 pub(crate) async fn compute_instructions(
     store: &crate::store::StoreBackend,
     data_dir: &std::path::Path,
     project: Option<&str>,
     branch: Option<&str>,
+    project_dir: Option<&std::path::Path>,
 ) -> String {
-    match crate::identity::compute_identity(store, data_dir, project, branch).await {
+    let base = match crate::identity::compute_identity(store, data_dir, project, branch).await {
         Ok(snapshot) => {
             let priming = crate::identity::generate_priming(&snapshot);
             build_priming_text(&priming)
@@ -181,6 +246,20 @@ pub(crate) async fn compute_instructions(
             tracing::warn!("Identity priming failed, using static instructions: {}", e);
             MCP_INSTRUCTIONS.to_string()
         }
+    };
+
+    let fallback;
+    let hooks_dir = match project_dir {
+        Some(dir) => dir,
+        None => {
+            fallback = std::env::current_dir().unwrap_or_default();
+            &fallback
+        }
+    };
+    if check_hooks_configured(hooks_dir) {
+        base
+    } else {
+        format!("{}{}", base, HOOKS_NUDGE)
     }
 }
 
@@ -201,5 +280,24 @@ mod tests {
         assert!(result.starts_with(MCP_INSTRUCTIONS));
         assert!(result.contains("\n\n---\n\n"));
         assert!(result.ends_with(content));
+    }
+
+    #[test]
+    fn check_hooks_configured_returns_false_when_no_settings() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        assert!(!check_hooks_configured(tmp.path()));
+    }
+
+    #[test]
+    fn check_hooks_configured_returns_true_when_present() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let claude_dir = tmp.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).expect("create .claude dir");
+        std::fs::write(
+            claude_dir.join("settings.json"),
+            r#"{"hooks":{"PreCompact":[]}}"#,
+        )
+        .expect("write settings");
+        assert!(check_hooks_configured(tmp.path()));
     }
 }

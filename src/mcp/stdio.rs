@@ -40,6 +40,7 @@ pub async fn run_stdio(config: Config) -> Result<()> {
         &config.data_dir,
         config.project.as_deref(),
         config.branch.as_deref(),
+        None,
     )
     .await;
 

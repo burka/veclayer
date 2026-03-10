@@ -4,5 +4,27 @@
       "command": "veclayer",
       "args": ["serve", "--mcp-stdio"]
     }
+  },
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Compaction imminent — persist important knowledge to veclayer now!' >&2"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "veclayer stale --output llm-nudge"
+          }
+        ]
+      }
+    ]
   }
 }

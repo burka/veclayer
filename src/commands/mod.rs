@@ -323,7 +323,7 @@ pub use reflect::{compact, reflect, CompactAction};
 pub use search::{browse, focus, search, search_results};
 pub use serve::serve;
 pub use store_ops::{
-    archive, history, init, orientation, print_sources, show_config, sources, stats, status,
+    archive, history, init, orientation, print_sources, show_config, sources, stale, stats, status,
 };
 #[cfg(feature = "llm")]
 pub use think::think;

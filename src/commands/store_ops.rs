@@ -156,6 +156,95 @@ pub async fn stats(data_dir: &Path) -> Result<StatsResult> {
     })
 }
 
+/// Check whether any knowledge was stored recently.
+///
+/// `since` is a duration string (e.g. "15min", "1h") parsed by `parse_temporal`.
+/// `output` controls the output mode: "text" (human-readable) or "llm-nudge"
+/// (machine-friendly, returns exit code 2 when stale).
+pub async fn stale(data_dir: &Path, since: &str, output: &str) -> Result<i32> {
+    // Allow opt-out via VECLAYER_STALE=off (e.g. in project .claude/settings.json env block)
+    if std::env::var("VECLAYER_STALE").ok().as_deref() == Some("off") {
+        return Ok(0);
+    }
+
+    let threshold_epoch = crate::resolve::parse_temporal(since).ok_or_else(|| {
+        crate::Error::InvalidOperation(format!("Invalid duration: {since}"))
+    })?;
+
+    let store = StoreBackend::open_metadata(data_dir, true).await?;
+    // list_entries returns newest-first; one entry is enough to check freshness.
+    let recent = store.list_entries(None, None, None, 1).await?;
+
+    let now = crate::chunk::now_epoch_secs();
+
+    let exit_code = match recent.first() {
+        None => print_stale_result(output, None, now),
+        Some(chunk) => {
+            let created_at = chunk.access_profile.created_at;
+            let is_fresh = created_at >= threshold_epoch;
+            print_stale_result(output, Some((created_at, is_fresh)), now)
+        }
+    };
+    Ok(exit_code)
+}
+
+fn print_stale_result(output: &str, entry: Option<(i64, bool)>, now: i64) -> i32 {
+    match output {
+        "llm-nudge" => print_llm_nudge(entry, now),
+        _ => {
+            print_text(entry, now);
+            0
+        }
+    }
+}
+
+fn minutes_ago(created_at: i64, now: i64) -> i64 {
+    (now - created_at).max(0) / 60
+}
+
+fn print_text(entry: Option<(i64, bool)>, now: i64) {
+    match entry {
+        None => println!("Memory is stale. No entries in store."),
+        Some((created_at, true)) => {
+            println!(
+                "Memory is fresh. Last store was {} minutes ago.",
+                minutes_ago(created_at, now)
+            );
+        }
+        Some((created_at, false)) => {
+            println!(
+                "Memory is stale. Last store was {} minutes ago.",
+                minutes_ago(created_at, now)
+            );
+        }
+    }
+}
+
+fn print_llm_nudge(entry: Option<(i64, bool)>, now: i64) -> i32 {
+    match entry {
+        Some((created_at, true)) => {
+            let m = minutes_ago(created_at, now);
+            eprintln!("Memory fresh ({m}min ago). OK to stop.");
+            0
+        }
+        Some((created_at, false)) => {
+            let m = minutes_ago(created_at, now);
+            eprintln!("Last store was {m} minutes ago. Before stopping:");
+            eprintln!("- Store decisions, learnings, conventions, or bugs found this session (e.g. \"Switched to X because Y — 2x faster, same recall\").");
+            eprintln!("- Run `think` to curate memory if needed.");
+            eprintln!("- Then stop again.");
+            2
+        }
+        None => {
+            eprintln!("No entries in store. Before stopping:");
+            eprintln!("- Store decisions, learnings, conventions, or bugs found this session (e.g. \"Switched to X because Y — 2x faster, same recall\").");
+            eprintln!("- Run `think` to curate memory if needed.");
+            eprintln!("- Then stop again.");
+            2
+        }
+    }
+}
+
 /// List all indexed source files (returns data).
 pub async fn sources(data_dir: &Path) -> Result<Vec<String>> {
     let store = StoreBackend::open_metadata(data_dir, true).await?;

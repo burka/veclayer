@@ -11,7 +11,7 @@ use veclayer::commands::{auth_login, auth_status, auth_token, identity_init, ide
 use veclayer::commands::{
     add, archive, browse, compact, export_entries, focus, history, import_entries, init, merge,
     orientation, perspective_add, perspective_list, perspective_remove, print_sources,
-    rebuild_index, reflect, search, serve, show_config, status, think_aging_apply,
+    rebuild_index, reflect, search, serve, show_config, stale, status, think_aging_apply,
     think_aging_configure, think_demote, think_discover, think_promote, think_relate, AddOptions,
     CompactAction, CompactOptions, ExportOptions, FocusOptions, ImportOptions, MergeOptions,
     SearchOptions, ServeOptions,
@@ -258,6 +258,14 @@ enum Commands {
 
     /// Show store statistics
     Status,
+
+    /// Check if memory has been stored recently (set VECLAYER_STALE=off to disable)
+    Stale {
+        #[arg(long, default_value = "15min", help = "Staleness window (e.g. 15min, 1h, 1d)")]
+        since: String,
+        #[arg(long, default_value = "text", help = "Output mode: text or llm-nudge")]
+        output: String,
+    },
 
     /// List all indexed source files
     Sources,
@@ -796,6 +804,16 @@ async fn main() -> Result<()> {
         }
         Commands::Status => {
             status(&data_dir).await?;
+        }
+        Commands::Stale { since, output } => {
+            if using_global_store_fallback {
+                // No project store — nothing to check, allow stop.
+                return Ok(());
+            }
+            let exit_code = stale(&data_dir, &since, &output).await?;
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
         }
         Commands::Sources => {
             print_sources(&data_dir).await?;

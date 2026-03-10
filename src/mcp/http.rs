@@ -175,6 +175,7 @@ pub fn build_app(state: AppState) -> Router {
                     &mcp_state.data_dir,
                     mcp_state.project.as_deref(),
                     mcp_state.branch.as_deref(),
+                    None,
                 ))
             });
             Ok(McpHandler::new(

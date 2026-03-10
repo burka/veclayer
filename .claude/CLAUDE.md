@@ -19,6 +19,11 @@ You have persistent memory via the **veclayer** MCP server. Use it.
 - `store` a brief summary of what was accomplished and what's next.
 - Run `think` to review hot/stale knowledge and curate if needed.
 
+## Hook Feedback
+- A **Stop hook** may block you from stopping and provide a reason (e.g., "Persist before stopping: ...").
+- When this happens, **act on the reason immediately** — store the listed knowledge, then stop again.
+- Do not wait for the user to ask. The hook feedback is an instruction, not a suggestion.
+
 ## Rules
 - Do not ask permission to recall or store — just do it.
 - Keep stored content concise and high-signal. No filler.
