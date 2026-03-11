@@ -814,7 +814,8 @@ async fn main() -> Result<()> {
                 // No project store — nothing to check, allow stop.
                 return Ok(());
             }
-            let exit_code = stale(&data_dir, &since, &output).await?;
+            let hooks_enabled = veclayer::config::Config::new().hooks_enabled;
+            let exit_code = stale(&data_dir, &since, &output, hooks_enabled).await?;
             if exit_code != 0 {
                 std::process::exit(exit_code);
             }

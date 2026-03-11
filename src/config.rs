@@ -78,6 +78,10 @@ pub struct Config {
 
     /// Push mode for git storage (parsed from project/user config string)
     pub push_mode: crate::git::branch_config::PushMode,
+
+    /// Whether hooks (e.g. the `stale` stop hook) are enabled (default: true).
+    /// Set to false to disable the Claude Code stop hook without env vars.
+    pub hooks_enabled: bool,
 }
 
 /// Authentication configuration.
@@ -135,6 +139,7 @@ struct FileConfig {
     host: Option<String>,
     port: Option<u16>,
     read_only: Option<bool>,
+    hooks_enabled: Option<bool>,
     search_top_k: Option<usize>,
     search_children_k: Option<usize>,
     embedder: Option<FileEmbedderConfig>,
@@ -564,6 +569,10 @@ impl Config {
             .or(file.read_only)
             .unwrap_or(false);
 
+        let hooks_enabled = env_bool("VECLAYER_HOOKS_ENABLED")
+            .or(file.hooks_enabled)
+            .unwrap_or(true);
+
         let search_top_k = env_parse("VECLAYER_SEARCH_TOP_K")
             .or(file.search_top_k)
             .unwrap_or(DEFAULT_SEARCH_TOP_K);
@@ -582,6 +591,7 @@ impl Config {
             llm,
             auth,
             read_only,
+            hooks_enabled,
             port,
             host,
             search_top_k,

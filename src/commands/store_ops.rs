@@ -161,7 +161,12 @@ pub async fn stats(data_dir: &Path) -> Result<StatsResult> {
 /// `since` is a duration string (e.g. "15min", "1h") parsed by `parse_temporal`.
 /// `output` controls the output mode: "text" (human-readable) or "llm-nudge"
 /// (machine-friendly, returns exit code 2 when stale).
-pub async fn stale(data_dir: &Path, since: &str, output: &str) -> Result<i32> {
+/// `hooks_enabled` mirrors the `hooks_enabled` config field — when `false`, exits 0 silently.
+pub async fn stale(data_dir: &Path, since: &str, output: &str, hooks_enabled: bool) -> Result<i32> {
+    // Config-level opt-out (veclayer.toml: hooks_enabled = false, or VECLAYER_HOOKS_ENABLED=false)
+    if !hooks_enabled {
+        return Ok(0);
+    }
     // Allow opt-out via VECLAYER_STALE=off (e.g. in project .claude/settings.json env block)
     if std::env::var("VECLAYER_STALE").ok().as_deref() == Some("off") {
         return Ok(0);
