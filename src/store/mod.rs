@@ -8,6 +8,7 @@ mod lancedb_impl;
 pub(crate) mod lock;
 
 pub(crate) use lancedb_impl::LanceStore;
+#[cfg(feature = "cli")]
 pub(crate) use lancedb_impl::TABLE_NAME;
 pub(crate) use lock::FileLock;
 

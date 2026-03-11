@@ -18,13 +18,19 @@
 //!
 //! ## Feature Flags
 //!
-//! - `llm` (default): Enables LLM-powered summarization and clustering
-//! - `http` (default): Enables HTTP REST API, Streamable HTTP MCP transport, and OAuth
-//! - `auth` (default): Enables cryptographic identity (Ed25519), JWT tokens, and keystore
+//! - `cli`: Enables the CLI binary, implies `mcp` and `embedding-local`
+//! - `mcp`: Enables the MCP server module
+//! - `embedding-local`: Enables local embedding via FastEmbed (ONNX)
+//! - `llm`: Enables LLM-powered summarization and clustering
+//! - `http`: Enables HTTP REST API, Streamable HTTP MCP transport, and OAuth; implies `auth` and `mcp`
+//! - `auth`: Enables cryptographic identity (Ed25519), JWT tokens, and keystore
 //! - `sync`: Enables cross-store synchronization
+//! - `full`: Enables `cli`, `llm`, `http`, and `auth`
 //!
+//! Without `mcp`, the MCP server module is unavailable.
 //! Without `http`, only the stdio MCP transport is available — no network listener.
 //! Without `auth`, identity/token CLI commands are unavailable.
+//! Without `embedding-local`, only the Ollama embedder (requires `llm`) is available.
 
 #![recursion_limit = "256"]
 
@@ -38,6 +44,7 @@ pub mod chunk;
 #[cfg(feature = "llm")]
 #[doc(hidden)]
 pub mod cluster;
+#[cfg(feature = "cli")]
 #[doc(hidden)]
 pub mod commands;
 pub mod config;
@@ -53,6 +60,7 @@ pub mod identity;
 #[doc(hidden)]
 pub mod llm;
 pub(crate) mod macros;
+#[cfg(feature = "mcp")]
 #[doc(hidden)]
 pub mod mcp;
 pub mod parser;
@@ -105,6 +113,8 @@ pub use chunk::{
 pub use cluster::{ClusterPipeline, SoftClusterer};
 pub use config::Config;
 pub use embedder::Embedder;
+#[cfg(feature = "embedding-local")]
+pub use embedder::FastEmbedder;
 pub use entry::{EmbeddingCache, Entry, StoredBlob};
 pub use error::{Error, Result};
 #[cfg(feature = "llm")]

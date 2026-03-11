@@ -432,7 +432,7 @@ impl LanceStore {
             if current_schema
                 .metadata()
                 .get("veclayer::schema_fingerprint")
-                .map_or(false, |f| f == &fingerprint)
+                .is_some_and(|f| f == &fingerprint)
             {
                 return Ok(());
             }

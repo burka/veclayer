@@ -14,30 +14,34 @@ exclude = [".claude/", ".mcp.json", "opencode.json"]
 rust-version = "1.91"
 
 [features]
-default = ["llm", "http", "auth"]
+default = []
+cli = ["mcp", "embedding-local", "dep:clap", "dep:owo-colors", "dep:tracing-subscriber"]
+mcp = ["dep:rmcp", "dep:schemars"]
+embedding-local = ["dep:fastembed"]
 llm = ["dep:reqwest", "dep:linfa", "dep:linfa-clustering", "dep:ndarray"]
-http = ["auth", "dep:axum", "dep:tower", "dep:tower-http", "rmcp/transport-streamable-http-server"]
+http = ["auth", "mcp", "dep:axum", "dep:tower", "dep:tower-http", "rmcp/transport-streamable-http-server"]
 auth = ["dep:ed25519-dalek", "dep:jsonwebtoken", "dep:aes-gcm", "dep:argon2", "dep:rpassword", "dep:uuid", "dep:zeroize", "dep:bs58", "dep:base64", "dep:percent-encoding", "dep:rand"]
 sync = []
+full = ["cli", "llm", "http", "auth"]
 
 [dependencies]
-# CLI
-clap = { version = "4", features = ["derive", "env"] }
+# CLI (gated behind "cli" feature)
+clap = { version = "4", features = ["derive", "env"], optional = true }
 
 # Vector DB
 lancedb = "0.21"
 arrow-array = "55"
 arrow-schema = "55"
 
-# Embeddings
-fastembed = { version = "4", default-features = false, features = ["ort-download-binaries", "hf-hub-rustls-tls"] }
+# Embeddings (gated behind "embedding-local" feature)
+fastembed = { version = "4", default-features = false, features = ["ort-download-binaries", "hf-hub-rustls-tls"], optional = true }
 
 # Markdown parsing
 pulldown-cmark = "0.13"
 
-# MCP Server (rmcp — official Rust MCP SDK)
+# MCP Server (rmcp — official Rust MCP SDK, gated behind "mcp" feature)
 # transport-io is always available; transport-streamable-http-server requires the "http" feature
-rmcp = { version = "1.1", features = ["server", "macros", "transport-io", "schemars"] }
+rmcp = { version = "1.1", features = ["server", "macros", "transport-io"], optional = true }
 
 # Web server (gated behind "http" feature)
 axum = { version = "0.8", optional = true }
@@ -59,7 +63,7 @@ thiserror = "2"
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
 # Content-hash IDs
 sha2 = "0.10"
@@ -89,7 +93,7 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 # Utilities
 walkdir = "2"
 strsim = "0.11"
-schemars = "1"
+schemars = { version = "1", features = ["chrono04"], optional = true }
 fs2 = "0.4"
 directories = "6"
 glob = "0.3"
@@ -101,8 +105,13 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 linfa = { version = "0.7", optional = true }
 linfa-clustering = { version = "0.7", optional = true }
 ndarray = { version = "0.15", optional = true }
-owo-colors = { version = "4.2.3", features = ["supports-colors"] }
+owo-colors = { version = "4.2.3", features = ["supports-colors"], optional = true }
 serde_yml = "0.0.12"
+
+[[bin]]
+name = "veclayer"
+path = "src/main.rs"
+required-features = ["cli"]
 
 [dev-dependencies]
 tempfile = "3"

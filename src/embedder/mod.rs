@@ -6,10 +6,12 @@
 //! external HTTP embedding services (Ollama, TEI, OpenAI-compatible).
 //! All implementations must be `Send + Sync` for concurrent use across async tasks.
 
+#[cfg(feature = "embedding-local")]
 mod fastembed_impl;
 #[cfg(feature = "llm")]
 mod ollama_impl;
 
+#[cfg(feature = "embedding-local")]
 pub use fastembed_impl::FastEmbedder;
 #[cfg(feature = "llm")]
 pub use ollama_impl::OllamaEmbedder;
@@ -55,6 +57,7 @@ impl<T: Embedder + ?Sized> Embedder for Box<T> {
 /// Create an embedder from configuration.
 pub fn from_config(config: &EmbedderConfig) -> Result<Box<dyn Embedder + Send + Sync>> {
     match config {
+        #[cfg(feature = "embedding-local")]
         EmbedderConfig::FastEmbed { model } => {
             // Try parsing the model name; fall back to the default model if unrecognised.
             // This preserves backward compatibility with config values like "BAAI/bge-small-en-v1.5"
@@ -71,6 +74,10 @@ pub fn from_config(config: &EmbedderConfig) -> Result<Box<dyn Embedder + Send + 
             };
             Ok(Box::new(embedder))
         }
+        #[cfg(not(feature = "embedding-local"))]
+        EmbedderConfig::FastEmbed { .. } => Err(crate::Error::config(
+            "FastEmbed embedder requires the 'embedding-local' feature flag",
+        )),
         #[cfg(feature = "llm")]
         EmbedderConfig::Ollama {
             model,

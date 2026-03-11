@@ -43,7 +43,7 @@ async fn add_files(
     git_store: Option<&crate::git::memory_store::MemoryStore>,
 ) -> Result<AddResult> {
     debug!("Opening store at {:?}...", data_dir);
-    let (config, embedder, store, blob_store) = super::open_store(data_dir).await?;
+    let (_config, embedder, store, blob_store) = super::open_store(data_dir).await?;
 
     let parser = MarkdownParser::new();
 
@@ -121,7 +121,7 @@ async fn add_files(
             options.model
         );
 
-        let summary_embedder = crate::embedder::from_config(&config.embedder)?;
+        let summary_embedder = crate::embedder::from_config(&_config.embedder)?;
         let summarizer = OllamaSummarizer::new().with_model(&options.model);
 
         let pipeline = ClusterPipeline::with_summarizer(summary_embedder, summarizer)
