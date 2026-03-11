@@ -30,7 +30,7 @@ arrow-array = "55"
 arrow-schema = "55"
 
 # Embeddings
-fastembed = "4"
+fastembed = { version = "4", default-features = false, features = ["ort-download-binaries", "hf-hub-rustls-tls"] }
 
 # Markdown parsing
 pulldown-cmark = "0.13"
@@ -97,7 +97,7 @@ regex = "1"
 shellexpand = "3"
 
 # LLM-dependent (gated behind "llm" feature)
-reqwest = { version = "0.12", features = ["json"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 linfa = { version = "0.7", optional = true }
 linfa-clustering = { version = "0.7", optional = true }
 ndarray = { version = "0.15", optional = true }
@@ -107,4 +107,4 @@ serde_yml = "0.0.12"
 [dev-dependencies]
 tempfile = "3"
 serial_test = "3"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
