@@ -53,6 +53,7 @@ pub mod crypto;
 pub mod embedder;
 pub mod entry;
 pub mod error;
+pub mod facade;
 #[doc(hidden)]
 pub mod git;
 pub mod identity;
@@ -117,6 +118,7 @@ pub use embedder::Embedder;
 pub use embedder::FastEmbedder;
 pub use entry::{EmbeddingCache, Entry, StoredBlob};
 pub use error::{Error, Result};
+pub use facade::{FocusResult, StoreOptions, VecLayer};
 #[cfg(feature = "llm")]
 pub use llm::{LlmBackend, LlmProvider};
 pub use parser::DocumentParser;
