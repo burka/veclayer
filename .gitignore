@@ -4,5 +4,6 @@
 /.fastembed_cache
 /.gitmessage.txt
 .serena/
+.claude/settings.local.json
 *.rlib
 veclayer.toml

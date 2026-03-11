@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__veclayer__*"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "veclayer"
+  ],
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Compaction imminent — persist important knowledge to veclayer now!' >&2"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "veclayer stale --output llm-nudge"
+          }
+        ]
+      }
+    ]
+  }
+}
