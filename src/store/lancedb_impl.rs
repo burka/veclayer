@@ -71,6 +71,15 @@ fn eq_filter(column: &str, value: &str) -> String {
     format!("{} = '{}'", column, sql_escape(value))
 }
 
+fn is_commit_conflict(e: &lancedb::Error) -> bool {
+    // LanceDB wraps lance errors as "lance error: Commit conflict for version N: ..."
+    // or "lance error: Retryable commit conflict for version N: ...".
+    // Match case-insensitively to catch both variants.
+    e.to_string()
+        .to_ascii_lowercase()
+        .contains("commit conflict")
+}
+
 fn starts_with_filter(column: &str, prefix: &str) -> String {
     format!(
         "{} >= '{}' AND {} < '{}'",
@@ -193,6 +202,42 @@ impl LanceStore {
         };
 
         f().await
+    }
+
+    /// Retry a LanceDB write operation on commit conflict.
+    ///
+    /// LanceDB uses optimistic concurrency — concurrent UpdateConfig transactions
+    /// can conflict. This reopens the table on each retry to get a fresh view of
+    /// the latest committed version, then retries with short backoff.
+    async fn retry_on_conflict<F, Fut>(&self, op_name: &str, f: F) -> Result<()>
+    where
+        F: Fn(Table) -> Fut,
+        Fut: std::future::Future<
+            Output = std::result::Result<lancedb::table::UpdateResult, lancedb::Error>,
+        >,
+    {
+        let max_attempts = 5; // up to 4 retries: 10ms, 20ms, 40ms, 80ms ≈ 150ms total
+        let mut delay = tokio::time::Duration::from_millis(10);
+
+        for attempt in 0..max_attempts {
+            let table = self.get_table().await?;
+            match f(table).await {
+                Ok(_) => return Ok(()),
+                Err(e) if attempt + 1 < max_attempts && is_commit_conflict(&e) => {
+                    tracing::debug!(
+                        "{op_name}: commit conflict (attempt {attempt}), retrying in {delay:?}"
+                    );
+                    tokio::time::sleep(delay).await;
+                    delay *= 2;
+                }
+                Err(e) => {
+                    return Err(Error::store(format!("Failed to {op_name}: {e}")));
+                }
+            }
+        }
+        Err(Error::store(format!(
+            "Failed to {op_name}: exhausted {max_attempts} attempts"
+        )))
     }
 
     fn schema(&self) -> Arc<Schema> {
@@ -372,9 +417,26 @@ impl LanceStore {
 
     /// Write schema fingerprint and build commit into Arrow schema metadata.
     /// Requires a native (local) LanceDB table — silently skips for remote connections.
+    /// Skips the write entirely when the fingerprint is already current (avoids
+    /// UpdateConfig conflicts between concurrent processes).
     async fn stamp_version(table: &Table, schema: &Schema) -> Result<()> {
         if let Some(native) = table.as_native() {
             let fingerprint = schema_fingerprint(schema);
+
+            // Skip if already stamped with the same fingerprint — avoids a
+            // replace_schema_metadata write that can conflict with concurrent opens.
+            let current_schema = table
+                .schema()
+                .await
+                .map_err(|e| Error::store(format!("Failed to read schema: {}", e)))?;
+            if current_schema
+                .metadata()
+                .get("veclayer::schema_fingerprint")
+                .map_or(false, |f| f == &fingerprint)
+            {
+                return Ok(());
+            }
+
             let commit_info = format!(
                 "{} ({})",
                 env!("VECLAYER_GIT_HASH"),
@@ -1012,24 +1074,27 @@ impl VectorStore for LanceStore {
         }
 
         self.with_write_lock(|| async {
-            let table = self.get_table().await?;
+            for (chunk_id, profile) in &updates {
+                let filter = eq_filter("id", chunk_id);
 
-            for (chunk_id, profile) in updates {
-                let filter = eq_filter("id", &chunk_id);
-
-                table
-                    .update()
-                    .column("last_rolled", profile.last_rolled.to_string())
-                    .column("access_hour", profile.hour.to_string())
-                    .column("access_day", profile.day.to_string())
-                    .column("access_week", profile.week.to_string())
-                    .column("access_month", profile.month.to_string())
-                    .column("access_year", profile.year.to_string())
-                    .column("access_total", profile.total.to_string())
-                    .only_if(filter)
-                    .execute()
-                    .await
-                    .map_err(|e| Error::store(format!("Failed to update access profile: {}", e)))?;
+                self.retry_on_conflict("update access profile", |table| {
+                    let filter = filter.clone();
+                    async move {
+                        table
+                            .update()
+                            .column("last_rolled", profile.last_rolled.to_string())
+                            .column("access_hour", profile.hour.to_string())
+                            .column("access_day", profile.day.to_string())
+                            .column("access_week", profile.week.to_string())
+                            .column("access_month", profile.month.to_string())
+                            .column("access_year", profile.year.to_string())
+                            .column("access_total", profile.total.to_string())
+                            .only_if(filter)
+                            .execute()
+                            .await
+                    }
+                })
+                .await?;
             }
 
             Ok(())
@@ -1039,16 +1104,20 @@ impl VectorStore for LanceStore {
 
     async fn update_visibility(&self, chunk_id: &str, visibility: &str) -> Result<()> {
         self.with_write_lock(|| async {
-            let table = self.get_table().await?;
             let filter = eq_filter("id", chunk_id);
 
-            table
-                .update()
-                .column("visibility", format!("'{}'", sql_escape(visibility)))
-                .only_if(filter)
-                .execute()
-                .await
-                .map_err(|e| Error::store(format!("Failed to update visibility: {}", e)))?;
+            self.retry_on_conflict("update visibility", |table| {
+                let filter = filter.clone();
+                async move {
+                    table
+                        .update()
+                        .column("visibility", format!("'{}'", sql_escape(visibility)))
+                        .only_if(filter)
+                        .execute()
+                        .await
+                }
+            })
+            .await?;
 
             Ok(())
         })
@@ -1068,16 +1137,21 @@ impl VectorStore for LanceStore {
             let relations_json = serde_json::to_string(&relations)
                 .map_err(|e| Error::store(format!("serialize relations: {}", e)))?;
 
-            let table = self.get_table().await?;
             let filter = eq_filter("id", chunk_id);
 
-            table
-                .update()
-                .column("relations", format!("'{}'", sql_escape(&relations_json)))
-                .only_if(filter)
-                .execute()
-                .await
-                .map_err(|e| Error::store(format!("Failed to add relation: {}", e)))?;
+            self.retry_on_conflict("add relation", |table| {
+                let filter = filter.clone();
+                let relations_json = relations_json.clone();
+                async move {
+                    table
+                        .update()
+                        .column("relations", format!("'{}'", sql_escape(&relations_json)))
+                        .only_if(filter)
+                        .execute()
+                        .await
+                }
+            })
+            .await?;
 
             Ok(())
         })
@@ -2641,6 +2715,368 @@ mod tests {
             .expect("get_by_id must not error")
             .expect("chunk written by store1 must be visible via store4");
         assert_eq!(retrieved.content, "Raced into existence");
+    }
+
+    // --- is_commit_conflict unit tests ---
+
+    #[test]
+    fn test_is_commit_conflict_exact_capitalized() {
+        // Matches the CommitConflict lance variant: "Commit conflict for version N"
+        // wrapped as "lance error: Commit conflict for version N: ..."
+        let e = lancedb::Error::Runtime {
+            message: "Commit conflict for version 42: details here".to_string(),
+        };
+        assert!(
+            is_commit_conflict(&e),
+            "CommitConflict-style message must match"
+        );
+    }
+
+    #[test]
+    fn test_is_commit_conflict_lowercase() {
+        // Matches the RetryableCommitConflict variant (lower-c in "commit")
+        let e = lancedb::Error::Runtime {
+            message: "commit conflict for version 7: retryable".to_string(),
+        };
+        assert!(
+            is_commit_conflict(&e),
+            "lowercase 'commit conflict' must match"
+        );
+    }
+
+    #[test]
+    fn test_is_commit_conflict_retryable_prefix() {
+        // The full retryable message starts with "Retryable commit conflict"
+        let e = lancedb::Error::Runtime {
+            message: "Retryable commit conflict for version 3: source, loc".to_string(),
+        };
+        assert!(
+            is_commit_conflict(&e),
+            "'Retryable commit conflict' must match"
+        );
+    }
+
+    #[test]
+    fn test_is_commit_conflict_other_variant() {
+        // lancedb::Error::Other displays as the raw message — verify it also works
+        let e = lancedb::Error::Other {
+            message: "lance error: Commit conflict for version 1: something".to_string(),
+            source: None,
+        };
+        assert!(
+            is_commit_conflict(&e),
+            "Other variant with 'commit conflict' in message must match"
+        );
+    }
+
+    #[test]
+    fn test_is_commit_conflict_unrelated_error() {
+        let e = lancedb::Error::Runtime {
+            message: "some unrelated I/O failure".to_string(),
+        };
+        assert!(!is_commit_conflict(&e), "Unrelated error must not match");
+    }
+
+    #[test]
+    fn test_is_commit_conflict_empty_message() {
+        let e = lancedb::Error::Runtime {
+            message: String::new(),
+        };
+        assert!(!is_commit_conflict(&e), "Empty message must not match");
+    }
+
+    #[test]
+    fn test_is_commit_conflict_partial_word_no_match() {
+        // "commitment" contains "commit" but not "commit conflict"
+        let e = lancedb::Error::Runtime {
+            message: "commitment to version control".to_string(),
+        };
+        assert!(!is_commit_conflict(&e), "'commitment' alone must not match");
+    }
+
+    #[test]
+    fn test_is_commit_conflict_mixed_case() {
+        // Case-insensitive check: "COMMIT CONFLICT" must match
+        let e = lancedb::Error::Runtime {
+            message: "COMMIT CONFLICT for version 10".to_string(),
+        };
+        assert!(
+            is_commit_conflict(&e),
+            "All-caps 'COMMIT CONFLICT' must match (case-insensitive)"
+        );
+    }
+
+    // --- retry_on_conflict / public-API integration tests ---
+
+    /// `update_access_profiles` with an empty slice returns Ok immediately —
+    /// no table access is attempted.
+    #[tokio::test]
+    async fn test_update_access_profiles_empty_returns_ok() {
+        let (store, _temp) = create_test_store().await;
+        let result = store.update_access_profiles(vec![]).await;
+        assert!(result.is_ok(), "empty update must return Ok");
+    }
+
+    /// `update_visibility` on a nonexistent chunk ID returns Ok — LanceDB
+    /// silently updates zero rows and that is not an error.
+    #[tokio::test]
+    async fn test_update_visibility_nonexistent_id_is_ok() {
+        let (store, _temp) = create_test_store().await;
+        let result = store
+            .update_visibility("no-such-id-000000000000000000000000000000", "always")
+            .await;
+        assert!(
+            result.is_ok(),
+            "update on nonexistent chunk must not error: {:?}",
+            result
+        );
+    }
+
+    /// Normal `update_access_profiles` call on existing data succeeds on the
+    /// first attempt (green path through `retry_on_conflict`).
+    #[tokio::test]
+    async fn test_update_access_profiles_green_path() {
+        let (store, _temp) = create_test_store().await;
+        let chunk = create_test_chunk("uap-green-1", "Green path", ChunkLevel::H1);
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let before = store.get_by_id("uap-green-1").await.unwrap().unwrap();
+        let mut profile = before.access_profile.clone();
+        profile.total = 7;
+        profile.hour = 2;
+
+        store
+            .update_access_profiles(vec![("uap-green-1".to_string(), profile)])
+            .await
+            .expect("update_access_profiles must succeed");
+
+        let after = store.get_by_id("uap-green-1").await.unwrap().unwrap();
+        assert_eq!(after.access_profile.total, 7);
+        assert_eq!(after.access_profile.hour, 2);
+    }
+
+    /// Normal `update_visibility` succeeds on first attempt.
+    #[tokio::test]
+    async fn test_update_visibility_green_path() {
+        let (store, _temp) = create_test_store().await;
+        let chunk = create_test_chunk("uv-green-1", "Visibility green path", ChunkLevel::H1);
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        store
+            .update_visibility("uv-green-1", "deep_only")
+            .await
+            .expect("update_visibility must succeed");
+
+        let after = store.get_by_id("uv-green-1").await.unwrap().unwrap();
+        assert_eq!(after.visibility, "deep_only");
+    }
+
+    /// Normal `add_relation` succeeds on first attempt.
+    #[tokio::test]
+    async fn test_add_relation_green_path() {
+        let (store, _temp) = create_test_store().await;
+        let chunk = create_test_chunk("ar-green-1", "Relation green path", ChunkLevel::H1);
+        let target = create_test_chunk("ar-green-2", "Target", ChunkLevel::H1);
+        store.insert_chunks(vec![chunk, target]).await.unwrap();
+
+        store
+            .add_relation("ar-green-1", crate::ChunkRelation::related_to("ar-green-2"))
+            .await
+            .expect("add_relation must succeed");
+
+        let after = store.get_by_id("ar-green-1").await.unwrap().unwrap();
+        assert_eq!(after.relations.len(), 1);
+        assert_eq!(after.relations[0].target_id, "ar-green-2");
+    }
+
+    /// Spawn two tasks that each call `update_visibility` on the same chunk.
+    /// Both must succeed — `retry_on_conflict` handles any optimistic-concurrency
+    /// conflict that arises from the simultaneous writes.
+    #[tokio::test]
+    async fn test_concurrent_update_visibility_both_succeed() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().to_path_buf();
+
+        // Seed data with a single shared open
+        let seed = LanceStore::open(&path, 384, false).await.unwrap();
+        let chunk = create_test_chunk("conc-vis-1", "Concurrent visibility", ChunkLevel::H1);
+        seed.insert_chunks(vec![chunk]).await.unwrap();
+        drop(seed);
+
+        // Two independent stores writing to the same directory concurrently
+        let p1 = path.clone();
+        let p2 = path.clone();
+
+        let (r1, r2) = tokio::join!(
+            async move {
+                let s = LanceStore::open(&p1, 384, false).await.unwrap();
+                s.update_visibility("conc-vis-1", "always").await
+            },
+            async move {
+                let s = LanceStore::open(&p2, 384, false).await.unwrap();
+                s.update_visibility("conc-vis-1", "deep_only").await
+            }
+        );
+
+        assert!(r1.is_ok(), "concurrent update #1 must succeed: {:?}", r1);
+        assert!(r2.is_ok(), "concurrent update #2 must succeed: {:?}", r2);
+    }
+
+    /// Concurrent store + recall: one task writes new chunks while another
+    /// calls `stats()` repeatedly. Both must complete without errors.
+    #[tokio::test]
+    async fn test_concurrent_store_and_recall() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().to_path_buf();
+
+        // Create the table first
+        let seed = LanceStore::open(&path, 384, false).await.unwrap();
+        drop(seed);
+
+        let p_writer = path.clone();
+        let p_reader = path.clone();
+
+        let writer = tokio::spawn(async move {
+            let s = LanceStore::open(&p_writer, 384, false).await.unwrap();
+            for i in 0..5u8 {
+                let id = format!("conc-sr-{}", i);
+                let chunk = create_test_chunk(&id, "concurrent content", ChunkLevel::H1);
+                s.insert_chunks(vec![chunk]).await.unwrap();
+            }
+        });
+
+        let reader = tokio::spawn(async move {
+            let s = LanceStore::open(&p_reader, 384, false).await.unwrap();
+            for _ in 0..5 {
+                s.stats().await.unwrap();
+            }
+        });
+
+        writer.await.expect("writer task must not panic");
+        reader.await.expect("reader task must not panic");
+    }
+
+    // --- stamp_version skip / idempotent open tests ---
+
+    /// Opening the same store a second time must not cause a commit conflict.
+    /// The fingerprint check in `stamp_version` skips the `replace_schema_metadata`
+    /// write when the metadata is already current.
+    #[tokio::test]
+    async fn test_idempotent_open_no_conflict() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let store1 = LanceStore::open(temp_dir.path(), 384, false)
+            .await
+            .expect("first open must succeed");
+        drop(store1);
+
+        // Second open must succeed without any stamp_version write conflict
+        let store2 = LanceStore::open(temp_dir.path(), 384, false)
+            .await
+            .expect("second open must succeed without commit conflict");
+        drop(store2);
+
+        // Third open for good measure
+        LanceStore::open(temp_dir.path(), 384, false)
+            .await
+            .expect("third open must succeed");
+    }
+
+    /// After the first open stamps the fingerprint, the metadata key must be
+    /// present and unchanged after a second open (no duplicate write happened).
+    #[tokio::test]
+    async fn test_stamp_version_fingerprint_stable_across_opens() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let store1 = LanceStore::open(temp_dir.path(), 384, false).await.unwrap();
+        let table1 = store1.get_table().await.unwrap();
+        let fp_after_first = table1
+            .schema()
+            .await
+            .unwrap()
+            .metadata()
+            .get("veclayer::schema_fingerprint")
+            .cloned()
+            .expect("fingerprint must be set after first open");
+        // Record the table version after first open
+        let version_after_first = table1.version().await.unwrap();
+        drop(table1);
+        drop(store1);
+
+        let store2 = LanceStore::open(temp_dir.path(), 384, false).await.unwrap();
+        let table2 = store2.get_table().await.unwrap();
+        let fp_after_second = table2
+            .schema()
+            .await
+            .unwrap()
+            .metadata()
+            .get("veclayer::schema_fingerprint")
+            .cloned()
+            .expect("fingerprint must still be set after second open");
+        let version_after_second = table2.version().await.unwrap();
+
+        assert_eq!(
+            fp_after_first, fp_after_second,
+            "fingerprint must not change on second open"
+        );
+        assert_eq!(
+            version_after_first, version_after_second,
+            "table version must not advance on second open (stamp_version skipped the write)"
+        );
+    }
+
+    /// Four concurrent opens on the same fresh directory must all succeed.
+    /// This exercises the stamp_version skip path under contention — if the
+    /// skip were absent, concurrent `replace_schema_metadata` calls would
+    /// produce commit conflicts.
+    #[tokio::test]
+    async fn test_concurrent_opens_no_commit_conflict() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().to_path_buf();
+
+        // Warm the table (first open creates it and stamps the fingerprint)
+        LanceStore::open(&path, 384, false).await.unwrap();
+
+        // Now open four handles simultaneously — each runs stamp_version
+        // and must exit via the "fingerprint already current" early-return
+        // rather than attempting a conflicting write
+        let p1 = path.clone();
+        let p2 = path.clone();
+        let p3 = path.clone();
+        let p4 = path.clone();
+
+        let (r1, r2, r3, r4) = tokio::join!(
+            LanceStore::open(p1, 384, false),
+            LanceStore::open(p2, 384, false),
+            LanceStore::open(p3, 384, false),
+            LanceStore::open(p4, 384, false),
+        );
+
+        r1.expect("concurrent reopen #1 must succeed");
+        r2.expect("concurrent reopen #2 must succeed");
+        r3.expect("concurrent reopen #3 must succeed");
+        r4.expect("concurrent reopen #4 must succeed");
+    }
+
+    // --- Edge-case tests ---
+
+    /// `update_access_profiles` with a chunk ID that has no matching rows
+    /// returns Ok — LanceDB update with no rows matched is not an error.
+    #[tokio::test]
+    async fn test_update_access_profiles_nonexistent_id_is_ok() {
+        let (store, _temp) = create_test_store().await;
+        let profile = crate::AccessProfile::default();
+        let result = store
+            .update_access_profiles(vec![(
+                "nonexistent-chunk-id-000000000000".to_string(),
+                profile,
+            )])
+            .await;
+        assert!(
+            result.is_ok(),
+            "update_access_profiles on missing id must not error: {:?}",
+            result
+        );
     }
 
     // Verifies the per-write-operation locking design (issue #70).

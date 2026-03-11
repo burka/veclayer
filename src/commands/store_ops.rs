@@ -171,6 +171,23 @@ pub async fn stale(data_dir: &Path, since: &str, output: &str, hooks_enabled: bo
     if std::env::var("VECLAYER_STALE").ok().as_deref() == Some("off") {
         return Ok(0);
     }
+    // Deduplicate: if another stale check ran within the last 5 seconds for the
+    // same data_dir, skip silently. This prevents duplicate output when both global
+    // and project-level hooks invoke `veclayer stale`.
+    let marker = data_dir.join(".stale_check");
+    if let Ok(meta) = std::fs::metadata(&marker) {
+        if let Ok(modified) = meta.modified() {
+            if modified.elapsed().unwrap_or_default() < std::time::Duration::from_secs(5) {
+                return Ok(0);
+            }
+        }
+    }
+    // Touch the marker file
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&marker);
 
     let threshold_epoch = crate::resolve::parse_temporal(since)
         .ok_or_else(|| crate::Error::InvalidOperation(format!("Invalid duration: {since}")))?;
@@ -638,6 +655,76 @@ mod tests {
         let result = sources(temp_dir.path()).await?;
 
         assert!(result.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_stale_dedup_second_call_is_noop() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+
+        // First call should run (returns exit code based on store state)
+        let code1 = stale(temp_dir.path(), "15min", "llm-nudge", true).await?;
+
+        // Second call within 5 seconds should be deduped (exit 0)
+        let code2 = stale(temp_dir.path(), "15min", "llm-nudge", true).await?;
+        assert_eq!(code2, 0, "second stale call should be deduped to exit 0");
+
+        // First call should have produced a non-zero exit (empty store = stale)
+        assert_ne!(
+            code1, 0,
+            "first stale call on empty store should be non-zero"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_stale_dedup_no_marker_runs_normally() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let marker = temp_dir.path().join(".stale_check");
+
+        // Ensure no marker exists
+        assert!(!marker.exists());
+
+        // Should run normally (no marker = no dedup)
+        let code = stale(temp_dir.path(), "15min", "llm-nudge", true).await?;
+        assert_ne!(code, 0, "stale call without marker should run normally");
+
+        // Marker should now exist
+        assert!(marker.exists(), "marker should be created after stale runs");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_stale_hooks_disabled_skips() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+
+        let code = stale(temp_dir.path(), "15min", "llm-nudge", false).await?;
+        assert_eq!(code, 0, "hooks_enabled=false should exit 0");
+
+        // Marker should NOT be created when hooks are disabled
+        assert!(
+            !temp_dir.path().join(".stale_check").exists(),
+            "no marker when hooks disabled"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_stale_different_data_dirs_not_deduped() -> Result<()> {
+        let dir1 = TempDir::new()?;
+        let dir2 = TempDir::new()?;
+
+        // First call on dir1
+        let code1 = stale(dir1.path(), "15min", "llm-nudge", true).await?;
+        assert_ne!(code1, 0);
+
+        // Call on dir2 should NOT be deduped (different data_dir)
+        let code2 = stale(dir2.path(), "15min", "llm-nudge", true).await?;
+        assert_ne!(code2, 0, "different data_dir should not be deduped");
 
         Ok(())
     }
