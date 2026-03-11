@@ -36,7 +36,7 @@ use crate::blob_store::BlobStore;
 use crate::chunk::{ChunkLevel, EntryType};
 use crate::embedder::Embedder;
 use crate::entry::StoredBlob;
-use crate::search::{HierarchicalSearch, HierarchicalSearchResult, SearchConfig};
+use crate::search::{self, HierarchicalSearch, HierarchicalSearchResult, SearchConfig};
 use crate::store::{SearchResult, StoreBackend, StoreStats, VectorStore};
 use crate::{ChunkRelation, HierarchicalChunk, Result};
 
@@ -65,7 +65,8 @@ pub struct StoreOptions {
     pub entry_type: EntryType,
     /// Source label (default: "[api]").
     pub source: Option<String>,
-    /// Visibility: "normal" (default), "always", "deep_only".
+    /// Visibility level. Use constants from [`chunk::visibility`](crate::chunk::visibility):
+    /// `NORMAL` (default), `ALWAYS`, `DEEP_ONLY`, `SEASONAL`.
     pub visibility: Option<String>,
     /// Relations to establish atomically.
     pub relations: Vec<ChunkRelation>,
@@ -77,20 +78,17 @@ impl<E: Embedder> VecLayer<E> {
     /// Creates the data directory if it doesn't exist. The embedder's
     /// dimension is used to configure the vector index.
     pub async fn open(data_dir: &Path, embedder: E) -> Result<Self> {
-        let dimension = embedder.dimension();
-        let store = Arc::new(StoreBackend::open(data_dir, dimension, false).await?);
-        let blob_store = BlobStore::open(data_dir)?;
-        Ok(Self {
-            store,
-            embedder: Arc::new(embedder),
-            blob_store,
-        })
+        Self::open_inner(data_dir, embedder, false).await
     }
 
     /// Open a read-only VecLayer store.
     pub async fn open_read_only(data_dir: &Path, embedder: E) -> Result<Self> {
+        Self::open_inner(data_dir, embedder, true).await
+    }
+
+    async fn open_inner(data_dir: &Path, embedder: E, read_only: bool) -> Result<Self> {
         let dimension = embedder.dimension();
-        let store = Arc::new(StoreBackend::open(data_dir, dimension, true).await?);
+        let store = Arc::new(StoreBackend::open(data_dir, dimension, read_only).await?);
         let blob_store = BlobStore::open(data_dir)?;
         Ok(Self {
             store,
@@ -141,7 +139,7 @@ impl<E: Embedder> VecLayer<E> {
 
         // Persist raw content in blob store (before move)
         let blob = StoredBlob::from_chunk_and_embedding(&chunk, self.embedder.name());
-        let _ = self.blob_store.put(&blob);
+        self.blob_store.put(&blob)?;
 
         self.store.insert_chunks(vec![chunk]).await?;
 
@@ -202,7 +200,7 @@ impl<E: Embedder> VecLayer<E> {
                     let score = c
                         .embedding
                         .as_deref()
-                        .map(|e| cosine_similarity(&query_embedding, e))
+                        .map(|e| search::cosine_similarity(&query_embedding, e))
                         .unwrap_or(0.0);
                     (c, score)
                 })
@@ -293,20 +291,6 @@ pub struct FocusResult {
     pub children: Vec<(HierarchicalChunk, f32)>,
 }
 
-/// Cosine similarity between two embedding vectors.
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return 0.0;
-    }
-    dot / (norm_a * norm_b)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,33 +316,6 @@ mod tests {
         fn name(&self) -> &str {
             "test-embedder"
         }
-    }
-
-    #[test]
-    fn cosine_similarity_identical() {
-        let v = vec![1.0, 2.0, 3.0];
-        let sim = cosine_similarity(&v, &v);
-        assert!((sim - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn cosine_similarity_orthogonal() {
-        let a = vec![1.0, 0.0];
-        let b = vec![0.0, 1.0];
-        let sim = cosine_similarity(&a, &b);
-        assert!(sim.abs() < 1e-6);
-    }
-
-    #[test]
-    fn cosine_similarity_empty() {
-        assert_eq!(cosine_similarity(&[], &[]), 0.0);
-    }
-
-    #[test]
-    fn cosine_similarity_zero_vector() {
-        let a = vec![0.0, 0.0];
-        let b = vec![1.0, 2.0];
-        assert_eq!(cosine_similarity(&a, &b), 0.0);
     }
 
     #[test]
@@ -523,7 +480,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_only_rejects_writes() {
+    async fn read_only_allows_search() {
         let dir = tempfile::tempdir().unwrap();
 
         // Create store first
@@ -531,7 +488,7 @@ mod tests {
         let _ = vl.store("seed").await.unwrap();
         drop(vl);
 
-        // Open read-only
+        // Open read-only (skips write lock — allows concurrent readers)
         let vl = VecLayer::open_read_only(dir.path(), TestEmbedder)
             .await
             .unwrap();

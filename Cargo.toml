@@ -15,9 +15,11 @@ rust-version = "1.91"
 
 [features]
 default = []
-cli = ["mcp", "embedding-local", "dep:clap", "dep:owo-colors", "dep:tracing-subscriber"]
-mcp = ["dep:rmcp", "dep:schemars"]
-embedding-local = ["dep:fastembed"]
+parser = ["dep:pulldown-cmark"]
+config = ["dep:toml", "dep:glob", "dep:directories", "dep:shellexpand", "dep:regex", "dep:serde_yml", "dep:walkdir"]
+cli = ["mcp", "embedding-local", "config", "parser", "dep:clap", "dep:owo-colors", "dep:tracing-subscriber"]
+mcp = ["config", "dep:rmcp", "dep:schemars"]
+embedding-local = ["config", "dep:fastembed"]
 llm = ["dep:reqwest", "dep:linfa", "dep:linfa-clustering", "dep:ndarray"]
 http = ["auth", "mcp", "dep:axum", "dep:tower", "dep:tower-http", "rmcp/transport-streamable-http-server"]
 auth = ["dep:ed25519-dalek", "dep:jsonwebtoken", "dep:aes-gcm", "dep:argon2", "dep:rpassword", "dep:uuid", "dep:zeroize", "dep:bs58", "dep:base64", "dep:percent-encoding", "dep:rand"]
@@ -36,8 +38,8 @@ arrow-schema = "55"
 # Embeddings (gated behind "embedding-local" feature)
 fastembed = { version = "4", default-features = false, features = ["ort-download-binaries", "hf-hub-rustls-tls"], optional = true }
 
-# Markdown parsing
-pulldown-cmark = "0.13"
+# Markdown parsing (gated behind "parser" feature)
+pulldown-cmark = { version = "0.13", optional = true }
 
 # MCP Server (rmcp — official Rust MCP SDK, gated behind "mcp" feature)
 # transport-io is always available; transport-streamable-http-server requires the "http" feature
@@ -55,7 +57,7 @@ futures = "0.3"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+toml = { version = "0.8", optional = true }
 
 # Error handling
 anyhow = "1"
@@ -91,14 +93,14 @@ postcard = { version = "1", default-features = false, features = ["alloc"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 # Utilities
-walkdir = "2"
+walkdir = { version = "2", optional = true }
 strsim = "0.11"
 schemars = { version = "1", features = ["chrono04"], optional = true }
 fs2 = "0.4"
-directories = "6"
-glob = "0.3"
-regex = "1"
-shellexpand = "3"
+directories = { version = "6", optional = true }
+glob = { version = "0.3", optional = true }
+regex = { version = "1", optional = true }
+shellexpand = { version = "3", optional = true }
 
 # LLM-dependent (gated behind "llm" feature)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
@@ -106,7 +108,7 @@ linfa = { version = "0.7", optional = true }
 linfa-clustering = { version = "0.7", optional = true }
 ndarray = { version = "0.15", optional = true }
 owo-colors = { version = "4.2.3", features = ["supports-colors"], optional = true }
-serde_yml = "0.0.12"
+serde_yml = { version = "0.0.12", optional = true }
 
 [[bin]]
 name = "veclayer"

@@ -13,12 +13,18 @@
 //!
 //! Any field set in the environment always wins over the config file.
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::Deserialize;
+
+#[cfg(feature = "config")]
+use std::collections::HashMap;
+#[cfg(feature = "config")]
+use std::path::Path;
+#[cfg(feature = "config")]
 use tracing::warn;
 
+#[cfg(feature = "config")]
 pub const GLOB_MATCH_OPTIONS: glob::MatchOptions = glob::MatchOptions {
     case_sensitive: true,
     require_literal_separator: true,
@@ -77,6 +83,7 @@ pub struct Config {
     pub storage: Option<String>,
 
     /// Push mode for git storage (parsed from project/user config string)
+    #[cfg(feature = "config")]
     pub push_mode: crate::git::branch_config::PushMode,
 
     /// Whether hooks (e.g. the `stale` stop hook) are enabled (default: true).
@@ -130,8 +137,9 @@ pub enum EmbedderConfig {
     },
 }
 
-// --- TOML file schema (all fields optional) ---
+// --- TOML file schema (all fields optional, gated behind "config" feature) ---
 
+#[cfg(feature = "config")]
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct FileConfig {
@@ -147,6 +155,7 @@ struct FileConfig {
     auth: Option<FileAuthConfig>,
 }
 
+#[cfg(feature = "config")]
 #[derive(Debug, Deserialize)]
 struct FileAuthConfig {
     auth_required: Option<bool>,
@@ -158,6 +167,7 @@ struct FileAuthConfig {
 
 /// Unified match override: path glob and/or git-remote regex, plus config fields.
 /// At least one matcher (path or git-remote) must be present.
+#[cfg(feature = "config")]
 #[derive(Debug, Clone)]
 pub struct MatchOverride {
     pub path: Option<glob::Pattern>,
@@ -172,6 +182,7 @@ pub struct MatchOverride {
     pub scopes: Vec<String>,
 }
 
+#[cfg(feature = "config")]
 impl MatchOverride {
     /// Check if this override matches the given cwd and/or git remote (OR logic).
     pub fn matches(&self, cwd_str: &str, git_remote: Option<&str>) -> bool {
@@ -199,6 +210,7 @@ impl MatchOverride {
     }
 }
 
+#[cfg(feature = "config")]
 impl<'de> Deserialize<'de> for MatchOverride {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -255,6 +267,7 @@ impl<'de> Deserialize<'de> for MatchOverride {
 }
 
 /// User-level configuration with global defaults and match-based overrides.
+#[cfg(feature = "config")]
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct UserConfig {
@@ -269,6 +282,7 @@ pub struct UserConfig {
     pub scopes: HashMap<String, ScopeConfig>,
 }
 
+#[cfg(feature = "config")]
 impl UserConfig {
     pub fn load(path: &Path) -> Self {
         match std::fs::read_to_string(path) {
@@ -428,6 +442,7 @@ impl UserConfig {
 }
 
 /// A fully resolved scope ready for use.
+#[cfg(feature = "config")]
 #[derive(Debug, Clone)]
 pub struct ResolvedScope {
     pub name: String,
@@ -437,6 +452,7 @@ pub struct ResolvedScope {
 }
 
 /// Resolved configuration from user config (globals + path match).
+#[cfg(feature = "config")]
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedConfig {
     pub project: Option<String>,
@@ -452,6 +468,7 @@ pub struct ResolvedConfig {
     pub push: Option<String>,
 }
 
+#[cfg(feature = "config")]
 #[derive(Debug, Deserialize)]
 struct FileLlmConfig {
     /// "ollama" or "openai"
@@ -464,10 +481,12 @@ struct FileLlmConfig {
     max_tokens: Option<usize>,
 }
 
+#[cfg(feature = "config")]
 fn default_llm_provider() -> String {
     "ollama".to_string()
 }
 
+#[cfg(feature = "config")]
 #[derive(Debug, Deserialize)]
 struct FileEmbedderConfig {
     /// "fastembed" or "ollama"
@@ -479,10 +498,12 @@ struct FileEmbedderConfig {
     dimension: Option<usize>,
 }
 
+#[cfg(feature = "config")]
 fn default_embedder_type() -> String {
     "fastembed".to_string()
 }
 
+#[cfg(feature = "config")]
 impl FileConfig {
     /// Try to load from a TOML file. Returns default (all-None) on any error.
     fn load(path: &Path) -> Self {
@@ -533,17 +554,25 @@ impl FileConfig {
     }
 }
 
-// --- Hardcoded defaults ---
+// --- Hardcoded defaults (used by Config::new(), gated behind "config") ---
 
+#[cfg(feature = "config")]
 const DEFAULT_HOST: &str = "127.0.0.1";
+#[cfg(feature = "config")]
 const DEFAULT_PORT: u16 = 8080;
+#[cfg(feature = "config")]
 const DEFAULT_SEARCH_TOP_K: usize = 5;
+#[cfg(feature = "config")]
 const DEFAULT_SEARCH_CHILDREN_K: usize = 3;
 const DEFAULT_FASTEMBED_MODEL: &str = "Xenova/bge-small-en-v1.5";
+#[cfg(feature = "config")]
 const DEFAULT_OLLAMA_MODEL: &str = "nomic-embed-text";
+#[cfg(feature = "config")]
 const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
+#[cfg(feature = "config")]
 const DEFAULT_OLLAMA_DIMENSION: usize = 768;
 
+#[cfg(feature = "config")]
 impl Config {
     /// Build config with full layered resolution: ENV > TOML file > Defaults.
     pub fn new() -> Self {
@@ -730,7 +759,9 @@ impl Config {
             auto_approve,
         }
     }
+}
 
+impl Config {
     pub fn with_data_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.data_dir = path.into();
         self
@@ -766,6 +797,7 @@ impl Config {
         self
     }
 
+    #[cfg(feature = "config")]
     pub fn with_push_mode(mut self, push: Option<&str>) -> Self {
         if let Some(p) = push {
             self.push_mode = parse_push_mode(p);
@@ -779,6 +811,7 @@ impl Config {
 /// unlike branch_config.rs which returns a hard error. Project/user config is user-edited TOML
 /// where a hard error would be disruptive; the branch config is a committed, controlled file
 /// where typos should be caught immediately.
+#[cfg(feature = "config")]
 pub fn parse_push_mode(s: &str) -> crate::git::branch_config::PushMode {
     use crate::git::branch_config::PushMode;
     match s {
@@ -798,6 +831,7 @@ pub fn parse_push_mode(s: &str) -> crate::git::branch_config::PushMode {
     }
 }
 
+#[cfg(feature = "config")]
 impl Default for Config {
     fn default() -> Self {
         Self::new()
@@ -882,6 +916,7 @@ pub struct ProjectConfig {
 
 /// Walk up from `start_dir` looking for a `.veclayer/` directory.
 /// Returns `(data_dir, project_config)` if found.
+#[cfg(feature = "config")]
 pub fn discover_project(start_dir: &Path) -> Option<(PathBuf, ProjectConfig)> {
     let git_info = crate::git::detect::detect(start_dir);
 
@@ -939,6 +974,7 @@ pub fn discover_project(start_dir: &Path) -> Option<(PathBuf, ProjectConfig)> {
 
 /// Return the path to the user config file, using the same lookup order as
 /// [`UserConfig::discover`], but without loading or creating the file.
+#[cfg(feature = "config")]
 pub fn user_config_path() -> PathBuf {
     if let Ok(path) = std::env::var("VECLAYER_USER_CONFIG") {
         return PathBuf::from(path);
@@ -965,6 +1001,7 @@ pub fn user_config_path() -> PathBuf {
 /// At least one of `git_remote` or `path_glob` must be `Some`.
 /// Parent directories are created if they do not exist.
 /// Returns the path of the config file that was written.
+#[cfg(feature = "config")]
 pub fn append_match_to_user_config(
     git_remote: Option<&str>,
     path_glob: Option<&str>,
@@ -1009,24 +1046,24 @@ pub fn append_match_to_user_config(
     Ok(config_path)
 }
 
-// --- Helpers for ENV > TOML > Default resolution ---
+// --- Helpers for ENV > TOML > Default resolution (only used by Config::new()) ---
 
-/// Return env var if set, else TOML value if present, else default.
+#[cfg(feature = "config")]
 fn env_or(key: &str, file_val: Option<String>, default: String) -> String {
     std::env::var(key).ok().or(file_val).unwrap_or(default)
 }
 
-/// Parse env var as T. Returns None if unset or unparseable.
+#[cfg(feature = "config")]
 fn env_parse<T: std::str::FromStr>(key: &str) -> Option<T> {
     std::env::var(key).ok().and_then(|v| v.parse().ok())
 }
 
-/// Parse env var as boolean ("true"/"1" = true, anything else = false).
+#[cfg(feature = "config")]
 fn env_bool(key: &str) -> Option<bool> {
     std::env::var(key).ok().map(|v| v == "true" || v == "1")
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "config"))]
 mod tests {
     use super::*;
     use std::io::Write;

@@ -18,8 +18,10 @@
 //!
 //! ## Feature Flags
 //!
-//! - `cli`: Enables the CLI binary, implies `mcp` and `embedding-local`
-//! - `mcp`: Enables the MCP server module
+//! - `parser`: Enables `DocumentParser` and Markdown parsing (requires `pulldown-cmark`)
+//! - `config`: Enables config file discovery, user config, and `git` module (requires `toml`, `glob`, `directories`, `shellexpand`, `regex`, `serde_yml`, `walkdir`)
+//! - `cli`: Enables the CLI binary, implies `mcp`, `embedding-local`, `config`, and `parser`
+//! - `mcp`: Enables the MCP server module, implies `config`
 //! - `embedding-local`: Enables local embedding via FastEmbed (ONNX)
 //! - `llm`: Enables LLM-powered summarization and clustering
 //! - `http`: Enables HTTP REST API, Streamable HTTP MCP transport, and OAuth; implies `auth` and `mcp`
@@ -27,6 +29,8 @@
 //! - `sync`: Enables cross-store synchronization
 //! - `full`: Enables `cli`, `llm`, `http`, and `auth`
 //!
+//! Without `parser`, the `DocumentParser` trait and Markdown parser are unavailable.
+//! Without `config`, config file discovery and the `git` module are unavailable; `Config` types are still available.
 //! Without `mcp`, the MCP server module is unavailable.
 //! Without `http`, only the stdio MCP transport is available — no network listener.
 //! Without `auth`, identity/token CLI commands are unavailable.
@@ -34,6 +38,7 @@
 
 #![recursion_limit = "256"]
 
+#[cfg(feature = "config")]
 use std::path::PathBuf;
 
 pub mod access_profile;
@@ -54,6 +59,7 @@ pub mod embedder;
 pub mod entry;
 pub mod error;
 pub mod facade;
+#[cfg(feature = "config")]
 #[doc(hidden)]
 pub mod git;
 pub mod identity;
@@ -64,6 +70,7 @@ pub(crate) mod macros;
 #[cfg(feature = "mcp")]
 #[doc(hidden)]
 pub mod mcp;
+#[cfg(feature = "parser")]
 pub mod parser;
 pub mod perspective;
 pub mod relations;
@@ -88,6 +95,7 @@ pub mod util;
 /// Returns `~/.local/share/veclayer` on Linux, `~/Library/Application Support/veclayer`
 /// on macOS, `AppData\Local\veclayer` on Windows. Falls back to `.veclayer` if
 /// platform directories cannot be determined.
+#[cfg(feature = "config")]
 pub fn default_data_dir() -> PathBuf {
     directories::ProjectDirs::from("", "", "veclayer")
         .map(|dirs| dirs.data_local_dir().to_path_buf())
@@ -99,6 +107,7 @@ pub fn default_data_dir() -> PathBuf {
 /// Returns `~/.cache/veclayer` on Linux, `~/Library/Caches/veclayer` on macOS,
 /// `AppData\Local\veclayer\cache` on Windows. Falls back to `.veclayer/cache` if
 /// platform directories cannot be determined.
+#[cfg(feature = "config")]
 pub fn default_cache_dir() -> PathBuf {
     directories::ProjectDirs::from("", "", "veclayer")
         .map(|dirs| dirs.cache_dir().to_path_buf())
@@ -121,6 +130,7 @@ pub use error::{Error, Result};
 pub use facade::{FocusResult, StoreOptions, VecLayer};
 #[cfg(feature = "llm")]
 pub use llm::{LlmBackend, LlmProvider};
+#[cfg(feature = "parser")]
 pub use parser::DocumentParser;
 pub use salience::SalienceWeights;
 pub use search::{HierarchicalSearch, HierarchicalSearchResult, SearchConfig};
