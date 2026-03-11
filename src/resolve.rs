@@ -201,7 +201,10 @@ mod tests {
         assert!((hour - (now - 3 * 3600)).abs() <= 2);
 
         let minutes = parse_temporal("15min").unwrap();
-        assert!((minutes - (now - 15 * 60)).abs() <= 2, "15min should be ~15 minutes ago");
+        assert!(
+            (minutes - (now - 15 * 60)).abs() <= 2,
+            "15min should be ~15 minutes ago"
+        );
 
         // Unknown suffix → None
         assert_eq!(parse_temporal("5x"), None);

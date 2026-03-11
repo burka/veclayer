@@ -205,9 +205,7 @@ pub(crate) fn check_hooks_configured(project_dir: &std::path::Path) -> bool {
     ];
     candidates.iter().any(|path| {
         std::fs::read_to_string(path)
-            .map(|contents| {
-                contents.contains("\"PreCompact\"") || contents.contains("\"Stop\"")
-            })
+            .map(|contents| contents.contains("\"PreCompact\"") || contents.contains("\"Stop\""))
             .unwrap_or(false)
     })
 }

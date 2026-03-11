@@ -167,9 +167,8 @@ pub async fn stale(data_dir: &Path, since: &str, output: &str) -> Result<i32> {
         return Ok(0);
     }
 
-    let threshold_epoch = crate::resolve::parse_temporal(since).ok_or_else(|| {
-        crate::Error::InvalidOperation(format!("Invalid duration: {since}"))
-    })?;
+    let threshold_epoch = crate::resolve::parse_temporal(since)
+        .ok_or_else(|| crate::Error::InvalidOperation(format!("Invalid duration: {since}")))?;
 
     let store = StoreBackend::open_metadata(data_dir, true).await?;
     // list_entries returns newest-first; one entry is enough to check freshness.

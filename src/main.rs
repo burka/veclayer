@@ -6,8 +6,6 @@ use tracing_subscriber::EnvFilter;
 
 #[cfg(feature = "llm")]
 use veclayer::commands::think;
-#[cfg(feature = "auth")]
-use veclayer::commands::{auth_login, auth_status, auth_token, identity_init, identity_show};
 use veclayer::commands::{
     add, archive, browse, compact, export_entries, focus, history, import_entries, init, merge,
     orientation, perspective_add, perspective_list, perspective_remove, print_sources,
@@ -16,6 +14,8 @@ use veclayer::commands::{
     CompactAction, CompactOptions, ExportOptions, FocusOptions, ImportOptions, MergeOptions,
     SearchOptions, ServeOptions,
 };
+#[cfg(feature = "auth")]
+use veclayer::commands::{auth_login, auth_status, auth_token, identity_init, identity_show};
 use veclayer::Result;
 
 #[derive(Clone, Debug, clap::ValueEnum)]
@@ -261,7 +261,11 @@ enum Commands {
 
     /// Check if memory has been stored recently (set VECLAYER_STALE=off to disable)
     Stale {
-        #[arg(long, default_value = "15min", help = "Staleness window (e.g. 15min, 1h, 1d)")]
+        #[arg(
+            long,
+            default_value = "15min",
+            help = "Staleness window (e.g. 15min, 1h, 1d)"
+        )]
         since: String,
         #[arg(long, default_value = "text", help = "Output mode: text or llm-nudge")]
         output: String,

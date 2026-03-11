@@ -5,11 +5,11 @@
 //! The `middleware` and `oauth` submodules additionally require the `http` feature.
 
 pub mod capability;
-#[cfg(feature = "auth")]
-pub mod token;
-#[cfg(feature = "auth")]
-pub mod token_store;
 #[cfg(feature = "http")]
 pub mod middleware;
 #[cfg(feature = "http")]
 pub mod oauth;
+#[cfg(feature = "auth")]
+pub mod token;
+#[cfg(feature = "auth")]
+pub mod token_store;
