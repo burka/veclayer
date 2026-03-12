@@ -30,7 +30,7 @@ use crate::store::StoreBackend;
 use crate::{Config, Embedder, Result, VectorStore};
 
 use super::handler::McpHandler;
-use super::tools;
+use super::tools::{self, ToolContext};
 use super::types::*;
 
 // ─── Auth setup ───────────────────────────────────────────────────────────────
@@ -60,6 +60,21 @@ pub struct AppState {
     pub git_store: Option<Arc<crate::git::memory_store::MemoryStore>>,
     /// Push mode for git storage.
     pub push_mode: crate::git::branch_config::PushMode,
+}
+
+impl AppState {
+    fn tool_context(&self) -> ToolContext {
+        ToolContext {
+            store: Arc::clone(&self.store),
+            embedder: Arc::clone(&self.embedder),
+            blob_store: Arc::clone(&self.blob_store),
+            data_dir: self.data_dir.clone(),
+            project: self.project.clone(),
+            branch: self.branch.clone(),
+            git_store: self.git_store.clone(),
+            push_mode: self.push_mode,
+        }
+    }
 }
 
 // ─── Error types ──────────────────────────────────────────────────────────────
@@ -418,17 +433,10 @@ async fn api_recall(
         return Err(insufficient(Capability::Read));
     }
     let Json(input) = body?;
-    let results = tools::execute_recall(
-        &state.store,
-        &state.embedder,
-        input,
-        state.project.as_deref(),
-        state.branch.as_deref(),
-        state.git_store.as_deref(),
-        Some(state.push_mode),
-    )
-    .await
-    .map_err(warn_and_convert("Recall"))?;
+    let ctx = state.tool_context();
+    let results = tools::execute_recall(&ctx, input, Some(state.push_mode))
+        .await
+        .map_err(warn_and_convert("Recall"))?;
     Ok(Json(results))
 }
 
@@ -441,15 +449,10 @@ async fn api_focus(
         return Err(insufficient(Capability::Read));
     }
     let Json(input) = body?;
-    let response = tools::execute_focus(
-        &state.store,
-        &state.embedder,
-        input,
-        state.project.as_deref(),
-        state.branch.as_deref(),
-    )
-    .await
-    .map_err(warn_and_convert("Focus"))?;
+    let ctx = state.tool_context();
+    let response = tools::execute_focus(&ctx, input)
+        .await
+        .map_err(warn_and_convert("Focus"))?;
     Ok(Json(response))
 }
 
@@ -465,23 +468,13 @@ async fn api_store(
     if input.content.is_empty() {
         return Err(AppError::bad_request("content is required"));
     }
-    let effective_git_store = if state.push_mode.auto_stages() {
-        state.git_store.as_deref()
-    } else {
-        None
-    };
-    let result = tools::execute_store(
-        &state.store,
-        &state.embedder,
-        &state.blob_store,
-        input,
-        state.project.as_deref(),
-        state.branch.as_deref(),
-        effective_git_store,
-        state.push_mode,
-    )
-    .await
-    .map_err(warn_and_convert("Store"))?;
+    let mut ctx = state.tool_context();
+    if !state.push_mode.auto_stages() {
+        ctx.git_store = None;
+    }
+    let result = tools::execute_store(&ctx, input)
+        .await
+        .map_err(warn_and_convert("Store"))?;
     Ok(Json(result.as_str().unwrap_or_default().to_string()))
 }
 
@@ -494,18 +487,10 @@ async fn api_think(
         return Err(insufficient(Capability::Write));
     }
     let Json(input) = body?;
-    let text = tools::execute_think(
-        &state.store,
-        &state.data_dir,
-        &state.blob_store,
-        input,
-        state.project.as_deref(),
-        state.branch.as_deref(),
-        state.git_store.as_deref(),
-        Some(state.push_mode),
-    )
-    .await
-    .map_err(warn_and_convert("Think"))?;
+    let ctx = state.tool_context();
+    let text = tools::execute_think(&ctx, input, Some(state.push_mode))
+        .await
+        .map_err(warn_and_convert("Think"))?;
     Ok(Json(text))
 }
 

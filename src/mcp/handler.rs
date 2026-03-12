@@ -20,6 +20,7 @@ use crate::git::branch_config::PushMode;
 use crate::store::StoreBackend;
 use crate::Embedder;
 
+use super::tools::ToolContext;
 use super::types::*;
 use super::{format, tools};
 
@@ -56,6 +57,20 @@ pub struct McpHandler {
 }
 
 impl McpHandler {
+    /// Build a `ToolContext` from the handler's fields.
+    fn tool_context(&self) -> ToolContext {
+        ToolContext {
+            store: Arc::clone(&self.store),
+            embedder: Arc::clone(&self.embedder),
+            blob_store: Arc::clone(&self.blob_store),
+            data_dir: self.data_dir.clone(),
+            project: self.project.clone(),
+            branch: self.branch.clone(),
+            git_store: self.git_store.clone(),
+            push_mode: self.push_mode,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         store: Arc<StoreBackend>,
@@ -149,16 +164,8 @@ impl McpHandler {
             )]));
         }
         let query = input.query.clone();
-        match tools::execute_recall(
-            &self.store,
-            &self.embedder,
-            input,
-            self.project.as_deref(),
-            self.branch.as_deref(),
-            self.git_store.as_deref(),
-            Some(self.push_mode),
-        )
-        .await
+        let ctx = self.tool_context();
+        match tools::execute_recall(&ctx, input, Some(self.push_mode)).await
         {
             Ok(results) => {
                 let text = format::format_recall(query.as_deref(), &results);
@@ -180,14 +187,8 @@ impl McpHandler {
                 "Insufficient permission: need read",
             )]));
         }
-        match tools::execute_focus(
-            &self.store,
-            &self.embedder,
-            input,
-            self.project.as_deref(),
-            self.branch.as_deref(),
-        )
-        .await
+        let ctx = self.tool_context();
+        match tools::execute_focus(&ctx, input).await
         {
             Ok(response) => {
                 let text = format::format_focus(&response);
@@ -215,24 +216,12 @@ impl McpHandler {
             )]));
         }
 
-        // Only pass git_store when the scope warrants staging and push mode allows it.
-        let effective_git_store = if self.push_mode.auto_stages() {
-            self.git_store.as_deref()
-        } else {
-            None
-        };
-
-        match tools::execute_store(
-            &self.store,
-            &self.embedder,
-            &self.blob_store,
-            input,
-            self.project.as_deref(),
-            self.branch.as_deref(),
-            effective_git_store,
-            self.push_mode,
-        )
-        .await
+        // Only include git_store when the scope warrants staging and push mode allows it.
+        let mut ctx = self.tool_context();
+        if !self.push_mode.auto_stages() {
+            ctx.git_store = None;
+        }
+        match tools::execute_store(&ctx, input).await
         {
             Ok(result) => {
                 let text = result.as_str().unwrap_or_default().to_string();
@@ -254,17 +243,8 @@ impl McpHandler {
                 "Insufficient permission: need write",
             )]));
         }
-        match tools::execute_think(
-            &self.store,
-            &self.data_dir,
-            &self.blob_store,
-            input,
-            self.project.as_deref(),
-            self.branch.as_deref(),
-            self.git_store.as_deref(),
-            Some(self.push_mode),
-        )
-        .await
+        let ctx = self.tool_context();
+        match tools::execute_think(&ctx, input, Some(self.push_mode)).await
         {
             Ok(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
             Err(e) => tool_error(e),

@@ -24,6 +24,25 @@ use crate::{Embedder, Result, VectorStore};
 
 use super::types::*;
 
+/// Shared execution context passed to all tool functions.
+///
+/// Groups the stable dependencies that every tool needs, eliminating repeated
+/// 7-9 parameter lists on each public `execute_*` function.
+///
+/// Holds `Arc` references so the context is cheap to clone and can be built
+/// once per handler call without lifetime constraints.
+#[derive(Clone)]
+pub struct ToolContext {
+    pub store: Arc<StoreBackend>,
+    pub embedder: Arc<dyn Embedder + Send + Sync>,
+    pub blob_store: Arc<crate::blob_store::BlobStore>,
+    pub data_dir: std::path::PathBuf,
+    pub project: Option<String>,
+    pub branch: Option<String>,
+    pub git_store: Option<Arc<crate::git::memory_store::MemoryStore>>,
+    pub push_mode: crate::git::branch_config::PushMode,
+}
+
 /// Helper: check if a chunk passes project filter.
 /// Returns true if:
 /// - No project is set (no filtering)
@@ -131,18 +150,18 @@ fn commit_to_git(
 
 /// Store a single entry and return (chunk_id, git_status).
 /// Pass `Some(embedding)` for immediate embedding, or `None` for deferred (pending).
-#[allow(clippy::too_many_arguments)]
 async fn store_single_entry(
-    store: &Arc<StoreBackend>,
-    embedder: &Arc<dyn Embedder + Send + Sync>,
-    blob_store: &Arc<crate::blob_store::BlobStore>,
+    ctx: &ToolContext,
     input: StoreSingleInput,
     embedding: Option<Vec<f32>>,
-    project: Option<&str>,
-    branch: Option<&str>,
-    git_store: Option<&crate::git::memory_store::MemoryStore>,
-    push_mode: crate::git::branch_config::PushMode,
 ) -> Result<(String, Option<String>)> {
+    let store = &ctx.store;
+    let embedder = &ctx.embedder;
+    let blob_store = &ctx.blob_store;
+    let project = ctx.project.as_deref();
+    let branch = ctx.branch.as_deref();
+    let git_store = ctx.git_store.as_deref();
+    let push_mode = ctx.push_mode;
     let parent_id = input.parent_id.as_deref().filter(|s| !s.is_empty());
 
     let (level, path) = if let Some(pid) = parent_id {
@@ -161,16 +180,10 @@ async fn store_single_entry(
     let chunk_id = crate::chunk::content_hash(&input.content);
 
     let entry_type = match input.entry_type.as_deref() {
-        None | Some("raw") => crate::chunk::EntryType::Raw,
-        Some("summary") => crate::chunk::EntryType::Summary,
-        Some("meta") => crate::chunk::EntryType::Meta,
-        Some("impression") => crate::chunk::EntryType::Impression,
-        Some(unknown) => {
-            return Err(crate::Error::config(format!(
-                "Unknown entry_type: '{}'. Valid: raw, summary, meta, impression",
-                unknown
-            )))
-        }
+        None => crate::chunk::EntryType::default(),
+        Some(s) => s
+            .parse()
+            .map_err(|e: String| crate::Error::config(e))?,
     };
 
     let perspectives = match input.scope.as_str() {
@@ -261,16 +274,16 @@ async fn store_single_entry(
     Ok((chunk_id, git_status))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn execute_recall(
-    store: &Arc<StoreBackend>,
-    embedder: &Arc<dyn Embedder + Send + Sync>,
+    ctx: &ToolContext,
     input: RecallInput,
-    project: Option<&str>,
-    branch: Option<&str>,
-    git_store: Option<&crate::git::memory_store::MemoryStore>,
     push_mode: Option<crate::git::branch_config::PushMode>,
 ) -> Result<Vec<SearchResultResponse>> {
+    let store = &ctx.store;
+    let embedder = &ctx.embedder;
+    let project = ctx.project.as_deref();
+    let branch = ctx.branch.as_deref();
+    let git_store = ctx.git_store.as_deref();
     // PushMode::Always implies bidirectional continuous sync — pull before
     // recall to serve the freshest data. Non-blocking: recall proceeds with
     // local data if the pull fails or conflicts.
@@ -406,12 +419,13 @@ pub async fn execute_recall(
 }
 
 pub async fn execute_focus(
-    store: &Arc<StoreBackend>,
-    embedder: &Arc<dyn Embedder + Send + Sync>,
+    ctx: &ToolContext,
     input: FocusInput,
-    project: Option<&str>,
-    branch: Option<&str>,
 ) -> Result<FocusResponse> {
+    let store = &ctx.store;
+    let embedder = &ctx.embedder;
+    let project = ctx.project.as_deref();
+    let branch = ctx.branch.as_deref();
     let node = store
         .get_by_id_prefix(&input.id)
         .await?
@@ -439,7 +453,7 @@ pub async fn execute_focus(
             })
             .collect();
 
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        crate::chunk::sort_f32_desc(&mut scored, |r| r.1);
         scored.truncate(input.limit);
 
         scored
@@ -467,17 +481,11 @@ pub async fn execute_focus(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn execute_store(
-    store: &Arc<StoreBackend>,
-    embedder: &Arc<dyn Embedder + Send + Sync>,
-    blob_store: &Arc<crate::blob_store::BlobStore>,
+    ctx: &ToolContext,
     input: StoreInput,
-    project: Option<&str>,
-    branch: Option<&str>,
-    git_store: Option<&crate::git::memory_store::MemoryStore>,
-    push_mode: crate::git::branch_config::PushMode,
 ) -> Result<serde_json::Value> {
+    let embedder = &ctx.embedder;
     if !input.items.is_empty() {
         let mut ids = Vec::new();
         let mut long_entries = 0usize;
@@ -485,9 +493,7 @@ pub async fn execute_store(
         for item in input.items {
             let content_len = item.content.len();
             let (id, git_status) = store_single_entry(
-                store,
-                embedder,
-                blob_store,
+                ctx,
                 StoreSingleInput {
                     content: item.content,
                     parent_id: item.parent_id,
@@ -502,10 +508,6 @@ pub async fn execute_store(
                     scope: item.scope,
                 },
                 None, // deferred — background worker will embed
-                project,
-                branch,
-                git_store,
-                push_mode,
             )
             .await?;
             ids.push(crate::short_id(&id).to_string());
@@ -550,9 +552,7 @@ pub async fn execute_store(
             .next()
             .ok_or_else(|| crate::Error::embedding("Failed to generate embedding"))?;
         let (id, git_status) = store_single_entry(
-            store,
-            embedder,
-            blob_store,
+            ctx,
             StoreSingleInput {
                 content: input.content,
                 parent_id: input.parent_id,
@@ -567,10 +567,6 @@ pub async fn execute_store(
                 scope: input.scope,
             },
             Some(embedding),
-            project,
-            branch,
-            git_store,
-            push_mode,
         )
         .await?;
         let mut msg = format!("Stored. ID: {}", crate::short_id(&id));
@@ -587,327 +583,373 @@ pub async fn execute_store(
     }
 }
 
-#[allow(unused_variables, clippy::too_many_arguments)]
 pub async fn execute_think(
-    store: &Arc<StoreBackend>,
-    data_dir: &std::path::Path,
-    blob_store: &Arc<crate::blob_store::BlobStore>,
+    ctx: &ToolContext,
     input: ThinkInput,
-    project: Option<&str>,
-    branch: Option<&str>,
-    git_store: Option<&crate::git::memory_store::MemoryStore>,
     push_mode: Option<crate::git::branch_config::PushMode>,
 ) -> Result<String> {
+    let store = &ctx.store;
+    let data_dir = ctx.data_dir.as_path();
+    let blob_store = &ctx.blob_store;
+    let project = ctx.project.as_deref();
+    let branch = ctx.branch.as_deref();
+    let git_store = ctx.git_store.as_deref();
     match input.action.as_deref() {
-        None => {
-            let hot_limit = input.hot_limit.unwrap_or(10);
-            let stale_limit = input.stale_limit.unwrap_or(10);
-            execute_reflect(store, data_dir, hot_limit, stale_limit, project, branch).await
-        }
-        Some("promote") => {
-            let raw_id = input
-                .id
-                .as_deref()
-                .ok_or_else(|| crate::Error::config("think(promote) requires 'id'"))?;
-            let chunk_id = crate::resolve::resolve_id(store, raw_id).await?;
-            let vis = input.visibility.as_deref().unwrap_or("always");
-            store.update_visibility(&chunk_id, vis).await?;
-            Ok(format!("Promoted `{}` to visibility '{}'", chunk_id, vis))
-        }
-        Some("demote") => {
-            let raw_id = input
-                .id
-                .as_deref()
-                .ok_or_else(|| crate::Error::config("think(demote) requires 'id'"))?;
-            let chunk_id = crate::resolve::resolve_id(store, raw_id).await?;
-            let vis = input.visibility.as_deref().unwrap_or("deep_only");
-            store.update_visibility(&chunk_id, vis).await?;
-            Ok(format!("Demoted `{}` to visibility '{}'", chunk_id, vis))
-        }
-        Some("relate") => {
-            let raw_source = input
-                .source_id
-                .as_deref()
-                .ok_or_else(|| crate::Error::config("think(relate) requires 'source_id'"))?;
-            let raw_target = input
-                .target_id
-                .as_deref()
-                .ok_or_else(|| crate::Error::config("think(relate) requires 'target_id'"))?;
-            let kind = input.kind.as_deref().unwrap_or("related_to");
-            let source_id = crate::resolve::resolve_id(store, raw_source).await?;
-            let target_id = crate::resolve::resolve_id(store, raw_target).await?;
-            let relation = crate::ChunkRelation::new(kind, &target_id);
-            store.add_relation(&source_id, relation).await?;
-            // Bidirectional: related_to gets a backward link (mirrors CLI think_relate)
-            if kind == "related_to" {
-                let backward = crate::ChunkRelation::new("related_to", &source_id);
-                store.add_relation(&target_id, backward).await?;
-            }
-            Ok(format!(
-                "Added relation '{}' from `{}` to `{}`",
-                kind, source_id, target_id
-            ))
-        }
-        Some("configure_aging") => {
-            let mut config = AgingConfig::load(data_dir);
-            if let Some(days) = input.degrade_after_days {
-                config.degrade_after_days = days;
-            }
-            if let Some(ref to) = input.degrade_to {
-                config.degrade_to = to.clone();
-            }
-            if let Some(ref from) = input.degrade_from {
-                config.degrade_from = from.clone();
-            }
-            config.save(data_dir)?;
-            Ok(format!(
-                "Aging configured: degrade {} → '{}' after {} days without access",
-                config.degrade_from.join(", "),
-                config.degrade_to,
-                config.degrade_after_days
-            ))
-        }
-        Some("apply_aging") => {
-            let config = AgingConfig::load(data_dir);
-            let result = aging::apply_aging(store.as_ref(), &config).await?;
-            if result.degraded_count == 0 {
-                Ok("No chunks needed aging. All knowledge is fresh.".to_string())
-            } else {
-                Ok(format!(
-                    "Aged {} chunks (degraded to '{}'): {}",
-                    result.degraded_count,
-                    config.degrade_to,
-                    result.degraded_ids.join(", ")
-                ))
-            }
-        }
-        #[cfg(feature = "llm")]
-        Some("consolidate") => {
-            let config = crate::Config::new().with_data_dir(data_dir);
-            let llm = crate::llm::LlmBackend::from_config(&config.llm);
-            let embedder = crate::embedder::from_config(&config.embedder)
-                .map_err(|e| crate::Error::llm(format!("Failed to init embedder: {}", e)))?;
-
-            let result = crate::think::execute(
-                store.as_ref(),
-                embedder.as_ref(),
-                &llm,
-                data_dir,
-                Some(blob_store.as_ref()),
-            )
-            .await?;
-
-            if result.entries_created.is_empty() {
-                return Ok("Nothing to consolidate. Memory is well-organized.".to_string());
-            }
-
-            let mut report = format!(
-                "## Think Cycle Complete\n\n- Narrative: {}\n- Consolidations: {}\n- Learnings: {}\n\n",
-                if result.narrative_id.is_some() { "yes" } else { "no" },
-                result.consolidations_added,
-                result.learnings_added,
-            );
-            report.push_str("### Entries Created\n\n");
-            for entry in &result.entries_created {
-                report.push_str(&format!(
-                    "- **{}** ({}) `{}`\n",
-                    entry.content_preview, entry.entry_type, entry.id
-                ));
-            }
-            Ok(report)
-        }
-        #[cfg(not(feature = "llm"))]
-        Some("consolidate") => Err(crate::Error::config(
-            "think(consolidate) requires the 'llm' feature",
-        )),
-        Some("salience") => {
-            let limit = input.hot_limit.unwrap_or(10);
-            let hot = store.get_hot_chunks(limit * 2).await?;
-            if hot.is_empty() {
-                return Ok("No entries to analyze.".to_string());
-            }
-            let weights = crate::salience::SalienceWeights::default();
-            let top = crate::salience::top_salient(&hot, &weights, limit);
-            let mut report = String::from("## Salience Report\n\n");
-            for (idx, score) in &top {
-                let chunk = &hot[*idx];
-                let heading = chunk.heading.as_deref().unwrap_or("(no heading)");
-                report.push_str(&format!(
-                    "- **{}** [composite={:.3}, inter={:.2}, persp={:.2}, rev={:.2}] `{}`\n",
-                    heading,
-                    score.composite,
-                    score.interaction,
-                    score.perspective,
-                    score.revision,
-                    chunk.id
-                ));
-            }
-            Ok(report)
-        }
-        Some("perspectives") => {
-            let perspectives = crate::perspective::load(data_dir)?;
-            if perspectives.is_empty() {
-                return Ok("No perspectives defined.".to_string());
-            }
-            let mut report = String::from("## Perspectives\n\n");
-            for p in &perspectives {
-                let tag = if p.builtin { " [builtin]" } else { "" };
-                report.push_str(&format!("- **{}** — {}{}\n", p.id, p.hint, tag));
-            }
-            report.push_str(&format!("\n{} perspective(s) total.", perspectives.len()));
-            Ok(report)
-        }
-        Some("status") => {
-            let stats = store.stats().await?;
-            let aging_config = AgingConfig::load(data_dir);
-            let mut status = super::format::format_store_status(&stats, &aging_config);
-
-            if let Some(git) = git_store {
-                status.push_str("\n### Git Memory\n\n");
-                match git.unpushed_commit_count() {
-                    Ok(0) => status.push_str("- **Pending commits:** 0 (in sync with remote)\n"),
-                    Ok(n) => {
-                        status.push_str(&format!("- **Pending commits:** {n} (not yet pushed)\n"))
-                    }
-                    Err(_) => {
-                        status.push_str("- **Pending commits:** unknown (no remote configured)\n")
-                    }
-                }
-                if let Some(pm) = push_mode {
-                    status.push_str(&format!("- **Push mode:** {pm}\n"));
-                }
-            }
-
-            Ok(status)
-        }
-        Some("history") => {
-            let raw_id = input
-                .id
-                .as_deref()
-                .ok_or_else(|| crate::Error::config("think(history) requires 'id'"))?;
-            let chunk_id = crate::resolve::resolve_id(store, raw_id).await?;
-            let chunk = store.get_by_id(&chunk_id).await?.ok_or_else(|| {
-                crate::Error::not_found(format!("Entry '{}' not found", chunk_id))
-            })?;
-
-            let heading = chunk.heading.as_deref().unwrap_or("(no heading)");
-            let mut report = format!("## Entry History: {} `{}`\n\n", heading, chunk.id);
-            report.push_str(&format!("- **Type:** {}\n", chunk.entry_type));
-            report.push_str(&format!("- **Visibility:** {}\n", chunk.visibility));
-            report.push_str(&format!("- **Source:** {}\n", chunk.source_file));
-            if !chunk.perspectives.is_empty() {
-                report.push_str(&format!(
-                    "- **Perspectives:** {}\n",
-                    chunk.perspectives.join(", ")
-                ));
-            }
-
-            if chunk.relations.is_empty() {
-                report.push_str("\nNo relations.\n");
-            } else {
-                report.push_str(&format!("\n### Relations ({})\n\n", chunk.relations.len()));
-                for rel in &chunk.relations {
-                    report.push_str(&format!(
-                        "- {} → `{}`\n",
-                        rel.kind,
-                        crate::chunk::short_id(&rel.target_id)
-                    ));
-                }
-            }
-
-            report.push_str(&format!(
-                "\n### Content\n\n{}\n",
-                if chunk.content.len() > 500 {
-                    let end = chunk.content.floor_char_boundary(500);
-                    format!("{}...", &chunk.content[..end])
-                } else {
-                    chunk.content.clone()
-                }
-            ));
-
-            Ok(report)
-        }
-        Some("discover") => {
-            let limit = input.hot_limit.unwrap_or(10);
-            discover_unlinked_pairs(store, limit).await
-        }
-        Some("sync") => {
-            use crate::git::{PushResult, SyncResult};
-
-            let git = git_store.ok_or_else(|| {
-                crate::Error::config(
-                    "Git memory storage is not configured. Run `veclayer init --share` first.",
-                )
-            })?;
-
-            let direction = input.direction.as_deref().unwrap_or("both");
-            let mut report = String::from("## Sync Report\n\n");
-
-            match direction {
-                "push" => match git.push() {
-                    Ok(PushResult::Success) => {
-                        report.push_str("**Pushed** to remote successfully.\n")
-                    }
-                    Ok(PushResult::NothingToPush) => {
-                        report.push_str("Nothing to push — already up to date.\n")
-                    }
-                    Ok(PushResult::Rejected) => {
-                        report.push_str("Push **rejected** — remote has diverged.\n");
-                        report.push_str("Try `think(action='sync')` to pull first, then push.\n");
-                    }
-                    Err(e) => report.push_str(&format!("Push failed: {e}\n")),
-                },
-                "pull" => match git.pull() {
-                    Ok(SyncResult::Success) => {
-                        report.push_str("**Pulled** new entries from remote.\n")
-                    }
-                    Ok(SyncResult::NothingToSync) => {
-                        report.push_str("Already up to date with remote.\n")
-                    }
-                    Ok(SyncResult::Conflicts(files)) => {
-                        report.push_str("**Conflict detected** during pull. Rebase aborted.\n\n");
-                        report.push_str("Conflicting files:\n");
-                        for f in &files {
-                            report.push_str(&format!("- `{f}`\n"));
-                        }
-                        report.push_str(
-                            "\nResolve manually or use `think(action='sync')` after fixing.\n",
-                        );
-                    }
-                    Err(e) => report.push_str(&format!("Pull failed: {e}\n")),
-                },
-                _ => match git.sync() {
-                    Ok(SyncResult::Success) => {
-                        report.push_str("**Synced** — pulled and pushed successfully.\n")
-                    }
-                    Ok(SyncResult::NothingToSync) => {
-                        report.push_str("Already in sync with remote.\n")
-                    }
-                    Ok(SyncResult::Conflicts(files)) => {
-                        report.push_str("**Conflict detected** during sync.\n\n");
-                        report.push_str("Conflicting files:\n");
-                        for f in &files {
-                            report.push_str(&format!("- `{f}`\n"));
-                        }
-                    }
-                    Err(e) => report.push_str(&format!("Sync failed: {e}\n")),
-                },
-            }
-
-            match git.unpushed_commit_count() {
-                Ok(0) => {}
-                Ok(n) => report.push_str(&format!("\n{n} commit(s) still pending push.\n")),
-                Err(_) => {}
-            }
-
-            Ok(report)
-        }
+        None => think_reflect(store, data_dir, &input, project, branch).await,
+        Some("promote") => think_promote(store, &input).await,
+        Some("demote") => think_demote(store, &input).await,
+        Some("relate") => think_relate(store, &input).await,
+        Some("configure_aging") => think_configure_aging(data_dir, &input),
+        Some("apply_aging") => think_apply_aging(store, data_dir).await,
+        Some("consolidate") => think_consolidate(store, data_dir, blob_store).await,
+        Some("salience") => think_salience(store, &input).await,
+        Some("perspectives") => think_perspectives(data_dir),
+        Some("status") => think_status(store, data_dir, git_store, push_mode).await,
+        Some("history") => think_history(store, &input).await,
+        Some("discover") => think_discover(store, &input).await,
+        Some("sync") => think_sync(git_store, &input).await,
         Some(unknown) => Err(crate::Error::config(format!(
             "Unknown think action: '{}'. Available: {}",
             unknown,
             THINK_ACTIONS.join(", ")
         ))),
     }
+}
+
+async fn think_reflect(
+    store: &Arc<StoreBackend>,
+    data_dir: &std::path::Path,
+    input: &ThinkInput,
+    project: Option<&str>,
+    branch: Option<&str>,
+) -> Result<String> {
+    let hot_limit = input.hot_limit.unwrap_or(10);
+    let stale_limit = input.stale_limit.unwrap_or(10);
+    execute_reflect(store, data_dir, hot_limit, stale_limit, project, branch).await
+}
+
+async fn think_promote(store: &Arc<StoreBackend>, input: &ThinkInput) -> Result<String> {
+    let raw_id = input
+        .id
+        .as_deref()
+        .ok_or_else(|| crate::Error::config("think(promote) requires 'id'"))?;
+    let chunk_id = crate::resolve::resolve_id(store, raw_id).await?;
+    let vis = input.visibility.as_deref().unwrap_or("always");
+    store.update_visibility(&chunk_id, vis).await?;
+    Ok(format!("Promoted `{}` to visibility '{}'", chunk_id, vis))
+}
+
+async fn think_demote(store: &Arc<StoreBackend>, input: &ThinkInput) -> Result<String> {
+    let raw_id = input
+        .id
+        .as_deref()
+        .ok_or_else(|| crate::Error::config("think(demote) requires 'id'"))?;
+    let chunk_id = crate::resolve::resolve_id(store, raw_id).await?;
+    let vis = input.visibility.as_deref().unwrap_or("deep_only");
+    store.update_visibility(&chunk_id, vis).await?;
+    Ok(format!("Demoted `{}` to visibility '{}'", chunk_id, vis))
+}
+
+async fn think_relate(store: &Arc<StoreBackend>, input: &ThinkInput) -> Result<String> {
+    let raw_source = input
+        .source_id
+        .as_deref()
+        .ok_or_else(|| crate::Error::config("think(relate) requires 'source_id'"))?;
+    let raw_target = input
+        .target_id
+        .as_deref()
+        .ok_or_else(|| crate::Error::config("think(relate) requires 'target_id'"))?;
+    let kind = input.kind.as_deref().unwrap_or("related_to");
+    let source_id = crate::resolve::resolve_id(store, raw_source).await?;
+    let target_id = crate::resolve::resolve_id(store, raw_target).await?;
+    let relation = crate::ChunkRelation::new(kind, &target_id);
+    store.add_relation(&source_id, relation).await?;
+    // Bidirectional: related_to gets a backward link (mirrors CLI think_relate)
+    if kind == "related_to" {
+        let backward = crate::ChunkRelation::new("related_to", &source_id);
+        store.add_relation(&target_id, backward).await?;
+    }
+    Ok(format!(
+        "Added relation '{}' from `{}` to `{}`",
+        kind, source_id, target_id
+    ))
+}
+
+fn think_configure_aging(data_dir: &std::path::Path, input: &ThinkInput) -> Result<String> {
+    let mut config = AgingConfig::load(data_dir);
+    if let Some(days) = input.degrade_after_days {
+        config.degrade_after_days = days;
+    }
+    if let Some(ref to) = input.degrade_to {
+        config.degrade_to = to.clone();
+    }
+    if let Some(ref from) = input.degrade_from {
+        config.degrade_from = from.clone();
+    }
+    config.save(data_dir)?;
+    Ok(format!(
+        "Aging configured: degrade {} → '{}' after {} days without access",
+        config.degrade_from.join(", "),
+        config.degrade_to,
+        config.degrade_after_days
+    ))
+}
+
+async fn think_apply_aging(
+    store: &Arc<StoreBackend>,
+    data_dir: &std::path::Path,
+) -> Result<String> {
+    let config = AgingConfig::load(data_dir);
+    let result = aging::apply_aging(store.as_ref(), &config).await?;
+    if result.degraded_count == 0 {
+        Ok("No chunks needed aging. All knowledge is fresh.".to_string())
+    } else {
+        Ok(format!(
+            "Aged {} chunks (degraded to '{}'): {}",
+            result.degraded_count,
+            config.degrade_to,
+            result.degraded_ids.join(", ")
+        ))
+    }
+}
+
+#[cfg(feature = "llm")]
+async fn think_consolidate(
+    store: &Arc<StoreBackend>,
+    data_dir: &std::path::Path,
+    blob_store: &Arc<crate::blob_store::BlobStore>,
+) -> Result<String> {
+    let config = crate::Config::new().with_data_dir(data_dir);
+    let llm = crate::llm::LlmBackend::from_config(&config.llm);
+    let embedder = crate::embedder::from_config(&config.embedder)
+        .map_err(|e| crate::Error::llm(format!("Failed to init embedder: {}", e)))?;
+
+    let result = crate::think::execute(
+        store.as_ref(),
+        embedder.as_ref(),
+        &llm,
+        data_dir,
+        Some(blob_store.as_ref()),
+    )
+    .await?;
+
+    if result.entries_created.is_empty() {
+        return Ok("Nothing to consolidate. Memory is well-organized.".to_string());
+    }
+
+    let mut report = format!(
+        "## Think Cycle Complete\n\n- Narrative: {}\n- Consolidations: {}\n- Learnings: {}\n\n",
+        if result.narrative_id.is_some() { "yes" } else { "no" },
+        result.consolidations_added,
+        result.learnings_added,
+    );
+    report.push_str("### Entries Created\n\n");
+    for entry in &result.entries_created {
+        report.push_str(&format!(
+            "- **{}** ({}) `{}`\n",
+            entry.content_preview, entry.entry_type, entry.id
+        ));
+    }
+    Ok(report)
+}
+
+#[cfg(not(feature = "llm"))]
+async fn think_consolidate(
+    _store: &Arc<StoreBackend>,
+    _data_dir: &std::path::Path,
+    _blob_store: &Arc<crate::blob_store::BlobStore>,
+) -> Result<String> {
+    Err(crate::Error::config(
+        "think(consolidate) requires the 'llm' feature",
+    ))
+}
+
+async fn think_salience(store: &Arc<StoreBackend>, input: &ThinkInput) -> Result<String> {
+    let limit = input.hot_limit.unwrap_or(10);
+    let hot = store.get_hot_chunks(limit * 2).await?;
+    if hot.is_empty() {
+        return Ok("No entries to analyze.".to_string());
+    }
+    let weights = crate::salience::SalienceWeights::default();
+    let top = crate::salience::top_salient(&hot, &weights, limit);
+    let mut report = String::from("## Salience Report\n\n");
+    for (idx, score) in &top {
+        let chunk = &hot[*idx];
+        let heading = chunk.heading.as_deref().unwrap_or("(no heading)");
+        report.push_str(&format!(
+            "- **{}** [composite={:.3}, inter={:.2}, persp={:.2}, rev={:.2}] `{}`\n",
+            heading,
+            score.composite,
+            score.interaction,
+            score.perspective,
+            score.revision,
+            chunk.id
+        ));
+    }
+    Ok(report)
+}
+
+fn think_perspectives(data_dir: &std::path::Path) -> Result<String> {
+    let perspectives = crate::perspective::load(data_dir)?;
+    if perspectives.is_empty() {
+        return Ok("No perspectives defined.".to_string());
+    }
+    let mut report = String::from("## Perspectives\n\n");
+    for p in &perspectives {
+        let tag = if p.builtin { " [builtin]" } else { "" };
+        report.push_str(&format!("- **{}** — {}{}\n", p.id, p.hint, tag));
+    }
+    report.push_str(&format!("\n{} perspective(s) total.", perspectives.len()));
+    Ok(report)
+}
+
+async fn think_status(
+    store: &Arc<StoreBackend>,
+    data_dir: &std::path::Path,
+    git_store: Option<&crate::git::memory_store::MemoryStore>,
+    push_mode: Option<crate::git::branch_config::PushMode>,
+) -> Result<String> {
+    let stats = store.stats().await?;
+    let aging_config = AgingConfig::load(data_dir);
+    let mut status = super::format::format_store_status(&stats, &aging_config);
+
+    if let Some(git) = git_store {
+        status.push_str("\n### Git Memory\n\n");
+        match git.unpushed_commit_count() {
+            Ok(0) => status.push_str("- **Pending commits:** 0 (in sync with remote)\n"),
+            Ok(n) => status.push_str(&format!("- **Pending commits:** {n} (not yet pushed)\n")),
+            Err(_) => {
+                status.push_str("- **Pending commits:** unknown (no remote configured)\n")
+            }
+        }
+        if let Some(pm) = push_mode {
+            status.push_str(&format!("- **Push mode:** {pm}\n"));
+        }
+    }
+
+    Ok(status)
+}
+
+async fn think_history(store: &Arc<StoreBackend>, input: &ThinkInput) -> Result<String> {
+    let raw_id = input
+        .id
+        .as_deref()
+        .ok_or_else(|| crate::Error::config("think(history) requires 'id'"))?;
+    let chunk_id = crate::resolve::resolve_id(store, raw_id).await?;
+    let chunk = store
+        .get_by_id(&chunk_id)
+        .await?
+        .ok_or_else(|| crate::Error::not_found(format!("Entry '{}' not found", chunk_id)))?;
+
+    let heading = chunk.heading.as_deref().unwrap_or("(no heading)");
+    let mut report = format!("## Entry History: {} `{}`\n\n", heading, chunk.id);
+    report.push_str(&format!("- **Type:** {}\n", chunk.entry_type));
+    report.push_str(&format!("- **Visibility:** {}\n", chunk.visibility));
+    report.push_str(&format!("- **Source:** {}\n", chunk.source_file));
+    if !chunk.perspectives.is_empty() {
+        report.push_str(&format!(
+            "- **Perspectives:** {}\n",
+            chunk.perspectives.join(", ")
+        ));
+    }
+
+    if chunk.relations.is_empty() {
+        report.push_str("\nNo relations.\n");
+    } else {
+        report.push_str(&format!("\n### Relations ({})\n\n", chunk.relations.len()));
+        for rel in &chunk.relations {
+            report.push_str(&format!(
+                "- {} → `{}`\n",
+                rel.kind,
+                crate::chunk::short_id(&rel.target_id)
+            ));
+        }
+    }
+
+    report.push_str(&format!(
+        "\n### Content\n\n{}\n",
+        if chunk.content.len() > 500 {
+            let end = chunk.content.floor_char_boundary(500);
+            format!("{}...", &chunk.content[..end])
+        } else {
+            chunk.content.clone()
+        }
+    ));
+
+    Ok(report)
+}
+
+async fn think_discover(store: &Arc<StoreBackend>, input: &ThinkInput) -> Result<String> {
+    let limit = input.hot_limit.unwrap_or(10);
+    crate::think::discover_unlinked_pairs(store, limit).await
+}
+
+async fn think_sync(
+    git_store: Option<&crate::git::memory_store::MemoryStore>,
+    input: &ThinkInput,
+) -> Result<String> {
+    use crate::git::{PushResult, SyncResult};
+
+    let git = git_store.ok_or_else(|| {
+        crate::Error::config(
+            "Git memory storage is not configured. Run `veclayer init --share` first.",
+        )
+    })?;
+
+    let direction = input.direction.as_deref().unwrap_or("both");
+    let mut report = String::from("## Sync Report\n\n");
+
+    match direction {
+        "push" => match git.push() {
+            Ok(PushResult::Success) => report.push_str("**Pushed** to remote successfully.\n"),
+            Ok(PushResult::NothingToPush) => {
+                report.push_str("Nothing to push — already up to date.\n")
+            }
+            Ok(PushResult::Rejected) => {
+                report.push_str("Push **rejected** — remote has diverged.\n");
+                report.push_str("Try `think(action='sync')` to pull first, then push.\n");
+            }
+            Err(e) => report.push_str(&format!("Push failed: {e}\n")),
+        },
+        "pull" => match git.pull() {
+            Ok(SyncResult::Success) => report.push_str("**Pulled** new entries from remote.\n"),
+            Ok(SyncResult::NothingToSync) => {
+                report.push_str("Already up to date with remote.\n")
+            }
+            Ok(SyncResult::Conflicts(files)) => {
+                report.push_str("**Conflict detected** during pull. Rebase aborted.\n\n");
+                report.push_str("Conflicting files:\n");
+                for f in &files {
+                    report.push_str(&format!("- `{f}`\n"));
+                }
+                report
+                    .push_str("\nResolve manually or use `think(action='sync')` after fixing.\n");
+            }
+            Err(e) => report.push_str(&format!("Pull failed: {e}\n")),
+        },
+        _ => match git.sync() {
+            Ok(SyncResult::Success) => {
+                report.push_str("**Synced** — pulled and pushed successfully.\n")
+            }
+            Ok(SyncResult::NothingToSync) => report.push_str("Already in sync with remote.\n"),
+            Ok(SyncResult::Conflicts(files)) => {
+                report.push_str("**Conflict detected** during sync.\n\n");
+                report.push_str("Conflicting files:\n");
+                for f in &files {
+                    report.push_str(&format!("- `{f}`\n"));
+                }
+            }
+            Err(e) => report.push_str(&format!("Sync failed: {e}\n")),
+        },
+    }
+
+    match git.unpushed_commit_count() {
+        Ok(0) => {}
+        Ok(n) => report.push_str(&format!("\n{n} commit(s) still pending push.\n")),
+        Err(_) => {}
+    }
+
+    Ok(report)
 }
 
 async fn execute_reflect(
@@ -1019,159 +1061,6 @@ async fn execute_reflect(
     Ok(report)
 }
 
-/// A discovered pair: two entries that are semantically similar but have no explicit relation.
-struct DiscoveredPair {
-    entry_a: crate::HierarchicalChunk,
-    entry_b: crate::HierarchicalChunk,
-    similarity: f32,
-}
-
-/// Find entries that are semantically similar but share no explicit relation.
-///
-/// Algorithm:
-/// 1. List up to `scan_limit * 2` entries as candidates.
-/// 2. For each candidate that has an embedding, search for its top-5 ANN neighbors.
-/// 3. For each (candidate, neighbor) pair, check whether a relation already exists in either direction.
-/// 4. Deduplicate symmetric pairs using a sorted-ID set key.
-/// 5. Sort by similarity descending and return up to `output_limit`.
-async fn discover_unlinked_pairs(store: &Arc<StoreBackend>, output_limit: usize) -> Result<String> {
-    const SCAN_LIMIT: usize = 100;
-    const NEIGHBORS_PER_ENTRY: usize = 5;
-
-    let candidates = store.list_entries(None, None, None, SCAN_LIMIT).await?;
-
-    if candidates.is_empty() {
-        return Ok("No entries in the store. Nothing to discover.".to_string());
-    }
-
-    let mut seen_pairs: std::collections::HashSet<(String, String)> =
-        std::collections::HashSet::new();
-    let mut pairs: Vec<DiscoveredPair> = Vec::new();
-
-    for entry in &candidates {
-        let embedding = match &entry.embedding {
-            Some(e) => e,
-            None => continue,
-        };
-
-        let neighbors = store
-            .search(embedding, NEIGHBORS_PER_ENTRY + 1, None, None)
-            .await?;
-
-        for neighbor_result in &neighbors {
-            let neighbor = &neighbor_result.chunk;
-
-            if neighbor.id == entry.id {
-                continue;
-            }
-
-            // Canonical pair key: smaller ID first so A↔B == B↔A
-            let pair_key = if entry.id < neighbor.id {
-                (entry.id.clone(), neighbor.id.clone())
-            } else {
-                (neighbor.id.clone(), entry.id.clone())
-            };
-
-            if seen_pairs.contains(&pair_key) {
-                continue;
-            }
-
-            let already_related = entry.relations.iter().any(|r| r.target_id == neighbor.id)
-                || neighbor.relations.iter().any(|r| r.target_id == entry.id);
-
-            if already_related {
-                seen_pairs.insert(pair_key);
-                continue;
-            }
-
-            seen_pairs.insert(pair_key);
-            pairs.push(DiscoveredPair {
-                entry_a: entry.clone(),
-                entry_b: neighbor.clone(),
-                similarity: neighbor_result.score,
-            });
-        }
-    }
-
-    if pairs.is_empty() {
-        return Ok(
-            "No unlinked similar entries found. All semantically close pairs are already related."
-                .to_string(),
-        );
-    }
-
-    pairs.sort_by(|a, b| {
-        b.similarity
-            .partial_cmp(&a.similarity)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    pairs.truncate(output_limit);
-
-    format_discovered_pairs(&pairs)
-}
-
-/// Format discovered pairs as a markdown report.
-fn format_discovered_pairs(pairs: &[DiscoveredPair]) -> Result<String> {
-    let mut report = String::from("## Discover: Unlinked Similar Entries\n\n");
-    report.push_str("These entry pairs are semantically close but share no explicit relation.\n");
-    report
-        .push_str("Consider linking them with `think(action='relate')` or consolidating them.\n\n");
-
-    for (i, pair) in pairs.iter().enumerate() {
-        let heading_a = pair
-            .entry_a
-            .heading
-            .as_deref()
-            .unwrap_or_else(|| pair.entry_a.content.lines().next().unwrap_or("(untitled)"));
-        let heading_b = pair
-            .entry_b
-            .heading
-            .as_deref()
-            .unwrap_or_else(|| pair.entry_b.content.lines().next().unwrap_or("(untitled)"));
-
-        let preview_a = &heading_a[..heading_a.len().min(100)];
-        let preview_b = &heading_b[..heading_b.len().min(100)];
-
-        report.push_str(&format!(
-            "### Discovery {} (similarity: {:.2})\n\n",
-            i + 1,
-            pair.similarity
-        ));
-        report.push_str(&format!(
-            "**Entry A:** `{}` — \"{}\"\n",
-            crate::chunk::short_id(&pair.entry_a.id),
-            preview_a
-        ));
-        if !pair.entry_a.perspectives.is_empty() {
-            report.push_str(&format!(
-                "  perspectives: {}\n",
-                pair.entry_a.perspectives.join(", ")
-            ));
-        }
-        report.push('\n');
-        report.push_str(&format!(
-            "**Entry B:** `{}` — \"{}\"\n",
-            crate::chunk::short_id(&pair.entry_b.id),
-            preview_b
-        ));
-        if !pair.entry_b.perspectives.is_empty() {
-            report.push_str(&format!(
-                "  perspectives: {}\n",
-                pair.entry_b.perspectives.join(", ")
-            ));
-        }
-        report.push('\n');
-        report.push_str("**Potential:** These entries are semantically close but not linked.\n\n");
-    }
-
-    report.push_str(&format!(
-        "{} pair(s) found. Use `think(action='relate')` to link entries or `recall(similar_to='<id>')` to explore further.\n",
-        pairs.len()
-    ));
-
-    Ok(report)
-}
-
 pub fn build_share_token(input: ShareInput) -> serde_json::Value {
     let can = if input.can.is_empty() {
         vec!["recall".to_string(), "focus".to_string()]
@@ -1209,6 +1098,73 @@ mod tests {
         let store = StoreBackend::open(dir.path(), 384, false).await.unwrap();
         let blob_store = crate::blob_store::BlobStore::open(dir.path()).unwrap();
         (Arc::new(store), Arc::new(blob_store), dir)
+    }
+
+    /// Build a minimal `ToolContext` for tests.
+    ///
+    /// All optional fields default to `None`; override them in the returned struct if needed.
+    fn test_ctx(
+        store: &Arc<StoreBackend>,
+        embedder: &Arc<dyn crate::Embedder + Send + Sync>,
+        blob_store: &Arc<crate::blob_store::BlobStore>,
+        data_dir: &std::path::Path,
+    ) -> ToolContext {
+        ToolContext {
+            store: Arc::clone(store),
+            embedder: Arc::clone(embedder),
+            blob_store: Arc::clone(blob_store),
+            data_dir: data_dir.to_path_buf(),
+            project: None,
+            branch: None,
+            git_store: None,
+            push_mode: crate::git::branch_config::PushMode::Off,
+        }
+    }
+
+    /// Build a `ToolContext` for think tests (embedder not used by think, so a `MockEmbedder` is
+    /// created internally).
+    fn test_ctx_think(
+        store: &Arc<StoreBackend>,
+        blob_store: &Arc<crate::blob_store::BlobStore>,
+        data_dir: &std::path::Path,
+    ) -> ToolContext {
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
+        ToolContext {
+            store: Arc::clone(store),
+            embedder,
+            blob_store: Arc::clone(blob_store),
+            data_dir: data_dir.to_path_buf(),
+            project: None,
+            branch: None,
+            git_store: None,
+            push_mode: crate::git::branch_config::PushMode::Off,
+        }
+    }
+
+    /// Build a `ToolContext` for recall/focus tests (blob_store and data_dir unused, so
+    /// sensible defaults are provided).
+    fn test_ctx_recall(
+        store: &Arc<StoreBackend>,
+        embedder: &Arc<dyn crate::Embedder + Send + Sync>,
+    ) -> ToolContext {
+        // blob_store not used by recall/focus — create a temporary one
+        let tmp = tempfile::tempdir().unwrap();
+        let blob_store = Arc::new(
+            crate::blob_store::BlobStore::open(tmp.path()).unwrap(),
+        );
+        // Keep tmp alive via a static-ish approach: leak the dir into a Box so its path is valid.
+        // This is test-only and intentionally leaks a small TempDir per call.
+        let data_dir = Box::leak(Box::new(tmp)).path().to_path_buf();
+        ToolContext {
+            store: Arc::clone(store),
+            embedder: Arc::clone(embedder),
+            blob_store,
+            data_dir,
+            project: None,
+            branch: None,
+            git_store: None,
+            push_mode: crate::git::branch_config::PushMode::Off,
+        }
     }
 
     #[test]
@@ -1268,16 +1224,7 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result = execute_think(
-            &store,
-            dir.path(),
-            &blob_store,
-            input,
-            None,
-            None,
-            None,
-            None,
-        )
+        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
         .await
         .unwrap();
         assert!(result.contains("Perspectives"));
@@ -1309,16 +1256,7 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result = execute_think(
-            &store,
-            dir.path(),
-            &blob_store,
-            input,
-            None,
-            None,
-            None,
-            None,
-        )
+        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
         .await
         .unwrap();
         assert!(result.contains("Store Status"));
@@ -1349,16 +1287,7 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result = execute_think(
-            &store,
-            dir.path(),
-            &blob_store,
-            input,
-            None,
-            None,
-            None,
-            None,
-        )
+        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
         .await
         .unwrap();
         assert!(result.contains("Entry History"));
@@ -1385,16 +1314,7 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result = execute_think(
-            &store,
-            dir.path(),
-            &blob_store,
-            input,
-            None,
-            None,
-            None,
-            None,
-        )
+        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
         .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("requires 'id'"));
@@ -1418,16 +1338,7 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result = execute_think(
-            &store,
-            dir.path(),
-            &blob_store,
-            input,
-            None,
-            None,
-            None,
-            None,
-        )
+        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
         .await
         .unwrap();
         assert!(result.contains("Total entries"));
@@ -1452,16 +1363,7 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result = execute_think(
-            &store,
-            dir.path(),
-            &blob_store,
-            input,
-            None,
-            None,
-            None,
-            None,
-        )
+        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
         .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1490,16 +1392,7 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result = execute_think(
-            &store,
-            dir.path(),
-            &blob_store,
-            input,
-            None,
-            None,
-            None,
-            None,
-        )
+        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
         .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1529,16 +1422,7 @@ mod tests {
             direction: None,
         };
         // With no git_store, status should still return store info without git section
-        let result = execute_think(
-            &store,
-            dir.path(),
-            &blob_store,
-            input,
-            None,
-            None,
-            None,
-            None,
-        )
+        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
         .await
         .unwrap();
         assert!(result.contains("Store Status"));
@@ -1763,7 +1647,7 @@ mod tests {
             ongoing: Some(true),
         };
         let ongoing_results =
-            execute_recall(&store, &embedder, input_ongoing, None, None, None, None)
+            execute_recall(&test_ctx_recall(&store, &embedder), input_ongoing, None)
                 .await
                 .unwrap();
         assert_eq!(
@@ -1794,7 +1678,7 @@ mod tests {
             until: None,
             ongoing: None,
         };
-        let all_results = execute_recall(&store, &embedder, input_all, None, None, None, None)
+        let all_results = execute_recall(&test_ctx_recall(&store, &embedder), input_all, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1840,7 +1724,7 @@ mod tests {
             until: None,
             ongoing: None,
         };
-        let all_results = execute_recall(&store, &embedder, input_all, None, None, None, None)
+        let all_results = execute_recall(&test_ctx_recall(&store, &embedder), input_all, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1864,7 +1748,7 @@ mod tests {
             ongoing: Some(true),
         };
         let ongoing_results =
-            execute_recall(&store, &embedder, input_ongoing, None, None, None, None)
+            execute_recall(&test_ctx_recall(&store, &embedder), input_ongoing, None)
                 .await
                 .unwrap();
         assert_eq!(
@@ -1892,7 +1776,7 @@ mod tests {
             ongoing: Some(false),
         };
         let not_ongoing_results =
-            execute_recall(&store, &embedder, input_not_ongoing, None, None, None, None)
+            execute_recall(&test_ctx_recall(&store, &embedder), input_not_ongoing, None)
                 .await
                 .unwrap();
         assert_eq!(
@@ -1935,16 +1819,7 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result = execute_think(
-            &store,
-            dir.path(),
-            &blob_store,
-            input,
-            None,
-            None,
-            None,
-            None,
-        )
+        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
         .await
         .unwrap();
         assert!(result.contains("Nothing to discover") || result.contains("No entries"));
@@ -1986,16 +1861,7 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result = execute_think(
-            &store,
-            dir.path(),
-            &blob_store,
-            input,
-            None,
-            None,
-            None,
-            None,
-        )
+        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
         .await
         .unwrap();
 
@@ -2047,16 +1913,7 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result = execute_think(
-            &store,
-            dir.path(),
-            &blob_store,
-            input,
-            None,
-            None,
-            None,
-            None,
-        )
+        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
         .await
         .unwrap();
 
@@ -2198,16 +2055,7 @@ mod tests {
             impression_strength: None,
             scope: "project".to_string(),
         };
-        let result = execute_store(
-            &store,
-            &embedder,
-            &blob_store,
-            input,
-            None,
-            None,
-            None,
-            crate::git::branch_config::PushMode::Off,
-        )
+        let result = execute_store(&test_ctx(&store, &embedder, &blob_store, _dir.path()), input)
         .await
         .unwrap();
         let msg = result.as_str().unwrap();
@@ -2234,16 +2082,7 @@ mod tests {
             impression_strength: None,
             scope: "project".to_string(),
         };
-        execute_store(
-            &store,
-            &embedder,
-            &blob_store,
-            input,
-            Some("myproj"),
-            None,
-            None,
-            crate::git::branch_config::PushMode::Off,
-        )
+        execute_store(&ToolContext { project: Some("myproj".to_string()), ..test_ctx(&store, &embedder, &blob_store, _dir.path()) }, input)
         .await
         .unwrap();
 
@@ -2277,16 +2116,7 @@ mod tests {
             impression_strength: None,
             scope: "personal".to_string(),
         };
-        execute_store(
-            &store,
-            &embedder,
-            &blob_store,
-            input,
-            Some("myproj"),
-            None,
-            None,
-            crate::git::branch_config::PushMode::Off,
-        )
+        execute_store(&ToolContext { project: Some("myproj".to_string()), ..test_ctx(&store, &embedder, &blob_store, _dir.path()) }, input)
         .await
         .unwrap();
 
@@ -2349,16 +2179,7 @@ mod tests {
             impression_strength: None,
             scope: "project".to_string(),
         };
-        let result = execute_store(
-            &store,
-            &embedder,
-            &blob_store,
-            input,
-            None,
-            None,
-            None,
-            crate::git::branch_config::PushMode::Off,
-        )
+        let result = execute_store(&test_ctx(&store, &embedder, &blob_store, _dir.path()), input)
         .await
         .unwrap();
         let msg = result.as_str().unwrap();
@@ -2387,16 +2208,7 @@ mod tests {
             impression_strength: None,
             scope: "project".to_string(),
         };
-        let result = execute_store(
-            &store,
-            &embedder,
-            &blob_store,
-            input,
-            None,
-            None,
-            None,
-            crate::git::branch_config::PushMode::Off,
-        )
+        let result = execute_store(&test_ctx(&store, &embedder, &blob_store, _dir.path()), input)
         .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Unknown entry_type"));
@@ -2422,16 +2234,7 @@ mod tests {
             impression_strength: None,
             scope: "project".to_string(),
         };
-        let result = execute_store(
-            &store,
-            &embedder,
-            &blob_store,
-            input,
-            None,
-            None,
-            None,
-            crate::git::branch_config::PushMode::Off,
-        )
+        let result = execute_store(&test_ctx(&store, &embedder, &blob_store, _dir.path()), input)
         .await
         .unwrap();
         let msg = result.as_str().unwrap();
@@ -2457,16 +2260,7 @@ mod tests {
             impression_strength: None,
             scope: "branch".to_string(),
         };
-        execute_store(
-            &store,
-            &embedder,
-            &blob_store,
-            input,
-            Some("myproj"),
-            Some("main"),
-            None,
-            crate::git::branch_config::PushMode::Off,
-        )
+        execute_store(&ToolContext { project: Some("myproj".to_string()), branch: Some("main".to_string()), ..test_ctx(&store, &embedder, &blob_store, _dir.path()) }, input)
         .await
         .unwrap();
 
@@ -2508,7 +2302,7 @@ mod tests {
             question: None,
             limit: 10,
         };
-        let response = execute_focus(&store, &embedder, input, None, None)
+        let response = execute_focus(&test_ctx_recall(&store, &embedder), input)
             .await
             .unwrap();
 
@@ -2528,7 +2322,7 @@ mod tests {
             question: None,
             limit: 10,
         };
-        let result = execute_focus(&store, &embedder, input, None, None).await;
+        let result = execute_focus(&test_ctx_recall(&store, &embedder), input).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -2562,7 +2356,7 @@ mod tests {
             question: Some("architecture".to_string()),
             limit: 10,
         };
-        let response = execute_focus(&store, &embedder, input, None, None)
+        let response = execute_focus(&test_ctx_recall(&store, &embedder), input)
             .await
             .unwrap();
 
@@ -2598,7 +2392,7 @@ mod tests {
             question: None,
             limit: 2,
         };
-        let response = execute_focus(&store, &embedder, input, None, None)
+        let response = execute_focus(&test_ctx_recall(&store, &embedder), input)
             .await
             .unwrap();
 
@@ -2636,7 +2430,7 @@ mod tests {
             direction: None,
         };
         let result =
-            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None)
+            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
                 .await
                 .unwrap();
         assert!(result.contains("Promoted"), "got: {result}");
@@ -2664,7 +2458,7 @@ mod tests {
             direction: None,
         };
         let result =
-            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None).await;
+            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("requires 'id'"));
     }
@@ -2693,7 +2487,7 @@ mod tests {
             direction: None,
         };
         let result =
-            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None)
+            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
                 .await
                 .unwrap();
         assert!(result.contains("Demoted"), "got: {result}");
@@ -2721,7 +2515,7 @@ mod tests {
             direction: None,
         };
         let result =
-            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None).await;
+            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("requires 'id'"));
     }
@@ -2755,7 +2549,7 @@ mod tests {
             direction: None,
         };
         let result =
-            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None)
+            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
                 .await
                 .unwrap();
         assert!(result.contains("Added relation"), "got: {result}");
@@ -2780,7 +2574,7 @@ mod tests {
             direction: None,
         };
         let result =
-            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None).await;
+            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None).await;
         assert!(result.is_err());
         assert!(
             result.unwrap_err().to_string().contains("requires 'source_id'")
@@ -2805,7 +2599,7 @@ mod tests {
             direction: None,
         };
         let result =
-            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None).await;
+            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None).await;
         assert!(result.is_err());
         assert!(
             result.unwrap_err().to_string().contains("requires 'target_id'")
@@ -2833,7 +2627,7 @@ mod tests {
             direction: None,
         };
         let result =
-            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None)
+            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
                 .await
                 .unwrap();
         assert!(result.contains("Aging configured"), "got: {result}");
@@ -2860,7 +2654,7 @@ mod tests {
             direction: None,
         };
         let result =
-            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None)
+            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
                 .await
                 .unwrap();
         assert!(
@@ -2890,7 +2684,7 @@ mod tests {
             direction: None,
         };
         let result =
-            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None)
+            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
                 .await
                 .unwrap();
         assert!(result.contains("No entries to analyze"), "got: {result}");
@@ -2922,7 +2716,7 @@ mod tests {
             direction: None,
         };
         let result =
-            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None)
+            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
                 .await
                 .unwrap();
         assert!(result.contains("Salience Report"), "got: {result}");
@@ -2956,7 +2750,7 @@ mod tests {
             until: None,
             ongoing: None,
         };
-        let results = execute_recall(&store, &embedder, input, None, None, None, None)
+        let results = execute_recall(&test_ctx_recall(&store, &embedder), input, None)
             .await
             .unwrap();
 
@@ -3005,7 +2799,11 @@ mod tests {
             until: None,
             ongoing: None,
         };
-        let results = execute_recall(&store, &embedder, input, Some("proj-a"), None, None, None)
+        let ctx = ToolContext {
+            project: Some("proj-a".to_string()),
+            ..test_ctx_recall(&store, &embedder)
+        };
+        let results = execute_recall(&ctx, input, None)
             .await
             .unwrap();
 
@@ -3045,7 +2843,7 @@ mod tests {
             direction: None,
         };
         let result =
-            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None)
+            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
                 .await
                 .unwrap();
         assert!(result.contains("Hot Chunks"), "got: {result}");
@@ -3079,7 +2877,7 @@ mod tests {
             direction: None,
         };
         let result =
-            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None)
+            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
                 .await
                 .unwrap();
         assert!(result.contains("Total chunks: 1"), "got: {result}");
