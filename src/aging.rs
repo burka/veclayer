@@ -144,7 +144,15 @@ pub async fn apply_aging<S: VectorStore>(store: &S, config: &AgingConfig) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
+
+    use crate::access_profile::AccessProfile;
+    use crate::chunk::{ChunkLevel, HierarchicalChunk};
+    use crate::store::{SearchResult, StoreStats};
+    use crate::{ChunkRelation, Result};
+
+    // --- AgingConfig tests ---
 
     #[test]
     fn test_aging_config_default() {
@@ -179,5 +187,278 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let loaded = AgingConfig::load(temp_dir.path());
         assert_eq!(loaded.degrade_after_days, 30); // default
+    }
+
+    #[test]
+    fn test_aging_config_save_and_load_roundtrip_preserves_all_fields() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = AgingConfig {
+            degrade_after_days: 7,
+            degrade_to: "seasonal".to_string(),
+            degrade_from: vec!["normal".to_string()],
+            salience_protection: 0.5,
+        };
+        config.save(temp_dir.path()).unwrap();
+        let loaded = AgingConfig::load(temp_dir.path());
+        assert_eq!(loaded.degrade_after_days, 7);
+        assert_eq!(loaded.degrade_to, "seasonal");
+        assert_eq!(loaded.degrade_from, vec!["normal"]);
+        assert!((loaded.salience_protection - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_aging_config_load_corrupted_falls_back_to_default() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join(AGING_CONFIG_FILE);
+        std::fs::write(&path, b"this is not valid json").unwrap();
+        let loaded = AgingConfig::load(temp_dir.path());
+        // Corrupted file silently falls back to default
+        assert_eq!(loaded.degrade_after_days, 30);
+    }
+
+    #[test]
+    fn test_stale_seconds_one_day() {
+        let config = AgingConfig {
+            degrade_after_days: 1,
+            ..AgingConfig::default()
+        };
+        assert_eq!(config.stale_seconds(), 86_400);
+    }
+
+    #[test]
+    fn test_stale_seconds_zero_days() {
+        let config = AgingConfig {
+            degrade_after_days: 0,
+            ..AgingConfig::default()
+        };
+        assert_eq!(config.stale_seconds(), 0);
+    }
+
+    #[test]
+    fn test_stale_seconds_large_value() {
+        let config = AgingConfig {
+            degrade_after_days: 365,
+            ..AgingConfig::default()
+        };
+        assert_eq!(config.stale_seconds(), 365 * 86_400);
+    }
+
+    // --- AgingResult serde ---
+
+    #[test]
+    fn test_aging_result_serializes_to_json() {
+        let result = AgingResult {
+            degraded_count: 2,
+            degraded_ids: vec!["abc".to_string(), "def".to_string()],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("degraded_count"));
+        assert!(json.contains("abc"));
+    }
+
+    #[test]
+    fn test_aging_result_empty() {
+        let result = AgingResult {
+            degraded_count: 0,
+            degraded_ids: vec![],
+        };
+        assert_eq!(result.degraded_count, 0);
+        assert!(result.degraded_ids.is_empty());
+    }
+
+    // --- apply_aging integration tests ---
+
+    /// Minimal in-memory VectorStore for aging tests.
+    struct MockStore {
+        stale_chunks: Vec<HierarchicalChunk>,
+        degraded: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    impl MockStore {
+        fn new(stale_chunks: Vec<HierarchicalChunk>) -> Self {
+            Self {
+                stale_chunks,
+                degraded: Arc::new(Mutex::new(vec![])),
+            }
+        }
+
+        fn degraded_ids(&self) -> Vec<String> {
+            self.degraded
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect()
+        }
+    }
+
+    impl crate::VectorStore for MockStore {
+        async fn insert_chunks(&self, _chunks: Vec<HierarchicalChunk>) -> Result<()> {
+            Ok(())
+        }
+
+        async fn search(
+            &self,
+            _query_embedding: &[f32],
+            _limit: usize,
+            _level_filter: Option<ChunkLevel>,
+            _perspective: Option<&str>,
+        ) -> Result<Vec<SearchResult>> {
+            Ok(vec![])
+        }
+
+        async fn get_children(&self, _parent_id: &str) -> Result<Vec<HierarchicalChunk>> {
+            Ok(vec![])
+        }
+
+        async fn get_by_id(&self, _id: &str) -> Result<Option<HierarchicalChunk>> {
+            Ok(None)
+        }
+
+        async fn get_by_id_prefix(&self, _prefix: &str) -> Result<Option<HierarchicalChunk>> {
+            Ok(None)
+        }
+
+        async fn get_by_source(&self, _source_file: &str) -> Result<Vec<HierarchicalChunk>> {
+            Ok(vec![])
+        }
+
+        async fn delete_by_source(&self, _source_file: &str) -> Result<usize> {
+            Ok(0)
+        }
+
+        async fn stats(&self) -> Result<StoreStats> {
+            Ok(StoreStats::default())
+        }
+
+        async fn update_access_profiles(
+            &self,
+            _updates: Vec<(String, AccessProfile)>,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn update_visibility(&self, chunk_id: &str, visibility: &str) -> Result<()> {
+            self.degraded
+                .lock()
+                .unwrap()
+                .push((chunk_id.to_string(), visibility.to_string()));
+            Ok(())
+        }
+
+        async fn add_relation(&self, _chunk_id: &str, _relation: ChunkRelation) -> Result<()> {
+            Ok(())
+        }
+
+        async fn get_hot_chunks(&self, _limit: usize) -> Result<Vec<HierarchicalChunk>> {
+            Ok(vec![])
+        }
+
+        async fn get_stale_chunks(
+            &self,
+            _stale_seconds: i64,
+            _limit: usize,
+        ) -> Result<Vec<HierarchicalChunk>> {
+            Ok(self.stale_chunks.clone())
+        }
+
+        async fn list_entries(
+            &self,
+            _perspective: Option<&str>,
+            _since: Option<i64>,
+            _until: Option<i64>,
+            _limit: usize,
+        ) -> Result<Vec<HierarchicalChunk>> {
+            Ok(vec![])
+        }
+
+        async fn get_pending_embeddings(&self, _limit: usize) -> Result<Vec<HierarchicalChunk>> {
+            Ok(vec![])
+        }
+
+        async fn batch_update_embeddings(
+            &self,
+            _updates: Vec<(String, Vec<f32>)>,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn count_pending_embeddings(&self) -> Result<usize> {
+            Ok(0)
+        }
+    }
+
+    /// Build a truly stale chunk: last_rolled far in the past, no recent accesses.
+    fn stale_chunk(id_suffix: &str, visibility: &str) -> HierarchicalChunk {
+        let far_past = 1_000_000_i64; // epoch seconds well in the past
+        let mut chunk = HierarchicalChunk::new(
+            format!("stale content {}", id_suffix),
+            ChunkLevel::CONTENT,
+            None,
+            String::new(),
+            "test.md".to_string(),
+        );
+        chunk.visibility = visibility.to_string();
+        // Place last_rolled far in the past so age_since_roll > cutoff_secs
+        chunk.access_profile.last_rolled = far_past;
+        chunk
+    }
+
+    #[tokio::test]
+    async fn test_apply_aging_degrades_stale_normal_chunk() {
+        let chunk = stale_chunk("a", "normal");
+        let store = MockStore::new(vec![chunk.clone()]);
+        let config = AgingConfig::default();
+        let result = apply_aging(&store, &config).await.unwrap();
+        assert_eq!(result.degraded_count, 1);
+        assert_eq!(result.degraded_ids, vec![chunk.id]);
+        assert_eq!(store.degraded_ids().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_apply_aging_skips_wrong_visibility() {
+        // A stale chunk with visibility "deep_only" should NOT be degraded
+        // because degrade_from = ["normal"] by default.
+        let chunk = stale_chunk("b", "deep_only");
+        let store = MockStore::new(vec![chunk]);
+        let config = AgingConfig::default();
+        let result = apply_aging(&store, &config).await.unwrap();
+        assert_eq!(result.degraded_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_apply_aging_skips_high_salience_chunk() {
+        // A stale chunk with maximum perspectives achieves composite = 0.25
+        // (perspective=1.0, w_perspective=0.25, no interaction/revision).
+        // Set protection threshold just below that to verify it's protected.
+        let mut chunk = stale_chunk("c", "normal");
+        chunk.perspectives = (0..8).map(|i| format!("p{}", i)).collect();
+        let store = MockStore::new(vec![chunk]);
+        let config = AgingConfig {
+            salience_protection: 0.20, // 0.25 composite > 0.20 threshold → protected
+            ..AgingConfig::default()
+        };
+        let result = apply_aging(&store, &config).await.unwrap();
+        assert_eq!(result.degraded_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_apply_aging_no_stale_chunks() {
+        let store = MockStore::new(vec![]);
+        let config = AgingConfig::default();
+        let result = apply_aging(&store, &config).await.unwrap();
+        assert_eq!(result.degraded_count, 0);
+        assert!(result.degraded_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_apply_aging_skips_chunk_with_recent_activity() {
+        // hour > 0 means recent activity — should not be degraded.
+        let mut chunk = stale_chunk("d", "normal");
+        chunk.access_profile.hour = 1;
+        let store = MockStore::new(vec![chunk]);
+        let config = AgingConfig::default();
+        let result = apply_aging(&store, &config).await.unwrap();
+        assert_eq!(result.degraded_count, 0);
     }
 }

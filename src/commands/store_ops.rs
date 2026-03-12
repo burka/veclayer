@@ -728,4 +728,161 @@ mod tests {
 
         Ok(())
     }
+
+    // ── write_git_storage_config ──────────────────────────────────────────────
+
+    #[test]
+    fn test_write_git_storage_config_creates_new_file() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        write_git_storage_config(temp_dir.path())?;
+
+        let config_path = temp_dir.path().join("config.toml");
+        assert!(config_path.exists());
+        let content = std::fs::read_to_string(&config_path)?;
+        assert!(content.contains("storage = \"git\""));
+        assert!(content.contains("push = \"review\""));
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_git_storage_config_existing_file_without_fields() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let config_path = temp_dir.path().join("config.toml");
+        std::fs::write(&config_path, "project = \"test\"\n")?;
+
+        write_git_storage_config(temp_dir.path())?;
+
+        let content = std::fs::read_to_string(&config_path)?;
+        assert!(content.contains("project = \"test\""));
+        assert!(content.contains("storage = \"git\""));
+        assert!(content.contains("push = \"review\""));
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_git_storage_config_does_not_duplicate_existing_fields() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let config_path = temp_dir.path().join("config.toml");
+        std::fs::write(&config_path, "storage = \"lancedb\"\npush = \"manual\"\n")?;
+
+        write_git_storage_config(temp_dir.path())?;
+
+        let content = std::fs::read_to_string(&config_path)?;
+        // Original values preserved — function must not overwrite existing keys
+        assert!(content.contains("storage = \"lancedb\""));
+        assert!(content.contains("push = \"manual\""));
+        // Must not have added a second storage or push line
+        assert_eq!(content.matches("storage").count(), 1);
+        assert_eq!(content.matches("push").count(), 1);
+        Ok(())
+    }
+
+    // ── minutes_ago ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_minutes_ago_basic() {
+        assert_eq!(minutes_ago(0, 3600), 60);
+        assert_eq!(minutes_ago(0, 60), 1);
+        assert_eq!(minutes_ago(0, 0), 0);
+    }
+
+    #[test]
+    fn test_minutes_ago_clamps_negative() {
+        // future created_at relative to now → should return 0, not negative
+        assert_eq!(minutes_ago(1000, 500), 0);
+    }
+
+    // ── print_stale_result ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_print_stale_result_text_returns_zero() {
+        let code = print_stale_result("text", None, 1000);
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn test_print_stale_result_text_fresh_returns_zero() {
+        let code = print_stale_result("text", Some((900, true)), 1000);
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn test_print_stale_result_text_stale_returns_zero() {
+        // text mode always returns 0 regardless of freshness
+        let code = print_stale_result("text", Some((100, false)), 1000);
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn test_print_stale_result_llm_nudge_no_entries_returns_two() {
+        let code = print_stale_result("llm-nudge", None, 1000);
+        assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn test_print_stale_result_llm_nudge_fresh_returns_zero() {
+        let code = print_stale_result("llm-nudge", Some((900, true)), 1000);
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn test_print_stale_result_llm_nudge_stale_returns_two() {
+        let code = print_stale_result("llm-nudge", Some((100, false)), 1000);
+        assert_eq!(code, 2);
+    }
+
+    // ── archive error path ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_archive_empty_ids_returns_error() {
+        let temp_dir = TempDir::new().unwrap();
+        let err = archive(temp_dir.path(), &[]).await.unwrap_err();
+        assert!(
+            err.to_string().contains("No entry IDs"),
+            "expected 'No entry IDs', got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_archive_unknown_id_returns_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let err = archive(temp_dir.path(), &["deadbeef".to_string()])
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("not found")
+                || err.to_string().contains("deadbeef"),
+            "expected not-found error, got: {err}"
+        );
+    }
+
+    // ── stale invalid duration ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_stale_invalid_duration_returns_error() {
+        let temp_dir = TempDir::new().unwrap();
+        let err = stale(temp_dir.path(), "not-a-duration", "text", true)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Invalid duration"),
+            "expected 'Invalid duration', got: {err}"
+        );
+    }
+
+    // ── status/print_sources on empty store ───────────────────────────────────
+
+    #[tokio::test]
+    async fn test_status_empty_store() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        status(temp_dir.path()).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_print_sources_empty_store() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        print_sources(temp_dir.path()).await?;
+        Ok(())
+    }
 }

@@ -467,4 +467,161 @@ mod tests {
 
         Ok(())
     }
+
+    // ── AddOptions construction ───────────────────────────────────────────────
+
+    #[test]
+    fn test_add_options_custom_fields() {
+        let opts = AddOptions {
+            recursive: false,
+            follow_links: true,
+            summarize: false,
+            model: "mistral".to_string(),
+            visibility: Some("deep_only".to_string()),
+            entry_type: "meta".to_string(),
+            perspectives: vec!["decisions".to_string()],
+            parent_id: Some("abc123".to_string()),
+            heading: Some("My heading".to_string()),
+            impression_hint: Some("hint".to_string()),
+            impression_strength: 0.5,
+            rel_supersedes: vec!["old-id".to_string()],
+            rel_summarizes: vec!["sum-id".to_string()],
+            rel_to: vec!["related-id".to_string()],
+            rel_derived_from: vec!["source-id".to_string()],
+            rel_version_of: vec!["v0-id".to_string()],
+            rel_custom: vec!["custom:target-id".to_string()],
+        };
+        assert!(!opts.recursive);
+        assert!(opts.follow_links);
+        assert!(!opts.summarize);
+        assert_eq!(opts.model, "mistral");
+        assert_eq!(opts.visibility.as_deref(), Some("deep_only"));
+        assert_eq!(opts.entry_type, "meta");
+        assert_eq!(opts.perspectives, vec!["decisions"]);
+        assert_eq!(opts.parent_id.as_deref(), Some("abc123"));
+        assert_eq!(opts.heading.as_deref(), Some("My heading"));
+        assert_eq!(opts.impression_hint.as_deref(), Some("hint"));
+        assert!((opts.impression_strength - 0.5).abs() < f32::EPSILON);
+        assert_eq!(opts.rel_supersedes, vec!["old-id"]);
+        assert_eq!(opts.rel_summarizes, vec!["sum-id"]);
+        assert_eq!(opts.rel_to, vec!["related-id"]);
+        assert_eq!(opts.rel_derived_from, vec!["source-id"]);
+        assert_eq!(opts.rel_version_of, vec!["v0-id"]);
+        assert_eq!(opts.rel_custom, vec!["custom:target-id"]);
+    }
+
+    // ── collect_files: nonexistent path ──────────────────────────────────────
+
+    #[test]
+    fn test_collect_files_nonexistent_path_is_not_file_or_dir() -> Result<()> {
+        let parser = MarkdownParser::new();
+        let nonexistent = std::path::Path::new("/tmp/__veclayer_does_not_exist_12345__");
+        // Neither is_file() nor is_dir() — returns empty without error
+        let files = collect_files(nonexistent, false, false, &parser)?;
+        assert!(files.is_empty());
+        Ok(())
+    }
+
+    // ── collect_files: multiple markdown extensions ───────────────────────────
+
+    #[test]
+    fn test_collect_files_filters_out_non_markdown_in_dir() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        fs::write(temp_dir.path().join("doc.md"), "# doc")?;
+        fs::write(temp_dir.path().join("image.png"), &[0u8; 4])?;
+        fs::write(temp_dir.path().join("archive.zip"), &[0u8; 4])?;
+        fs::write(temp_dir.path().join("notes.txt"), "plain text")?;
+
+        let parser = MarkdownParser::new();
+        let files = collect_files(temp_dir.path(), false, false, &parser)?;
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].file_name().unwrap(), "doc.md");
+        Ok(())
+    }
+
+    // ── collect_files: deeply nested recursive ────────────────────────────────
+
+    #[test]
+    fn test_collect_files_recursive_deep_nesting() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let deep = temp_dir.path().join("a").join("b").join("c");
+        fs::create_dir_all(&deep)?;
+        fs::write(deep.join("deep.md"), "# Deep")?;
+
+        let parser = MarkdownParser::new();
+        let files = collect_files(temp_dir.path(), true, false, &parser)?;
+
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("deep.md"));
+        Ok(())
+    }
+
+    // ── add: perspective comma splitting ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_add_text_inline_with_perspective_validation() {
+        // A perspective that doesn't exist in the store should fail validation.
+        // We call add() with a non-existent path (inline text path) and a
+        // perspective that hasn't been registered.
+        let temp_dir = TempDir::new().unwrap();
+
+        // Initialize perspective store so validation runs
+        crate::perspective::init(temp_dir.path()).unwrap();
+
+        let opts = AddOptions {
+            perspectives: vec!["nonexistent-perspective".to_string()],
+            ..Default::default()
+        };
+
+        let err = super::super::add::add(temp_dir.path(), "some text", opts, None)
+            .await
+            .unwrap_err();
+
+        // Perspective validation should catch this
+        assert!(
+            err.to_string().contains("nonexistent-perspective")
+                || err.to_string().to_lowercase().contains("unknown perspective")
+                || err.to_string().to_lowercase().contains("invalid"),
+            "expected perspective error, got: {err}"
+        );
+    }
+
+    // ── add: perspective comma splitting logic ────────────────────────────────
+
+    #[test]
+    fn test_add_options_perspectives_can_be_comma_separated_conceptually() {
+        // The add() function splits comma-separated perspectives.
+        // We test the splitting logic itself by verifying the expected result
+        // of what add() does to perspectives before validation.
+        let raw = vec!["decisions,knowledge".to_string(), "learnings".to_string()];
+        let split: Vec<String> = raw
+            .iter()
+            .flat_map(|p| p.split(',').map(|s| s.trim().to_string()))
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(split, vec!["decisions", "knowledge", "learnings"]);
+    }
+
+    #[test]
+    fn test_add_options_perspectives_comma_splits_with_spaces() {
+        let raw = vec!["  decisions , knowledge  ".to_string()];
+        let split: Vec<String> = raw
+            .iter()
+            .flat_map(|p| p.split(',').map(|s| s.trim().to_string()))
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(split, vec!["decisions", "knowledge"]);
+    }
+
+    #[test]
+    fn test_add_options_perspectives_empty_after_split_removed() {
+        let raw = vec![",,,".to_string()];
+        let split: Vec<String> = raw
+            .iter()
+            .flat_map(|p| p.split(',').map(|s| s.trim().to_string()))
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert!(split.is_empty());
+    }
 }

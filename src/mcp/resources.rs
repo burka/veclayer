@@ -368,3 +368,464 @@ fn format_epoch(epoch: i64) -> String {
         .map(|dt: DateTime<Utc>| dt.format("%Y-%m-%d %H:%M UTC").to_string())
         .unwrap_or_else(|| "(unknown)".to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    // ── static_resources ────────────────────────────────────────────────
+
+    #[test]
+    fn static_resources_returns_five_entries() {
+        let resources = static_resources();
+        assert_eq!(resources.len(), 5);
+    }
+
+    #[test]
+    fn static_resources_uris_are_veclayer_scheme() {
+        for r in static_resources() {
+            assert!(
+                r.raw.uri.starts_with("veclayer://"),
+                "URI '{}' should use veclayer:// scheme",
+                r.raw.uri
+            );
+        }
+    }
+
+    #[test]
+    fn static_resources_all_have_text_markdown_mime() {
+        for r in static_resources() {
+            assert_eq!(
+                r.raw.mime_type.as_deref(),
+                Some("text/markdown"),
+                "Resource '{}' should have text/markdown MIME",
+                r.raw.uri
+            );
+        }
+    }
+
+    #[test]
+    fn static_resources_known_uris_present() {
+        let uris: Vec<String> = static_resources()
+            .into_iter()
+            .map(|r| r.raw.uri.clone())
+            .collect();
+        assert!(uris.contains(&"veclayer://status".to_string()));
+        assert!(uris.contains(&"veclayer://perspectives".to_string()));
+        assert!(uris.contains(&"veclayer://hot".to_string()));
+        assert!(uris.contains(&"veclayer://recent".to_string()));
+        assert!(uris.contains(&"veclayer://identity".to_string()));
+    }
+
+    #[test]
+    fn static_resources_have_audience_set() {
+        let resources = static_resources();
+        for r in &resources {
+            let has_audience = r
+                .annotations
+                .as_ref()
+                .and_then(|a| a.audience.as_ref())
+                .map(|a| !a.is_empty())
+                .unwrap_or(false);
+            assert!(
+                has_audience,
+                "Resource '{}' should have audience set",
+                r.raw.uri
+            );
+        }
+    }
+
+    // ── templates ────────────────────────────────────────────────────────
+
+    #[test]
+    fn templates_returns_two_entries() {
+        let tmpl = templates();
+        assert_eq!(tmpl.len(), 2);
+    }
+
+    #[test]
+    fn templates_have_uri_params() {
+        let tmpl = templates();
+        let uris: Vec<&str> = tmpl.iter().map(|t| t.raw.uri_template.as_str()).collect();
+        assert!(uris.iter().any(|u| u.contains("{perspective_id}")));
+        assert!(uris.iter().any(|u| u.contains("{entry_id}")));
+    }
+
+    #[test]
+    fn templates_all_have_text_markdown_mime() {
+        for t in templates() {
+            assert_eq!(
+                t.raw.mime_type.as_deref(),
+                Some("text/markdown"),
+                "Template '{}' should have text/markdown MIME",
+                t.raw.uri_template
+            );
+        }
+    }
+
+    #[test]
+    fn templates_have_audience_set() {
+        for t in templates() {
+            let has_audience = t
+                .annotations
+                .as_ref()
+                .and_then(|a| a.audience.as_ref())
+                .map(|a| !a.is_empty())
+                .unwrap_or(false);
+            assert!(
+                has_audience,
+                "Template '{}' should have audience",
+                t.raw.uri_template
+            );
+        }
+    }
+
+    // ── read dispatch ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn read_rejects_non_veclayer_uri() {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(
+            crate::store::StoreBackend::open_metadata(dir.path(), false)
+                .await
+                .unwrap(),
+        );
+        let result = read("https://example.com/foo", &store, dir.path(), None, None).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(format!("{:?}", err).contains("veclayer://"));
+    }
+
+    #[tokio::test]
+    async fn read_rejects_unknown_path() {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(
+            crate::store::StoreBackend::open_metadata(dir.path(), false)
+                .await
+                .unwrap(),
+        );
+        let result = read(
+            "veclayer://unknown_path_xyz",
+            &store,
+            dir.path(),
+            None,
+            None,
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_status_returns_markdown() {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(
+            crate::store::StoreBackend::open_metadata(dir.path(), false)
+                .await
+                .unwrap(),
+        );
+        let result = read("veclayer://status", &store, dir.path(), None, None)
+            .await
+            .unwrap();
+        let text = extract_text(&result);
+        assert!(text.contains("## Store Status"));
+    }
+
+    #[tokio::test]
+    async fn read_perspectives_returns_default_perspectives() {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(
+            crate::store::StoreBackend::open_metadata(dir.path(), false)
+                .await
+                .unwrap(),
+        );
+        let result = read("veclayer://perspectives", &store, dir.path(), None, None)
+            .await
+            .unwrap();
+        let text = extract_text(&result);
+        assert!(text.contains("## Perspectives"));
+        assert!(text.contains("decisions"));
+    }
+
+    #[tokio::test]
+    async fn read_hot_returns_no_entries_when_store_empty() {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(
+            crate::store::StoreBackend::open_metadata(dir.path(), false)
+                .await
+                .unwrap(),
+        );
+        let result = read("veclayer://hot", &store, dir.path(), None, None)
+            .await
+            .unwrap();
+        let text = extract_text(&result);
+        assert!(text.contains("No entries"));
+    }
+
+    #[tokio::test]
+    async fn read_hot_returns_entries_when_store_has_data() {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(
+            crate::store::StoreBackend::open(dir.path(), 384, false)
+                .await
+                .unwrap(),
+        );
+        let mut chunk =
+            crate::test_helpers::make_test_chunk("hotentry001", "Very important decision");
+        chunk.access_profile.record_access();
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let result = read("veclayer://hot", &store, dir.path(), None, None)
+            .await
+            .unwrap();
+        let text = extract_text(&result);
+        assert!(!text.contains("No entries"));
+    }
+
+    #[tokio::test]
+    async fn read_hot_with_project_filter_excludes_unscoped() {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(
+            crate::store::StoreBackend::open(dir.path(), 384, false)
+                .await
+                .unwrap(),
+        );
+        let mut chunk =
+            crate::test_helpers::make_test_chunk("hotentry002", "Unscoped knowledge entry");
+        chunk.perspectives = vec!["project:other-project".to_string()];
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let result = read("veclayer://hot", &store, dir.path(), Some("my-project"), None)
+            .await
+            .unwrap();
+        let text = extract_text(&result);
+        assert!(text.contains("No entries"));
+    }
+
+    #[tokio::test]
+    async fn read_recent_returns_no_entries_when_store_empty() {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(
+            crate::store::StoreBackend::open_metadata(dir.path(), false)
+                .await
+                .unwrap(),
+        );
+        let result = read("veclayer://recent", &store, dir.path(), None, None)
+            .await
+            .unwrap();
+        let text = extract_text(&result);
+        assert!(text.contains("No entries"));
+    }
+
+    #[tokio::test]
+    async fn read_recent_returns_entries_when_store_has_data() {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(
+            crate::store::StoreBackend::open(dir.path(), 384, false)
+                .await
+                .unwrap(),
+        );
+        let chunk =
+            crate::test_helpers::make_test_chunk("recententry01", "Recent knowledge entry");
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let result = read("veclayer://recent", &store, dir.path(), None, None)
+            .await
+            .unwrap();
+        let text = extract_text(&result);
+        assert!(text.contains("## Recent Entries"));
+        assert!(text.contains("entry(ies)"));
+    }
+
+    #[tokio::test]
+    async fn read_recent_with_project_filter_excludes_unscoped() {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(
+            crate::store::StoreBackend::open(dir.path(), 384, false)
+                .await
+                .unwrap(),
+        );
+        let mut chunk =
+            crate::test_helpers::make_test_chunk("recententry02", "Other project entry");
+        chunk.perspectives = vec!["project:other-project".to_string()];
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let result = read(
+            "veclayer://recent",
+            &store,
+            dir.path(),
+            Some("my-project"),
+            None,
+        )
+        .await
+        .unwrap();
+        let text = extract_text(&result);
+        assert!(text.contains("No entries found"));
+    }
+
+    #[tokio::test]
+    async fn read_identity_returns_no_identity_when_store_empty() {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(
+            crate::store::StoreBackend::open_metadata(dir.path(), false)
+                .await
+                .unwrap(),
+        );
+        let result = read("veclayer://identity", &store, dir.path(), None, None)
+            .await
+            .unwrap();
+        let text = extract_text(&result);
+        // Empty store → no identity data
+        assert!(!text.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_perspective_entries_rejects_unknown_perspective() {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(
+            crate::store::StoreBackend::open_metadata(dir.path(), false)
+                .await
+                .unwrap(),
+        );
+        let result = read(
+            "veclayer://perspectives/nonexistent_xyz",
+            &store,
+            dir.path(),
+            None,
+            None,
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_perspective_entries_accepts_builtin_perspective() {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(
+            crate::store::StoreBackend::open_metadata(dir.path(), false)
+                .await
+                .unwrap(),
+        );
+        let result = read(
+            "veclayer://perspectives/decisions",
+            &store,
+            dir.path(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let text = extract_text(&result);
+        assert!(text.contains("## Perspective: decisions"));
+    }
+
+    #[tokio::test]
+    async fn read_perspective_entries_shows_entries() {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(
+            crate::store::StoreBackend::open(dir.path(), 384, false)
+                .await
+                .unwrap(),
+        );
+        let mut chunk =
+            crate::test_helpers::make_test_chunk("perspentry01", "A decision about databases");
+        chunk.perspectives = vec!["decisions".to_string()];
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let result = read(
+            "veclayer://perspectives/decisions",
+            &store,
+            dir.path(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let text = extract_text(&result);
+        assert!(text.contains("## Perspective: decisions"));
+        assert!(text.contains("entry(ies)"));
+    }
+
+    #[tokio::test]
+    async fn read_entry_returns_error_for_unknown_id() {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(
+            crate::store::StoreBackend::open_metadata(dir.path(), false)
+                .await
+                .unwrap(),
+        );
+        let result = read(
+            "veclayer://entries/nonexistent000",
+            &store,
+            dir.path(),
+            None,
+            None,
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_entry_returns_detail_for_known_entry() {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(
+            crate::store::StoreBackend::open(dir.path(), 384, false)
+                .await
+                .unwrap(),
+        );
+        let chunk = crate::test_helpers::make_test_chunk("abc1230000", "Design decision: use Rust");
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let result = read(
+            "veclayer://entries/abc1230000",
+            &store,
+            dir.path(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let text = extract_text(&result);
+        assert!(text.contains("Design decision: use Rust"));
+    }
+
+    // ── format_epoch ─────────────────────────────────────────────────────
+
+    #[test]
+    fn format_epoch_known_timestamp() {
+        // 2024-01-15 12:00:00 UTC = 1705320000
+        let result = format_epoch(1705320000);
+        assert!(result.contains("2024-01-15"));
+        assert!(result.contains("UTC"));
+    }
+
+    #[test]
+    fn format_epoch_zero_is_unix_epoch() {
+        let result = format_epoch(0);
+        assert!(result.contains("1970-01-01"));
+    }
+
+    #[test]
+    fn format_epoch_negative_out_of_range_returns_unknown() {
+        let result = format_epoch(i64::MIN);
+        assert_eq!(result, "(unknown)");
+    }
+
+    // ── helpers ──────────────────────────────────────────────────────────
+
+    /// Extract text content from a ReadResourceResult.
+    fn extract_text(result: &ReadResourceResult) -> String {
+        result
+            .contents
+            .iter()
+            .filter_map(|c| {
+                if let rmcp::model::ResourceContents::TextResourceContents { text, .. } = c {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+}

@@ -665,4 +665,215 @@ mod tests {
         };
         assert!(!filters.accepts(&chunk));
     }
+
+    // ── MigrateFilters: combined filters ──────────────────────────────────────
+
+    #[test]
+    fn test_migrate_filters_combined_perspective_and_since() {
+        use crate::chunk::{ChunkLevel, HierarchicalChunk};
+        let mut chunk = HierarchicalChunk::new(
+            "content".to_string(),
+            ChunkLevel::H1,
+            None,
+            String::new(),
+            "src.md".to_string(),
+        )
+        .with_perspectives(vec!["decisions".to_string()]);
+        chunk.access_profile.created_at = 1_000_000;
+
+        // Both conditions pass
+        let filters = MigrateFilters {
+            perspective: Some("decisions".to_string()),
+            since: Some(500_000),
+            ..Default::default()
+        };
+        assert!(filters.accepts(&chunk));
+
+        // Perspective matches but since fails
+        let filters = MigrateFilters {
+            perspective: Some("decisions".to_string()),
+            since: Some(2_000_000),
+            ..Default::default()
+        };
+        assert!(!filters.accepts(&chunk));
+
+        // since passes but perspective fails
+        let filters = MigrateFilters {
+            perspective: Some("knowledge".to_string()),
+            since: Some(500_000),
+            ..Default::default()
+        };
+        assert!(!filters.accepts(&chunk));
+    }
+
+    #[test]
+    fn test_migrate_filters_exclude_and_include_both_set_include_wins_when_missing() {
+        use crate::chunk::{ChunkLevel, HierarchicalChunk};
+        let chunk = HierarchicalChunk::new(
+            "content".to_string(),
+            ChunkLevel::H1,
+            None,
+            String::new(),
+            "src.md".to_string(),
+        )
+        .with_perspectives(vec!["decisions".to_string()]);
+
+        // Require perspective "knowledge" (not present) — rejected
+        let filters = MigrateFilters {
+            perspective: Some("knowledge".to_string()),
+            exclude_perspective: Some("learnings".to_string()),
+            ..Default::default()
+        };
+        assert!(!filters.accepts(&chunk));
+    }
+
+    #[test]
+    fn test_migrate_filters_chunk_with_no_perspectives() {
+        use crate::chunk::{ChunkLevel, HierarchicalChunk};
+        let chunk = HierarchicalChunk::new(
+            "content".to_string(),
+            ChunkLevel::H1,
+            None,
+            String::new(),
+            "src.md".to_string(),
+        );
+
+        // No perspective filter → accepts
+        assert!(MigrateFilters::default().accepts(&chunk));
+
+        // Require specific perspective → rejects (no perspectives on chunk)
+        let filters = MigrateFilters {
+            perspective: Some("decisions".to_string()),
+            ..Default::default()
+        };
+        assert!(!filters.accepts(&chunk));
+
+        // Exclude perspective not present → still accepts
+        let filters = MigrateFilters {
+            exclude_perspective: Some("decisions".to_string()),
+            ..Default::default()
+        };
+        assert!(filters.accepts(&chunk));
+    }
+
+    // ── is_remote_git_url: additional cases ──────────────────────────────────
+
+    #[test]
+    fn test_is_remote_git_url_gitlab() {
+        assert!(is_remote_git_url("https://gitlab.com/org/repo"));
+    }
+
+    #[test]
+    fn test_is_remote_git_url_plain_git_keyword_not_remote() {
+        // "git" alone is not a remote URL (no git@ prefix, no github/gitlab, no .git suffix)
+        assert!(!is_remote_git_url("git"));
+    }
+
+    #[test]
+    fn test_is_remote_git_url_dot_git_path() {
+        assert!(is_remote_git_url("../some/path/repo.git"));
+    }
+
+    // ── sync: no scopes configured ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_sync_no_scopes_returns_ok() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let result = sync(temp_dir.path(), &[], None, false).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_sync_no_scopes_dry_run_returns_ok() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let result = sync(temp_dir.path(), &[], None, true).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_sync_scope_filter_not_found_in_empty_scopes_returns_ok() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        // Filter for a named scope when no scopes exist — should return Ok (advisory stderr)
+        let result = sync(temp_dir.path(), &[], Some("my-scope"), false).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_sync_scope_filter_not_found_in_existing_scopes_returns_ok() {
+        use crate::config::ResolvedScope;
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let scopes = vec![ResolvedScope {
+            name: "team".to_string(),
+            storage: "git".to_string(),
+            branch: "veclayer-memory".to_string(),
+            push: "review".to_string(),
+        }];
+        // Filter for a scope that doesn't exist in the list
+        let result = sync(temp_dir.path(), &scopes, Some("nonexistent"), false).await;
+        assert!(result.is_ok());
+    }
+
+    // ── print_entry_list: smoke test ──────────────────────────────────────────
+
+    #[test]
+    fn test_print_entry_list_empty() {
+        // Should not panic on empty list
+        print_entry_list(&[]);
+    }
+
+    #[test]
+    fn test_print_entry_list_single_entry() {
+        use crate::chunk::{ChunkLevel, HierarchicalChunk};
+        use crate::entry::Entry;
+
+        let chunk = HierarchicalChunk::new(
+            "Some content here".to_string(),
+            ChunkLevel::H1,
+            None,
+            String::new(),
+            "src.md".to_string(),
+        );
+        let entry = Entry::from_chunk(&chunk);
+        // Should not panic
+        print_entry_list(&[entry]);
+    }
+
+    #[test]
+    fn test_print_entry_list_entry_with_heading_and_perspectives() {
+        use crate::chunk::{ChunkLevel, HierarchicalChunk};
+        use crate::entry::Entry;
+
+        let chunk = HierarchicalChunk::new(
+            "Architecture decision: use SQLite for metadata".to_string(),
+            ChunkLevel::H1,
+            None,
+            String::new(),
+            "src.md".to_string(),
+        )
+        .with_perspectives(vec!["decisions".to_string(), "knowledge".to_string()]);
+
+        let entry = Entry::from_chunk(&chunk);
+        // Should not panic
+        print_entry_list(&[entry]);
+    }
+
+    #[test]
+    fn test_print_entry_list_long_heading_truncated() {
+        use crate::chunk::{ChunkLevel, HierarchicalChunk};
+        use crate::entry::Entry;
+
+        let long_heading = "A".repeat(100);
+        let mut chunk = HierarchicalChunk::new(
+            "content".to_string(),
+            ChunkLevel::H1,
+            None,
+            String::new(),
+            "src.md".to_string(),
+        );
+        chunk.heading = Some(long_heading);
+
+        let entry = Entry::from_chunk(&chunk);
+        // Should not panic — heading truncation at 60 chars must work
+        print_entry_list(&[entry]);
+    }
 }

@@ -1663,4 +1663,985 @@ mod tests {
         // Unreserved characters must NOT be encoded.
         assert_eq!(urlencoded("abc-123_~."), "abc-123_~.");
     }
+
+    // ── normalize_user_code ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_normalize_user_code_strips_dashes_and_uppercases() {
+        assert_eq!(normalize_user_code("abcd-efgh"), "ABCDEFGH");
+        assert_eq!(normalize_user_code("ABCD-EFGH"), "ABCDEFGH");
+        assert_eq!(normalize_user_code("abcdefgh"), "ABCDEFGH");
+        assert_eq!(normalize_user_code(""), "");
+    }
+
+    // ── format_user_code edge cases ───────────────────────────────────────────
+
+    #[test]
+    fn test_format_user_code_short_code_returned_as_is() {
+        let result = format_user_code("ABC");
+        assert_eq!(result, "ABC");
+        assert!(!result.contains('-'));
+    }
+
+    #[test]
+    fn test_format_user_code_with_existing_dashes_reformatted() {
+        let result = format_user_code("ABCD-EFGH");
+        assert_eq!(result, "ABCD-EFGH");
+    }
+
+    // ── generate_opaque_token ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_generate_opaque_token_length_and_uniqueness() {
+        let t1 = generate_opaque_token();
+        let t2 = generate_opaque_token();
+        assert_eq!(t1.len(), 43, "opaque token must be 43 chars");
+        assert_ne!(t1, t2, "tokens must be unique");
+        assert!(
+            t1.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'),
+            "token must be URL-safe: {t1}"
+        );
+    }
+
+    // ── Registration validation errors ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_register_empty_client_name_rejected() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let resp = app
+            .oneshot(post_json(
+                "/oauth/register",
+                serde_json::json!({
+                    "client_name": "   ",
+                    "redirect_uris": ["https://example.com/cb"]
+                }),
+            ))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "client_name is required");
+    }
+
+    #[tokio::test]
+    async fn test_register_empty_redirect_uris_rejected() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let resp = app
+            .oneshot(post_json(
+                "/oauth/register",
+                serde_json::json!({
+                    "client_name": "My App",
+                    "redirect_uris": []
+                }),
+            ))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "invalid_client_metadata");
+    }
+
+    #[tokio::test]
+    async fn test_register_client_name_too_long_rejected() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let resp = app
+            .oneshot(post_json(
+                "/oauth/register",
+                serde_json::json!({
+                    "client_name": "x".repeat(MAX_STRING_LENGTH + 1),
+                    "redirect_uris": ["https://example.com/cb"]
+                }),
+            ))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert!(json["error_description"]
+            .as_str()
+            .unwrap_or("")
+            .contains("client_name"));
+    }
+
+    #[tokio::test]
+    async fn test_register_redirect_uri_too_long_rejected() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let long_uri = format!("https://example.com/{}", "x".repeat(MAX_STRING_LENGTH));
+        let resp = app
+            .oneshot(post_json(
+                "/oauth/register",
+                serde_json::json!({
+                    "client_name": "My App",
+                    "redirect_uris": [long_uri]
+                }),
+            ))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert!(json["error_description"]
+            .as_str()
+            .unwrap_or("")
+            .contains("redirect_uri"));
+    }
+
+    // ── Authorize GET: missing fields ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_authorize_get_missing_client_id_returns_400() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let resp = app
+            .oneshot(get_req("/oauth/authorize?response_type=code"))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_authorize_get_missing_redirect_uri_returns_400() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let resp = app
+            .oneshot(get_req("/oauth/authorize?response_type=code&client_id=xyz"))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_authorize_get_plain_challenge_method_rejected() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+
+        let authorize_uri = format!(
+            "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&code_challenge=somechallenge&code_challenge_method=plain"
+        );
+        let resp = app
+            .clone()
+            .oneshot(get_req(&authorize_uri))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(location.contains("error=invalid_request"));
+    }
+
+    #[tokio::test]
+    async fn test_authorize_get_invalid_scope_redirects_with_error() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (_, challenge) = pkce_pair();
+
+        let authorize_uri = format!(
+            "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&code_challenge={challenge}&code_challenge_method=S256&scope=superuser"
+        );
+        let resp = app
+            .clone()
+            .oneshot(get_req(&authorize_uri))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(location.contains("error=invalid_scope"));
+    }
+
+    #[tokio::test]
+    async fn test_authorize_get_no_pkce_redirects_with_error() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+
+        let authorize_uri = format!(
+            "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope=read"
+        );
+        let resp = app
+            .clone()
+            .oneshot(get_req(&authorize_uri))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(location.contains("error=invalid_request"));
+    }
+
+    // ── Authorize GET: consent page ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_authorize_get_shows_consent_page_when_not_auto_approve() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (_, challenge) = pkce_pair();
+
+        let authorize_uri = format!(
+            "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&code_challenge_method=S256"
+        );
+        let resp = app
+            .clone()
+            .oneshot(get_req(&authorize_uri))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let html = String::from_utf8(body_vec(resp).await).unwrap();
+        assert!(html.contains("Authorize Access"));
+        assert!(html.contains(&client_id));
+    }
+
+    // ── Authorize POST (consent form) ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_authorize_post_approved_issues_code() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (_, challenge) = pkce_pair();
+
+        let form = format!(
+            "client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&approved=true"
+        );
+        let resp = app
+            .clone()
+            .oneshot(post_form("/oauth/authorize", &form))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            location.contains("code="),
+            "expected code in location: {location}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_authorize_post_denied_redirects_with_access_denied() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (_, challenge) = pkce_pair();
+
+        let form = format!(
+            "client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&approved=false"
+        );
+        let resp = app
+            .clone()
+            .oneshot(post_form("/oauth/authorize", &form))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(location.contains("error=access_denied"));
+    }
+
+    #[tokio::test]
+    async fn test_authorize_post_unknown_client_returns_400() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let form = "client_id=unknown-xyz&redirect_uri=https%3A%2F%2Fexample.com%2Fcb&scope=read&code_challenge=xxx";
+        let resp = app
+            .oneshot(post_form("/oauth/authorize", form))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_authorize_post_mismatched_redirect_uri_returns_400() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+
+        let form = format!(
+            "client_id={client_id}&redirect_uri=https://evil.com/steal&scope=read&code_challenge=xxx"
+        );
+        let resp = app
+            .oneshot(post_form("/oauth/authorize", &form))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_authorize_post_invalid_scope_redirects_with_error() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (_, challenge) = pkce_pair();
+
+        let form = format!(
+            "client_id={client_id}&redirect_uri={redirect_uri}&scope=superuser&code_challenge={challenge}&approved=true"
+        );
+        let resp = app
+            .clone()
+            .oneshot(post_form("/oauth/authorize", &form))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(location.contains("error=invalid_scope"));
+    }
+
+    // ── Token endpoint: error paths ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_token_unsupported_grant_type() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let resp = app
+            .oneshot(post_form("/oauth/token", "grant_type=implicit"))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "unsupported_grant_type");
+    }
+
+    #[tokio::test]
+    async fn test_token_auth_code_missing_code() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let resp = app
+            .oneshot(post_form(
+                "/oauth/token",
+                "grant_type=authorization_code&code_verifier=someverifier&client_id=abc",
+            ))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn test_token_auth_code_missing_client_id() {
+        let (state, _dir) = make_state(true);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (verifier, challenge) = pkce_pair();
+
+        let authorize_uri = format!(
+            "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&code_challenge_method=S256"
+        );
+        let resp = app
+            .clone()
+            .oneshot(get_req(&authorize_uri))
+            .await
+            .unwrap();
+        let location = resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let code = location
+            .split("code=")
+            .nth(1)
+            .unwrap()
+            .split('&')
+            .next()
+            .unwrap()
+            .to_owned();
+
+        // Exchange without client_id
+        let body = format!("grant_type=authorization_code&code={code}&code_verifier={verifier}");
+        let resp = app
+            .oneshot(post_form("/oauth/token", &body))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn test_token_auth_code_client_id_mismatch() {
+        let (state, _dir) = make_state(true);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (verifier, challenge) = pkce_pair();
+
+        let authorize_uri = format!(
+            "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&code_challenge_method=S256"
+        );
+        let resp = app
+            .clone()
+            .oneshot(get_req(&authorize_uri))
+            .await
+            .unwrap();
+        let location = resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let code = location
+            .split("code=")
+            .nth(1)
+            .unwrap()
+            .split('&')
+            .next()
+            .unwrap()
+            .to_owned();
+
+        let body = format!(
+            "grant_type=authorization_code&code={code}&code_verifier={verifier}&client_id=wrong-client"
+        );
+        let resp = app
+            .oneshot(post_form("/oauth/token", &body))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "invalid_client");
+    }
+
+    #[tokio::test]
+    async fn test_token_auth_code_redirect_uri_mismatch() {
+        let (state, _dir) = make_state(true);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (verifier, challenge) = pkce_pair();
+
+        let authorize_uri = format!(
+            "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&code_challenge_method=S256"
+        );
+        let resp = app
+            .clone()
+            .oneshot(get_req(&authorize_uri))
+            .await
+            .unwrap();
+        let location = resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let code = location
+            .split("code=")
+            .nth(1)
+            .unwrap()
+            .split('&')
+            .next()
+            .unwrap()
+            .to_owned();
+
+        let body = format!(
+            "grant_type=authorization_code&code={code}&code_verifier={verifier}&client_id={client_id}&redirect_uri=https://other.com/cb"
+        );
+        let resp = app
+            .oneshot(post_form("/oauth/token", &body))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "invalid_grant");
+    }
+
+    #[tokio::test]
+    async fn test_token_refresh_missing_token() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let resp = app
+            .oneshot(post_form(
+                "/oauth/token",
+                "grant_type=refresh_token&client_id=abc",
+            ))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn test_token_refresh_missing_client_id_after_invalid_token() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        // No client_id provided — should return invalid_request
+        let resp = app
+            .oneshot(post_form(
+                "/oauth/token",
+                "grant_type=refresh_token&refresh_token=sometoken",
+            ))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        // Either invalid_grant (token not found) or invalid_request (no client_id)
+        // The current implementation tries to validate/revoke the token first,
+        // so if the token is not found it returns invalid_grant before checking client_id.
+        let error = json["error"].as_str().unwrap_or("");
+        assert!(
+            error == "invalid_grant" || error == "invalid_request",
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_token_refresh_invalid_token() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let resp = app
+            .oneshot(post_form(
+                "/oauth/token",
+                "grant_type=refresh_token&refresh_token=nonexistent&client_id=abc",
+            ))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "invalid_grant");
+    }
+
+    #[tokio::test]
+    async fn test_token_refresh_client_id_mismatch() {
+        let (state, _dir) = make_state(true);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (verifier, challenge) = pkce_pair();
+
+        let authorize_uri = format!(
+            "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&code_challenge_method=S256"
+        );
+        let resp = app
+            .clone()
+            .oneshot(get_req(&authorize_uri))
+            .await
+            .unwrap();
+        let location = resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let code = location
+            .split("code=")
+            .nth(1)
+            .unwrap()
+            .split('&')
+            .next()
+            .unwrap()
+            .to_owned();
+
+        let body = format!("grant_type=authorization_code&code={code}&code_verifier={verifier}&client_id={client_id}&redirect_uri={redirect_uri}");
+        let resp = app
+            .clone()
+            .oneshot(post_form("/oauth/token", &body))
+            .await
+            .unwrap();
+        let json = body_json(resp).await;
+        let refresh = json["refresh_token"].as_str().unwrap().to_owned();
+
+        // Use refresh token with wrong client_id
+        let body =
+            format!("grant_type=refresh_token&refresh_token={refresh}&client_id=wrong-client");
+        let resp = app
+            .oneshot(post_form("/oauth/token", &body))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "invalid_client");
+    }
+
+    // ── Device flow: error paths ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_device_code_missing_client_id() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let resp = app
+            .oneshot(post_form("/oauth/device/code", "scope=read"))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn test_device_code_unknown_client_id() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let resp = app
+            .oneshot(post_form(
+                "/oauth/device/code",
+                "client_id=nonexistent&scope=read",
+            ))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "invalid_client");
+    }
+
+    #[tokio::test]
+    async fn test_device_code_invalid_scope() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+
+        let body = format!("client_id={client_id}&scope=superuser");
+        let resp = app
+            .oneshot(post_form("/oauth/device/code", &body))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "invalid_scope");
+    }
+
+    #[tokio::test]
+    async fn test_device_token_unknown_device_code() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+
+        let body = format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code=unknown&client_id={client_id}"
+        );
+        let resp = app
+            .oneshot(post_form("/oauth/token", &body))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "invalid_grant");
+    }
+
+    #[tokio::test]
+    async fn test_device_token_missing_device_code() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let body = "grant_type=urn:ietf:params:oauth:grant-type:device_code&client_id=abc";
+        let resp = app
+            .oneshot(post_form("/oauth/token", body))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn test_device_denied_returns_access_denied() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+
+        // Request a device code
+        let body = format!("client_id={client_id}&scope=read");
+        let resp = app
+            .clone()
+            .oneshot(post_form("/oauth/device/code", &body))
+            .await
+            .unwrap();
+        let json = body_json(resp).await;
+        let device_code = json["device_code"].as_str().unwrap().to_owned();
+        let user_code = json["user_code"].as_str().unwrap().to_owned();
+
+        // Deny the device
+        let deny_body = format!("user_code={user_code}&approved=false");
+        let resp = app
+            .clone()
+            .oneshot(post_form("/oauth/device", &deny_body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let html = String::from_utf8(body_vec(resp).await).unwrap();
+        assert!(html.contains("Denied") || html.contains("denied"));
+
+        // Poll after denial → access_denied
+        let poll_body = format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code={device_code}&client_id={client_id}"
+        );
+        let resp = app
+            .oneshot(post_form("/oauth/token", &poll_body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "access_denied");
+    }
+
+    #[tokio::test]
+    async fn test_device_page_handler_get_returns_html() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let resp = app
+            .oneshot(get_req("/oauth/device"))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let html = String::from_utf8(body_vec(resp).await).unwrap();
+        assert!(html.contains("Device Authorization") || html.contains("Authorize Device"));
+    }
+
+    #[tokio::test]
+    async fn test_device_page_prefills_user_code() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let resp = app
+            .oneshot(get_req("/oauth/device?user_code=ABCD-EFGH"))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let html = String::from_utf8(body_vec(resp).await).unwrap();
+        assert!(html.contains("ABCD-EFGH"));
+    }
+
+    #[tokio::test]
+    async fn test_device_approve_unknown_user_code_returns_error_page() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let resp = app
+            .oneshot(post_form(
+                "/oauth/device",
+                "user_code=ZZZZ-ZZZZ&approved=true",
+            ))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let html = String::from_utf8(body_vec(resp).await).unwrap();
+        assert!(html.contains("Error") || html.contains("Unknown") || html.contains("expired"));
+    }
+
+    // ── Device flow: expired device code ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_device_token_expired_code() {
+        let (state, _dir) = make_state(false);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = {
+            let mut store = state.token_store.lock().unwrap();
+            store
+                .register_client("App", vec![redirect_uri.to_owned()])
+                .client_id
+                .clone()
+        };
+
+        let expired_device_code = "expired-device-code-xyz";
+        state.device_codes.lock().unwrap().insert(
+            expired_device_code.to_owned(),
+            PendingDeviceAuth {
+                device_code: expired_device_code.to_owned(),
+                user_code: "AAAA-BBBB".to_owned(),
+                client_id: client_id.clone(),
+                scope: crate::auth::capability::Capability::Read,
+                expires_at: 0,
+                approved: None,
+                denied: false,
+            },
+        );
+
+        let app = oauth_router(state);
+
+        let body = format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code={expired_device_code}&client_id={client_id}"
+        );
+        let resp = app
+            .oneshot(post_form("/oauth/token", &body))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "expired_token");
+    }
+
+    // ── HTML template helpers ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_consent_page_escapes_xss_in_client_name() {
+        let html = consent_page(
+            "<script>alert(1)</script>",
+            "safe-client-id",
+            "https://example.com/cb",
+            "read",
+            "challenge",
+            "",
+        );
+        assert!(!html.contains("<script>alert(1)</script>"));
+        assert!(html.contains("&lt;script&gt;"));
+    }
+
+    #[test]
+    fn test_error_page_escapes_message() {
+        let html = error_page("<b>bad</b>");
+        assert!(!html.contains("<b>bad</b>"));
+        assert!(html.contains("&lt;b&gt;bad&lt;/b&gt;"));
+    }
+
+    // ── redirect helpers ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_redirect_with_code_includes_state() {
+        let resp = redirect_with_code(
+            "https://app.example.com/cb",
+            "mycode",
+            Some("oauth-state-123"),
+        );
+        let location = resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert!(location.contains("code=mycode"));
+        assert!(location.contains("state=oauth-state-123"));
+    }
+
+    #[tokio::test]
+    async fn test_redirect_with_code_no_state() {
+        let resp = redirect_with_code("https://app.example.com/cb", "mycode", None);
+        let location = resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert!(location.contains("code=mycode"));
+        assert!(!location.contains("state="));
+    }
+
+    #[tokio::test]
+    async fn test_redirect_with_error_includes_state() {
+        let resp = redirect_with_error(
+            "https://app.example.com/cb",
+            "access_denied",
+            "user denied",
+            Some("mystate"),
+        );
+        let location = resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert!(location.contains("error=access_denied"));
+        assert!(location.contains("state=mystate"));
+    }
 }

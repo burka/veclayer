@@ -163,11 +163,90 @@ pub async fn reflect(data_dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn test_compact_options_default() {
         let opts = CompactOptions::default();
         assert_eq!(opts.limit, 20);
         assert_eq!(opts.archive_threshold, 0.1);
+    }
+
+    // ── CompactOptions custom values ──────────────────────────────────────────
+
+    #[test]
+    fn test_compact_options_custom() {
+        let opts = CompactOptions {
+            limit: 50,
+            archive_threshold: 0.25,
+        };
+        assert_eq!(opts.limit, 50);
+        assert!((opts.archive_threshold - 0.25).abs() < f32::EPSILON);
+    }
+
+    // ── compact_salience on empty store ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_compact_salience_empty_store() -> Result<()> {
+        let dir = TempDir::new()?;
+        compact(
+            dir.path(),
+            CompactAction::Salience,
+            &CompactOptions::default(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    // ── compact_archive_candidates on empty store ─────────────────────────────
+
+    #[tokio::test]
+    async fn test_compact_archive_candidates_empty_store() -> Result<()> {
+        let dir = TempDir::new()?;
+        compact(
+            dir.path(),
+            CompactAction::ArchiveCandidates,
+            &CompactOptions::default(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    // ── reflect on empty store ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_reflect_empty_store() -> Result<()> {
+        let dir = TempDir::new()?;
+        reflect(dir.path()).await?;
+        Ok(())
+    }
+
+    // ── compact_rotate on empty store ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_compact_rotate_empty_store() -> Result<()> {
+        let dir = TempDir::new()?;
+        compact(
+            dir.path(),
+            CompactAction::Rotate,
+            &CompactOptions::default(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    // ── CompactAction variants are all handled ────────────────────────────────
+
+    #[test]
+    fn test_compact_action_debug() {
+        // Ensure all variants are reachable/Debug-printable
+        let actions = [
+            CompactAction::Rotate,
+            CompactAction::Salience,
+            CompactAction::ArchiveCandidates,
+        ];
+        for action in &actions {
+            let _ = format!("{action:?}");
+        }
     }
 }

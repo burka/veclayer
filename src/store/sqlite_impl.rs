@@ -1163,4 +1163,636 @@ mod tests {
         assert!(s.source_files.contains(&"keep.md".to_string()));
         assert!(!s.source_files.contains(&"delete-me.md".to_string()));
     }
+
+    // --- insert_chunks: batch, pending status ---
+
+    #[tokio::test]
+    async fn insert_batch_without_embeddings_marks_pending() {
+        let (store, _dir) = create_test_store().await;
+
+        let chunks: Vec<HierarchicalChunk> = (0..5)
+            .map(|i| make_chunk(&format!("content {i}"), "batch.md"))
+            .collect();
+
+        store.insert_chunks(chunks).await.expect("insert batch");
+
+        let count = store.count_pending_embeddings().await.expect("count");
+        assert_eq!(count, 5);
+
+        let s = store.stats().await.expect("stats");
+        assert_eq!(s.total_chunks, 5);
+        assert_eq!(s.pending_embeddings, 5);
+    }
+
+    #[tokio::test]
+    async fn insert_chunk_with_embedding_is_not_pending() {
+        let (store, _dir) = create_test_store().await;
+
+        let chunk = make_chunk_with_embedding("embedded", "emb.md", vec![1.0, 0.0, 0.0, 0.0]);
+        store.insert_chunks(vec![chunk]).await.expect("insert");
+
+        let count = store.count_pending_embeddings().await.expect("count");
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn insert_empty_batch_is_noop() {
+        let (store, _dir) = create_test_store().await;
+
+        store.insert_chunks(vec![]).await.expect("insert empty");
+
+        let s = store.stats().await.expect("stats");
+        assert_eq!(s.total_chunks, 0);
+    }
+
+    #[tokio::test]
+    async fn duplicate_insert_replaces_chunk() {
+        let (store, _dir) = create_test_store().await;
+
+        let mut chunk = make_chunk("original", "dup.md");
+        let id = chunk.id.clone();
+        store.insert_chunks(vec![chunk.clone()]).await.expect("insert 1");
+
+        // Replace with updated content (same id since INSERT OR REPLACE)
+        chunk.visibility = "always".to_string();
+        store.insert_chunks(vec![chunk]).await.expect("insert 2");
+
+        let s = store.stats().await.expect("stats");
+        assert_eq!(s.total_chunks, 1, "no duplicate rows");
+
+        let fetched = store.get_by_id(&id).await.expect("query").expect("chunk");
+        assert_eq!(fetched.visibility, "always");
+    }
+
+    // --- search: empty store, top-k, cosine ranking ---
+
+    #[tokio::test]
+    async fn search_empty_store_returns_empty() {
+        let (store, _dir) = create_test_store().await;
+
+        let results = store
+            .search(&[1.0, 0.0, 0.0, 0.0], 10, None, None)
+            .await
+            .expect("search");
+
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_pending_chunks_excluded() {
+        let (store, _dir) = create_test_store().await;
+
+        // Chunk without embedding stays pending and must not appear in search
+        let chunk = make_chunk("no embedding", "ne.md");
+        store.insert_chunks(vec![chunk]).await.expect("insert");
+
+        let results = store
+            .search(&[1.0, 0.0, 0.0, 0.0], 10, None, None)
+            .await
+            .expect("search");
+
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_top_k_limits_results() {
+        let (store, _dir) = create_test_store().await;
+
+        let chunks: Vec<HierarchicalChunk> = (0..10)
+            .map(|i| {
+                make_chunk_with_embedding(
+                    &format!("chunk {i}"),
+                    "topk.md",
+                    vec![i as f32, 0.0, 0.0, 0.0],
+                )
+            })
+            .collect();
+
+        store.insert_chunks(chunks).await.expect("insert");
+
+        let results = store
+            .search(&[1.0, 0.0, 0.0, 0.0], 3, None, None)
+            .await
+            .expect("search");
+
+        assert_eq!(results.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn search_results_ordered_by_cosine_similarity() {
+        let (store, _dir) = create_test_store().await;
+
+        // c_close is almost identical to query; c_far is orthogonal
+        let c_close =
+            make_chunk_with_embedding("close", "sim.md", vec![1.0, 0.0, 0.0, 0.0]);
+        let c_far =
+            make_chunk_with_embedding("far", "sim.md", vec![0.0, 1.0, 0.0, 0.0]);
+
+        store
+            .insert_chunks(vec![c_close.clone(), c_far.clone()])
+            .await
+            .expect("insert");
+
+        let results = store
+            .search(&[1.0, 0.0, 0.0, 0.0], 10, None, None)
+            .await
+            .expect("search");
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].chunk.id, c_close.id, "closest first");
+        assert!(results[0].score >= results[1].score, "scores descending");
+    }
+
+    // --- get_children ---
+
+    #[tokio::test]
+    async fn get_children_returns_direct_children() {
+        let (store, _dir) = create_test_store().await;
+
+        let parent = make_chunk("parent", "tree.md");
+        let parent_id = parent.id.clone();
+
+        let mut child1 = make_chunk("child 1", "tree.md");
+        child1.parent_id = Some(parent_id.clone());
+
+        let mut child2 = make_chunk("child 2", "tree.md");
+        child2.parent_id = Some(parent_id.clone());
+
+        let unrelated = make_chunk("unrelated", "tree.md");
+
+        store
+            .insert_chunks(vec![parent, child1.clone(), child2.clone(), unrelated])
+            .await
+            .expect("insert");
+
+        let children = store
+            .get_children(&parent_id)
+            .await
+            .expect("get_children");
+
+        assert_eq!(children.len(), 2);
+        let ids: Vec<&str> = children.iter().map(|c| c.id.as_str()).collect();
+        assert!(ids.contains(&child1.id.as_str()));
+        assert!(ids.contains(&child2.id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn get_children_leaf_node_returns_empty() {
+        let (store, _dir) = create_test_store().await;
+
+        let leaf = make_chunk("leaf node", "leaf.md");
+        let leaf_id = leaf.id.clone();
+        store.insert_chunks(vec![leaf]).await.expect("insert");
+
+        let children = store.get_children(&leaf_id).await.expect("get_children");
+        assert!(children.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_children_unknown_parent_returns_empty() {
+        let (store, _dir) = create_test_store().await;
+
+        let children = store
+            .get_children("nonexistent-parent")
+            .await
+            .expect("get_children");
+
+        assert!(children.is_empty());
+    }
+
+    // --- get_by_id_prefix: ambiguous, non-hex ---
+
+    #[tokio::test]
+    async fn get_by_id_prefix_ambiguous_returns_error() {
+        let (store, _dir) = create_test_store().await;
+
+        // Force two chunks that share the same 4-char prefix by using fixed IDs
+        let mut c1 = make_chunk("alpha", "ambig.md");
+        c1.id = "aaaa1111bbbbccccddddeeeeffffaaaabbbbccccddddeeeeffffaaaaaaaaaaaa".to_string();
+
+        let mut c2 = make_chunk("beta", "ambig.md");
+        c2.id = "aaaa2222bbbbccccddddeeeeffffaaaabbbbccccddddeeeeffffaaaaaaaaaaaa".to_string();
+
+        store.insert_chunks(vec![c1, c2]).await.expect("insert");
+
+        let result = store.get_by_id_prefix("aaaa").await;
+        assert!(result.is_err(), "ambiguous prefix must return error");
+    }
+
+    #[tokio::test]
+    async fn get_by_id_prefix_non_hex_returns_error() {
+        let (store, _dir) = create_test_store().await;
+
+        let result = store.get_by_id_prefix("xyz!").await;
+        assert!(result.is_err(), "non-hex prefix must return error");
+    }
+
+    #[tokio::test]
+    async fn get_by_id_prefix_missing_returns_none() {
+        let (store, _dir) = create_test_store().await;
+
+        let result = store
+            .get_by_id_prefix("deadbeef")
+            .await
+            .expect("query ok");
+
+        assert!(result.is_none());
+    }
+
+    // --- get_by_source ---
+
+    #[tokio::test]
+    async fn get_by_source_returns_all_matching_chunks() {
+        let (store, _dir) = create_test_store().await;
+
+        let c1 = make_chunk("source a1", "src.md");
+        let c2 = make_chunk("source a2", "src.md");
+        let c3 = make_chunk("other source", "other.md");
+
+        store.insert_chunks(vec![c1, c2, c3]).await.expect("insert");
+
+        let chunks = store.get_by_source("src.md").await.expect("get_by_source");
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks.iter().all(|c| c.source_file == "src.md"));
+    }
+
+    #[tokio::test]
+    async fn get_by_source_unknown_file_returns_empty() {
+        let (store, _dir) = create_test_store().await;
+
+        let chunks = store
+            .get_by_source("does-not-exist.md")
+            .await
+            .expect("get_by_source");
+
+        assert!(chunks.is_empty());
+    }
+
+    // --- update_visibility ---
+
+    #[tokio::test]
+    async fn update_visibility_persists_new_value() {
+        let (store, _dir) = create_test_store().await;
+
+        let chunk = make_chunk("visibility test", "vis.md");
+        let id = chunk.id.clone();
+        store.insert_chunks(vec![chunk]).await.expect("insert");
+
+        store
+            .update_visibility(&id, "deep_only")
+            .await
+            .expect("update_visibility");
+
+        let fetched = store.get_by_id(&id).await.expect("query").expect("chunk");
+        assert_eq!(fetched.visibility, "deep_only");
+    }
+
+    #[tokio::test]
+    async fn update_visibility_custom_value_works() {
+        let (store, _dir) = create_test_store().await;
+
+        let chunk = make_chunk("custom vis", "cvis.md");
+        let id = chunk.id.clone();
+        store.insert_chunks(vec![chunk]).await.expect("insert");
+
+        store
+            .update_visibility(&id, "archived")
+            .await
+            .expect("update_visibility");
+
+        let fetched = store.get_by_id(&id).await.expect("query").expect("chunk");
+        assert_eq!(fetched.visibility, "archived");
+    }
+
+    // --- add_relation ---
+
+    #[tokio::test]
+    async fn add_relation_appends_to_chunk() {
+        let (store, _dir) = create_test_store().await;
+
+        let chunk = make_chunk("relation source", "rel.md");
+        let id = chunk.id.clone();
+        store.insert_chunks(vec![chunk]).await.expect("insert");
+
+        let rel = ChunkRelation::superseded_by("target-id-001");
+        store.add_relation(&id, rel).await.expect("add_relation");
+
+        let fetched = store.get_by_id(&id).await.expect("query").expect("chunk");
+        assert_eq!(fetched.relations.len(), 1);
+        assert_eq!(fetched.relations[0].kind, "superseded_by");
+        assert_eq!(fetched.relations[0].target_id, "target-id-001");
+    }
+
+    #[tokio::test]
+    async fn add_relation_accumulates_multiple_relations() {
+        let (store, _dir) = create_test_store().await;
+
+        let chunk = make_chunk("multi-rel", "mrel.md");
+        let id = chunk.id.clone();
+        store.insert_chunks(vec![chunk]).await.expect("insert");
+
+        store
+            .add_relation(&id, ChunkRelation::related_to("a"))
+            .await
+            .expect("rel 1");
+        store
+            .add_relation(&id, ChunkRelation::related_to("b"))
+            .await
+            .expect("rel 2");
+        store
+            .add_relation(&id, ChunkRelation::superseded_by("c"))
+            .await
+            .expect("rel 3");
+
+        let fetched = store.get_by_id(&id).await.expect("query").expect("chunk");
+        assert_eq!(fetched.relations.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn add_relation_missing_chunk_returns_error() {
+        let (store, _dir) = create_test_store().await;
+
+        let result = store
+            .add_relation("nonexistent-id", ChunkRelation::related_to("x"))
+            .await;
+
+        assert!(result.is_err(), "missing chunk must error");
+    }
+
+    // --- list_entries ---
+
+    #[tokio::test]
+    async fn list_entries_returns_all_chunks_ordered_by_created_at_desc() {
+        let (store, _dir) = create_test_store().await;
+
+        let now = now_epoch_secs();
+
+        let mut old = make_chunk("old entry", "list.md");
+        old.access_profile.created_at = now - 1000;
+        old.access_profile.last_rolled = now - 1000;
+
+        let mut mid = make_chunk("mid entry", "list.md");
+        mid.access_profile.created_at = now - 500;
+        mid.access_profile.last_rolled = now - 500;
+
+        let mut recent = make_chunk("recent entry", "list.md");
+        recent.access_profile.created_at = now;
+        recent.access_profile.last_rolled = now;
+
+        store
+            .insert_chunks(vec![old.clone(), mid.clone(), recent.clone()])
+            .await
+            .expect("insert");
+
+        let entries = store
+            .list_entries(None, None, None, 100)
+            .await
+            .expect("list_entries");
+
+        assert_eq!(entries.len(), 3);
+        // Most recent first
+        assert_eq!(entries[0].id, recent.id);
+        assert_eq!(entries[2].id, old.id);
+    }
+
+    #[tokio::test]
+    async fn list_entries_limit_respected() {
+        let (store, _dir) = create_test_store().await;
+
+        let chunks: Vec<HierarchicalChunk> = (0..10)
+            .map(|i| make_chunk(&format!("entry {i}"), "lim.md"))
+            .collect();
+
+        store.insert_chunks(chunks).await.expect("insert");
+
+        let entries = store
+            .list_entries(None, None, None, 4)
+            .await
+            .expect("list_entries");
+
+        assert_eq!(entries.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn list_entries_perspective_filter() {
+        let (store, _dir) = create_test_store().await;
+
+        let c_dec = make_chunk("a decision", "lp.md")
+            .with_perspective("decisions");
+        let c_learn = make_chunk("a learning", "lp.md")
+            .with_perspective("learnings");
+        let c_none = make_chunk("no perspective", "lp.md");
+
+        store
+            .insert_chunks(vec![c_dec.clone(), c_learn, c_none])
+            .await
+            .expect("insert");
+
+        let entries = store
+            .list_entries(Some("decisions"), None, None, 100)
+            .await
+            .expect("list_entries");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, c_dec.id);
+    }
+
+    #[tokio::test]
+    async fn list_entries_since_filter() {
+        let (store, _dir) = create_test_store().await;
+
+        let now = now_epoch_secs();
+
+        let mut before = make_chunk("before", "ts.md");
+        before.access_profile.created_at = now - 2000;
+        before.access_profile.last_rolled = now - 2000;
+
+        let mut after = make_chunk("after", "ts.md");
+        after.access_profile.created_at = now - 100;
+        after.access_profile.last_rolled = now - 100;
+
+        store
+            .insert_chunks(vec![before, after.clone()])
+            .await
+            .expect("insert");
+
+        let entries = store
+            .list_entries(None, Some(now - 500), None, 100)
+            .await
+            .expect("list_entries since");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, after.id);
+    }
+
+    #[tokio::test]
+    async fn list_entries_until_filter() {
+        let (store, _dir) = create_test_store().await;
+
+        let now = now_epoch_secs();
+
+        let mut before = make_chunk("before", "until.md");
+        before.access_profile.created_at = now - 2000;
+        before.access_profile.last_rolled = now - 2000;
+
+        let mut after = make_chunk("after", "until.md");
+        after.access_profile.created_at = now - 100;
+        after.access_profile.last_rolled = now - 100;
+
+        store
+            .insert_chunks(vec![before.clone(), after])
+            .await
+            .expect("insert");
+
+        let entries = store
+            .list_entries(None, None, Some(now - 500), 100)
+            .await
+            .expect("list_entries until");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, before.id);
+    }
+
+    #[tokio::test]
+    async fn list_entries_empty_store_returns_empty() {
+        let (store, _dir) = create_test_store().await;
+
+        let entries = store
+            .list_entries(None, None, None, 100)
+            .await
+            .expect("list_entries");
+
+        assert!(entries.is_empty());
+    }
+
+    // --- insert: round-trips metadata fields ---
+
+    #[tokio::test]
+    async fn insert_preserves_all_metadata_fields() {
+        let (store, _dir) = create_test_store().await;
+
+        let mut chunk = make_chunk_with_embedding("rich chunk", "meta.md", vec![0.1, 0.2, 0.3, 0.4]);
+        chunk.heading = Some("Rich Heading".to_string());
+        chunk.start_offset = 42;
+        chunk.end_offset = 99;
+        chunk.entry_type = EntryType::Meta;
+        chunk.visibility = "always".to_string();
+        chunk.perspectives = vec!["decisions".to_string(), "learnings".to_string()];
+        chunk.summarizes = vec!["abc".to_string()];
+        chunk.impression_hint = Some("confident".to_string());
+        chunk.impression_strength = 0.75;
+        chunk.expires_at = Some(9_999_999);
+
+        let id = chunk.id.clone();
+        store.insert_chunks(vec![chunk]).await.expect("insert");
+
+        let fetched = store.get_by_id(&id).await.expect("query").expect("chunk");
+
+        assert_eq!(fetched.heading, Some("Rich Heading".to_string()));
+        assert_eq!(fetched.start_offset, 42);
+        assert_eq!(fetched.end_offset, 99);
+        assert_eq!(fetched.entry_type, EntryType::Meta);
+        assert_eq!(fetched.visibility, "always");
+        assert_eq!(fetched.perspectives, vec!["decisions", "learnings"]);
+        assert_eq!(fetched.summarizes, vec!["abc"]);
+        assert_eq!(fetched.impression_hint, Some("confident".to_string()));
+        assert!((fetched.impression_strength - 0.75_f32).abs() < 1e-5);
+        assert_eq!(fetched.expires_at, Some(9_999_999));
+    }
+
+    // --- get_hot_chunks: respects ordering and limit ---
+
+    #[tokio::test]
+    async fn get_hot_chunks_empty_store_returns_empty() {
+        let (store, _dir) = create_test_store().await;
+
+        let hot = store.get_hot_chunks(5).await.expect("get_hot");
+        assert!(hot.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_hot_chunks_limit_respected() {
+        let (store, _dir) = create_test_store().await;
+
+        let chunks: Vec<HierarchicalChunk> = (1..=5)
+            .map(|i| {
+                let mut c = make_chunk(&format!("hot {i}"), "hot_lim.md");
+                c.access_profile.total = i * 10;
+                c.access_profile.hour = i as u16;
+                c
+            })
+            .collect();
+
+        store.insert_chunks(chunks).await.expect("insert");
+
+        let hot = store.get_hot_chunks(2).await.expect("get_hot");
+        assert_eq!(hot.len(), 2);
+        // Highest total first
+        assert!(
+            hot[0].access_profile.total >= hot[1].access_profile.total,
+            "ordered descending"
+        );
+    }
+
+    // --- get_stale_chunks: respects visibility filter ---
+
+    #[tokio::test]
+    async fn get_stale_chunks_excludes_deep_only_visibility() {
+        let (store, _dir) = create_test_store().await;
+
+        let now = now_epoch_secs();
+
+        let mut stale_normal = make_chunk("stale normal", "sn.md");
+        stale_normal.access_profile.last_rolled = now - 5000;
+        stale_normal.access_profile.created_at = now - 5000;
+        // default visibility is "normal"
+
+        let mut stale_deep = make_chunk("stale deep", "sd.md");
+        stale_deep.access_profile.last_rolled = now - 5000;
+        stale_deep.access_profile.created_at = now - 5000;
+        stale_deep.visibility = "deep_only".to_string();
+
+        store
+            .insert_chunks(vec![stale_normal.clone(), stale_deep.clone()])
+            .await
+            .expect("insert");
+
+        let stale = store.get_stale_chunks(1000, 10).await.expect("get_stale");
+
+        let ids: Vec<&str> = stale.iter().map(|c| c.id.as_str()).collect();
+        assert!(ids.contains(&stale_normal.id.as_str()), "normal should appear");
+        assert!(
+            !ids.contains(&stale_deep.id.as_str()),
+            "deep_only must not appear"
+        );
+    }
+
+    // --- stats: empty store ---
+
+    #[tokio::test]
+    async fn stats_empty_store() {
+        let (store, _dir) = create_test_store().await;
+
+        let s = store.stats().await.expect("stats");
+        assert_eq!(s.total_chunks, 0);
+        assert_eq!(s.pending_embeddings, 0);
+        assert!(s.source_files.is_empty());
+        assert!(s.chunks_by_level.is_empty());
+    }
+
+    // --- zero-vector edge case ---
+
+    #[tokio::test]
+    async fn search_zero_vector_does_not_panic() {
+        let (store, _dir) = create_test_store().await;
+
+        let chunk = make_chunk_with_embedding("zero vec", "zv.md", vec![0.0, 0.0, 0.0, 0.0]);
+        store.insert_chunks(vec![chunk]).await.expect("insert");
+
+        // Searching with a zero query should not panic (cosine of zero vector is undefined)
+        let _results = store
+            .search(&[0.0, 0.0, 0.0, 0.0], 5, None, None)
+            .await
+            .expect("search with zero vector");
+    }
 }

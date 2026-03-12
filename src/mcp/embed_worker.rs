@@ -107,3 +107,206 @@ async fn process_batch(
 
     Ok(count)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── eta_seconds ──────────────────────────────────────────────────────
+
+    #[test]
+    fn eta_seconds_zero_pending_returns_zero() {
+        assert_eq!(eta_seconds(0), 0);
+    }
+
+    #[test]
+    fn eta_seconds_one_batch_equals_single_batch_cost() {
+        let expected = 1 * (POLL_INTERVAL_BUSY.as_secs() + EMBED_TIME_SECS);
+        assert_eq!(eta_seconds(1), expected);
+    }
+
+    #[test]
+    fn eta_seconds_exactly_one_full_batch() {
+        let expected = 1 * (POLL_INTERVAL_BUSY.as_secs() + EMBED_TIME_SECS);
+        assert_eq!(eta_seconds(BATCH_SIZE), expected);
+    }
+
+    #[test]
+    fn eta_seconds_one_over_batch_size_rounds_up() {
+        let expected = 2 * (POLL_INTERVAL_BUSY.as_secs() + EMBED_TIME_SECS);
+        assert_eq!(eta_seconds(BATCH_SIZE + 1), expected);
+    }
+
+    #[test]
+    fn eta_seconds_two_full_batches() {
+        let expected = 2 * (POLL_INTERVAL_BUSY.as_secs() + EMBED_TIME_SECS);
+        assert_eq!(eta_seconds(BATCH_SIZE * 2), expected);
+    }
+
+    #[test]
+    fn eta_seconds_scales_linearly_with_batches() {
+        let cost_per_batch = POLL_INTERVAL_BUSY.as_secs() + EMBED_TIME_SECS;
+        for batches in 1usize..=5 {
+            let pending = batches * BATCH_SIZE;
+            assert_eq!(
+                eta_seconds(pending),
+                batches as u64 * cost_per_batch,
+                "failed for {batches} batch(es)"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_size_constant_is_positive() {
+        assert!(BATCH_SIZE > 0);
+    }
+
+    #[test]
+    fn poll_interval_idle_is_longer_than_busy() {
+        assert!(POLL_INTERVAL_IDLE > POLL_INTERVAL_BUSY);
+    }
+
+    // ── process_batch ─────────────────────────────────────────────────────
+
+    struct FixedEmbedder;
+
+    impl crate::Embedder for FixedEmbedder {
+        fn embed(&self, texts: &[&str]) -> crate::Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![0.5f32; 384]).collect())
+        }
+
+        fn dimension(&self) -> usize {
+            384
+        }
+
+        fn name(&self) -> &str {
+            "fixed-embedder"
+        }
+    }
+
+    async fn make_store_and_blobs(dir: &std::path::Path) -> (Arc<StoreBackend>, Arc<BlobStore>) {
+        let store = StoreBackend::open(dir, 384, false).await.unwrap();
+        let blob_store = BlobStore::open(dir).unwrap();
+        (Arc::new(store), Arc::new(blob_store))
+    }
+
+    #[tokio::test]
+    async fn process_batch_empty_store_returns_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, blob_store) = make_store_and_blobs(dir.path()).await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+
+        let count = process_batch(&store, &embedder, &blob_store)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn process_batch_embeds_pending_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, blob_store) = make_store_and_blobs(dir.path()).await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+
+        let mut chunk = crate::test_helpers::make_test_chunk(
+            "embed001deadbeef1234567890abcdef12345678",
+            "embed me please",
+        );
+        chunk.embedding = None;
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let count = process_batch(&store, &embedder, &blob_store)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "should have embedded 1 pending entry");
+    }
+
+    #[tokio::test]
+    async fn process_batch_already_embedded_returns_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, blob_store) = make_store_and_blobs(dir.path()).await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+
+        // make_test_chunk sets embedding = Some(vec![0.0; 384])
+        let chunk = crate::test_helpers::make_test_chunk(
+            "embedded1deadbeef1234567890abcdef12345678",
+            "already has embedding",
+        );
+        assert!(chunk.embedding.is_some());
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let count = process_batch(&store, &embedder, &blob_store)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "no pending entries to embed");
+    }
+
+    #[tokio::test]
+    async fn process_batch_processes_at_most_batch_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, blob_store) = make_store_and_blobs(dir.path()).await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+
+        let chunks: Vec<_> = (0..BATCH_SIZE + 5)
+            .map(|i| {
+                let id = format!("pend{:060}", i);
+                let mut c = crate::test_helpers::make_test_chunk(&id, &format!("content {i}"));
+                c.embedding = None;
+                c
+            })
+            .collect();
+        store.insert_chunks(chunks).await.unwrap();
+
+        let count = process_batch(&store, &embedder, &blob_store)
+            .await
+            .unwrap();
+        assert_eq!(count, BATCH_SIZE, "should process exactly {BATCH_SIZE}");
+    }
+
+    struct MismatchEmbedder;
+
+    impl crate::Embedder for MismatchEmbedder {
+        fn embed(&self, texts: &[&str]) -> crate::Result<Vec<Vec<f32>>> {
+            // Return fewer embeddings than texts to trigger count mismatch
+            if texts.len() > 1 {
+                Ok(vec![vec![0.1f32; 384]])
+            } else {
+                Ok(texts.iter().map(|_| vec![0.1f32; 384]).collect())
+            }
+        }
+
+        fn dimension(&self) -> usize {
+            384
+        }
+
+        fn name(&self) -> &str {
+            "mismatch-embedder"
+        }
+    }
+
+    #[tokio::test]
+    async fn process_batch_returns_error_on_embedding_count_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, blob_store) = make_store_and_blobs(dir.path()).await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MismatchEmbedder);
+
+        // Insert 2 pending chunks so embedder returns fewer than expected
+        let chunks: Vec<_> = (0..2)
+            .map(|i| {
+                let id = format!("mismatch{:056}", i);
+                let mut c = crate::test_helpers::make_test_chunk(&id, &format!("content {i}"));
+                c.embedding = None;
+                c
+            })
+            .collect();
+        store.insert_chunks(chunks).await.unwrap();
+
+        let result = process_batch(&store, &embedder, &blob_store).await;
+        assert!(
+            result.is_err(),
+            "should fail with count mismatch error"
+        );
+        let err_str = result.unwrap_err().to_string();
+        assert!(err_str.contains("mismatch"), "error should mention mismatch: {err_str}");
+    }
+}

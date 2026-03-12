@@ -592,4 +592,370 @@ mod tests {
         let out = format_recall(Some("q"), &results);
         assert!(!out.contains("embedding pending"));
     }
+
+    // ── format_recall edge cases ─────────────────────────────────────────
+
+    #[test]
+    fn recall_empty_no_query_shows_no_entries_found() {
+        let out = format_recall(None, &[]);
+        assert_eq!(out, "No entries found.");
+    }
+
+    #[test]
+    fn recall_result_uses_first_line_as_title_when_no_heading() {
+        let mut chunk = make_chunk("abc1234deadbeef", "First line\nSecond line", None);
+        chunk.heading = None;
+        let results = vec![SearchResultResponse {
+            chunk,
+            score: 0.5,
+            relevance: "strong".to_string(),
+            hierarchy_path: vec![],
+            children: vec![],
+        }];
+        let out = format_recall(Some("q"), &results);
+        assert!(out.contains("### 1. First line (strong)"));
+    }
+
+    #[test]
+    fn recall_source_file_shown_for_non_agent_files() {
+        let mut chunk = make_chunk("abc1234deadbeef", "Content", Some("Title"));
+        chunk.source_file = "docs/design.md".to_string();
+        let results = vec![SearchResultResponse {
+            chunk,
+            score: 0.5,
+            relevance: "strong".to_string(),
+            hierarchy_path: vec![],
+            children: vec![],
+        }];
+        let out = format_recall(Some("q"), &results);
+        assert!(out.contains("docs/design.md"));
+    }
+
+    #[test]
+    fn recall_inline_source_file_omitted() {
+        let mut chunk = make_chunk("abc1234deadbeef", "Content", Some("Title"));
+        chunk.source_file = "[inline]".to_string();
+        let results = vec![SearchResultResponse {
+            chunk,
+            score: 0.5,
+            relevance: "strong".to_string(),
+            hierarchy_path: vec![],
+            children: vec![],
+        }];
+        let out = format_recall(Some("q"), &results);
+        assert!(!out.contains("[inline]"));
+    }
+
+    #[test]
+    fn recall_multiple_results_separated_by_divider() {
+        let results = vec![
+            SearchResultResponse {
+                chunk: make_chunk("aaa1234deadbeef", "Content A", Some("Entry A")),
+                score: 0.8,
+                relevance: "strong".to_string(),
+                hierarchy_path: vec![],
+                children: vec![],
+            },
+            SearchResultResponse {
+                chunk: make_chunk("bbb1234deadbeef", "Content B", Some("Entry B")),
+                score: 0.4,
+                relevance: "moderate".to_string(),
+                hierarchy_path: vec![],
+                children: vec![],
+            },
+        ];
+        let out = format_recall(Some("q"), &results);
+        assert!(out.contains("### 1. Entry A"));
+        assert!(out.contains("### 2. Entry B"));
+        assert!(out.contains("\n---\n"));
+        assert!(out.contains("_2 result(s)."));
+    }
+
+    #[test]
+    fn recall_entry_type_shown_for_non_raw() {
+        let mut chunk = make_chunk("abc1234deadbeef", "Content", Some("Title"));
+        chunk.entry_type = "summary".to_string();
+        let results = vec![SearchResultResponse {
+            chunk,
+            score: 0.5,
+            relevance: "strong".to_string(),
+            hierarchy_path: vec![],
+            children: vec![],
+        }];
+        let out = format_recall(Some("q"), &results);
+        assert!(out.contains("summary"));
+    }
+
+    #[test]
+    fn recall_raw_entry_type_omitted_from_metadata() {
+        let chunk = make_chunk("abc1234deadbeef", "Content", Some("Title"));
+        let results = vec![SearchResultResponse {
+            chunk,
+            score: 0.5,
+            relevance: "strong".to_string(),
+            hierarchy_path: vec![],
+            children: vec![],
+        }];
+        let out = format_recall(Some("q"), &results);
+        // "· raw" should NOT appear as a separate token in the metadata
+        assert!(!out.contains("· raw\n") && !out.contains("· raw ·"));
+    }
+
+    // ── format_focus edge cases ──────────────────────────────────────────
+
+    #[test]
+    fn focus_no_children_shows_no_children_message() {
+        let node = make_chunk("node000deadbeef", "Content", Some("Node"));
+        let response = FocusResponse {
+            node,
+            children: vec![],
+        };
+        let out = format_focus(&response);
+        assert!(out.contains("_(no children)_"));
+    }
+
+    #[test]
+    fn focus_child_without_relevance_shows_no_score_bracket() {
+        let node = make_chunk("node000deadbeef", "Node content", Some("Node"));
+        let child = make_chunk("child00deadbeef", "Child content", Some("Child"));
+        let response = FocusResponse {
+            node,
+            children: vec![FocusChild {
+                chunk: child,
+                relevance: None,
+            }],
+        };
+        let out = format_focus(&response);
+        assert!(!out.contains("[0."));
+    }
+
+    #[test]
+    fn focus_uses_first_line_for_node_without_heading() {
+        let mut node = make_chunk("node000deadbeef", "First heading line\nMore content", None);
+        node.heading = None;
+        let response = FocusResponse {
+            node,
+            children: vec![],
+        };
+        let out = format_focus(&response);
+        assert!(out.contains("## First heading line"));
+    }
+
+    // ── format_store_status ──────────────────────────────────────────────
+
+    #[test]
+    fn format_store_status_empty_store() {
+        use crate::aging::AgingConfig;
+        use crate::store::StoreStats;
+        use std::collections::HashMap;
+
+        let stats = StoreStats {
+            total_chunks: 0,
+            chunks_by_level: HashMap::new(),
+            source_files: vec![],
+            pending_embeddings: 0,
+        };
+        let aging = AgingConfig::default();
+        let out = format_store_status(&stats, &aging);
+        assert!(out.contains("## Store Status"));
+        assert!(out.contains("Total entries:** 0"));
+        assert!(out.contains("Aging policy"));
+        assert!(!out.contains("Pending embeddings"));
+    }
+
+    #[test]
+    fn format_store_status_with_entries_and_pending() {
+        use crate::aging::AgingConfig;
+        use crate::store::StoreStats;
+        use std::collections::HashMap;
+
+        let mut by_level = HashMap::new();
+        by_level.insert(1u8, 3usize);
+        by_level.insert(7u8, 5usize);
+
+        let stats = StoreStats {
+            total_chunks: 8,
+            chunks_by_level: by_level,
+            source_files: vec!["docs/a.md".to_string(), "docs/b.md".to_string()],
+            pending_embeddings: 32,
+        };
+        let aging = AgingConfig {
+            degrade_after_days: 14,
+            degrade_to: "deep_only".to_string(),
+            degrade_from: vec!["normal".to_string()],
+            ..AgingConfig::default()
+        };
+        let out = format_store_status(&stats, &aging);
+        assert!(out.contains("Total entries:** 8"));
+        assert!(out.contains("H1: 3"));
+        assert!(out.contains("Content: 5"));
+        assert!(out.contains("docs/a.md"));
+        assert!(out.contains("docs/b.md"));
+        assert!(out.contains("Pending embeddings"));
+        assert!(out.contains("Pending:** 32"));
+        assert!(out.contains("14 days"));
+        assert!(out.contains("deep_only"));
+    }
+
+    #[test]
+    fn format_store_status_level_7_shown_as_content() {
+        use crate::aging::AgingConfig;
+        use crate::store::StoreStats;
+        use std::collections::HashMap;
+
+        let mut by_level = HashMap::new();
+        by_level.insert(7u8, 42usize);
+
+        let stats = StoreStats {
+            total_chunks: 42,
+            chunks_by_level: by_level,
+            source_files: vec![],
+            pending_embeddings: 0,
+        };
+        let out = format_store_status(&stats, &AgingConfig::default());
+        assert!(out.contains("Content: 42"));
+        assert!(!out.contains("H7"));
+    }
+
+    // ── format_hot_entries ───────────────────────────────────────────────
+
+    #[test]
+    fn format_hot_entries_empty() {
+        let chunks: Vec<crate::HierarchicalChunk> = vec![];
+        let top: Vec<(usize, crate::salience::SalienceScore)> = vec![];
+        let out = super::format_hot_entries(&chunks, &top);
+        assert!(out.contains("## Hot Entries"));
+        assert!(out.contains("_0 entry(ies)._"));
+    }
+
+    #[test]
+    fn format_hot_entries_shows_score() {
+        use crate::salience::SalienceScore;
+        use crate::test_helpers::make_test_chunk;
+
+        let chunk = make_test_chunk("abc1234deadbeef1234567890abcdef12345678", "Test content");
+        let chunks = vec![chunk];
+        let score = SalienceScore {
+            composite: 0.75,
+            interaction: 0.8,
+            perspective: 0.7,
+            revision: 0.0,
+        };
+        let top = vec![(0usize, score)];
+        let out = super::format_hot_entries(&chunks, &top);
+        assert!(out.contains("0.750"));
+        assert!(out.contains("_1 entry(ies)._"));
+    }
+
+    #[test]
+    fn format_hot_entries_with_perspectives() {
+        use crate::salience::SalienceScore;
+        use crate::test_helpers::make_test_chunk;
+
+        let mut chunk = make_test_chunk("abc1234deadbeef1234567890abcdef12345678", "Content");
+        chunk.perspectives = vec!["decisions".to_string(), "learnings".to_string()];
+        let chunks = vec![chunk];
+        let score = SalienceScore {
+            composite: 0.5,
+            interaction: 0.5,
+            perspective: 0.5,
+            revision: 0.0,
+        };
+        let top = vec![(0usize, score)];
+        let out = super::format_hot_entries(&chunks, &top);
+        assert!(out.contains("decisions, learnings"));
+    }
+
+    // ── format_entry_detail ──────────────────────────────────────────────
+
+    #[test]
+    fn format_entry_detail_basic() {
+        use crate::test_helpers::make_test_chunk;
+
+        let chunk = make_test_chunk("abc1234deadbeef1234567890abcdef12345678", "Entry content");
+        let children: Vec<crate::HierarchicalChunk> = vec![];
+        let out = super::format_entry_detail(&chunk, &children);
+        assert!(out.contains("Entry content"));
+        assert!(out.contains("### Metadata"));
+        assert!(out.contains("**ID:**"));
+        assert!(out.contains("**Visibility:**"));
+    }
+
+    #[test]
+    fn format_entry_detail_with_relations() {
+        use crate::test_helpers::make_test_chunk;
+
+        let mut chunk = make_test_chunk("abc1234deadbeef1234567890abcdef12345678", "Content");
+        chunk
+            .relations
+            .push(crate::ChunkRelation::new("supersedes", "older-entry-id-abc123456"));
+        let children: Vec<crate::HierarchicalChunk> = vec![];
+        let out = super::format_entry_detail(&chunk, &children);
+        assert!(out.contains("### Relations (1)"));
+        assert!(out.contains("supersedes"));
+    }
+
+    #[test]
+    fn format_entry_detail_with_children() {
+        use crate::test_helpers::make_test_chunk;
+
+        let parent = make_test_chunk("abc1234deadbeef1234567890abcdef12345678", "Parent");
+        let child = make_test_chunk("child12deadbeef1234567890abcdef123456789", "Child content");
+        let out = super::format_entry_detail(&parent, &[child]);
+        assert!(out.contains("### Children (1)"));
+        assert!(out.contains("Child content"));
+    }
+
+    #[test]
+    fn format_entry_detail_with_perspectives() {
+        use crate::test_helpers::make_test_chunk;
+
+        let mut chunk = make_test_chunk("abc1234deadbeef1234567890abcdef12345678", "Content");
+        chunk.perspectives = vec!["decisions".to_string()];
+        let out = super::format_entry_detail(&chunk, &[]);
+        assert!(out.contains("**Perspectives:** decisions"));
+    }
+
+    #[test]
+    fn format_entry_detail_no_children_section_when_empty() {
+        use crate::test_helpers::make_test_chunk;
+
+        let chunk = make_test_chunk("abc1234deadbeef1234567890abcdef12345678", "Content");
+        let out = super::format_entry_detail(&chunk, &[]);
+        assert!(!out.contains("### Children"));
+    }
+
+    // ── content_preview ──────────────────────────────────────────────────
+
+    #[test]
+    fn content_preview_short_content_returned_in_full() {
+        let s = "Short content";
+        let preview = content_preview(s, 300);
+        assert_eq!(preview, s);
+    }
+
+    #[test]
+    fn content_preview_truncates_at_char_boundary() {
+        let s = "Hello 日本語 world and more text";
+        let preview = content_preview(s, 9);
+        assert!(s.is_char_boundary(preview.len()) || preview.len() <= 9);
+        assert!(!preview.is_empty());
+    }
+
+    // ── first_line helper via recall ─────────────────────────────────────
+
+    #[test]
+    fn recall_uses_untitled_for_blank_content() {
+        let mut chunk = make_chunk("abc1234deadbeef", "\n\n  \n", None);
+        chunk.heading = None;
+        let results = vec![SearchResultResponse {
+            chunk,
+            score: 0.5,
+            relevance: "strong".to_string(),
+            hierarchy_path: vec![],
+            children: vec![],
+        }];
+        let out = format_recall(Some("q"), &results);
+        assert!(out.contains("(untitled)"));
+    }
 }

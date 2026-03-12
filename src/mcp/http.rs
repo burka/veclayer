@@ -610,3 +610,242 @@ async fn api_priming(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    // ── AppError ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn app_error_bad_request_has_correct_status() {
+        let err = AppError::bad_request("missing field");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.message, "missing field");
+    }
+
+    #[test]
+    fn app_error_forbidden_has_correct_status() {
+        let err = AppError::forbidden("need write");
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert_eq!(err.message, "need write");
+    }
+
+    #[test]
+    fn app_error_from_domain_not_found() {
+        let domain_err = crate::Error::not_found("entry 123");
+        let app_err = AppError::from(domain_err);
+        assert_eq!(app_err.status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn app_error_from_domain_parse_error() {
+        let domain_err = crate::Error::Parse("bad input".to_string());
+        let app_err = AppError::from(domain_err);
+        assert_eq!(app_err.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn app_error_from_domain_invalid_operation() {
+        let domain_err = crate::Error::InvalidOperation("can't do that".to_string());
+        let app_err = AppError::from(domain_err);
+        assert_eq!(app_err.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn app_error_from_domain_config_error() {
+        let domain_err = crate::Error::Config("bad config".to_string());
+        let app_err = AppError::from(domain_err);
+        assert_eq!(app_err.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn app_error_from_generic_domain_error_is_internal() {
+        let domain_err =
+            crate::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "disk full"));
+        let app_err = AppError::from(domain_err);
+        assert_eq!(app_err.status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn insufficient_capability_produces_forbidden() {
+        let err = insufficient(Capability::Write);
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert!(err.message.contains("write"));
+    }
+
+    // ── build_cors ───────────────────────────────────────────────────────
+
+    #[test]
+    fn build_cors_without_server_url_does_not_panic() {
+        let _cors = build_cors(None);
+    }
+
+    #[test]
+    fn build_cors_with_server_url_does_not_panic() {
+        let _cors = build_cors(Some("https://example.com".to_string()));
+    }
+
+    // ── Test AppState helper ─────────────────────────────────────────────
+
+    async fn make_test_app_state() -> (AppState, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+
+        struct FixedEmbedder;
+        impl crate::Embedder for FixedEmbedder {
+            fn embed(&self, texts: &[&str]) -> crate::Result<Vec<Vec<f32>>> {
+                Ok(texts.iter().map(|_| vec![0.1f32; 384]).collect())
+            }
+            fn dimension(&self) -> usize {
+                384
+            }
+            fn name(&self) -> &str {
+                "fixed"
+            }
+        }
+
+        let store = StoreBackend::open(dir.path(), 384, false).await.unwrap();
+        let blob_store = BlobStore::open(dir.path()).unwrap();
+
+        let state = AppState {
+            store: Arc::new(store),
+            embedder: Arc::new(FixedEmbedder),
+            blob_store: Arc::new(blob_store),
+            data_dir: dir.path().to_path_buf(),
+            project: None,
+            branch: None,
+            auth: None,
+            git_store: None,
+            push_mode: crate::git::branch_config::PushMode::Off,
+        };
+        (state, dir)
+    }
+
+    // ── Route tests ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn health_endpoint_returns_ok() {
+        let (state, _dir) = make_test_app_state().await;
+        let app = build_app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn api_stats_returns_ok_for_admin() {
+        let (state, _dir) = make_test_app_state().await;
+        let app = build_app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats")
+                    .method("GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn api_recall_with_invalid_json_returns_bad_request() {
+        let (state, _dir) = make_test_app_state().await;
+        let app = build_app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/recall")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from("not valid json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn api_share_with_valid_body_returns_ok() {
+        let (state, _dir) = make_test_app_state().await;
+        let app = build_app(state);
+
+        let body = serde_json::json!({
+            "tree": "projects:test",
+            "can": ["recall"]
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/share")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn api_store_with_empty_content_returns_bad_request() {
+        let (state, _dir) = make_test_app_state().await;
+        let app = build_app(state);
+
+        let body = serde_json::json!({ "content": "" });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/store")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn api_focus_with_unknown_id_returns_not_found() {
+        let (state, _dir) = make_test_app_state().await;
+        let app = build_app(state);
+
+        let body = serde_json::json!({ "id": "nonexistentid" });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/focus")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+}

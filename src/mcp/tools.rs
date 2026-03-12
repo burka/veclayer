@@ -1196,6 +1196,7 @@ mod tests {
     // resolve_id and parse_temporal tests are in resolve::tests.
     // These tests cover tool-specific logic that remains in this module.
 
+    #[cfg(feature = "embedding-local")]
     use crate::embedder::FastEmbedder;
     use crate::test_helpers::make_test_chunk;
 
@@ -1719,6 +1720,7 @@ mod tests {
         assert_eq!(relations[4].kind, "version_of");
     }
 
+    #[cfg(feature = "embedding-local")]
     #[tokio::test]
     async fn test_recall_ongoing_filter_with_query() {
         let (store, _blob_store, _dir) = make_test_store_with_dir().await;
@@ -1802,6 +1804,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedding-local")]
     #[tokio::test]
     async fn test_recall_ongoing_filter_browse_mode() {
         let (store, _blob_store, _dir) = make_test_store_with_dir().await;
@@ -1902,6 +1905,7 @@ mod tests {
     // ── discover tests ──────────────────────────────────────────────────
 
     /// Build a chunk with a real embedding using the FastEmbedder.
+    #[cfg(feature = "embedding-local")]
     async fn make_embedded_chunk(
         embedder: &Arc<dyn Embedder + Send + Sync>,
         id: &str,
@@ -1946,6 +1950,7 @@ mod tests {
         assert!(result.contains("Nothing to discover") || result.contains("No entries"));
     }
 
+    #[cfg(feature = "embedding-local")]
     #[tokio::test]
     async fn test_discover_finds_unlinked_similar_pair() {
         let (store, blob_store, dir) = make_test_store_with_dir().await;
@@ -2002,6 +2007,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedding-local")]
     #[tokio::test]
     async fn test_discover_skips_already_linked_pair() {
         let (store, blob_store, dir) = make_test_store_with_dir().await;
@@ -2075,5 +2081,1007 @@ mod tests {
                 &section[..section.len().min(300)]
             );
         }
+    }
+
+    // ── Mock embedder (no external feature deps) ─────────────────────────
+
+    struct MockEmbedder {
+        dim: usize,
+    }
+
+    impl MockEmbedder {
+        fn new() -> Self {
+            Self { dim: 384 }
+        }
+    }
+
+    impl crate::Embedder for MockEmbedder {
+        fn embed(&self, texts: &[&str]) -> crate::Result<Vec<Vec<f32>>> {
+            Ok(texts
+                .iter()
+                .enumerate()
+                .map(|(i, _)| {
+                    let mut v = vec![0.1f32; self.dim];
+                    v[0] = (i + 1) as f32 / 100.0;
+                    v
+                })
+                .collect())
+        }
+
+        fn dimension(&self) -> usize {
+            self.dim
+        }
+
+        fn name(&self) -> &str {
+            "mock-embedder"
+        }
+    }
+
+    // ── passes_scope_filter ──────────────────────────────────────────────
+
+    #[test]
+    fn scope_filter_no_project_passes_everything() {
+        let chunk = make_test_chunk("id1", "content");
+        assert!(passes_scope_filter(&chunk, None, None));
+    }
+
+    #[test]
+    fn scope_filter_unscoped_chunk_passes_any_project() {
+        let chunk = make_test_chunk("id1", "content");
+        assert!(passes_scope_filter(&chunk, Some("myproject"), None));
+    }
+
+    #[test]
+    fn scope_filter_matching_project_passes() {
+        let mut chunk = make_test_chunk("id1", "content");
+        chunk.perspectives = vec!["project:myproject".to_string()];
+        assert!(passes_scope_filter(&chunk, Some("myproject"), None));
+    }
+
+    #[test]
+    fn scope_filter_wrong_project_fails() {
+        let mut chunk = make_test_chunk("id1", "content");
+        chunk.perspectives = vec!["project:other".to_string()];
+        assert!(!passes_scope_filter(&chunk, Some("myproject"), None));
+    }
+
+    #[test]
+    fn scope_filter_branch_requires_exact_branch_match() {
+        let mut chunk = make_test_chunk("id1", "content");
+        chunk.perspectives = vec![
+            "project:myproject".to_string(),
+            "branch:myproject@main".to_string(),
+        ];
+        assert!(passes_scope_filter(&chunk, Some("myproject"), Some("main")));
+        assert!(!passes_scope_filter(
+            &chunk,
+            Some("myproject"),
+            Some("feature")
+        ));
+    }
+
+    #[test]
+    fn scope_filter_branch_chunk_without_branch_arg_fails() {
+        let mut chunk = make_test_chunk("id1", "content");
+        chunk.perspectives = vec![
+            "project:myproject".to_string(),
+            "branch:myproject@main".to_string(),
+        ];
+        assert!(!passes_scope_filter(&chunk, Some("myproject"), None));
+    }
+
+    #[test]
+    fn scope_filter_non_project_perspectives_pass_project_filter() {
+        let mut chunk = make_test_chunk("id1", "content");
+        chunk.perspectives = vec!["decisions".to_string()];
+        assert!(passes_scope_filter(&chunk, Some("myproject"), None));
+    }
+
+    // ── execute_store ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn execute_store_single_entry_returns_id() {
+        let (store, blob_store, _dir) = make_test_store_with_dir().await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
+
+        let input = StoreInput {
+            content: "Test entry content".to_string(),
+            parent_id: None,
+            source_file: "[agent]".to_string(),
+            heading: Some("Test".to_string()),
+            visibility: "normal".to_string(),
+            perspectives: vec![],
+            relations: vec![],
+            entry_type: None,
+            items: vec![],
+            impression_hint: None,
+            impression_strength: None,
+            scope: "project".to_string(),
+        };
+        let result = execute_store(
+            &store,
+            &embedder,
+            &blob_store,
+            input,
+            None,
+            None,
+            None,
+            crate::git::branch_config::PushMode::Off,
+        )
+        .await
+        .unwrap();
+        let msg = result.as_str().unwrap();
+        assert!(msg.contains("Stored."), "got: {msg}");
+        assert!(msg.contains("ID:"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn execute_store_project_scope_adds_project_perspective() {
+        let (store, blob_store, _dir) = make_test_store_with_dir().await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
+
+        let input = StoreInput {
+            content: "Project-scoped entry".to_string(),
+            parent_id: None,
+            source_file: "[agent]".to_string(),
+            heading: None,
+            visibility: "normal".to_string(),
+            perspectives: vec![],
+            relations: vec![],
+            entry_type: None,
+            items: vec![],
+            impression_hint: None,
+            impression_strength: None,
+            scope: "project".to_string(),
+        };
+        execute_store(
+            &store,
+            &embedder,
+            &blob_store,
+            input,
+            Some("myproj"),
+            None,
+            None,
+            crate::git::branch_config::PushMode::Off,
+        )
+        .await
+        .unwrap();
+
+        let entries = store.list_entries(None, None, None, 10).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0]
+                .perspectives
+                .contains(&"project:myproj".to_string()),
+            "perspectives: {:?}",
+            entries[0].perspectives
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_store_personal_scope_no_project_perspective() {
+        let (store, blob_store, _dir) = make_test_store_with_dir().await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
+
+        let input = StoreInput {
+            content: "Personal entry".to_string(),
+            parent_id: None,
+            source_file: "[agent]".to_string(),
+            heading: None,
+            visibility: "normal".to_string(),
+            perspectives: vec![],
+            relations: vec![],
+            entry_type: None,
+            items: vec![],
+            impression_hint: None,
+            impression_strength: None,
+            scope: "personal".to_string(),
+        };
+        execute_store(
+            &store,
+            &embedder,
+            &blob_store,
+            input,
+            Some("myproj"),
+            None,
+            None,
+            crate::git::branch_config::PushMode::Off,
+        )
+        .await
+        .unwrap();
+
+        let entries = store.list_entries(None, None, None, 10).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(
+            !entries[0]
+                .perspectives
+                .iter()
+                .any(|p| p.starts_with("project:")),
+            "personal scope should not add project perspective: {:?}",
+            entries[0].perspectives
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_store_batch_mode_stores_multiple_entries() {
+        let (store, blob_store, _dir) = make_test_store_with_dir().await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
+
+        let items = vec![
+            StoreItem {
+                content: "Batch item one".to_string(),
+                parent_id: None,
+                heading: None,
+                visibility: "normal".to_string(),
+                perspectives: vec![],
+                source_file: None,
+                entry_type: None,
+                relations: vec![],
+                impression_hint: None,
+                impression_strength: None,
+                scope: "project".to_string(),
+            },
+            StoreItem {
+                content: "Batch item two".to_string(),
+                parent_id: None,
+                heading: Some("Item Two".to_string()),
+                visibility: "normal".to_string(),
+                perspectives: vec!["decisions".to_string()],
+                source_file: Some("[file]".to_string()),
+                entry_type: Some("meta".to_string()),
+                relations: vec![],
+                impression_hint: None,
+                impression_strength: None,
+                scope: "project".to_string(),
+            },
+        ];
+        let input = StoreInput {
+            content: String::new(),
+            parent_id: None,
+            source_file: "[agent]".to_string(),
+            heading: None,
+            visibility: "normal".to_string(),
+            perspectives: vec![],
+            relations: vec![],
+            entry_type: None,
+            items,
+            impression_hint: None,
+            impression_strength: None,
+            scope: "project".to_string(),
+        };
+        let result = execute_store(
+            &store,
+            &embedder,
+            &blob_store,
+            input,
+            None,
+            None,
+            None,
+            crate::git::branch_config::PushMode::Off,
+        )
+        .await
+        .unwrap();
+        let msg = result.as_str().unwrap();
+        assert!(msg.contains("Stored 2 entries"), "got: {msg}");
+
+        let entries = store.list_entries(None, None, None, 10).await.unwrap();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn execute_store_unknown_entry_type_returns_error() {
+        let (store, blob_store, _dir) = make_test_store_with_dir().await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
+
+        let input = StoreInput {
+            content: "Test content".to_string(),
+            parent_id: None,
+            source_file: "[agent]".to_string(),
+            heading: None,
+            visibility: "normal".to_string(),
+            perspectives: vec![],
+            relations: vec![],
+            entry_type: Some("unknown_type".to_string()),
+            items: vec![],
+            impression_hint: None,
+            impression_strength: None,
+            scope: "project".to_string(),
+        };
+        let result = execute_store(
+            &store,
+            &embedder,
+            &blob_store,
+            input,
+            None,
+            None,
+            None,
+            crate::git::branch_config::PushMode::Off,
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown entry_type"));
+    }
+
+    #[tokio::test]
+    async fn execute_store_long_content_includes_warning() {
+        let (store, blob_store, _dir) = make_test_store_with_dir().await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
+
+        let long_content = "x".repeat(2001);
+        let input = StoreInput {
+            content: long_content,
+            parent_id: None,
+            source_file: "[agent]".to_string(),
+            heading: None,
+            visibility: "normal".to_string(),
+            perspectives: vec![],
+            relations: vec![],
+            entry_type: None,
+            items: vec![],
+            impression_hint: None,
+            impression_strength: None,
+            scope: "project".to_string(),
+        };
+        let result = execute_store(
+            &store,
+            &embedder,
+            &blob_store,
+            input,
+            None,
+            None,
+            None,
+            crate::git::branch_config::PushMode::Off,
+        )
+        .await
+        .unwrap();
+        let msg = result.as_str().unwrap();
+        assert!(msg.contains("2000 chars"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn execute_store_branch_scope_adds_branch_perspective() {
+        let (store, blob_store, _dir) = make_test_store_with_dir().await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
+
+        let input = StoreInput {
+            content: "Branch-scoped entry".to_string(),
+            parent_id: None,
+            source_file: "[agent]".to_string(),
+            heading: None,
+            visibility: "normal".to_string(),
+            perspectives: vec![],
+            relations: vec![],
+            entry_type: None,
+            items: vec![],
+            impression_hint: None,
+            impression_strength: None,
+            scope: "branch".to_string(),
+        };
+        execute_store(
+            &store,
+            &embedder,
+            &blob_store,
+            input,
+            Some("myproj"),
+            Some("main"),
+            None,
+            crate::git::branch_config::PushMode::Off,
+        )
+        .await
+        .unwrap();
+
+        let entries = store.list_entries(None, None, None, 10).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        let persp = &entries[0].perspectives;
+        assert!(
+            persp.contains(&"branch:myproj@main".to_string()),
+            "perspectives: {persp:?}"
+        );
+        assert!(
+            persp.contains(&"project:myproj".to_string()),
+            "perspectives: {persp:?}"
+        );
+    }
+
+    // ── execute_focus ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn execute_focus_returns_node_with_children() {
+        let (store, _blob_store, _dir) = make_test_store_with_dir().await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
+
+        // All IDs must be lowercase hex for get_by_id_prefix to work
+        let parent_id = "abcd1234deadbeef1234567890abcdef12345678";
+        let parent = make_test_chunk(parent_id, "Parent content");
+
+        let mut child = make_test_chunk(
+            "1234567890abcdef1234567890abcdef12345678",
+            "Child content",
+        );
+        child.parent_id = Some(parent_id.to_string());
+
+        store.insert_chunks(vec![parent, child]).await.unwrap();
+
+        // Use full ID for exact match
+        let input = FocusInput {
+            id: parent_id.to_string(),
+            question: None,
+            limit: 10,
+        };
+        let response = execute_focus(&store, &embedder, input, None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(response.node.content, "Parent content");
+        assert_eq!(response.children.len(), 1);
+        assert_eq!(response.children[0].chunk.content, "Child content");
+        assert!(response.children[0].relevance.is_none());
+    }
+
+    #[tokio::test]
+    async fn execute_focus_not_found_returns_error() {
+        let (store, _blob_store, _dir) = make_test_store_with_dir().await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
+
+        let input = FocusInput {
+            id: "0000000000000000000000000000000000000000".to_string(),
+            question: None,
+            limit: 10,
+        };
+        let result = execute_focus(&store, &embedder, input, None, None).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn execute_focus_with_question_returns_scored_children() {
+        let (store, _blob_store, _dir) = make_test_store_with_dir().await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
+
+        let parent_id = "beef5678deadbeef1234567890abcdef12345678";
+        let mut parent = make_test_chunk(parent_id, "Parent node");
+        parent.embedding = Some(vec![0.1f32; 384]);
+
+        let child_id_a = "cafe5678deadbeef1234567890abcdef12345678";
+        let mut child_a = make_test_chunk(child_id_a, "Architecture decisions");
+        child_a.parent_id = Some(parent_id.to_string());
+        child_a.embedding = Some(vec![0.2f32; 384]);
+
+        let child_id_b = "fade5678deadbeef1234567890abcdef12345678";
+        let mut child_b = make_test_chunk(child_id_b, "Implementation notes");
+        child_b.parent_id = Some(parent_id.to_string());
+        child_b.embedding = Some(vec![0.3f32; 384]);
+
+        store
+            .insert_chunks(vec![parent, child_a, child_b])
+            .await
+            .unwrap();
+
+        let input = FocusInput {
+            id: parent_id.to_string(),
+            question: Some("architecture".to_string()),
+            limit: 10,
+        };
+        let response = execute_focus(&store, &embedder, input, None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(response.children.len(), 2);
+        for child in &response.children {
+            assert!(child.relevance.is_some(), "child missing relevance score");
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_focus_respects_limit() {
+        let (store, _blob_store, _dir) = make_test_store_with_dir().await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
+
+        let parent_id = "dead9999deadbeef1234567890abcdef12345678";
+        let parent = make_test_chunk(parent_id, "Parent");
+
+        let children: Vec<_> = (0..5)
+            .map(|i| {
+                let id = format!("0000000{i}0000deadbeef1234567890abcdef1234{:04x}", i);
+                let mut c = make_test_chunk(&id, &format!("Child {i}"));
+                c.parent_id = Some(parent_id.to_string());
+                c
+            })
+            .collect();
+
+        let mut all = vec![parent];
+        all.extend(children);
+        store.insert_chunks(all).await.unwrap();
+
+        let input = FocusInput {
+            id: parent_id.to_string(),
+            question: None,
+            limit: 2,
+        };
+        let response = execute_focus(&store, &embedder, input, None, None)
+            .await
+            .unwrap();
+
+        assert!(
+            response.children.len() <= 2,
+            "expected at most 2 children, got {}",
+            response.children.len()
+        );
+    }
+
+    // ── execute_think: promote/demote/relate ─────────────────────────────
+
+    #[tokio::test]
+    async fn execute_think_promote_changes_visibility() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+        // All-hex ID so get_by_id_prefix accepts the 8-char prefix
+        let chunk_id = "9a3b1234deadbeef1234567890abcdef12345678";
+        store
+            .insert_chunks(vec![make_test_chunk(chunk_id, "content")])
+            .await
+            .unwrap();
+
+        let input = ThinkInput {
+            action: Some("promote".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: Some(chunk_id[..8].to_string()),
+            visibility: Some("always".to_string()),
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+        let result =
+            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None)
+                .await
+                .unwrap();
+        assert!(result.contains("Promoted"), "got: {result}");
+        assert!(result.contains("always"), "got: {result}");
+
+        let updated = store.get_by_id(chunk_id).await.unwrap().unwrap();
+        assert_eq!(updated.visibility, "always");
+    }
+
+    #[tokio::test]
+    async fn execute_think_promote_requires_id() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+        let input = ThinkInput {
+            action: Some("promote".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+        let result =
+            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("requires 'id'"));
+    }
+
+    #[tokio::test]
+    async fn execute_think_demote_defaults_to_deep_only() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+        // All-hex ID so get_by_id_prefix accepts the 8-char prefix
+        let chunk_id = "7f8e1234deadbeef1234567890abcdef12345678";
+        let mut chunk = make_test_chunk(chunk_id, "content");
+        chunk.visibility = "always".to_string();
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let input = ThinkInput {
+            action: Some("demote".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: Some(chunk_id[..8].to_string()),
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+        let result =
+            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None)
+                .await
+                .unwrap();
+        assert!(result.contains("Demoted"), "got: {result}");
+        assert!(result.contains("deep_only"), "got: {result}");
+
+        let updated = store.get_by_id(chunk_id).await.unwrap().unwrap();
+        assert_eq!(updated.visibility, "deep_only");
+    }
+
+    #[tokio::test]
+    async fn execute_think_demote_requires_id() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+        let input = ThinkInput {
+            action: Some("demote".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+        let result =
+            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("requires 'id'"));
+    }
+
+    #[tokio::test]
+    async fn execute_think_relate_adds_relation() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+        // All-hex IDs so get_by_id_prefix accepts 8-char prefixes
+        let src_id = "5c0e1234deadbeef1234567890abcdef12345678";
+        let tgt_id = "6d1f2345deadbeef1234567890abcdef12345678";
+        store
+            .insert_chunks(vec![
+                make_test_chunk(src_id, "source content"),
+                make_test_chunk(tgt_id, "target content"),
+            ])
+            .await
+            .unwrap();
+
+        let input = ThinkInput {
+            action: Some("relate".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: Some(src_id[..8].to_string()),
+            target_id: Some(tgt_id[..8].to_string()),
+            kind: Some("related_to".to_string()),
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+        let result =
+            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None)
+                .await
+                .unwrap();
+        assert!(result.contains("Added relation"), "got: {result}");
+        assert!(result.contains("related_to"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn execute_think_relate_requires_source_id() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+        let input = ThinkInput {
+            action: Some("relate".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: Some("target".to_string()),
+            kind: Some("related_to".to_string()),
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+        let result =
+            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None).await;
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("requires 'source_id'")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_think_relate_requires_target_id() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+        let input = ThinkInput {
+            action: Some("relate".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: Some("source".to_string()),
+            target_id: None,
+            kind: Some("related_to".to_string()),
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+        let result =
+            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None).await;
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("requires 'target_id'")
+        );
+    }
+
+    // ── execute_think: configure_aging / apply_aging ──────────────────────
+
+    #[tokio::test]
+    async fn execute_think_configure_aging_updates_config() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+
+        let input = ThinkInput {
+            action: Some("configure_aging".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: Some(30),
+            degrade_to: Some("expired".to_string()),
+            degrade_from: Some(vec!["normal".to_string(), "deep_only".to_string()]),
+            direction: None,
+        };
+        let result =
+            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None)
+                .await
+                .unwrap();
+        assert!(result.contains("Aging configured"), "got: {result}");
+        assert!(result.contains("30 days"), "got: {result}");
+        assert!(result.contains("expired"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn execute_think_apply_aging_on_empty_store() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+
+        let input = ThinkInput {
+            action: Some("apply_aging".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+        let result =
+            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None)
+                .await
+                .unwrap();
+        assert!(
+            result.contains("No chunks needed aging") || result.contains("Aged"),
+            "got: {result}"
+        );
+    }
+
+    // ── execute_think: salience ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn execute_think_salience_empty_store_no_entries() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+
+        let input = ThinkInput {
+            action: Some("salience".to_string()),
+            hot_limit: Some(5),
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+        let result =
+            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None)
+                .await
+                .unwrap();
+        assert!(result.contains("No entries to analyze"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn execute_think_salience_with_entries_shows_report() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+        // get_hot_chunks filters on access_total > 0 — set total to make it visible
+        let mut chunk = make_test_chunk(
+            "aa1234b5deadbeef1234567890abcdef12345678",
+            "important content",
+        );
+        chunk.access_profile.total = 5;
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let input = ThinkInput {
+            action: Some("salience".to_string()),
+            hot_limit: Some(5),
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+        let result =
+            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None)
+                .await
+                .unwrap();
+        assert!(result.contains("Salience Report"), "got: {result}");
+    }
+
+    // ── execute_recall: browse mode + project filter ─────────────────────
+
+    #[tokio::test]
+    async fn execute_recall_browse_mode_returns_all_entries() {
+        let (store, _blob_store, _dir) = make_test_store_with_dir().await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
+
+        store
+            .insert_chunks(vec![
+                make_test_chunk("entry1deadbeef1234567890abcdef123456789a", "Entry one"),
+                make_test_chunk("entry2deadbeef1234567890abcdef123456789b", "Entry two"),
+            ])
+            .await
+            .unwrap();
+
+        let input = RecallInput {
+            query: None,
+            limit: 10,
+            deep: false,
+            recency: None,
+            perspective: None,
+            similar_to: None,
+            min_salience: None,
+            min_score: None,
+            since: None,
+            until: None,
+            ongoing: None,
+        };
+        let results = execute_recall(&store, &embedder, input, None, None, None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        for r in &results {
+            assert_eq!(r.relevance, "browse");
+            assert_eq!(r.score, 1.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_recall_browse_with_project_filter_excludes_other_projects() {
+        let (store, _blob_store, _dir) = make_test_store_with_dir().await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
+
+        let mut chunk_a = make_test_chunk(
+            "projaaaa1deadbeef1234567890abcdef12345678",
+            "Project A content",
+        );
+        chunk_a.perspectives = vec!["project:proj-a".to_string()];
+
+        let mut chunk_b = make_test_chunk(
+            "projbbbb1deadbeef1234567890abcdef12345678",
+            "Project B content",
+        );
+        chunk_b.perspectives = vec!["project:proj-b".to_string()];
+
+        let chunk_c =
+            make_test_chunk("unscoped1deadbeef1234567890abcdef12345678", "Unscoped content");
+
+        store
+            .insert_chunks(vec![chunk_a, chunk_b, chunk_c])
+            .await
+            .unwrap();
+
+        let input = RecallInput {
+            query: None,
+            limit: 10,
+            deep: false,
+            recency: None,
+            perspective: None,
+            similar_to: None,
+            min_salience: None,
+            min_score: None,
+            since: None,
+            until: None,
+            ongoing: None,
+        };
+        let results = execute_recall(&store, &embedder, input, Some("proj-a"), None, None, None)
+            .await
+            .unwrap();
+
+        // proj-a + unscoped → 2 results
+        assert_eq!(
+            results.len(),
+            2,
+            "expected proj-a + unscoped, got: {:?}",
+            results.iter().map(|r| &r.chunk.id).collect::<Vec<_>>()
+        );
+        for r in &results {
+            assert!(
+                !r.chunk.perspectives.contains(&"project:proj-b".to_string()),
+                "proj-b entry should be filtered out"
+            );
+        }
+    }
+
+    // ── execute_think: reflect (None action) ────────────────────────────
+
+    #[tokio::test]
+    async fn execute_think_reflect_empty_store() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+
+        let input = ThinkInput {
+            action: None,
+            hot_limit: Some(5),
+            stale_limit: Some(5),
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+        let result =
+            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None)
+                .await
+                .unwrap();
+        assert!(result.contains("Hot Chunks"), "got: {result}");
+        assert!(result.contains("Stale Chunks"), "got: {result}");
+        assert!(result.contains("Suggested Actions"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn execute_think_reflect_with_entries_shows_count() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+        store
+            .insert_chunks(vec![make_test_chunk(
+                "reflect1deadbeef1234567890abcdef12345678",
+                "content to reflect on",
+            )])
+            .await
+            .unwrap();
+
+        let input = ThinkInput {
+            action: None,
+            hot_limit: Some(5),
+            stale_limit: Some(5),
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+        let result =
+            execute_think(&store, dir.path(), &blob_store, input, None, None, None, None)
+                .await
+                .unwrap();
+        assert!(result.contains("Total chunks: 1"), "got: {result}");
     }
 }

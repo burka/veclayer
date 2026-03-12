@@ -250,4 +250,86 @@ mod tests {
             .await
             .unwrap();
     }
+
+    // ── wrong passphrase ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_identity_show_wrong_passphrase_returns_error() {
+        let (_dir, data_dir) = temp_data_dir();
+
+        identity_init_with_passphrase(&data_dir, false, Some("correct-pass"))
+            .await
+            .unwrap();
+
+        let err = identity_show_with_passphrase(&data_dir, Some("wrong-pass"))
+            .await
+            .unwrap_err();
+
+        // Should fail decryption — error message varies but must not be empty
+        assert!(
+            !err.to_string().is_empty(),
+            "expected decryption failure, got empty error"
+        );
+    }
+
+    // ── DID is deterministic for same key ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_identity_did_is_stable_across_loads() {
+        let (_dir, data_dir) = temp_data_dir();
+
+        identity_init_with_passphrase(&data_dir, false, Some("stable-pass"))
+            .await
+            .unwrap();
+
+        let path = keystore::keystore_path(&data_dir);
+
+        let key1 = keystore::load("stable-pass", &path).unwrap();
+        let key2 = keystore::load("stable-pass", &path).unwrap();
+
+        let did1 = keypair::to_did(&key1.verifying_key());
+        let did2 = keypair::to_did(&key2.verifying_key());
+
+        assert_eq!(did1, did2, "DID must be stable across loads");
+    }
+
+    // ── DID format ────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_identity_did_has_did_key_prefix() {
+        let (_dir, data_dir) = temp_data_dir();
+
+        identity_init_with_passphrase(&data_dir, false, Some("did-pass"))
+            .await
+            .unwrap();
+
+        let path = keystore::keystore_path(&data_dir);
+        let key = keystore::load("did-pass", &path).unwrap();
+        let did = keypair::to_did(&key.verifying_key());
+
+        assert!(
+            did.starts_with("did:key:"),
+            "DID must start with 'did:key:', got: {did}"
+        );
+    }
+
+    // ── force overwrite generates new keypair ─────────────────────────────────
+
+    #[tokio::test]
+    async fn test_identity_force_generates_fresh_keypair_each_time() {
+        let (_dir, data_dir) = temp_data_dir();
+        let path = keystore::keystore_path(&data_dir);
+
+        let mut dids = std::collections::HashSet::new();
+        for i in 0..3 {
+            identity_init_with_passphrase(&data_dir, true, Some(&format!("pass-{i}")))
+                .await
+                .unwrap();
+            let key = keystore::load(&format!("pass-{i}"), &path).unwrap();
+            dids.insert(keypair::to_did(&key.verifying_key()));
+        }
+
+        // All three force-generated keypairs should be unique
+        assert_eq!(dids.len(), 3, "each force-init should produce a unique DID");
+    }
 }

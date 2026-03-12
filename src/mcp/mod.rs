@@ -298,4 +298,111 @@ mod tests {
         .expect("write settings");
         assert!(check_hooks_configured(tmp.path()));
     }
+
+    #[test]
+    fn check_hooks_configured_returns_true_for_stop_hook() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let claude_dir = tmp.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).expect("create .claude dir");
+        std::fs::write(
+            claude_dir.join("settings.local.json"),
+            r#"{"hooks":{"Stop":[{"type":"command","command":"veclayer stale"}]}}"#,
+        )
+        .expect("write settings");
+        assert!(check_hooks_configured(tmp.path()));
+    }
+
+    #[test]
+    fn check_hooks_configured_true_for_settings_local_json() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let claude_dir = tmp.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).expect("create .claude dir");
+        std::fs::write(
+            claude_dir.join("settings.local.json"),
+            r#"{"hooks":{"PreCompact":[]}}"#,
+        )
+        .expect("write settings");
+        assert!(check_hooks_configured(tmp.path()));
+    }
+
+    #[test]
+    fn check_hooks_configured_ignores_unrelated_content() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let claude_dir = tmp.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).expect("create .claude dir");
+        std::fs::write(
+            claude_dir.join("settings.json"),
+            r#"{"permissions":{"allow":["Bash"]}}"#,
+        )
+        .expect("write settings");
+        assert!(!check_hooks_configured(tmp.path()));
+    }
+
+    #[test]
+    fn mcp_instructions_contains_all_five_tools() {
+        assert!(MCP_INSTRUCTIONS.contains("recall"));
+        assert!(MCP_INSTRUCTIONS.contains("focus"));
+        assert!(MCP_INSTRUCTIONS.contains("store"));
+        assert!(MCP_INSTRUCTIONS.contains("think"));
+        assert!(MCP_INSTRUCTIONS.contains("share"));
+    }
+
+    #[test]
+    fn build_priming_text_separator_is_present() {
+        let content = "Some priming content";
+        let result = build_priming_text(content);
+        assert!(result.contains("\n\n---\n\n"));
+    }
+
+    #[tokio::test]
+    async fn compute_instructions_without_hooks_includes_nudge() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let store = crate::store::StoreBackend::open(tmp.path(), 384, false)
+            .await
+            .expect("open store");
+        // No .claude/settings files in tmp — hooks not configured
+        let result =
+            super::compute_instructions(&store, tmp.path(), None, None, Some(tmp.path())).await;
+        // No hooks configured → nudge appended
+        assert!(
+            result.contains("Persistence Hooks") || result.contains("PreCompact"),
+            "expected hooks nudge in: {}",
+            &result[..result.len().min(200)]
+        );
+    }
+
+    #[tokio::test]
+    async fn compute_instructions_with_hooks_omits_nudge() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let store = crate::store::StoreBackend::open(tmp.path(), 384, false)
+            .await
+            .expect("open store");
+        // Create hooks config
+        let claude_dir = tmp.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).expect("create .claude dir");
+        std::fs::write(
+            claude_dir.join("settings.json"),
+            r#"{"hooks":{"Stop":[]}}"#,
+        )
+        .expect("write hooks");
+        let result =
+            super::compute_instructions(&store, tmp.path(), None, None, Some(tmp.path())).await;
+        // Hooks configured → nudge NOT appended
+        assert!(
+            !result.contains("Persistence Hooks"),
+            "nudge should be absent when hooks are configured"
+        );
+        // But instructions are still there
+        assert!(result.contains("VecLayer"));
+    }
+
+    #[test]
+    fn open_git_store_returns_none_without_git_storage_config() {
+        use crate::Config;
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let config = Config::new().with_data_dir(tmp.path());
+        // storage is None by default, not "git"
+        let result = open_git_store(&config);
+        assert!(result.is_none());
+    }
 }

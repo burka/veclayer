@@ -388,4 +388,232 @@ mod tests {
         assert_eq!(profile.hour, u16::MAX);
         assert_eq!(profile.total, u32::MAX);
     }
+
+    // --- with_created_at ---
+
+    #[test]
+    fn test_with_created_at_sets_both_timestamps() {
+        let ts = 9_999_999_i64;
+        let profile = AccessProfile::with_created_at(ts);
+        assert_eq!(profile.created_at, ts);
+        assert_eq!(profile.last_rolled, ts);
+        assert_eq!(profile.total, 0);
+        assert_eq!(profile.hour, 0);
+    }
+
+    #[test]
+    fn test_with_created_at_all_buckets_zero() {
+        let profile = AccessProfile::with_created_at(1_000_000);
+        assert_eq!(profile.day, 0);
+        assert_eq!(profile.week, 0);
+        assert_eq!(profile.month, 0);
+        assert_eq!(profile.year, 0);
+    }
+
+    // --- age_seconds ---
+
+    #[test]
+    fn test_age_seconds_non_negative_for_recent_creation() {
+        let profile = AccessProfile::new();
+        assert!(profile.age_seconds() >= 0);
+    }
+
+    #[test]
+    fn test_age_seconds_old_entry() {
+        // created far in the past
+        let past = 1_000_000_i64;
+        let profile = AccessProfile::with_created_at(past);
+        // age should be at least (now - past) seconds; rough lower-bound check
+        assert!(profile.age_seconds() > 1_000_000);
+    }
+
+    // --- RecencyWindow aliases ---
+
+    #[test]
+    fn test_recency_window_alias_day() {
+        assert_eq!(RecencyWindow::from_str_opt("day"), Some(RecencyWindow::Day));
+    }
+
+    #[test]
+    fn test_recency_window_alias_week() {
+        assert_eq!(RecencyWindow::from_str_opt("week"), Some(RecencyWindow::Week));
+    }
+
+    #[test]
+    fn test_recency_window_alias_month() {
+        assert_eq!(
+            RecencyWindow::from_str_opt("month"),
+            Some(RecencyWindow::Month)
+        );
+    }
+
+    #[test]
+    fn test_recency_window_empty_string_returns_none() {
+        assert_eq!(RecencyWindow::from_str_opt(""), None);
+    }
+
+    #[test]
+    fn test_recency_window_case_sensitive() {
+        // Aliases are case-sensitive — "Day" should not match
+        assert_eq!(RecencyWindow::from_str_opt("Day"), None);
+        assert_eq!(RecencyWindow::from_str_opt("WEEK"), None);
+    }
+
+    // --- saturation of buckets via roll_up ---
+
+    #[test]
+    fn test_roll_up_week_to_month() {
+        // After a week-level roll-up, prior accesses (hour/day/week) accumulate into month.
+        let base = 1_000_000;
+        let mut profile = AccessProfile::with_created_at(base);
+        profile.record_access_at(base + 10);
+        profile.record_access_at(base + 20);
+        // elapsed >= SECS_PER_WEEK → month accumulates week+day+hour; those buckets zeroed
+        profile.record_access_at(base + SECS_PER_WEEK + 100);
+        // The 2 old accesses now in month; the new one is in hour
+        assert_eq!(profile.month, 2);
+        assert_eq!(profile.week, 0);
+        assert_eq!(profile.hour, 1);
+        // Advance a full month past the current last_rolled to trigger the month branch.
+        // last_rolled = base + SECS_PER_WEEK + 100; add SECS_PER_MONTH to exceed it.
+        let t2 = base + SECS_PER_WEEK + 100 + SECS_PER_MONTH + 1;
+        profile.record_access_at(t2);
+        // month branch: year += month+week+day+hour; then month/week/day/hour zeroed
+        assert_eq!(profile.month, 0);
+        assert_eq!(profile.week, 0);
+        assert!(profile.year > 0); // 2 + 1 = 3 rolled into year
+    }
+
+    #[test]
+    fn test_roll_up_saturation_at_u16_max() {
+        let base = 1_000_000;
+        let mut profile = AccessProfile::with_created_at(base);
+        // Fill hour and day near their max
+        profile.hour = u16::MAX;
+        profile.day = u16::MAX;
+
+        // Trigger a day-level roll-up: week = week.saturating_add(day).saturating_add(hour)
+        profile.roll_up(base + SECS_PER_DAY + 100);
+        assert_eq!(profile.week, u16::MAX); // saturated
+        assert_eq!(profile.hour, 0);
+        assert_eq!(profile.day, 0);
+    }
+
+    // --- rollup semantics ---
+
+    #[test]
+    fn test_roll_up_does_not_change_last_rolled_if_elapsed_zero() {
+        let base = 1_000_000;
+        let mut profile = AccessProfile::with_created_at(base);
+        profile.roll_up(base); // elapsed = 0
+        assert_eq!(profile.last_rolled, base);
+    }
+
+    #[test]
+    fn test_roll_up_updates_last_rolled() {
+        let base = 1_000_000;
+        let mut profile = AccessProfile::with_created_at(base);
+        let later = base + SECS_PER_HOUR + 1;
+        profile.roll_up(later);
+        assert_eq!(profile.last_rolled, later);
+    }
+
+    #[test]
+    fn test_roll_up_negative_elapsed_is_noop() {
+        let base = 1_000_000;
+        let mut profile = AccessProfile::with_created_at(base);
+        profile.hour = 5;
+        profile.roll_up(base - 100); // elapsed is negative
+        assert_eq!(profile.hour, 5); // unchanged
+        assert_eq!(profile.last_rolled, base);
+    }
+
+    // --- relevancy scoring per window ---
+
+    #[test]
+    fn test_relevancy_score_day_window_favours_hour_bucket() {
+        let base = 1_000_000;
+        // A profile with only hour accesses should score higher for Day window
+        // vs a profile with only year accesses
+        let mut recent = AccessProfile::with_created_at(base);
+        recent.hour = 5;
+        recent.total = 5;
+
+        let mut old = AccessProfile::with_created_at(base);
+        old.year = 5;
+        old.total = 5;
+
+        assert!(
+            recent.relevancy_score(Some(RecencyWindow::Day))
+                > old.relevancy_score(Some(RecencyWindow::Day))
+        );
+    }
+
+    #[test]
+    fn test_relevancy_score_week_window() {
+        let base = 1_000_000;
+        let mut profile = AccessProfile::with_created_at(base);
+        profile.week = 3;
+        profile.total = 3;
+        let score = profile.relevancy_score(Some(RecencyWindow::Week));
+        assert!(score > 0.0);
+        assert!(score <= 1.0);
+    }
+
+    #[test]
+    fn test_relevancy_score_month_window() {
+        let base = 1_000_000;
+        let mut profile = AccessProfile::with_created_at(base);
+        profile.month = 3;
+        profile.total = 3;
+        let score = profile.relevancy_score(Some(RecencyWindow::Month));
+        assert!(score > 0.0);
+        assert!(score <= 1.0);
+    }
+
+    #[test]
+    fn test_relevancy_score_in_zero_to_one_range() {
+        let base = 1_000_000;
+        let mut profile = AccessProfile::with_created_at(base);
+        profile.hour = u16::MAX;
+        profile.day = u16::MAX;
+        profile.week = u16::MAX;
+        profile.month = u16::MAX;
+        profile.year = u16::MAX;
+        profile.total = u32::MAX;
+        // tanh(very_large) approaches 1.0 but never exceeds it
+        let score = profile.relevancy_score(None);
+        assert!(score >= 0.0);
+        assert!(score <= 1.0);
+    }
+
+    // --- serde ---
+
+    #[test]
+    fn test_access_profile_serde_roundtrip() {
+        let base = 1_000_000;
+        let mut profile = AccessProfile::with_created_at(base);
+        profile.hour = 10;
+        profile.day = 20;
+        profile.week = 30;
+        profile.month = 40;
+        profile.year = 50;
+        profile.total = 150;
+
+        let json = serde_json::to_string(&profile).unwrap();
+        let restored: AccessProfile = serde_json::from_str(&json).unwrap();
+        assert_eq!(profile, restored);
+    }
+
+    #[test]
+    fn test_access_profile_default_equals_new_structurally() {
+        // Default delegates to new(); both should have 0-valued buckets.
+        let via_default = AccessProfile::default();
+        assert_eq!(via_default.hour, 0);
+        assert_eq!(via_default.day, 0);
+        assert_eq!(via_default.week, 0);
+        assert_eq!(via_default.month, 0);
+        assert_eq!(via_default.year, 0);
+        assert_eq!(via_default.total, 0);
+    }
 }

@@ -453,4 +453,111 @@ mod tests {
         browse(dir.path(), &SearchOptions::default()).await?;
         Ok(())
     }
+
+    // ── search: mutually exclusive options ────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_search_similar_to_and_query_are_mutually_exclusive() {
+        let dir = TempDir::new().unwrap();
+        let opts = SearchOptions {
+            similar_to: Some("abc123".to_string()),
+            ..Default::default()
+        };
+        let err = search(dir.path(), "some query", &opts).await.unwrap_err();
+        assert!(
+            err.to_string().contains("mutually exclusive"),
+            "expected 'mutually exclusive', got: {err}"
+        );
+    }
+
+    // ── browse: since/until filtering doesn't crash on empty store ────────────
+
+    #[tokio::test]
+    async fn test_browse_with_since_filter_empty_store() -> Result<()> {
+        let dir = TempDir::new()?;
+        let opts = SearchOptions {
+            since: Some("1970-01-01".to_string()),
+            ..Default::default()
+        };
+        browse(dir.path(), &opts).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_browse_with_until_filter_empty_store() -> Result<()> {
+        let dir = TempDir::new()?;
+        let opts = SearchOptions {
+            until: Some("2099-12-31".to_string()),
+            ..Default::default()
+        };
+        browse(dir.path(), &opts).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_browse_with_perspective_filter_empty_store() -> Result<()> {
+        let dir = TempDir::new()?;
+        let opts = SearchOptions {
+            perspective: Some("decisions".to_string()),
+            ..Default::default()
+        };
+        browse(dir.path(), &opts).await?;
+        Ok(())
+    }
+
+    // ── SearchOptions field coverage ─────────────────────────────────────────
+
+    #[test]
+    fn test_search_options_all_fields() {
+        let opts = SearchOptions {
+            top_k: 10,
+            show_path: true,
+            subtree: Some("parent-id".to_string()),
+            deep: true,
+            recent: Some("1h".to_string()),
+            perspective: Some("decisions".to_string()),
+            similar_to: None,
+            min_salience: Some(0.5),
+            min_score: Some(0.3),
+            since: Some("2025-01-01".to_string()),
+            until: Some("2025-12-31".to_string()),
+            ongoing: true,
+        };
+        assert_eq!(opts.top_k, 10);
+        assert!(opts.show_path);
+        assert_eq!(opts.subtree.as_deref(), Some("parent-id"));
+        assert!(opts.deep);
+        assert_eq!(opts.recent.as_deref(), Some("1h"));
+        assert_eq!(opts.perspective.as_deref(), Some("decisions"));
+        assert!(opts.similar_to.is_none());
+        assert_eq!(opts.min_salience, Some(0.5));
+        assert_eq!(opts.min_score, Some(0.3));
+        assert_eq!(opts.since.as_deref(), Some("2025-01-01"));
+        assert_eq!(opts.until.as_deref(), Some("2025-12-31"));
+        assert!(opts.ongoing);
+    }
+
+    #[test]
+    fn test_focus_options_custom() {
+        let opts = FocusOptions {
+            question: Some("What is X?".to_string()),
+            limit: 5,
+        };
+        assert_eq!(opts.question.as_deref(), Some("What is X?"));
+        assert_eq!(opts.limit, 5);
+    }
+
+    // ── print_entry_line: smoke test via browse ────────────────────────────────
+
+    #[tokio::test]
+    async fn test_browse_top_k_limits_results() -> Result<()> {
+        let dir = TempDir::new()?;
+        let opts = SearchOptions {
+            top_k: 1,
+            ..Default::default()
+        };
+        // Should not panic even if fewer entries than top_k exist
+        browse(dir.path(), &opts).await?;
+        Ok(())
+    }
 }

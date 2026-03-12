@@ -789,4 +789,398 @@ mod tests {
         assert!(entry.salience > 0.0);
         assert_eq!(entry.perspectives, vec!["knowledge"]);
     }
+
+    // ── open_threads_from_store ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_open_threads_from_store_empty_store() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::store::StoreBackend::open_metadata(dir.path(), false)
+            .await
+            .unwrap();
+        let threads = open_threads_from_store(&store).await.unwrap();
+        assert!(threads.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_open_threads_from_store_with_superseded_entry() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::store::StoreBackend::open_metadata(dir.path(), false)
+            .await
+            .unwrap();
+
+        let mut chunk = test_chunk("this decision is now obsolete");
+        chunk
+            .relations
+            .push(ChunkRelation::superseded_by("newer-decision-id"));
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let threads = open_threads_from_store(&store).await.unwrap();
+        assert_eq!(threads.len(), 1);
+        assert!(threads[0].reason.contains("Superseded"));
+    }
+
+    // ── resolve_ongoing_filter ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_resolve_ongoing_filter_false_returns_none() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::store::StoreBackend::open_metadata(dir.path(), false)
+            .await
+            .unwrap();
+        let filter = resolve_ongoing_filter(&store, false).await.unwrap();
+        assert!(filter.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_ongoing_filter_true_empty_store() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::store::StoreBackend::open_metadata(dir.path(), false)
+            .await
+            .unwrap();
+        let filter = resolve_ongoing_filter(&store, true).await.unwrap();
+        assert!(filter.is_some());
+        assert!(filter.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_ongoing_filter_true_with_open_thread() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::store::StoreBackend::open_metadata(dir.path(), false)
+            .await
+            .unwrap();
+
+        let mut chunk = test_chunk("pending decision");
+        let chunk_id = chunk.id.clone();
+        chunk
+            .relations
+            .push(ChunkRelation::superseded_by("newer"));
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let filter = resolve_ongoing_filter(&store, true).await.unwrap();
+        let ids = filter.unwrap();
+        assert!(ids.contains(&chunk_id));
+    }
+
+    // ── compute_identity ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_compute_identity_empty_store() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::store::StoreBackend::open_metadata(dir.path(), false)
+            .await
+            .unwrap();
+        let snapshot = compute_identity(&store, dir.path(), None, None)
+            .await
+            .unwrap();
+        assert!(snapshot.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_compute_identity_with_entries() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::store::StoreBackend::open(dir.path(), 3, false)
+            .await
+            .unwrap();
+
+        let mut chunk = test_chunk("Rust is great for systems programming");
+        chunk.embedding = Some(vec![1.0, 0.0, 0.0]);
+        chunk.perspectives = vec!["knowledge".to_string()];
+        chunk.access_profile.record_access();
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let snapshot = compute_identity(&store, dir.path(), None, None)
+            .await
+            .unwrap();
+        assert!(!snapshot.is_empty());
+        assert!(!snapshot.core_entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_compute_identity_recent_learnings_filtered() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::store::StoreBackend::open(dir.path(), 3, false)
+            .await
+            .unwrap();
+
+        let mut chunk = test_chunk("async Rust is complex but worth it");
+        chunk.embedding = Some(vec![0.5, 0.5, 0.0]);
+        chunk.perspectives = vec!["learnings".to_string()];
+        chunk.access_profile.record_access();
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let snapshot = compute_identity(&store, dir.path(), None, None)
+            .await
+            .unwrap();
+        assert!(!snapshot.recent_learnings.is_empty());
+        assert!(snapshot.recent_learnings[0]
+            .perspectives
+            .contains(&"learnings".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_compute_identity_project_filter_includes_personal_and_project() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::store::StoreBackend::open(dir.path(), 3, false)
+            .await
+            .unwrap();
+
+        let mut project_chunk = test_chunk("project-specific knowledge");
+        project_chunk.embedding = Some(vec![0.1, 0.9, 0.0]);
+        project_chunk.perspectives = vec!["project:my-project".to_string()];
+        project_chunk.access_profile.record_access();
+
+        let mut personal_chunk = test_chunk("personal general knowledge");
+        personal_chunk.embedding = Some(vec![0.9, 0.1, 0.0]);
+        personal_chunk.access_profile.record_access();
+
+        store
+            .insert_chunks(vec![project_chunk.clone(), personal_chunk.clone()])
+            .await
+            .unwrap();
+
+        let snapshot = compute_identity(&store, dir.path(), Some("my-project"), None)
+            .await
+            .unwrap();
+
+        let ids: Vec<_> = snapshot.core_entries.iter().map(|e| &e.id).collect();
+        assert!(ids.contains(&&project_chunk.id) || ids.contains(&&personal_chunk.id));
+    }
+
+    #[tokio::test]
+    async fn test_compute_identity_other_branches_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::store::StoreBackend::open(dir.path(), 3, false)
+            .await
+            .unwrap();
+
+        let mut branch_chunk = test_chunk("feature branch work");
+        branch_chunk.embedding = Some(vec![0.5, 0.5, 0.0]);
+        branch_chunk.perspectives = vec!["branch:my-project@feat/other-feature".to_string()];
+        store.insert_chunks(vec![branch_chunk]).await.unwrap();
+
+        let snapshot = compute_identity(
+            &store,
+            dir.path(),
+            Some("my-project"),
+            Some("feat/main-branch"),
+        )
+        .await
+        .unwrap();
+
+        assert!(!snapshot.other_branches.is_empty());
+        assert_eq!(snapshot.other_branches[0].entry_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_compute_identity_same_branch_not_in_other_branches() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::store::StoreBackend::open(dir.path(), 3, false)
+            .await
+            .unwrap();
+
+        let mut chunk = test_chunk("current branch work");
+        chunk.embedding = Some(vec![0.5, 0.5, 0.0]);
+        chunk.perspectives = vec!["branch:my-project@main".to_string()];
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let snapshot = compute_identity(&store, dir.path(), Some("my-project"), Some("main"))
+            .await
+            .unwrap();
+
+        assert!(snapshot.other_branches.is_empty());
+    }
+
+    // ── generate_priming edge cases ───────────────────────────────────────────
+
+    #[test]
+    fn test_generate_priming_with_emergent_clusters() {
+        let snapshot = IdentitySnapshot {
+            centroids: vec![],
+            core_entries: vec![CoreEntry {
+                id: "e1".to_string(),
+                heading: Some("Core".to_string()),
+                content_preview: "content".to_string(),
+                salience: 0.5,
+                perspectives: vec![],
+            }],
+            open_threads: vec![],
+            recent_learnings: vec![],
+            emergent_clusters: vec![EmergentCluster {
+                cluster_id: "cluster-0".to_string(),
+                representative: CoreEntry {
+                    id: "e1".to_string(),
+                    heading: Some("Rep Entry".to_string()),
+                    content_preview: "rep content".to_string(),
+                    salience: 0.6,
+                    perspectives: vec!["decisions".to_string()],
+                },
+                member_count: 3,
+                dominant_perspectives: vec!["decisions".to_string(), "knowledge".to_string()],
+            }],
+            other_branches: vec![],
+        };
+        let priming = generate_priming(&snapshot);
+        assert!(priming.contains("Emergent Clusters"));
+        assert!(priming.contains("cluster-0"));
+        assert!(priming.contains("3 members"));
+    }
+
+    #[test]
+    fn test_generate_priming_cluster_empty_dominant_perspectives() {
+        let snapshot = IdentitySnapshot {
+            centroids: vec![],
+            core_entries: vec![CoreEntry {
+                id: "e1".to_string(),
+                heading: None,
+                content_preview: "something".to_string(),
+                salience: 0.5,
+                perspectives: vec![],
+            }],
+            open_threads: vec![],
+            recent_learnings: vec![],
+            emergent_clusters: vec![EmergentCluster {
+                cluster_id: "cluster-1".to_string(),
+                representative: CoreEntry {
+                    id: "e1".to_string(),
+                    heading: None,
+                    content_preview: "rep".to_string(),
+                    salience: 0.5,
+                    perspectives: vec![],
+                },
+                member_count: 2,
+                dominant_perspectives: vec![],
+            }],
+            other_branches: vec![],
+        };
+        let priming = generate_priming(&snapshot);
+        assert!(priming.contains("cluster-1"));
+        // No parentheses for empty dominant_perspectives
+        assert!(!priming.contains("()"));
+    }
+
+    #[test]
+    fn test_generate_priming_other_branches_no_heading() {
+        let snapshot = IdentitySnapshot {
+            centroids: vec![],
+            core_entries: vec![CoreEntry {
+                id: "e1".to_string(),
+                heading: Some("Root".to_string()),
+                content_preview: "root content".to_string(),
+                salience: 0.5,
+                perspectives: vec![],
+            }],
+            open_threads: vec![],
+            recent_learnings: vec![],
+            emergent_clusters: vec![],
+            other_branches: vec![BranchActivity {
+                branch: "feat/old".to_string(),
+                entry_count: 1,
+                latest_heading: None,
+            }],
+        };
+        let priming = generate_priming(&snapshot);
+        assert!(priming.contains("(no heading)"));
+        assert!(priming.contains("feat/old"));
+    }
+
+    #[test]
+    fn test_generate_priming_core_entry_no_heading() {
+        let snapshot = IdentitySnapshot {
+            centroids: vec![],
+            core_entries: vec![CoreEntry {
+                id: "e1".to_string(),
+                heading: None,
+                content_preview: "something important".to_string(),
+                salience: 0.7,
+                perspectives: vec!["decisions".to_string()],
+            }],
+            open_threads: vec![],
+            recent_learnings: vec![],
+            emergent_clusters: vec![],
+            other_branches: vec![],
+        };
+        let priming = generate_priming(&snapshot);
+        assert!(priming.contains("(untitled)"));
+        assert!(priming.contains("[decisions]"));
+    }
+
+    #[test]
+    fn test_generate_priming_open_thread_no_heading() {
+        let snapshot = IdentitySnapshot {
+            centroids: vec![],
+            core_entries: vec![CoreEntry {
+                id: "e1".to_string(),
+                heading: Some("Item".to_string()),
+                content_preview: "content".to_string(),
+                salience: 0.5,
+                perspectives: vec![],
+            }],
+            open_threads: vec![OpenThread {
+                id: "t1".to_string(),
+                heading: None,
+                reason: "pending decision".to_string(),
+                related_ids: vec![],
+            }],
+            recent_learnings: vec![],
+            emergent_clusters: vec![],
+            other_branches: vec![],
+        };
+        let priming = generate_priming(&snapshot);
+        assert!(priming.contains("Open Threads"));
+        assert!(priming.contains("(untitled)"));
+    }
+
+    // ── find_open_threads edge cases ──────────────────────────────────────────
+
+    #[test]
+    fn test_find_open_threads_exactly_two_relations_not_triggered() {
+        let mut chunk = test_chunk("two relations not enough");
+        chunk.relations.push(ChunkRelation::related_to("a"));
+        chunk.relations.push(ChunkRelation::related_to("b"));
+        let threads = find_open_threads(&[chunk]);
+        // Threshold is >= 3, so 2 relations should not create a thread
+        assert!(threads.is_empty());
+    }
+
+    #[test]
+    fn test_find_open_threads_deduplicates_related_ids() {
+        let mut chunk = test_chunk("relation dedup check");
+        // superseded_by adds the target; high-relations also adds all targets
+        chunk
+            .relations
+            .push(ChunkRelation::superseded_by("shared-target"));
+        chunk.relations.push(ChunkRelation::related_to("b"));
+        chunk.relations.push(ChunkRelation::related_to("c"));
+        // total == 3 AND superseded → both reasons apply
+        let threads = find_open_threads(&[chunk]);
+        assert_eq!(threads.len(), 1);
+        let count = threads[0]
+            .related_ids
+            .iter()
+            .filter(|id| *id == "shared-target")
+            .count();
+        assert_eq!(count, 1, "shared-target should appear exactly once");
+    }
+
+    // ── compute_centroids: skip mismatched embedding dimensions ───────────────
+
+    #[test]
+    fn test_compute_centroids_skips_mismatched_dimensions() {
+        let mut c1 = test_chunk("correct dim");
+        c1.embedding = Some(vec![1.0, 0.0, 0.0]);
+        c1.perspectives = vec!["decisions".to_string()];
+
+        let mut c2 = test_chunk("wrong dim");
+        c2.embedding = Some(vec![0.5, 0.5]); // 2D instead of 3D
+        c2.perspectives = vec!["decisions".to_string()];
+
+        let perspectives = crate::perspective::defaults();
+        let weights = SalienceWeights::default();
+        let centroids = compute_centroids(&[c1, c2], &perspectives, &weights);
+
+        // Both are counted in entry_count; c2's embedding is skipped
+        assert_eq!(centroids.len(), 1);
+        assert_eq!(centroids[0].entry_count, 2);
+    }
 }

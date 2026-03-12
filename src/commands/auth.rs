@@ -606,4 +606,135 @@ mod tests {
         init_identity(&data_dir, "pass");
         auth_status(&data_dir).await.unwrap();
     }
+
+    // ── format_expiry ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_format_expiry_days() {
+        assert_eq!(format_expiry(86400), "expires in 1d");
+        assert_eq!(format_expiry(172800), "expires in 2d");
+        assert_eq!(format_expiry(86400 * 30), "expires in 30d");
+    }
+
+    #[test]
+    fn test_format_expiry_hours() {
+        assert_eq!(format_expiry(3600), "expires in 1h");
+        assert_eq!(format_expiry(7200), "expires in 2h");
+        assert_eq!(format_expiry(86399), "expires in 23h");
+    }
+
+    #[test]
+    fn test_format_expiry_minutes() {
+        assert_eq!(format_expiry(60), "expires in 1m");
+        assert_eq!(format_expiry(3599), "expires in 59m");
+        assert_eq!(format_expiry(0), "expires in 0m");
+    }
+
+    // ── token cache: overwrite existing token for same server ─────────────────
+
+    #[test]
+    fn test_token_cache_overwrite_existing_server() {
+        let (_dir, data_dir) = temp_data_dir();
+
+        let token1 = CachedToken {
+            access_token: "first_token".to_string(),
+            refresh_token: None,
+            expires_at: unix_now() + 3600,
+            scope: "read".to_string(),
+        };
+        save_token(&data_dir, "https://example.com", &token1).unwrap();
+
+        let token2 = CachedToken {
+            access_token: "second_token".to_string(),
+            refresh_token: Some("refresh_xyz".to_string()),
+            expires_at: unix_now() + 7200,
+            scope: "read write".to_string(),
+        };
+        save_token(&data_dir, "https://example.com", &token2).unwrap();
+
+        let loaded = load_token(&data_dir, "https://example.com")
+            .unwrap()
+            .expect("token should be present");
+        assert_eq!(loaded.access_token, "second_token");
+        assert_eq!(loaded.scope, "read write");
+    }
+
+    #[test]
+    fn test_token_cache_multiple_servers_independent() {
+        let (_dir, data_dir) = temp_data_dir();
+
+        let token_a = CachedToken {
+            access_token: "tok_a".to_string(),
+            refresh_token: None,
+            expires_at: unix_now() + 3600,
+            scope: "read".to_string(),
+        };
+        let token_b = CachedToken {
+            access_token: "tok_b".to_string(),
+            refresh_token: None,
+            expires_at: unix_now() + 3600,
+            scope: "write".to_string(),
+        };
+        save_token(&data_dir, "https://a.example.com", &token_a).unwrap();
+        save_token(&data_dir, "https://b.example.com", &token_b).unwrap();
+
+        let a = load_token(&data_dir, "https://a.example.com")
+            .unwrap()
+            .unwrap();
+        let b = load_token(&data_dir, "https://b.example.com")
+            .unwrap()
+            .unwrap();
+        assert_eq!(a.access_token, "tok_a");
+        assert_eq!(b.access_token, "tok_b");
+    }
+
+    // ── auth_token: invalid capability ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_auth_token_invalid_capability_returns_error() {
+        let (_dir, data_dir) = temp_data_dir();
+        init_identity(&data_dir, "test-pass");
+
+        let err = auth_token_with_passphrase(&data_dir, "not-a-capability", "1h", None, Some("test-pass"))
+            .await
+            .unwrap_err();
+        assert!(
+            !err.to_string().is_empty(),
+            "expected a capability parse error"
+        );
+    }
+
+    // ── auth_token: invalid expiry format ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_auth_token_invalid_expiry_returns_error() {
+        let (_dir, data_dir) = temp_data_dir();
+        init_identity(&data_dir, "test-pass");
+
+        let err = auth_token_with_passphrase(&data_dir, "read", "not-a-duration", None, Some("test-pass"))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("invalid duration"),
+            "expected 'invalid duration', got: {err}"
+        );
+    }
+
+    // ── parse_duration_secs: edge cases ───────────────────────────────────────
+
+    #[test]
+    fn test_parse_duration_zero_hours() {
+        // "0h" → 0 seconds
+        assert_eq!(parse_duration_secs("0h").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_parse_duration_zero_days() {
+        assert_eq!(parse_duration_secs("0d").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_parse_duration_empty_string() {
+        assert!(parse_duration_secs("").is_err());
+    }
 }

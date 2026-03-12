@@ -472,4 +472,368 @@ mod tests {
         assert!(result.ends_with("..."));
         assert_eq!(result.len(), 103);
     }
+
+    // ── execute() integration tests with mock LLM ─────────────────────────────
+
+    use crate::embedder::Embedder;
+    use crate::llm::{LlmProvider, Message};
+
+    struct MockLlm {
+        response: String,
+    }
+
+    impl LlmProvider for MockLlm {
+        fn name(&self) -> &str {
+            "mock-llm"
+        }
+        async fn complete(&self, _messages: &[Message]) -> crate::Result<String> {
+            Ok(self.response.clone())
+        }
+    }
+
+    struct FailingLlm;
+    impl LlmProvider for FailingLlm {
+        fn name(&self) -> &str {
+            "failing-llm"
+        }
+        async fn complete(&self, _messages: &[Message]) -> crate::Result<String> {
+            Err(crate::Error::llm("simulated LLM failure"))
+        }
+    }
+
+    struct FixedEmbedder {
+        dim: usize,
+    }
+
+    impl Embedder for FixedEmbedder {
+        fn embed(&self, texts: &[&str]) -> crate::Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![0.1f32; self.dim]).collect())
+        }
+        fn dimension(&self) -> usize {
+            self.dim
+        }
+        fn name(&self) -> &str {
+            "fixed-test"
+        }
+    }
+
+    // Use 384-dim to match make_test_chunk which creates 384-dim embeddings.
+    fn make_embedder() -> FixedEmbedder {
+        FixedEmbedder { dim: 384 }
+    }
+
+    async fn open_test_store(dir: &std::path::Path) -> crate::store::StoreBackend {
+        crate::store::StoreBackend::open(dir, 384, false)
+            .await
+            .expect("open store")
+    }
+
+    /// Create a test chunk that appears "hot" (access_total > 0 for get_hot_chunks).
+    fn make_hot_test_chunk(id: &str, content: &str) -> crate::HierarchicalChunk {
+        let mut chunk = crate::test_helpers::make_test_chunk(id, content);
+        chunk.access_profile.record_access();
+        chunk
+    }
+
+    #[tokio::test]
+    async fn test_execute_empty_store_returns_empty_result() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = open_test_store(dir.path()).await;
+        let embedder = make_embedder();
+        let llm = MockLlm {
+            response: r#"{"narrative": "I am.", "consolidations": [], "learnings": []}"#
+                .to_owned(),
+        };
+
+        let result = execute(&store, &embedder, &llm, dir.path(), None)
+            .await
+            .expect("execute should succeed on empty store");
+
+        // Empty store → no entries to think about
+        assert!(result.narrative_id.is_none());
+        assert_eq!(result.consolidations_added, 0);
+        assert_eq!(result.learnings_added, 0);
+        assert!(result.entries_created.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_entries_creates_narrative_and_learning() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = open_test_store(dir.path()).await;
+        let embedder = make_embedder();
+
+        let chunk = make_hot_test_chunk(
+            "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344",
+            "Important architectural decision about async Rust",
+        );
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let llm = MockLlm {
+            response: r#"{
+                "narrative": "I am a Rust knowledge base.",
+                "consolidations": [],
+                "learnings": [{"content": "async Rust is great", "perspectives": ["learnings"]}]
+            }"#
+            .to_owned(),
+        };
+
+        let result = execute(&store, &embedder, &llm, dir.path(), None)
+            .await
+            .expect("execute");
+
+        assert!(result.narrative_id.is_some(), "narrative should be created");
+        assert_eq!(result.learnings_added, 1);
+        assert_eq!(result.entries_created.len(), 2); // narrative + learning
+    }
+
+    #[tokio::test]
+    async fn test_execute_consolidation_with_valid_ids() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = open_test_store(dir.path()).await;
+        let embedder = make_embedder();
+
+        let entry_id = "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344";
+        let chunk = make_hot_test_chunk(entry_id, "Decision: use async Rust for concurrency");
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let llm = MockLlm {
+            response: format!(
+                r#"{{
+                "narrative": null,
+                "consolidations": [{{
+                    "content": "Rust async decisions summary",
+                    "entry_ids": ["{entry_id}"],
+                    "perspectives": ["decisions"]
+                }}],
+                "learnings": []
+            }}"#
+            ),
+        };
+
+        let result = execute(&store, &embedder, &llm, dir.path(), None)
+            .await
+            .expect("execute");
+
+        assert_eq!(result.consolidations_added, 1);
+        let summary_entry = result
+            .entries_created
+            .iter()
+            .find(|e| e.entry_type == crate::chunk::EntryType::Summary);
+        assert!(summary_entry.is_some());
+        assert!(summary_entry
+            .unwrap()
+            .perspectives
+            .contains(&"decisions".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_execute_consolidation_with_invalid_ids_skipped() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = open_test_store(dir.path()).await;
+        let embedder = make_embedder();
+
+        // Seed one real entry so snapshot is non-empty
+        let chunk = make_hot_test_chunk(
+            "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344",
+            "Real entry content here",
+        );
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let llm = MockLlm {
+            response: r#"{
+                "narrative": null,
+                "consolidations": [{
+                    "content": "Summary pointing at ghost",
+                    "entry_ids": ["0000000000000000000000000000000000000000000000000000000000000000"],
+                    "perspectives": []
+                }],
+                "learnings": []
+            }"#
+            .to_owned(),
+        };
+
+        let result = execute(&store, &embedder, &llm, dir.path(), None)
+            .await
+            .expect("execute");
+
+        assert_eq!(result.consolidations_added, 0);
+    }
+
+    #[tokio::test]
+    async fn test_execute_skips_empty_narrative() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = open_test_store(dir.path()).await;
+        let embedder = make_embedder();
+
+        let chunk = make_hot_test_chunk(
+            "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344",
+            "Some stored knowledge",
+        );
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let llm = MockLlm {
+            response: r#"{"narrative": "   ", "consolidations": [], "learnings": []}"#.to_owned(),
+        };
+
+        let result = execute(&store, &embedder, &llm, dir.path(), None)
+            .await
+            .expect("execute");
+
+        assert!(result.narrative_id.is_none());
+        assert!(result.entries_created.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_execute_skips_empty_learning_content() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = open_test_store(dir.path()).await;
+        let embedder = make_embedder();
+
+        let chunk = make_hot_test_chunk(
+            "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344",
+            "Base content for snapshot",
+        );
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let llm = MockLlm {
+            response:
+                r#"{"narrative": null, "consolidations": [], "learnings": [{"content": "  "}]}"#
+                    .to_owned(),
+        };
+
+        let result = execute(&store, &embedder, &llm, dir.path(), None)
+            .await
+            .expect("execute");
+
+        assert_eq!(result.learnings_added, 0);
+    }
+
+    #[tokio::test]
+    async fn test_execute_skips_empty_consolidation_content() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = open_test_store(dir.path()).await;
+        let embedder = make_embedder();
+
+        let entry_id = "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344";
+        let chunk = make_hot_test_chunk(entry_id, "Content to consolidate");
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let llm = MockLlm {
+            response: format!(
+                r#"{{"narrative": null, "consolidations": [{{"content": "  ", "entry_ids": ["{entry_id}"], "perspectives": []}}], "learnings": []}}"#
+            ),
+        };
+
+        let result = execute(&store, &embedder, &llm, dir.path(), None)
+            .await
+            .expect("execute");
+
+        assert_eq!(result.consolidations_added, 0);
+    }
+
+    #[tokio::test]
+    async fn test_execute_llm_failure_returns_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = open_test_store(dir.path()).await;
+        let embedder = make_embedder();
+
+        let chunk = make_hot_test_chunk(
+            "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344",
+            "Content that triggers LLM call",
+        );
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let result = execute(&store, &embedder, &FailingLlm, dir.path(), None).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("simulated LLM failure"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_invalid_llm_json_returns_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = open_test_store(dir.path()).await;
+        let embedder = make_embedder();
+
+        let chunk = make_hot_test_chunk(
+            "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344",
+            "Content that triggers LLM call",
+        );
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let llm = MockLlm {
+            response: "not json at all".to_owned(),
+        };
+
+        let result = execute(&store, &embedder, &llm, dir.path(), None).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Failed to parse think response"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_entry_ids_returns_only_existing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = open_test_store(dir.path()).await;
+
+        let real_id = "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344";
+        let fake_id = "0000000000000000000000000000000000000000000000000000000000000001";
+
+        let chunk = crate::test_helpers::make_test_chunk(real_id, "Existing entry");
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let ids = vec![real_id.to_owned(), fake_id.to_owned()];
+        let valid = validate_entry_ids(&store, &ids).await;
+
+        assert_eq!(valid, vec![real_id.to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn test_validate_entry_ids_all_missing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = open_test_store(dir.path()).await;
+
+        let ids = vec![
+            "0000000000000000000000000000000000000000000000000000000000000001".to_owned(),
+            "0000000000000000000000000000000000000000000000000000000000000002".to_owned(),
+        ];
+
+        let valid = validate_entry_ids(&store, &ids).await;
+        assert!(valid.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_validate_entry_ids_empty_input() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = open_test_store(dir.path()).await;
+        let valid = validate_entry_ids(&store, &[]).await;
+        assert!(valid.is_empty());
+    }
+
+    // ── build_prompt with untitled entry ─────────────────────────────────────
+
+    #[test]
+    fn test_build_prompt_untitled_entry() {
+        let snapshot = IdentitySnapshot {
+            centroids: vec![],
+            core_entries: vec![crate::identity::CoreEntry {
+                id: "aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff66660000111122223333".to_string(),
+                heading: None,
+                content_preview: "mystery content".to_string(),
+                salience: 0.3,
+                perspectives: vec![],
+            }],
+            open_threads: vec![],
+            recent_learnings: vec![],
+            emergent_clusters: vec![],
+            other_branches: vec![],
+        };
+        let prompt = build_prompt("Prefix\n", &snapshot);
+        assert!(prompt.contains("(untitled)"));
+        assert!(prompt.contains("aaaa1111bbbb2222"));
+    }
 }

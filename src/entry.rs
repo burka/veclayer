@@ -317,6 +317,225 @@ mod tests {
         assert!(blob.embeddings.is_empty());
     }
 
+    // --- EmbeddingCache serde ---
+
+    #[test]
+    fn test_embedding_cache_serde_roundtrip() {
+        let cache = EmbeddingCache {
+            model: "text-embedding-3-small".to_string(),
+            dimensions: 4,
+            vector: vec![0.1, 0.2, 0.3, 0.4],
+        };
+        let json = serde_json::to_string(&cache).unwrap();
+        let restored: EmbeddingCache = serde_json::from_str(&json).unwrap();
+        assert_eq!(cache, restored);
+    }
+
+    #[test]
+    fn test_embedding_cache_empty_vector_roundtrip() {
+        let cache = EmbeddingCache {
+            model: "none".to_string(),
+            dimensions: 0,
+            vector: vec![],
+        };
+        let json = serde_json::to_string(&cache).unwrap();
+        let restored: EmbeddingCache = serde_json::from_str(&json).unwrap();
+        assert_eq!(cache, restored);
+    }
+
+    // --- Entry default deserialization (serde defaults) ---
+
+    #[test]
+    fn test_entry_deserializes_with_minimal_fields() {
+        // Only required fields; serde defaults should fill in the rest.
+        // ChunkLevel(u8) serializes as a plain number.
+        let json = r#"{
+            "content": "minimal",
+            "entry_type": "raw",
+            "source": "src.md",
+            "created_at": 1700000000,
+            "level": 7
+        }"#;
+        let entry: Entry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.content, "minimal");
+        assert!(entry.perspectives.is_empty());
+        assert!(entry.relations.is_empty());
+        assert!(entry.heading.is_none());
+        assert!(entry.parent_id.is_none());
+        assert_eq!(entry.impression_strength, 1.0); // default_impression_strength
+        assert_eq!(entry.visibility, "normal"); // default_visibility
+        assert!(entry.path.is_empty());
+    }
+
+    #[test]
+    fn test_entry_default_visibility_is_normal() {
+        // Construct via from_chunk with no explicit visibility set
+        let chunk = crate::chunk::HierarchicalChunk::new(
+            "visibility test".to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            String::new(),
+            "test.md".to_string(),
+        );
+        let entry = Entry::from_chunk(&chunk);
+        assert_eq!(entry.visibility, "normal");
+    }
+
+    #[test]
+    fn test_entry_default_impression_strength_is_one() {
+        let chunk = crate::chunk::HierarchicalChunk::new(
+            "strength test".to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            String::new(),
+            "test.md".to_string(),
+        );
+        let entry = Entry::from_chunk(&chunk);
+        assert!((entry.impression_strength - 1.0).abs() < f32::EPSILON);
+    }
+
+    // --- from_chunk preservation ---
+
+    #[test]
+    fn test_from_chunk_preserves_created_at_timestamp() {
+        let mut chunk = crate::chunk::HierarchicalChunk::new(
+            "timestamped".to_string(),
+            ChunkLevel::H1,
+            None,
+            String::new(),
+            "test.md".to_string(),
+        );
+        let fixed_ts = 1_234_567_890_i64;
+        chunk.access_profile.created_at = fixed_ts;
+        let entry = Entry::from_chunk(&chunk);
+        assert_eq!(entry.created_at, fixed_ts);
+    }
+
+    #[test]
+    fn test_from_chunk_preserves_all_metadata_fields() {
+        let chunk = crate::chunk::HierarchicalChunk::new(
+            "full metadata".to_string(),
+            ChunkLevel::H2,
+            Some("parent-123".to_string()),
+            "root/child".to_string(),
+            "source.md".to_string(),
+        )
+        .with_entry_type(crate::chunk::EntryType::Summary)
+        .with_perspectives(vec!["decisions".to_string(), "learnings".to_string()]);
+
+        let entry = Entry::from_chunk(&chunk);
+        assert_eq!(entry.entry_type, crate::chunk::EntryType::Summary);
+        assert_eq!(entry.perspectives, vec!["decisions", "learnings"]);
+        assert_eq!(entry.parent_id, Some("parent-123".to_string()));
+        assert_eq!(entry.path, "root/child");
+        assert_eq!(entry.source, "source.md");
+        assert_eq!(entry.level, ChunkLevel::H2);
+    }
+
+    #[test]
+    fn test_from_chunk_content_id_matches_chunk_id() {
+        let chunk = crate::chunk::HierarchicalChunk::new(
+            "content id check".to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            String::new(),
+            "test.md".to_string(),
+        );
+        let entry = Entry::from_chunk(&chunk);
+        assert_eq!(entry.content_id(), chunk.id);
+    }
+
+    // --- postcard roundtrip ---
+
+    #[test]
+    fn test_stored_blob_postcard_roundtrip_no_embeddings() {
+        let blob = StoredBlob {
+            entry: sample_entry(),
+            embeddings: vec![],
+        };
+        let bytes = blob.to_bytes().unwrap();
+        let restored = StoredBlob::from_bytes(&bytes).unwrap();
+        assert_eq!(blob.entry, restored.entry);
+        assert!(restored.embeddings.is_empty());
+    }
+
+    #[test]
+    fn test_stored_blob_postcard_roundtrip_multiple_embeddings() {
+        let blob = StoredBlob {
+            entry: sample_entry(),
+            embeddings: vec![
+                EmbeddingCache {
+                    model: "model-x".to_string(),
+                    dimensions: 2,
+                    vector: vec![1.0, 2.0],
+                },
+                EmbeddingCache {
+                    model: "model-y".to_string(),
+                    dimensions: 3,
+                    vector: vec![3.0, 4.0, 5.0],
+                },
+            ],
+        };
+        let bytes = blob.to_bytes().unwrap();
+        let restored = StoredBlob::from_bytes(&bytes).unwrap();
+        assert_eq!(restored.embeddings.len(), 2);
+        assert_eq!(restored.embeddings[0].model, "model-x");
+        assert_eq!(restored.embeddings[1].model, "model-y");
+    }
+
+    #[test]
+    fn test_stored_blob_from_bytes_rejects_garbage() {
+        let result = StoredBlob::from_bytes(b"this is not postcard");
+        assert!(result.is_err());
+    }
+
+    // --- blob hash independence ---
+
+    #[test]
+    fn test_blob_hash_independent_of_embeddings() {
+        // Same content with different embeddings must produce the same blob hash.
+        let blob_a = StoredBlob {
+            entry: sample_entry(),
+            embeddings: vec![EmbeddingCache {
+                model: "model-a".to_string(),
+                dimensions: 2,
+                vector: vec![1.0, 2.0],
+            }],
+        };
+        let blob_b = StoredBlob {
+            entry: sample_entry(),
+            embeddings: vec![EmbeddingCache {
+                model: "model-b".to_string(),
+                dimensions: 3,
+                vector: vec![9.0, 8.0, 7.0],
+            }],
+        };
+        assert_eq!(blob_a.blob_hash(), blob_b.blob_hash());
+    }
+
+    #[test]
+    fn test_blob_hash_independent_of_timestamps() {
+        // Two entries with the same content but different created_at values
+        // map to the same content_id (hash only uses content), so same blob hash.
+        let entry_early = Entry {
+            created_at: 100,
+            ..sample_entry()
+        };
+        let entry_late = Entry {
+            created_at: 9_999_999,
+            ..sample_entry()
+        };
+        let blob_early = StoredBlob {
+            entry: entry_early,
+            embeddings: vec![],
+        };
+        let blob_late = StoredBlob {
+            entry: entry_late,
+            embeddings: vec![],
+        };
+        assert_eq!(blob_early.blob_hash(), blob_late.blob_hash());
+    }
+
     /// Round-trip test: Entry::from_chunk → HierarchicalChunk::from_entry.
     ///
     /// Documents known information loss: start_offset, end_offset,
