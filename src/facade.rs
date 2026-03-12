@@ -97,6 +97,34 @@ impl<E: Embedder> VecLayer<E> {
         })
     }
 
+    /// Open a VecLayer store backed by SQLite.
+    ///
+    /// Same as [`open`](Self::open) but forces the SQLite backend regardless of
+    /// which backends are compiled. Useful when you want a lightweight store
+    /// without LanceDB's transitive dependencies.
+    #[cfg(feature = "store-sqlite")]
+    pub async fn open_sqlite(data_dir: &Path, embedder: E) -> Result<Self> {
+        Self::open_sqlite_inner(data_dir, embedder, false).await
+    }
+
+    /// Open a read-only VecLayer store backed by SQLite.
+    #[cfg(feature = "store-sqlite")]
+    pub async fn open_sqlite_read_only(data_dir: &Path, embedder: E) -> Result<Self> {
+        Self::open_sqlite_inner(data_dir, embedder, true).await
+    }
+
+    #[cfg(feature = "store-sqlite")]
+    async fn open_sqlite_inner(data_dir: &Path, embedder: E, read_only: bool) -> Result<Self> {
+        let dimension = embedder.dimension();
+        let store = Arc::new(StoreBackend::open_sqlite(data_dir, dimension, read_only).await?);
+        let blob_store = BlobStore::open(data_dir)?;
+        Ok(Self {
+            store,
+            embedder: Arc::new(embedder),
+            blob_store,
+        })
+    }
+
     /// Store text content and return its entry ID.
     ///
     /// Embeds the content automatically using the configured embedder.
@@ -175,7 +203,7 @@ impl<E: Embedder> VecLayer<E> {
     /// Raw vector search without hierarchical enrichment.
     pub async fn search_raw(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         let embedding = self.embed_one(query)?;
-        self.store.search(&embedding, limit, None).await
+        self.store.search(&embedding, limit, None, None).await
     }
 
     /// Focus on a specific entry: returns it with its children.
@@ -327,174 +355,204 @@ mod tests {
         assert!(opts.relations.is_empty());
     }
 
-    #[tokio::test]
-    async fn open_store_search_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
-        let vl = VecLayer::open(dir.path(), TestEmbedder).await.unwrap();
+    /// Generate identical test suites for every compiled storage backend.
+    ///
+    /// Adding a new backend? Just add a `#[cfg] mod` block inside this macro
+    /// with `open` and `open_ro` helper fns — the tests are written once.
+    macro_rules! all_backend_tests {
+        (
+            $(fn $test_name:ident($vl:ident $(, $open_ro:ident)?) $body:block)+
+        ) => {
+            // ── Lance ──────────────────────────────────────────────
+            #[cfg(feature = "store-lance")]
+            mod lance {
+                use super::*;
 
-        // Store
-        let id = vl.store("Test content for roundtrip").await.unwrap();
-        assert!(!id.is_empty());
+                async fn open(p: &std::path::Path) -> Result<VecLayer<TestEmbedder>> {
+                    VecLayer::open(p, TestEmbedder).await
+                }
+                async fn open_ro(p: &std::path::Path) -> Result<VecLayer<TestEmbedder>> {
+                    VecLayer::open_read_only(p, TestEmbedder).await
+                }
 
-        // Stats
-        let stats = vl.stats().await.unwrap();
-        assert_eq!(stats.total_chunks, 1);
+                $( all_backend_tests!(@one $test_name, $vl $(, $open_ro)?, $body); )+
+            }
 
-        // Get by ID
-        let entry = vl.get(&id[..7]).await.unwrap();
-        assert!(entry.is_some());
-        assert_eq!(entry.unwrap().content, "Test content for roundtrip");
+            // ── SQLite ─────────────────────────────────────────────
+            #[cfg(feature = "store-sqlite")]
+            mod sqlite {
+                use super::*;
 
-        // Search
-        let results = vl.search("roundtrip test", 5).await.unwrap();
-        assert!(!results.is_empty());
-        assert_eq!(results[0].chunk.id, id);
+                async fn open(p: &std::path::Path) -> Result<VecLayer<TestEmbedder>> {
+                    VecLayer::open_sqlite(p, TestEmbedder).await
+                }
+                async fn open_ro(p: &std::path::Path) -> Result<VecLayer<TestEmbedder>> {
+                    VecLayer::open_sqlite_read_only(p, TestEmbedder).await
+                }
+
+                $( all_backend_tests!(@one $test_name, $vl $(, $open_ro)?, $body); )+
+            }
+
+            // ─────────────────────────────────────────────────────────
+            // NEW BACKEND? Copy one of the blocks above, swap the
+            // feature gate and the open/open_ro bodies. Done — every
+            // test defined below runs against your backend automatically.
+            // ─────────────────────────────────────────────────────────
+        };
+
+        // Internal: emit a single test fn. The two-binding variant passes
+        // the tempdir as `$dir` so the body can reopen with `open_ro($dir.path())`.
+        (@one $test_name:ident, $vl:ident, $dir:ident, $body:block) => {
+            #[tokio::test]
+            async fn $test_name() {
+                let $dir = tempfile::tempdir().unwrap();
+                let $vl = open($dir.path()).await.unwrap();
+                $body
+            }
+        };
+        (@one $test_name:ident, $vl:ident, $body:block) => {
+            #[tokio::test]
+            async fn $test_name() {
+                let _dir = tempfile::tempdir().unwrap();
+                let $vl = open(_dir.path()).await.unwrap();
+                $body
+            }
+        };
     }
 
-    #[tokio::test]
-    async fn store_with_options() {
-        let dir = tempfile::tempdir().unwrap();
-        let vl = VecLayer::open(dir.path(), TestEmbedder).await.unwrap();
+    // Tests written once, run against every compiled backend.
+    all_backend_tests! {
+        fn store_search_roundtrip(vl) {
+            let id = vl.store("Test content for roundtrip").await.unwrap();
+            assert!(!id.is_empty());
 
-        let id = vl
-            .store_with(
-                "Decision content",
-                StoreOptions {
-                    heading: Some("Architecture Decision".into()),
-                    perspectives: vec!["decisions".into()],
-                    entry_type: EntryType::Meta,
-                    source: Some("my-app".into()),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+            let stats = vl.stats().await.unwrap();
+            assert_eq!(stats.total_chunks, 1);
 
-        let entry = vl.get(&id).await.unwrap().unwrap();
-        assert_eq!(entry.heading.as_deref(), Some("Architecture Decision"));
-        assert!(entry.perspectives.contains(&"decisions".to_string()));
-        assert_eq!(entry.entry_type, EntryType::Meta);
-        assert_eq!(entry.source_file, "my-app");
-    }
+            let entry = vl.get(&id[..7]).await.unwrap();
+            assert!(entry.is_some());
+            assert_eq!(entry.unwrap().content, "Test content for roundtrip");
 
-    #[tokio::test]
-    async fn store_and_delete_by_source() {
-        let dir = tempfile::tempdir().unwrap();
-        let vl = VecLayer::open(dir.path(), TestEmbedder).await.unwrap();
+            let results = vl.search("roundtrip test", 5).await.unwrap();
+            assert!(!results.is_empty());
+            assert_eq!(results[0].chunk.id, id);
+        }
 
-        let _ = vl
-            .store_with(
-                "Ephemeral",
-                StoreOptions {
-                    source: Some("session-123".into()),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+        fn store_with_options(vl) {
+            let id = vl
+                .store_with(
+                    "Decision content",
+                    StoreOptions {
+                        heading: Some("Architecture Decision".into()),
+                        perspectives: vec!["decisions".into()],
+                        entry_type: EntryType::Meta,
+                        source: Some("my-app".into()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
 
-        assert_eq!(vl.stats().await.unwrap().total_chunks, 1);
-        let deleted = vl.delete_by_source("session-123").await.unwrap();
-        assert_eq!(deleted, 1);
-        assert_eq!(vl.stats().await.unwrap().total_chunks, 0);
-    }
+            let entry = vl.get(&id).await.unwrap().unwrap();
+            assert_eq!(entry.heading.as_deref(), Some("Architecture Decision"));
+            assert!(entry.perspectives.contains(&"decisions".to_string()));
+            assert_eq!(entry.entry_type, EntryType::Meta);
+            assert_eq!(entry.source_file, "my-app");
+        }
 
-    #[tokio::test]
-    async fn focus_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let vl = VecLayer::open(dir.path(), TestEmbedder).await.unwrap();
+        fn store_and_delete_by_source(vl) {
+            let _ = vl
+                .store_with(
+                    "Ephemeral",
+                    StoreOptions {
+                        source: Some("session-123".into()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
 
-        let parent_id = vl
-            .store_with(
-                "Parent entry",
-                StoreOptions {
-                    heading: Some("Parent".into()),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+            assert_eq!(vl.stats().await.unwrap().total_chunks, 1);
+            let deleted = vl.delete_by_source("session-123").await.unwrap();
+            assert_eq!(deleted, 1);
+            assert_eq!(vl.stats().await.unwrap().total_chunks, 0);
+        }
 
-        let _ = vl
-            .store_with(
-                "Child entry",
-                StoreOptions {
-                    parent_id: Some(parent_id.clone()),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+        fn focus_entry(vl) {
+            let parent_id = vl
+                .store_with(
+                    "Parent entry",
+                    StoreOptions {
+                        heading: Some("Parent".into()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
 
-        let result = vl.focus(&parent_id, None, 10).await.unwrap();
-        assert!(result.is_some());
-        let focus = result.unwrap();
-        assert_eq!(focus.entry.id, parent_id);
-        assert_eq!(focus.children.len(), 1);
-    }
+            let _ = vl
+                .store_with(
+                    "Child entry",
+                    StoreOptions {
+                        parent_id: Some(parent_id.clone()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
 
-    #[tokio::test]
-    async fn list_with_perspective() {
-        let dir = tempfile::tempdir().unwrap();
-        let vl = VecLayer::open(dir.path(), TestEmbedder).await.unwrap();
+            let result = vl.focus(&parent_id, None, 10).await.unwrap();
+            assert!(result.is_some());
+            let focus = result.unwrap();
+            assert_eq!(focus.entry.id, parent_id);
+            assert_eq!(focus.children.len(), 1);
+        }
 
-        let _ = vl
-            .store_with(
-                "A decision",
-                StoreOptions {
-                    perspectives: vec!["decisions".into()],
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        let _ = vl
-            .store_with(
-                "A learning",
-                StoreOptions {
-                    perspectives: vec!["learnings".into()],
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+        fn list_with_perspective(vl) {
+            let _ = vl
+                .store_with(
+                    "A decision",
+                    StoreOptions {
+                        perspectives: vec!["decisions".into()],
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            let _ = vl
+                .store_with(
+                    "A learning",
+                    StoreOptions {
+                        perspectives: vec!["learnings".into()],
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
 
-        let decisions = vl.list(Some("decisions"), 100).await.unwrap();
-        assert_eq!(decisions.len(), 1);
-        assert_eq!(decisions[0].content, "A decision");
+            let decisions = vl.list(Some("decisions"), 100).await.unwrap();
+            assert_eq!(decisions.len(), 1);
+            assert_eq!(decisions[0].content, "A decision");
 
-        let all = vl.list(None, 100).await.unwrap();
-        assert_eq!(all.len(), 2);
-    }
+            let all = vl.list(None, 100).await.unwrap();
+            assert_eq!(all.len(), 2);
+        }
 
-    #[tokio::test]
-    async fn embed_helpers() {
-        let dir = tempfile::tempdir().unwrap();
-        let vl = VecLayer::open(dir.path(), TestEmbedder).await.unwrap();
+        fn embed_helpers(vl) {
+            let single = vl.embed_one("hello").unwrap();
+            assert_eq!(single.len(), 3);
 
-        let single = vl.embed_one("hello").unwrap();
-        assert_eq!(single.len(), 3);
+            let batch = vl.embed_batch(&["hello", "world"]).unwrap();
+            assert_eq!(batch.len(), 2);
+        }
 
-        let batch = vl.embed_batch(&["hello", "world"]).unwrap();
-        assert_eq!(batch.len(), 2);
-    }
+        fn read_only_allows_search(vl, dir) {
+            let _ = vl.store("seed").await.unwrap();
+            drop(vl);
 
-    #[tokio::test]
-    async fn read_only_allows_search() {
-        let dir = tempfile::tempdir().unwrap();
-
-        // Create store first
-        let vl = VecLayer::open(dir.path(), TestEmbedder).await.unwrap();
-        let _ = vl.store("seed").await.unwrap();
-        drop(vl);
-
-        // Open read-only (skips write lock — allows concurrent readers)
-        let vl = VecLayer::open_read_only(dir.path(), TestEmbedder)
-            .await
-            .unwrap();
-
-        // Search should work
-        let results = vl.search("seed", 5).await.unwrap();
-        assert!(!results.is_empty());
+            let vl = open_ro(dir.path()).await.unwrap();
+            let results = vl.search("seed", 5).await.unwrap();
+            assert!(!results.is_empty());
+        }
     }
 }

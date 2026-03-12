@@ -12,13 +12,14 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::table::NewColumnTransform;
 use lancedb::{connect, Connection, Table};
 
-use super::{FileLock, SearchResult, StoreStats, VectorStore};
+use super::{
+    FileLock, SearchResult, StoreStats, VectorStore, EMBEDDING_STATUS_EMBEDDED,
+    EMBEDDING_STATUS_PENDING,
+};
 use crate::{ChunkLevel, ClusterMembership, Error, HierarchicalChunk, Result};
 
 pub(crate) const TABLE_NAME: &str = "chunks";
 
-const EMBEDDING_STATUS_EMBEDDED: &str = "embedded";
-const EMBEDDING_STATUS_PENDING: &str = "pending";
 const EMBEDDING_EMBEDDED_FILTER: &str = "embedding_status = 'embedded'";
 const EMBEDDING_PENDING_FILTER: &str = "embedding_status = 'pending'";
 const EMBEDDING_EMBEDDED_SQL: &str = "'embedded'";
@@ -858,6 +859,7 @@ impl VectorStore for LanceStore {
         query_embedding: &[f32],
         limit: usize,
         level_filter: Option<ChunkLevel>,
+        perspective: Option<&str>,
     ) -> Result<Vec<SearchResult>> {
         let table = self.get_table().await?;
 
@@ -870,6 +872,10 @@ impl VectorStore for LanceStore {
         query = query.only_if(EMBEDDING_EMBEDDED_FILTER);
         if let Some(level) = level_filter {
             query = query.only_if(format!("level = {}", level.depth()));
+        }
+        if let Some(p) = perspective {
+            let escaped = sql_escape(p);
+            query = query.only_if(format!("perspectives LIKE '%\"{}%'", escaped));
         }
 
         let results = query
@@ -1156,52 +1162,6 @@ impl VectorStore for LanceStore {
             Ok(())
         })
         .await
-    }
-
-    async fn search_by_perspective(
-        &self,
-        query_embedding: &[f32],
-        limit: usize,
-        perspective: &str,
-    ) -> Result<Vec<SearchResult>> {
-        let table = self.get_table().await?;
-        let query_vec: Vec<f32> = query_embedding.to_vec();
-
-        let escaped = sql_escape(perspective);
-        let filter = format!(
-            "{} AND perspectives LIKE '%\"{}%'",
-            EMBEDDING_EMBEDDED_FILTER, escaped
-        );
-
-        let query = table
-            .query()
-            .nearest_to(query_vec)
-            .map_err(|e| Error::search(format!("Failed to create perspective search: {}", e)))?
-            .only_if(filter)
-            .limit(limit);
-
-        let results = query
-            .execute()
-            .await
-            .map_err(|e| Error::search(format!("Failed to execute perspective search: {}", e)))?
-            .try_collect::<Vec<_>>()
-            .await
-            .map_err(|e| Error::search(format!("Failed to collect perspective results: {}", e)))?;
-
-        let mut search_results = Vec::new();
-        for batch in results {
-            let distances: Option<&Float32Array> = batch
-                .column_by_name("_distance")
-                .and_then(|c| c.as_any().downcast_ref());
-
-            let chunks = self.batch_to_chunks(&batch)?;
-            for (i, chunk) in chunks.into_iter().enumerate() {
-                let score = distances.map(|d| 1.0 - d.value(i)).unwrap_or(1.0);
-                search_results.push(SearchResult { chunk, score });
-            }
-        }
-
-        Ok(search_results)
     }
 
     async fn get_hot_chunks(&self, limit: usize) -> Result<Vec<HierarchicalChunk>> {
@@ -1555,7 +1515,7 @@ mod tests {
             .unwrap();
 
         let query_embedding = vec![0.1; 384];
-        let results = store.search(&query_embedding, 2, None).await.unwrap();
+        let results = store.search(&query_embedding, 2, None, None).await.unwrap();
 
         assert_eq!(results.len(), 2);
         assert!(results[0].score >= 0.0 && results[0].score <= 1.0);
@@ -1576,7 +1536,7 @@ mod tests {
 
         let query_embedding = vec![0.1; 384];
         let results = store
-            .search(&query_embedding, 10, Some(ChunkLevel::H1))
+            .search(&query_embedding, 10, Some(ChunkLevel::H1), None)
             .await
             .unwrap();
 
@@ -1810,7 +1770,7 @@ mod tests {
 
         // Vector search should only return the embedded chunk
         let query = vec![0.1f32; 384];
-        let results = store.search(&query, 10, None).await.unwrap();
+        let results = store.search(&query, 10, None, None).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].chunk.id, "emb-1");
     }
@@ -1845,7 +1805,7 @@ mod tests {
 
         // Not searchable yet
         let query = vec![0.1f32; 384];
-        let results = store.search(&query, 10, None).await.unwrap();
+        let results = store.search(&query, 10, None, None).await.unwrap();
         assert!(results.is_empty());
 
         // Update with real embedding
@@ -1855,7 +1815,7 @@ mod tests {
             .unwrap();
 
         // Now searchable
-        let results = store.search(&query, 10, None).await.unwrap();
+        let results = store.search(&query, 10, None, None).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].chunk.id, "upd-1");
         assert!(results[0].chunk.embedding.is_some());

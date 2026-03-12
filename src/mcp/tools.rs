@@ -1055,7 +1055,7 @@ async fn discover_unlinked_pairs(store: &Arc<StoreBackend>, output_limit: usize)
         };
 
         let neighbors = store
-            .search(embedding, NEIGHBORS_PER_ENTRY + 1, None)
+            .search(embedding, NEIGHBORS_PER_ENTRY + 1, None, None)
             .await?;
 
         for neighbor_result in &neighbors {

@@ -210,7 +210,12 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
         // Search H1 chunks first
         let mut results = self
             .store
-            .search(&query_embedding, self.config.top_k, Some(ChunkLevel::H1))
+            .search(
+                &query_embedding,
+                self.config.top_k,
+                Some(ChunkLevel::H1),
+                None,
+            )
             .await?;
 
         // If not enough H1 results, also search H2
@@ -221,6 +226,7 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
                     &query_embedding,
                     self.config.top_k - results.len(),
                     Some(ChunkLevel::H2),
+                    None,
                 )
                 .await?;
             results.extend(h2_results);
@@ -246,13 +252,15 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
         };
 
         // Step 1: Find top-level matches (optionally filtered by perspective)
-        let top_results = if let Some(ref perspective) = self.config.perspective {
-            self.store
-                .search_by_perspective(&query_embedding, fetch_k, perspective)
-                .await?
-        } else {
-            self.store.search(&query_embedding, fetch_k, None).await?
-        };
+        let top_results = self
+            .store
+            .search(
+                &query_embedding,
+                fetch_k,
+                None,
+                self.config.perspective.as_deref(),
+            )
+            .await?;
 
         let mut hierarchical_results = Vec::new();
         let mut access_updates = Vec::new();
@@ -343,13 +351,15 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
         // +1 to account for the source entry itself appearing in ANN results (excluded below)
         let fetch_k = limit + 1;
 
-        let top_results = if let Some(ref perspective) = self.config.perspective {
-            self.store
-                .search_by_perspective(&query_embedding, fetch_k, perspective)
-                .await?
-        } else {
-            self.store.search(&query_embedding, fetch_k, None).await?
-        };
+        let top_results = self
+            .store
+            .search(
+                &query_embedding,
+                fetch_k,
+                None,
+                self.config.perspective.as_deref(),
+            )
+            .await?;
 
         let mut hierarchical_results = Vec::new();
         let mut access_updates = Vec::new();
@@ -607,18 +617,27 @@ mod tests {
             _query_embedding: &[f32],
             limit: usize,
             level_filter: Option<ChunkLevel>,
+            perspective: Option<&str>,
         ) -> Result<Vec<SearchResult>> {
             let results = self.search_results.lock().unwrap();
-            let filtered: Vec<_> = if let Some(level) = level_filter {
-                results
-                    .iter()
-                    .filter(|r| r.chunk.level == level)
-                    .take(limit)
-                    .cloned()
-                    .collect()
-            } else {
-                results.iter().take(limit).cloned().collect()
-            };
+            let filtered: Vec<_> = results
+                .iter()
+                .filter(|r| {
+                    if let Some(level) = level_filter {
+                        if r.chunk.level != level {
+                            return false;
+                        }
+                    }
+                    if let Some(p) = perspective {
+                        if !r.chunk.perspectives.iter().any(|pp| pp == p) {
+                            return false;
+                        }
+                    }
+                    true
+                })
+                .take(limit)
+                .cloned()
+                .collect();
             Ok(filtered)
         }
 
@@ -686,22 +705,6 @@ mod tests {
             _relation: crate::ChunkRelation,
         ) -> Result<()> {
             Ok(())
-        }
-
-        async fn search_by_perspective(
-            &self,
-            _query_embedding: &[f32],
-            limit: usize,
-            perspective: &str,
-        ) -> Result<Vec<SearchResult>> {
-            let results = self.search_results.lock().unwrap();
-            let filtered: Vec<_> = results
-                .iter()
-                .filter(|r| r.chunk.perspectives.iter().any(|p| p == perspective))
-                .take(limit)
-                .cloned()
-                .collect();
-            Ok(filtered)
         }
 
         async fn get_hot_chunks(&self, _limit: usize) -> Result<Vec<HierarchicalChunk>> {

@@ -15,25 +15,30 @@ rust-version = "1.91"
 
 [features]
 default = []
+store-lance = ["dep:lancedb", "dep:arrow-array", "dep:arrow-schema", "dep:futures"]
+store-sqlite = ["dep:rusqlite"]
 parser = ["dep:pulldown-cmark"]
 config = ["dep:toml", "dep:glob", "dep:directories", "dep:shellexpand", "dep:regex", "dep:serde_yml", "dep:walkdir"]
-cli = ["mcp", "embedding-local", "config", "parser", "dep:clap", "dep:owo-colors", "dep:tracing-subscriber"]
+cli = ["store-lance", "mcp", "embedding-local", "config", "parser", "dep:clap", "dep:owo-colors", "dep:tracing-subscriber"]
 mcp = ["config", "dep:rmcp", "dep:schemars"]
 embedding-local = ["config", "dep:fastembed"]
 llm = ["dep:reqwest", "dep:linfa", "dep:linfa-clustering", "dep:ndarray"]
 http = ["auth", "mcp", "dep:axum", "dep:tower", "dep:tower-http", "rmcp/transport-streamable-http-server"]
 auth = ["dep:ed25519-dalek", "dep:jsonwebtoken", "dep:aes-gcm", "dep:argon2", "dep:rpassword", "dep:uuid", "dep:zeroize", "dep:bs58", "dep:base64", "dep:percent-encoding", "dep:rand"]
 sync = []
-full = ["cli", "llm", "http", "auth"]
+full = ["cli", "store-sqlite", "llm", "http", "auth"]
 
 [dependencies]
 # CLI (gated behind "cli" feature)
 clap = { version = "4", features = ["derive", "env"], optional = true }
 
-# Vector DB
-lancedb = "0.21"
-arrow-array = "55"
-arrow-schema = "55"
+# Vector DB (gated behind "store-lance" feature)
+lancedb = { version = "0.21", optional = true }
+arrow-array = { version = "55", optional = true }
+arrow-schema = { version = "55", optional = true }
+
+# SQLite backend (gated behind "store-sqlite" feature)
+rusqlite = { version = "0.37", features = ["bundled"], optional = true }
 
 # Embeddings (gated behind "embedding-local" feature)
 fastembed = { version = "4", default-features = false, features = ["ort-download-binaries", "hf-hub-rustls-tls"], optional = true }
@@ -52,7 +57,7 @@ tower-http = { version = "0.6", features = ["cors", "limit", "trace"], optional 
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
-futures = "0.3"
+futures = { version = "0.3", optional = true }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
