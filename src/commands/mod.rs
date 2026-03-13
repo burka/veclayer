@@ -82,15 +82,43 @@ pub fn vis_color(vis: &str) -> String {
     }
 }
 
-/// Truncate content to `max` chars, replacing newlines with spaces.
-pub fn preview(s: &str, max: usize) -> String {
-    let clean = s.replace('\n', " ");
-    if clean.len() <= max {
-        clean
-    } else {
-        let end = clean.floor_char_boundary(max);
-        format!("{}...", &clean[..end])
+pub use crate::util::preview;
+
+/// Extract the display heading from a chunk: heading if set, else first line of content.
+pub fn display_heading(chunk: &crate::HierarchicalChunk) -> &str {
+    chunk
+        .heading
+        .as_deref()
+        .unwrap_or_else(|| chunk.content.lines().next().unwrap_or("(untitled)"))
+}
+
+/// Build a metadata line for CLI display: id | entry_type | perspectives | visibility.
+pub fn format_meta_line(chunk: &crate::HierarchicalChunk) -> String {
+    let mut meta = vec![short_id(&chunk.id)
+        .if_supports_color(Stream::Stdout, |s| s.cyan())
+        .to_string()];
+    if chunk.entry_type != EntryType::Raw {
+        meta.push(
+            chunk
+                .entry_type
+                .to_string()
+                .if_supports_color(Stream::Stdout, |s| s.yellow())
+                .to_string(),
+        );
     }
+    if !chunk.perspectives.is_empty() {
+        meta.push(
+            chunk
+                .perspectives
+                .join(", ")
+                .if_supports_color(Stream::Stdout, |s| s.magenta())
+                .to_string(),
+        );
+    }
+    if chunk.visibility != "normal" {
+        meta.push(vis_color(&chunk.visibility));
+    }
+    meta.join(" | ")
 }
 
 // --- Option types ---

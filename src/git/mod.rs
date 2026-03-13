@@ -15,10 +15,15 @@ pub mod markdown;
 pub mod memory_store;
 pub mod plumbing;
 pub mod sync;
+#[cfg(test)]
+pub(crate) mod test_helpers;
 pub mod worktree;
 
 /// Default branch name for the memory branch.
 pub const DEFAULT_BRANCH: &str = "veclayer-memory";
+
+/// Default remote name used for all sync operations.
+pub(crate) const REMOTE: &str = "origin";
 
 // ---------------------------------------------------------------------------
 // Error types

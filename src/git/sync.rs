@@ -4,13 +4,9 @@
 //! Fetch and push operate purely on refs and require no worktree.
 //! Pull-rebase modifies files and therefore requires a live worktree.
 
-use super::{run_git_in, run_git_with_gitdir, GitError, GitMemoryBranch, PushResult, SyncResult};
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const REMOTE: &str = "origin";
+use super::{
+    run_git_in, run_git_with_gitdir, GitError, GitMemoryBranch, PushResult, SyncResult, REMOTE,
+};
 
 // ---------------------------------------------------------------------------
 // Auth-failure detection and guidance
@@ -266,28 +262,8 @@ fn extract_conflict_files(output: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::{Path, PathBuf};
-
-    // -----------------------------------------------------------------------
-    // Test helpers
-    // -----------------------------------------------------------------------
-
-    fn setup_test_repo() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let git_dir = dir.path().join(".git");
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["-c", "user.email=test@test.com", "-c", "user.name=Test"])
-            .args(["commit", "--allow-empty", "-m", "init"])
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
-        (dir, git_dir)
-    }
+    use crate::git::test_helpers::setup_test_repo;
+    use std::path::Path;
 
     fn open_branch(git_dir: &Path) -> GitMemoryBranch {
         GitMemoryBranch::open(git_dir, Some("test-memory")).unwrap()

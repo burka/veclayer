@@ -196,9 +196,7 @@ mod tests {
         let (store, blob_store) = make_store_and_blobs(dir.path()).await;
         let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
 
-        let count = process_batch(&store, &embedder, &blob_store)
-            .await
-            .unwrap();
+        let count = process_batch(&store, &embedder, &blob_store).await.unwrap();
         assert_eq!(count, 0);
     }
 
@@ -215,9 +213,7 @@ mod tests {
         chunk.embedding = None;
         store.insert_chunks(vec![chunk]).await.unwrap();
 
-        let count = process_batch(&store, &embedder, &blob_store)
-            .await
-            .unwrap();
+        let count = process_batch(&store, &embedder, &blob_store).await.unwrap();
         assert_eq!(count, 1, "should have embedded 1 pending entry");
     }
 
@@ -235,9 +231,7 @@ mod tests {
         assert!(chunk.embedding.is_some());
         store.insert_chunks(vec![chunk]).await.unwrap();
 
-        let count = process_batch(&store, &embedder, &blob_store)
-            .await
-            .unwrap();
+        let count = process_batch(&store, &embedder, &blob_store).await.unwrap();
         assert_eq!(count, 0, "no pending entries to embed");
     }
 
@@ -257,9 +251,7 @@ mod tests {
             .collect();
         store.insert_chunks(chunks).await.unwrap();
 
-        let count = process_batch(&store, &embedder, &blob_store)
-            .await
-            .unwrap();
+        let count = process_batch(&store, &embedder, &blob_store).await.unwrap();
         assert_eq!(count, BATCH_SIZE, "should process exactly {BATCH_SIZE}");
     }
 
@@ -302,11 +294,11 @@ mod tests {
         store.insert_chunks(chunks).await.unwrap();
 
         let result = process_batch(&store, &embedder, &blob_store).await;
-        assert!(
-            result.is_err(),
-            "should fail with count mismatch error"
-        );
+        assert!(result.is_err(), "should fail with count mismatch error");
         let err_str = result.unwrap_err().to_string();
-        assert!(err_str.contains("mismatch"), "error should mention mismatch: {err_str}");
+        assert!(
+            err_str.contains("mismatch"),
+            "error should mention mismatch: {err_str}"
+        );
     }
 }

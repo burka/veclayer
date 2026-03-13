@@ -595,9 +595,15 @@ mod tests {
         chunk.perspectives = vec!["project:other-project".to_string()];
         store.insert_chunks(vec![chunk]).await.unwrap();
 
-        let result = read("veclayer://hot", &store, dir.path(), Some("my-project"), None)
-            .await
-            .unwrap();
+        let result = read(
+            "veclayer://hot",
+            &store,
+            dir.path(),
+            Some("my-project"),
+            None,
+        )
+        .await
+        .unwrap();
         let text = extract_text(&result);
         assert!(text.contains("No entries"));
     }
@@ -625,8 +631,7 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let chunk =
-            crate::test_helpers::make_test_chunk("recententry01", "Recent knowledge entry");
+        let chunk = crate::test_helpers::make_test_chunk("recententry01", "Recent knowledge entry");
         store.insert_chunks(vec![chunk]).await.unwrap();
 
         let result = read("veclayer://recent", &store, dir.path(), None, None)

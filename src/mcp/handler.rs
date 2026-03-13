@@ -165,8 +165,7 @@ impl McpHandler {
         }
         let query = input.query.clone();
         let ctx = self.tool_context();
-        match tools::execute_recall(&ctx, input, Some(self.push_mode)).await
-        {
+        match tools::execute_recall(&ctx, input, Some(self.push_mode)).await {
             Ok(results) => {
                 let text = format::format_recall(query.as_deref(), &results);
                 Ok(CallToolResult::success(vec![Content::text(text)]))
@@ -188,8 +187,7 @@ impl McpHandler {
             )]));
         }
         let ctx = self.tool_context();
-        match tools::execute_focus(&ctx, input).await
-        {
+        match tools::execute_focus(&ctx, input).await {
             Ok(response) => {
                 let text = format::format_focus(&response);
                 Ok(CallToolResult::success(vec![Content::text(text)]))
@@ -221,8 +219,7 @@ impl McpHandler {
         if !self.push_mode.auto_stages() {
             ctx.git_store = None;
         }
-        match tools::execute_store(&ctx, input).await
-        {
+        match tools::execute_store(&ctx, input).await {
             Ok(result) => {
                 let text = result.as_str().unwrap_or_default().to_string();
                 Ok(CallToolResult::success(vec![Content::text(text)]))
@@ -244,8 +241,7 @@ impl McpHandler {
             )]));
         }
         let ctx = self.tool_context();
-        match tools::execute_think(&ctx, input, Some(self.push_mode)).await
-        {
+        match tools::execute_think(&ctx, input, Some(self.push_mode)).await {
             Ok(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
             Err(e) => tool_error(e),
         }

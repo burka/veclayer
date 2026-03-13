@@ -695,9 +695,15 @@ mod tests {
         let (_dir, data_dir) = temp_data_dir();
         init_identity(&data_dir, "test-pass");
 
-        let err = auth_token_with_passphrase(&data_dir, "not-a-capability", "1h", None, Some("test-pass"))
-            .await
-            .unwrap_err();
+        let err = auth_token_with_passphrase(
+            &data_dir,
+            "not-a-capability",
+            "1h",
+            None,
+            Some("test-pass"),
+        )
+        .await
+        .unwrap_err();
         assert!(
             !err.to_string().is_empty(),
             "expected a capability parse error"
@@ -711,9 +717,15 @@ mod tests {
         let (_dir, data_dir) = temp_data_dir();
         init_identity(&data_dir, "test-pass");
 
-        let err = auth_token_with_passphrase(&data_dir, "read", "not-a-duration", None, Some("test-pass"))
-            .await
-            .unwrap_err();
+        let err = auth_token_with_passphrase(
+            &data_dir,
+            "read",
+            "not-a-duration",
+            None,
+            Some("test-pass"),
+        )
+        .await
+        .unwrap_err();
         assert!(
             err.to_string().contains("invalid duration"),
             "expected 'invalid duration', got: {err}"

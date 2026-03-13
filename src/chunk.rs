@@ -59,6 +59,22 @@ pub enum EntryType {
     Impression,
 }
 
+impl std::str::FromStr for EntryType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "raw" => Ok(Self::Raw),
+            "summary" => Ok(Self::Summary),
+            "meta" => Ok(Self::Meta),
+            "impression" => Ok(Self::Impression),
+            other => Err(format!(
+                "Unknown entry_type: '{other}'. Valid: raw, summary, meta, impression"
+            )),
+        }
+    }
+}
+
 impl std::fmt::Display for EntryType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -68,6 +84,17 @@ impl std::fmt::Display for EntryType {
             Self::Impression => write!(f, "impression"),
         }
     }
+}
+
+/// Sort a slice in descending order by a float key extractor.
+///
+/// Handles NaN safely by treating uncomparable values as equal.
+pub fn sort_f32_desc<T>(slice: &mut [T], key: impl Fn(&T) -> f32) {
+    slice.sort_by(|a, b| {
+        key(b)
+            .partial_cmp(&key(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 }
 
 /// Soft cluster membership: probability of belonging to a cluster.

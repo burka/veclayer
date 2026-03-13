@@ -96,11 +96,7 @@ pub fn top_salient(
         .map(|(i, c)| (i, compute(c, weights)))
         .collect();
 
-    scored.sort_by(|a, b| {
-        b.1.composite
-            .partial_cmp(&a.1.composite)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    crate::chunk::sort_f32_desc(&mut scored, |s| s.1.composite);
 
     scored.truncate(limit);
     scored

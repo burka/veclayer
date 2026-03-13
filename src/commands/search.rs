@@ -34,11 +34,7 @@ pub async fn search(data_dir: &Path, query_str: &str, options: &SearchOptions) -
             println!();
         }
 
-        let heading = result
-            .chunk
-            .heading
-            .as_deref()
-            .unwrap_or_else(|| result.chunk.content.lines().next().unwrap_or("(untitled)"));
+        let heading = display_heading(&result.chunk);
         let tier = crate::mcp::types::relevance_tier(result.score);
         println!(
             "{}  {} {:.2}",
@@ -49,47 +45,17 @@ pub async fn search(data_dir: &Path, query_str: &str, options: &SearchOptions) -
                 .if_supports_color(Stream::Stdout, |s| s.dimmed()),
         );
 
-        let mut meta = vec![short_id(&result.chunk.id)
-            .if_supports_color(Stream::Stdout, |s| s.cyan())
-            .to_string()];
-        if result.chunk.entry_type != EntryType::Raw {
-            meta.push(
-                result
-                    .chunk
-                    .entry_type
-                    .to_string()
-                    .if_supports_color(Stream::Stdout, |s| s.yellow())
-                    .to_string(),
-            );
-        }
-        if !result.chunk.perspectives.is_empty() {
-            meta.push(
-                result
-                    .chunk
-                    .perspectives
-                    .join(", ")
-                    .if_supports_color(Stream::Stdout, |s| s.magenta())
-                    .to_string(),
-            );
-        }
-        if result.chunk.visibility != "normal" {
-            meta.push(
-                result
-                    .chunk
-                    .visibility
-                    .if_supports_color(Stream::Stdout, |s| s.red())
-                    .to_string(),
-            );
-        }
+        let mut meta_str = format_meta_line(&result.chunk);
         if options.show_path && !result.hierarchy_path.is_empty() {
             let path: Vec<&str> = result
                 .hierarchy_path
                 .iter()
                 .filter_map(|c| c.heading.as_deref())
                 .collect();
-            meta.push(path.join(" > "));
+            meta_str.push_str(" | ");
+            meta_str.push_str(&path.join(" > "));
         }
-        println!("   {}", meta.join(" | "));
+        println!("   {}", meta_str);
 
         println!(
             "   {}",
@@ -375,40 +341,12 @@ pub async fn browse(data_dir: &Path, options: &SearchOptions) -> Result<()> {
 }
 
 fn print_entry_line(index: usize, chunk: &crate::HierarchicalChunk) {
-    let heading = chunk
-        .heading
-        .as_deref()
-        .unwrap_or_else(|| chunk.content.lines().next().unwrap_or("(untitled)"));
+    let heading = display_heading(chunk);
     println!(
         "{}",
         format!("{}. {}", index + 1, heading).if_supports_color(Stream::Stdout, |s| s.bold())
     );
-
-    let mut meta = vec![short_id(&chunk.id)
-        .if_supports_color(Stream::Stdout, |s| s.cyan())
-        .to_string()];
-    if chunk.entry_type != EntryType::Raw {
-        meta.push(
-            chunk
-                .entry_type
-                .to_string()
-                .if_supports_color(Stream::Stdout, |s| s.yellow())
-                .to_string(),
-        );
-    }
-    if !chunk.perspectives.is_empty() {
-        meta.push(
-            chunk
-                .perspectives
-                .join(", ")
-                .if_supports_color(Stream::Stdout, |s| s.magenta())
-                .to_string(),
-        );
-    }
-    if chunk.visibility != "normal" {
-        meta.push(vis_color(&chunk.visibility));
-    }
-    println!("   {}", meta.join(" | "));
+    println!("   {}", format_meta_line(chunk));
     println!(
         "   {}",
         preview(&chunk.content, 200).if_supports_color(Stream::Stdout, |s| s.dimmed())

@@ -3,6 +3,20 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Truncate `s` to at most `max` bytes, replacing newlines with spaces.
+///
+/// Uses `floor_char_boundary` so multi-byte codepoints are never split.
+/// Appends `"..."` when truncation occurs.
+pub fn preview(s: &str, max: usize) -> String {
+    let clean = s.replace('\n', " ");
+    if clean.len() <= max {
+        clean
+    } else {
+        let end = clean.floor_char_boundary(max);
+        format!("{}...", &clean[..end])
+    }
+}
+
 /// Returns the current Unix timestamp in seconds.
 pub fn unix_now() -> u64 {
     SystemTime::now()

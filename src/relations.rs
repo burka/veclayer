@@ -20,6 +20,60 @@ pub struct RawRelation {
     pub target_id: String,
 }
 
+impl RawRelation {
+    /// Build a list of `RawRelation` from typed CLI option fields.
+    pub fn from_typed_options(
+        supersedes: &[String],
+        summarizes: &[String],
+        related_to: &[String],
+        derived_from: &[String],
+        version_of: &[String],
+    ) -> Vec<Self> {
+        let pairs: &[(&str, &[String])] = &[
+            ("supersedes", supersedes),
+            ("summarizes", summarizes),
+            ("related_to", related_to),
+            ("derived_from", derived_from),
+            ("version_of", version_of),
+        ];
+        pairs
+            .iter()
+            .flat_map(|(kind, targets)| {
+                targets.iter().map(move |t| Self {
+                    kind: kind.to_string(),
+                    target_id: t.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Parse custom relation specs in `KIND:ID` format.
+    pub fn parse_custom(specs: &[String]) -> crate::Result<Vec<Self>> {
+        specs
+            .iter()
+            .map(|spec| {
+                let (kind, target_id) = spec.split_once(':').ok_or_else(|| {
+                    crate::Error::parse(format!(
+                        "Invalid --rel format '{}': expected KIND:ID",
+                        spec
+                    ))
+                })?;
+                if kind.is_empty() || target_id.is_empty() {
+                    return Err(crate::Error::parse(format!(
+                        "Invalid --rel format '{}': expected KIND:ID",
+                        spec
+                    )));
+                }
+                validate_relation_kind(kind)?;
+                Ok(Self {
+                    kind: kind.to_string(),
+                    target_id: target_id.to_string(),
+                })
+            })
+            .collect()
+    }
+}
+
 /// Validate a relation kind string.
 ///
 /// - Known kinds pass without error.

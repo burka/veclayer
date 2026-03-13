@@ -7,6 +7,7 @@
 //! - **Priming blob**: Startup briefing for agents connecting to this memory
 
 use crate::salience::{self, SalienceWeights};
+use crate::util::preview;
 use crate::{HierarchicalChunk, VectorStore};
 
 /// Summary of activity on another branch.
@@ -133,7 +134,7 @@ pub async fn compute_identity<S: VectorStore>(
             CoreEntry {
                 id: chunk.id.clone(),
                 heading: chunk.heading.clone(),
-                content_preview: truncate(&chunk.content, 200),
+                content_preview: preview(&chunk.content, 200),
                 salience: score.composite,
                 perspectives: chunk.perspectives.clone(),
             }
@@ -152,7 +153,7 @@ pub async fn compute_identity<S: VectorStore>(
             CoreEntry {
                 id: c.id.clone(),
                 heading: c.heading.clone(),
-                content_preview: truncate(&c.content, 200),
+                content_preview: preview(&c.content, 200),
                 salience: score.composite,
                 perspectives: c.perspectives.clone(),
             }
@@ -313,7 +314,7 @@ fn build_cluster_info(
         representative: CoreEntry {
             id: rep.id.clone(),
             heading: rep.heading.clone(),
-            content_preview: truncate(&rep.content, 200),
+            content_preview: preview(&rep.content, 200),
             salience: score.composite,
             perspectives: rep.perspectives.clone(),
         },
@@ -573,15 +574,6 @@ pub fn generate_priming(snapshot: &IdentitySnapshot) -> String {
     priming
 }
 
-/// Truncate a string to a max length, appending "..." if truncated.
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.replace('\n', " ")
-    } else {
-        format!("{}...", s[..max].replace('\n', " "))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -595,24 +587,6 @@ mod tests {
             String::new(),
             "test.md".to_string(),
         )
-    }
-
-    #[test]
-    fn test_truncate_short() {
-        assert_eq!(truncate("hello", 10), "hello");
-    }
-
-    #[test]
-    fn test_truncate_long() {
-        let long = "a".repeat(300);
-        let result = truncate(&long, 200);
-        assert!(result.ends_with("..."));
-        assert_eq!(result.len(), 203); // 200 + "..."
-    }
-
-    #[test]
-    fn test_truncate_newlines() {
-        assert_eq!(truncate("hello\nworld", 20), "hello world");
     }
 
     #[test]
@@ -780,7 +754,7 @@ mod tests {
         let entry = CoreEntry {
             id: chunk.id.clone(),
             heading: chunk.heading.clone(),
-            content_preview: truncate(&chunk.content, 200),
+            content_preview: preview(&chunk.content, 200),
             salience: score.composite,
             perspectives: chunk.perspectives.clone(),
         };
@@ -852,9 +826,7 @@ mod tests {
 
         let mut chunk = test_chunk("pending decision");
         let chunk_id = chunk.id.clone();
-        chunk
-            .relations
-            .push(ChunkRelation::superseded_by("newer"));
+        chunk.relations.push(ChunkRelation::superseded_by("newer"));
         store.insert_chunks(vec![chunk]).await.unwrap();
 
         let filter = resolve_ongoing_filter(&store, true).await.unwrap();

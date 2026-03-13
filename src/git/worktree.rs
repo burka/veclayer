@@ -253,22 +253,7 @@ fn configure_author_if_missing(worktree: &Path) -> Result<(), GitError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn setup_test_repo() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let git_dir = dir.path().join(".git");
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "init"])
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
-        (dir, git_dir)
-    }
+    use crate::git::test_helpers::setup_test_repo;
 
     // -----------------------------------------------------------------------
     // validate_path

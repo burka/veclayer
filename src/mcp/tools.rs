@@ -181,9 +181,7 @@ async fn store_single_entry(
 
     let entry_type = match input.entry_type.as_deref() {
         None => crate::chunk::EntryType::default(),
-        Some(s) => s
-            .parse()
-            .map_err(|e: String| crate::Error::config(e))?,
+        Some(s) => s.parse().map_err(|e: String| crate::Error::config(e))?,
     };
 
     let perspectives = match input.scope.as_str() {
@@ -418,10 +416,7 @@ pub async fn execute_recall(
     }
 }
 
-pub async fn execute_focus(
-    ctx: &ToolContext,
-    input: FocusInput,
-) -> Result<FocusResponse> {
+pub async fn execute_focus(ctx: &ToolContext, input: FocusInput) -> Result<FocusResponse> {
     let store = &ctx.store;
     let embedder = &ctx.embedder;
     let project = ctx.project.as_deref();
@@ -481,10 +476,7 @@ pub async fn execute_focus(
     })
 }
 
-pub async fn execute_store(
-    ctx: &ToolContext,
-    input: StoreInput,
-) -> Result<serde_json::Value> {
+pub async fn execute_store(ctx: &ToolContext, input: StoreInput) -> Result<serde_json::Value> {
     let embedder = &ctx.embedder;
     if !input.items.is_empty() {
         let mut ids = Vec::new();
@@ -739,7 +731,11 @@ async fn think_consolidate(
 
     let mut report = format!(
         "## Think Cycle Complete\n\n- Narrative: {}\n- Consolidations: {}\n- Learnings: {}\n\n",
-        if result.narrative_id.is_some() { "yes" } else { "no" },
+        if result.narrative_id.is_some() {
+            "yes"
+        } else {
+            "no"
+        },
         result.consolidations_added,
         result.learnings_added,
     );
@@ -818,9 +814,7 @@ async fn think_status(
         match git.unpushed_commit_count() {
             Ok(0) => status.push_str("- **Pending commits:** 0 (in sync with remote)\n"),
             Ok(n) => status.push_str(&format!("- **Pending commits:** {n} (not yet pushed)\n")),
-            Err(_) => {
-                status.push_str("- **Pending commits:** unknown (no remote configured)\n")
-            }
+            Err(_) => status.push_str("- **Pending commits:** unknown (no remote configured)\n"),
         }
         if let Some(pm) = push_mode {
             status.push_str(&format!("- **Push mode:** {pm}\n"));
@@ -913,17 +907,14 @@ async fn think_sync(
         },
         "pull" => match git.pull() {
             Ok(SyncResult::Success) => report.push_str("**Pulled** new entries from remote.\n"),
-            Ok(SyncResult::NothingToSync) => {
-                report.push_str("Already up to date with remote.\n")
-            }
+            Ok(SyncResult::NothingToSync) => report.push_str("Already up to date with remote.\n"),
             Ok(SyncResult::Conflicts(files)) => {
                 report.push_str("**Conflict detected** during pull. Rebase aborted.\n\n");
                 report.push_str("Conflicting files:\n");
                 for f in &files {
                     report.push_str(&format!("- `{f}`\n"));
                 }
-                report
-                    .push_str("\nResolve manually or use `think(action='sync')` after fixing.\n");
+                report.push_str("\nResolve manually or use `think(action='sync')` after fixing.\n");
             }
             Err(e) => report.push_str(&format!("Pull failed: {e}\n")),
         },
@@ -1121,50 +1112,28 @@ mod tests {
         }
     }
 
-    /// Build a `ToolContext` for think tests (embedder not used by think, so a `MockEmbedder` is
-    /// created internally).
-    fn test_ctx_think(
-        store: &Arc<StoreBackend>,
-        blob_store: &Arc<crate::blob_store::BlobStore>,
-        data_dir: &std::path::Path,
-    ) -> ToolContext {
-        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
-        ToolContext {
-            store: Arc::clone(store),
-            embedder,
-            blob_store: Arc::clone(blob_store),
-            data_dir: data_dir.to_path_buf(),
-            project: None,
-            branch: None,
-            git_store: None,
-            push_mode: crate::git::branch_config::PushMode::Off,
-        }
-    }
-
     /// Build a `ToolContext` for recall/focus tests (blob_store and data_dir unused, so
-    /// sensible defaults are provided).
+    /// a temporary directory is created and returned as a guard alongside the context).
+    ///
+    /// The caller must hold the returned `TempDir` for the duration of the test; dropping
+    /// it early will delete the directory while the context still references it.
     fn test_ctx_recall(
         store: &Arc<StoreBackend>,
         embedder: &Arc<dyn crate::Embedder + Send + Sync>,
-    ) -> ToolContext {
-        // blob_store not used by recall/focus — create a temporary one
+    ) -> (ToolContext, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
-        let blob_store = Arc::new(
-            crate::blob_store::BlobStore::open(tmp.path()).unwrap(),
-        );
-        // Keep tmp alive via a static-ish approach: leak the dir into a Box so its path is valid.
-        // This is test-only and intentionally leaks a small TempDir per call.
-        let data_dir = Box::leak(Box::new(tmp)).path().to_path_buf();
-        ToolContext {
+        let blob_store = Arc::new(crate::blob_store::BlobStore::open(tmp.path()).unwrap());
+        let ctx = ToolContext {
             store: Arc::clone(store),
             embedder: Arc::clone(embedder),
             blob_store,
-            data_dir,
+            data_dir: tmp.path().to_path_buf(),
             project: None,
             branch: None,
             git_store: None,
             push_mode: crate::git::branch_config::PushMode::Off,
-        }
+        };
+        (ctx, tmp)
     }
 
     #[test]
@@ -1224,7 +1193,16 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
         .await
         .unwrap();
         assert!(result.contains("Perspectives"));
@@ -1256,7 +1234,16 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
         .await
         .unwrap();
         assert!(result.contains("Store Status"));
@@ -1287,7 +1274,16 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
         .await
         .unwrap();
         assert!(result.contains("Entry History"));
@@ -1314,7 +1310,16 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
         .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("requires 'id'"));
@@ -1338,7 +1343,16 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
         .await
         .unwrap();
         assert!(result.contains("Total entries"));
@@ -1363,7 +1377,16 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
         .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1392,7 +1415,16 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
         .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -1422,7 +1454,16 @@ mod tests {
             direction: None,
         };
         // With no git_store, status should still return store info without git section
-        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
         .await
         .unwrap();
         assert!(result.contains("Store Status"));
@@ -1646,10 +1687,10 @@ mod tests {
             until: None,
             ongoing: Some(true),
         };
-        let ongoing_results =
-            execute_recall(&test_ctx_recall(&store, &embedder), input_ongoing, None)
-                .await
-                .unwrap();
+        let (ctx_ongoing, _tmp_ongoing) = test_ctx_recall(&store, &embedder);
+        let ongoing_results = execute_recall(&ctx_ongoing, input_ongoing, None)
+            .await
+            .unwrap();
         assert_eq!(
             ongoing_results.len(),
             1,
@@ -1678,9 +1719,8 @@ mod tests {
             until: None,
             ongoing: None,
         };
-        let all_results = execute_recall(&test_ctx_recall(&store, &embedder), input_all, None)
-            .await
-            .unwrap();
+        let (ctx_all, _tmp_all) = test_ctx_recall(&store, &embedder);
+        let all_results = execute_recall(&ctx_all, input_all, None).await.unwrap();
         assert_eq!(
             all_results.len(),
             2,
@@ -1724,9 +1764,8 @@ mod tests {
             until: None,
             ongoing: None,
         };
-        let all_results = execute_recall(&test_ctx_recall(&store, &embedder), input_all, None)
-            .await
-            .unwrap();
+        let (ctx_all, _tmp_all) = test_ctx_recall(&store, &embedder);
+        let all_results = execute_recall(&ctx_all, input_all, None).await.unwrap();
         assert_eq!(
             all_results.len(),
             2,
@@ -1747,10 +1786,10 @@ mod tests {
             until: None,
             ongoing: Some(true),
         };
-        let ongoing_results =
-            execute_recall(&test_ctx_recall(&store, &embedder), input_ongoing, None)
-                .await
-                .unwrap();
+        let (ctx_ongoing, _tmp_ongoing) = test_ctx_recall(&store, &embedder);
+        let ongoing_results = execute_recall(&ctx_ongoing, input_ongoing, None)
+            .await
+            .unwrap();
         assert_eq!(
             ongoing_results.len(),
             1,
@@ -1775,10 +1814,10 @@ mod tests {
             until: None,
             ongoing: Some(false),
         };
-        let not_ongoing_results =
-            execute_recall(&test_ctx_recall(&store, &embedder), input_not_ongoing, None)
-                .await
-                .unwrap();
+        let (ctx_not_ongoing, _tmp_not_ongoing) = test_ctx_recall(&store, &embedder);
+        let not_ongoing_results = execute_recall(&ctx_not_ongoing, input_not_ongoing, None)
+            .await
+            .unwrap();
         assert_eq!(
             not_ongoing_results.len(),
             2,
@@ -1819,7 +1858,16 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
         .await
         .unwrap();
         assert!(result.contains("Nothing to discover") || result.contains("No entries"));
@@ -1861,7 +1909,16 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
         .await
         .unwrap();
 
@@ -1913,7 +1970,16 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result = execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
         .await
         .unwrap();
 
@@ -2055,7 +2121,10 @@ mod tests {
             impression_strength: None,
             scope: "project".to_string(),
         };
-        let result = execute_store(&test_ctx(&store, &embedder, &blob_store, _dir.path()), input)
+        let result = execute_store(
+            &test_ctx(&store, &embedder, &blob_store, _dir.path()),
+            input,
+        )
         .await
         .unwrap();
         let msg = result.as_str().unwrap();
@@ -2082,7 +2151,13 @@ mod tests {
             impression_strength: None,
             scope: "project".to_string(),
         };
-        execute_store(&ToolContext { project: Some("myproj".to_string()), ..test_ctx(&store, &embedder, &blob_store, _dir.path()) }, input)
+        execute_store(
+            &ToolContext {
+                project: Some("myproj".to_string()),
+                ..test_ctx(&store, &embedder, &blob_store, _dir.path())
+            },
+            input,
+        )
         .await
         .unwrap();
 
@@ -2116,7 +2191,13 @@ mod tests {
             impression_strength: None,
             scope: "personal".to_string(),
         };
-        execute_store(&ToolContext { project: Some("myproj".to_string()), ..test_ctx(&store, &embedder, &blob_store, _dir.path()) }, input)
+        execute_store(
+            &ToolContext {
+                project: Some("myproj".to_string()),
+                ..test_ctx(&store, &embedder, &blob_store, _dir.path())
+            },
+            input,
+        )
         .await
         .unwrap();
 
@@ -2179,7 +2260,10 @@ mod tests {
             impression_strength: None,
             scope: "project".to_string(),
         };
-        let result = execute_store(&test_ctx(&store, &embedder, &blob_store, _dir.path()), input)
+        let result = execute_store(
+            &test_ctx(&store, &embedder, &blob_store, _dir.path()),
+            input,
+        )
         .await
         .unwrap();
         let msg = result.as_str().unwrap();
@@ -2208,10 +2292,16 @@ mod tests {
             impression_strength: None,
             scope: "project".to_string(),
         };
-        let result = execute_store(&test_ctx(&store, &embedder, &blob_store, _dir.path()), input)
+        let result = execute_store(
+            &test_ctx(&store, &embedder, &blob_store, _dir.path()),
+            input,
+        )
         .await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown entry_type"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown entry_type"));
     }
 
     #[tokio::test]
@@ -2234,7 +2324,10 @@ mod tests {
             impression_strength: None,
             scope: "project".to_string(),
         };
-        let result = execute_store(&test_ctx(&store, &embedder, &blob_store, _dir.path()), input)
+        let result = execute_store(
+            &test_ctx(&store, &embedder, &blob_store, _dir.path()),
+            input,
+        )
         .await
         .unwrap();
         let msg = result.as_str().unwrap();
@@ -2260,7 +2353,14 @@ mod tests {
             impression_strength: None,
             scope: "branch".to_string(),
         };
-        execute_store(&ToolContext { project: Some("myproj".to_string()), branch: Some("main".to_string()), ..test_ctx(&store, &embedder, &blob_store, _dir.path()) }, input)
+        execute_store(
+            &ToolContext {
+                project: Some("myproj".to_string()),
+                branch: Some("main".to_string()),
+                ..test_ctx(&store, &embedder, &blob_store, _dir.path())
+            },
+            input,
+        )
         .await
         .unwrap();
 
@@ -2288,10 +2388,8 @@ mod tests {
         let parent_id = "abcd1234deadbeef1234567890abcdef12345678";
         let parent = make_test_chunk(parent_id, "Parent content");
 
-        let mut child = make_test_chunk(
-            "1234567890abcdef1234567890abcdef12345678",
-            "Child content",
-        );
+        let mut child =
+            make_test_chunk("1234567890abcdef1234567890abcdef12345678", "Child content");
         child.parent_id = Some(parent_id.to_string());
 
         store.insert_chunks(vec![parent, child]).await.unwrap();
@@ -2302,9 +2400,8 @@ mod tests {
             question: None,
             limit: 10,
         };
-        let response = execute_focus(&test_ctx_recall(&store, &embedder), input)
-            .await
-            .unwrap();
+        let (ctx, _tmp) = test_ctx_recall(&store, &embedder);
+        let response = execute_focus(&ctx, input).await.unwrap();
 
         assert_eq!(response.node.content, "Parent content");
         assert_eq!(response.children.len(), 1);
@@ -2322,7 +2419,8 @@ mod tests {
             question: None,
             limit: 10,
         };
-        let result = execute_focus(&test_ctx_recall(&store, &embedder), input).await;
+        let (ctx, _tmp) = test_ctx_recall(&store, &embedder);
+        let result = execute_focus(&ctx, input).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -2356,9 +2454,8 @@ mod tests {
             question: Some("architecture".to_string()),
             limit: 10,
         };
-        let response = execute_focus(&test_ctx_recall(&store, &embedder), input)
-            .await
-            .unwrap();
+        let (ctx, _tmp) = test_ctx_recall(&store, &embedder);
+        let response = execute_focus(&ctx, input).await.unwrap();
 
         assert_eq!(response.children.len(), 2);
         for child in &response.children {
@@ -2392,9 +2489,8 @@ mod tests {
             question: None,
             limit: 2,
         };
-        let response = execute_focus(&test_ctx_recall(&store, &embedder), input)
-            .await
-            .unwrap();
+        let (ctx, _tmp) = test_ctx_recall(&store, &embedder);
+        let response = execute_focus(&ctx, input).await.unwrap();
 
         assert!(
             response.children.len() <= 2,
@@ -2429,10 +2525,18 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result =
-            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
-                .await
-                .unwrap();
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(result.contains("Promoted"), "got: {result}");
         assert!(result.contains("always"), "got: {result}");
 
@@ -2457,8 +2561,17 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result =
-            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None).await;
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
+        .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("requires 'id'"));
     }
@@ -2486,10 +2599,18 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result =
-            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
-                .await
-                .unwrap();
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(result.contains("Demoted"), "got: {result}");
         assert!(result.contains("deep_only"), "got: {result}");
 
@@ -2514,8 +2635,17 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result =
-            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None).await;
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
+        .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("requires 'id'"));
     }
@@ -2548,10 +2678,18 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result =
-            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
-                .await
-                .unwrap();
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(result.contains("Added relation"), "got: {result}");
         assert!(result.contains("related_to"), "got: {result}");
     }
@@ -2573,12 +2711,22 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result =
-            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None).await;
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
+        .await;
         assert!(result.is_err());
-        assert!(
-            result.unwrap_err().to_string().contains("requires 'source_id'")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("requires 'source_id'"));
     }
 
     #[tokio::test]
@@ -2598,12 +2746,22 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result =
-            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None).await;
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
+        .await;
         assert!(result.is_err());
-        assert!(
-            result.unwrap_err().to_string().contains("requires 'target_id'")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("requires 'target_id'"));
     }
 
     // ── execute_think: configure_aging / apply_aging ──────────────────────
@@ -2626,10 +2784,18 @@ mod tests {
             degrade_from: Some(vec!["normal".to_string(), "deep_only".to_string()]),
             direction: None,
         };
-        let result =
-            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
-                .await
-                .unwrap();
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(result.contains("Aging configured"), "got: {result}");
         assert!(result.contains("30 days"), "got: {result}");
         assert!(result.contains("expired"), "got: {result}");
@@ -2653,10 +2819,18 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result =
-            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
-                .await
-                .unwrap();
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(
             result.contains("No chunks needed aging") || result.contains("Aged"),
             "got: {result}"
@@ -2683,10 +2857,18 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result =
-            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
-                .await
-                .unwrap();
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(result.contains("No entries to analyze"), "got: {result}");
     }
 
@@ -2715,10 +2897,18 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result =
-            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
-                .await
-                .unwrap();
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(result.contains("Salience Report"), "got: {result}");
     }
 
@@ -2750,9 +2940,8 @@ mod tests {
             until: None,
             ongoing: None,
         };
-        let results = execute_recall(&test_ctx_recall(&store, &embedder), input, None)
-            .await
-            .unwrap();
+        let (ctx, _tmp) = test_ctx_recall(&store, &embedder);
+        let results = execute_recall(&ctx, input, None).await.unwrap();
 
         assert_eq!(results.len(), 2);
         for r in &results {
@@ -2778,8 +2967,10 @@ mod tests {
         );
         chunk_b.perspectives = vec!["project:proj-b".to_string()];
 
-        let chunk_c =
-            make_test_chunk("unscoped1deadbeef1234567890abcdef12345678", "Unscoped content");
+        let chunk_c = make_test_chunk(
+            "unscoped1deadbeef1234567890abcdef12345678",
+            "Unscoped content",
+        );
 
         store
             .insert_chunks(vec![chunk_a, chunk_b, chunk_c])
@@ -2799,13 +2990,12 @@ mod tests {
             until: None,
             ongoing: None,
         };
+        let (base_ctx, _tmp) = test_ctx_recall(&store, &embedder);
         let ctx = ToolContext {
             project: Some("proj-a".to_string()),
-            ..test_ctx_recall(&store, &embedder)
+            ..base_ctx
         };
-        let results = execute_recall(&ctx, input, None)
-            .await
-            .unwrap();
+        let results = execute_recall(&ctx, input, None).await.unwrap();
 
         // proj-a + unscoped → 2 results
         assert_eq!(
@@ -2842,10 +3032,18 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result =
-            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
-                .await
-                .unwrap();
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(result.contains("Hot Chunks"), "got: {result}");
         assert!(result.contains("Stale Chunks"), "got: {result}");
         assert!(result.contains("Suggested Actions"), "got: {result}");
@@ -2876,10 +3074,18 @@ mod tests {
             degrade_from: None,
             direction: None,
         };
-        let result =
-            execute_think(&test_ctx_think(&store, &blob_store, dir.path()), input, None)
-                .await
-                .unwrap();
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(result.contains("Total chunks: 1"), "got: {result}");
     }
 }

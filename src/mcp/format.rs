@@ -886,9 +886,10 @@ mod tests {
         use crate::test_helpers::make_test_chunk;
 
         let mut chunk = make_test_chunk("abc1234deadbeef1234567890abcdef12345678", "Content");
-        chunk
-            .relations
-            .push(crate::ChunkRelation::new("supersedes", "older-entry-id-abc123456"));
+        chunk.relations.push(crate::ChunkRelation::new(
+            "supersedes",
+            "older-entry-id-abc123456",
+        ));
         let children: Vec<crate::HierarchicalChunk> = vec![];
         let out = super::format_entry_detail(&chunk, &children);
         assert!(out.contains("### Relations (1)"));

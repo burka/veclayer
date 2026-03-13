@@ -18,6 +18,7 @@ use crate::git::branch_config::{self, BranchConfig};
 use crate::git::markdown;
 use crate::git::{
     is_file_not_found, run_git_with_gitdir, GitError, GitMemoryBranch, PushResult, SyncResult,
+    REMOTE,
 };
 
 // ---------------------------------------------------------------------------
@@ -25,7 +26,6 @@ use crate::git::{
 // ---------------------------------------------------------------------------
 
 const CONFIG_FILENAME: &str = "config.toml";
-const REMOTE: &str = "origin";
 
 // ---------------------------------------------------------------------------
 // MemoryStore
@@ -552,27 +552,7 @@ mod tests {
     use super::*;
     use crate::chunk::{ChunkLevel, EntryType};
     use crate::git::branch_config::PushMode;
-
-    // -----------------------------------------------------------------------
-    // Test helpers
-    // -----------------------------------------------------------------------
-
-    fn setup_test_repo() -> (tempfile::TempDir, std::path::PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let git_dir = dir.path().join(".git");
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["-c", "user.email=test@test.com", "-c", "user.name=Test"])
-            .args(["commit", "--allow-empty", "-m", "init"])
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
-        (dir, git_dir)
-    }
+    use crate::git::test_helpers::setup_test_repo;
 
     fn sample_entry() -> Entry {
         Entry {

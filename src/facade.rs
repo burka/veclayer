@@ -233,7 +233,7 @@ impl<E: Embedder> VecLayer<E> {
                     (c, score)
                 })
                 .collect();
-            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            crate::chunk::sort_f32_desc(&mut scored, |r| r.1);
             scored.truncate(limit);
             scored
         } else {

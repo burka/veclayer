@@ -376,10 +376,7 @@ mod tests {
             Ok(vec![])
         }
 
-        async fn batch_update_embeddings(
-            &self,
-            _updates: Vec<(String, Vec<f32>)>,
-        ) -> Result<()> {
+        async fn batch_update_embeddings(&self, _updates: Vec<(String, Vec<f32>)>) -> Result<()> {
             Ok(())
         }
 

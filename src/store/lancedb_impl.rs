@@ -150,38 +150,7 @@ impl LanceStore {
     }
 
     pub async fn open_metadata(path: impl AsRef<Path>, read_only: bool) -> Result<Self> {
-        let path = path.as_ref();
-        let lock_dir = (!read_only).then(|| path.to_path_buf());
-
-        std::fs::create_dir_all(path)?;
-
-        let uri = path.to_string_lossy().to_string();
-        let connection = connect(&uri)
-            .execute()
-            .await
-            .map_err(|e| Error::store(format!("Failed to connect to LanceDB: {}", e)))?;
-
-        let store = Self {
-            connection,
-            dimension: 384,
-            lock_dir,
-        };
-
-        // Hold the write lock during schema creation/migration so two concurrent
-        // opens cannot race on table creation or column add/drop (issue #70).
-        let _migration_lock = if !read_only {
-            let dir = path.to_path_buf();
-            Some(
-                tokio::task::spawn_blocking(move || FileLock::acquire_blocking(&dir))
-                    .await
-                    .map_err(|e| Error::store(format!("lock task failed: {e}")))??,
-            )
-        } else {
-            None
-        };
-        store.ensure_table().await?;
-
-        Ok(store)
+        Self::open(path, 384, read_only).await
     }
 
     async fn with_write_lock<F, Fut, T>(&self, f: F) -> Result<T>
@@ -591,6 +560,15 @@ impl LanceStore {
             .ok_or_else(|| Error::store(format!("Invalid {} column", name)))
     }
 
+    /// Collect all chunks from a sequence of record batches.
+    fn collect_chunks(&self, batches: &[RecordBatch]) -> Result<Vec<HierarchicalChunk>> {
+        let mut chunks = Vec::new();
+        for batch in batches {
+            chunks.extend(self.batch_to_chunks(batch)?);
+        }
+        Ok(chunks)
+    }
+
     fn batch_to_chunks(&self, batch: &RecordBatch) -> Result<Vec<HierarchicalChunk>> {
         let ids = Self::extract_column::<StringArray>(batch, 0, "id")?;
         let contents = Self::extract_column::<StringArray>(batch, 1, "content")?;
@@ -699,15 +677,10 @@ impl LanceStore {
                     if col.is_null(i) {
                         None
                     } else {
-                        match col.value(i) {
-                            "summary" => Some(crate::chunk::EntryType::Summary),
-                            "meta" => Some(crate::chunk::EntryType::Meta),
-                            "impression" => Some(crate::chunk::EntryType::Impression),
-                            _ => Some(crate::chunk::EntryType::Raw),
-                        }
+                        Some(col.value(i).parse().unwrap_or_default())
                     }
                 })
-                .unwrap_or(crate::chunk::EntryType::Raw);
+                .unwrap_or_default();
 
             let summarizes: Vec<String> = summarizes_col
                 .and_then(|col| {
@@ -916,12 +889,7 @@ impl VectorStore for LanceStore {
             .await
             .map_err(|e| Error::search(format!("Failed to collect children: {}", e)))?;
 
-        let mut chunks = Vec::new();
-        for batch in results {
-            chunks.extend(self.batch_to_chunks(&batch)?);
-        }
-
-        Ok(chunks)
+        self.collect_chunks(&results)
     }
 
     async fn get_by_id(&self, id: &str) -> Result<Option<HierarchicalChunk>> {
@@ -971,10 +939,7 @@ impl VectorStore for LanceStore {
             .await
             .map_err(|e| Error::search(format!("Failed to collect prefix results: {}", e)))?;
 
-        let mut chunks = Vec::new();
-        for batch in &results {
-            chunks.extend(self.batch_to_chunks(batch)?);
-        }
+        let chunks = self.collect_chunks(&results)?;
 
         match chunks.len() {
             0 => Ok(None),
@@ -1000,12 +965,7 @@ impl VectorStore for LanceStore {
             .await
             .map_err(|e| Error::search(format!("Failed to collect results: {}", e)))?;
 
-        let mut chunks = Vec::new();
-        for batch in results {
-            chunks.extend(self.batch_to_chunks(&batch)?);
-        }
-
-        Ok(chunks)
+        self.collect_chunks(&results)
     }
 
     async fn delete_by_source(&self, source_file: &str) -> Result<usize> {
@@ -1177,11 +1137,7 @@ impl VectorStore for LanceStore {
             .await
             .map_err(|e| Error::search(format!("Failed to collect hot chunks: {}", e)))?;
 
-        let mut all_chunks = Vec::new();
-        for batch in results {
-            let mut chunks = self.batch_to_chunks(&batch)?;
-            all_chunks.append(&mut chunks);
-        }
+        let mut all_chunks = self.collect_chunks(&results)?;
 
         all_chunks.sort_by(|a, b| {
             b.access_profile
@@ -1219,11 +1175,7 @@ impl VectorStore for LanceStore {
             .await
             .map_err(|e| Error::search(format!("Failed to collect stale chunks: {}", e)))?;
 
-        let mut all_chunks = Vec::new();
-        for batch in results {
-            let mut chunks = self.batch_to_chunks(&batch)?;
-            all_chunks.append(&mut chunks);
-        }
+        let mut all_chunks = self.collect_chunks(&results)?;
 
         all_chunks.sort_by_key(|c| c.access_profile.last_rolled);
 
@@ -1265,10 +1217,7 @@ impl VectorStore for LanceStore {
             .await
             .map_err(|e| Error::search(format!("Failed to collect entries: {}", e)))?;
 
-        let mut all_chunks = Vec::new();
-        for batch in results {
-            all_chunks.extend(self.batch_to_chunks(&batch)?);
-        }
+        let mut all_chunks = self.collect_chunks(&results)?;
 
         all_chunks.sort_by(|a, b| {
             b.access_profile
@@ -1294,11 +1243,7 @@ impl VectorStore for LanceStore {
             .await
             .map_err(|e| Error::search(format!("Failed to collect pending embeddings: {}", e)))?;
 
-        let mut chunks = Vec::new();
-        for batch in results {
-            chunks.extend(self.batch_to_chunks(&batch)?);
-        }
-        Ok(chunks)
+        self.collect_chunks(&results)
     }
 
     async fn batch_update_embeddings(&self, updates: Vec<(String, Vec<f32>)>) -> Result<()> {
@@ -1336,12 +1281,11 @@ impl VectorStore for LanceStore {
                     ))
                 })?;
 
-            let mut chunks_by_id: HashMap<String, HierarchicalChunk> = HashMap::new();
-            for batch in results {
-                for chunk in self.batch_to_chunks(&batch)? {
-                    chunks_by_id.insert(chunk.id.clone(), chunk);
-                }
-            }
+            let mut chunks_by_id: HashMap<String, HierarchicalChunk> = self
+                .collect_chunks(&results)?
+                .into_iter()
+                .map(|c| (c.id.clone(), c))
+                .collect();
 
             let mut updated_chunks = Vec::with_capacity(updates.len());
             for (chunk_id, embedding) in updates {

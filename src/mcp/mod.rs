@@ -380,11 +380,8 @@ mod tests {
         // Create hooks config
         let claude_dir = tmp.path().join(".claude");
         std::fs::create_dir_all(&claude_dir).expect("create .claude dir");
-        std::fs::write(
-            claude_dir.join("settings.json"),
-            r#"{"hooks":{"Stop":[]}}"#,
-        )
-        .expect("write hooks");
+        std::fs::write(claude_dir.join("settings.json"), r#"{"hooks":{"Stop":[]}}"#)
+            .expect("write hooks");
         let result =
             super::compute_instructions(&store, tmp.path(), None, None, Some(tmp.path())).await;
         // Hooks configured → nudge NOT appended

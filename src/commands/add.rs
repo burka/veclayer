@@ -184,12 +184,7 @@ async fn add_text(
 ) -> Result<AddResult> {
     let (_config, embedder, store, blob_store) = super::open_store(data_dir).await?;
 
-    let entry_type = match options.entry_type.as_str() {
-        "meta" => crate::chunk::EntryType::Meta,
-        "impression" => crate::chunk::EntryType::Impression,
-        "summary" => crate::chunk::EntryType::Summary,
-        _ => crate::chunk::EntryType::Raw,
-    };
+    let entry_type: crate::chunk::EntryType = options.entry_type.parse().unwrap_or_default();
 
     let (level, path, resolved_parent_id) = if let Some(ref pid) = options.parent_id {
         let parent = resolve_entry(&store, pid).await?;
@@ -254,57 +249,16 @@ async fn add_text(
         }
     }
 
-    let mut raw_relations = Vec::new();
-    for target in &options.rel_supersedes {
-        raw_relations.push(crate::relations::RawRelation {
-            kind: "supersedes".to_string(),
-            target_id: target.clone(),
-        });
-    }
-    for target in &options.rel_summarizes {
-        raw_relations.push(crate::relations::RawRelation {
-            kind: "summarizes".to_string(),
-            target_id: target.clone(),
-        });
-    }
-    for target in &options.rel_to {
-        raw_relations.push(crate::relations::RawRelation {
-            kind: "related_to".to_string(),
-            target_id: target.clone(),
-        });
-    }
-    for target in &options.rel_derived_from {
-        raw_relations.push(crate::relations::RawRelation {
-            kind: "derived_from".to_string(),
-            target_id: target.clone(),
-        });
-    }
-    for target in &options.rel_version_of {
-        raw_relations.push(crate::relations::RawRelation {
-            kind: "version_of".to_string(),
-            target_id: target.clone(),
-        });
-    }
-    for spec in &options.rel_custom {
-        if let Some((kind, target_id)) = spec.split_once(':') {
-            if kind.is_empty() || target_id.is_empty() {
-                return Err(crate::Error::parse(format!(
-                    "Invalid --rel format '{}': expected KIND:ID",
-                    spec
-                )));
-            }
-            crate::relations::validate_relation_kind(kind)?;
-            raw_relations.push(crate::relations::RawRelation {
-                kind: kind.to_string(),
-                target_id: target_id.to_string(),
-            });
-        } else {
-            return Err(crate::Error::parse(format!(
-                "Invalid --rel format '{}': expected KIND:ID",
-                spec
-            )));
-        }
-    }
+    let mut raw_relations = crate::relations::RawRelation::from_typed_options(
+        &options.rel_supersedes,
+        &options.rel_summarizes,
+        &options.rel_to,
+        &options.rel_derived_from,
+        &options.rel_version_of,
+    );
+    raw_relations.extend(crate::relations::RawRelation::parse_custom(
+        &options.rel_custom,
+    )?);
 
     crate::relations::process_relations(&store, &id, raw_relations).await?;
 
@@ -581,7 +535,10 @@ mod tests {
         // Perspective validation should catch this
         assert!(
             err.to_string().contains("nonexistent-perspective")
-                || err.to_string().to_lowercase().contains("unknown perspective")
+                || err
+                    .to_string()
+                    .to_lowercase()
+                    .contains("unknown perspective")
                 || err.to_string().to_lowercase().contains("invalid"),
             "expected perspective error, got: {err}"
         );

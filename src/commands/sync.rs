@@ -1,6 +1,6 @@
 //! Sync command: pull entries from git-based memory scopes into the local index.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::ResolvedScope;
 use crate::entry::Entry;
@@ -8,6 +8,24 @@ use crate::git::detect;
 use crate::git::memory_store::MemoryStore;
 use crate::git::PushResult;
 use crate::store::VectorStore as _;
+
+/// Resolve the current git directory and open the default memory branch.
+///
+/// Returns `(git_dir, store)` on success. Fails with [`crate::Error::InvalidOperation`]
+/// when the working directory is not inside a git repository or the memory
+/// branch cannot be opened.
+fn open_memory_store() -> crate::Result<(PathBuf, MemoryStore)> {
+    let cwd = std::env::current_dir()?;
+    let git_dir = detect::find_git_dir(&cwd).ok_or_else(|| {
+        crate::Error::InvalidOperation(
+            "Not a git repository. Run `veclayer init --share` first.".into(),
+        )
+    })?;
+    let git_store = MemoryStore::open(&git_dir, None).map_err(|e| {
+        crate::Error::InvalidOperation(format!("Failed to open memory branch: {e}"))
+    })?;
+    Ok((git_dir, git_store))
+}
 
 /// Sync entries from all configured git-backed scopes into the local LanceDB index.
 ///
@@ -286,17 +304,7 @@ impl MigrateFilters {
 ///
 /// Entries are filtered by `filters` before writing.
 pub async fn migrate(data_dir: &Path, filters: &MigrateFilters) -> crate::Result<()> {
-    let cwd = std::env::current_dir()?;
-
-    let git_dir = detect::find_git_dir(&cwd).ok_or_else(|| {
-        crate::Error::InvalidOperation(
-            "Not a git project. Run `veclayer init --share` first.".into(),
-        )
-    })?;
-
-    let git_store = MemoryStore::open(&git_dir, None).map_err(|e| {
-        crate::Error::InvalidOperation(format!("Failed to open memory branch: {e}"))
-    })?;
+    let (_git_dir, git_store) = open_memory_store()?;
 
     let store = crate::store::StoreBackend::open_metadata(data_dir, true).await?;
     let all_chunks = store.list_entries(None, None, None, usize::MAX).await?;
@@ -359,14 +367,7 @@ pub async fn migrate(data_dir: &Path, filters: &MigrateFilters) -> crate::Result
 /// Shows the entry ID, heading (truncated), date, and perspectives for each
 /// unpushed commit. If no remote tracking branch exists, all entries are listed.
 pub async fn show_pending() -> crate::Result<()> {
-    let cwd = std::env::current_dir()?;
-
-    let git_dir = detect::find_git_dir(&cwd)
-        .ok_or_else(|| crate::Error::InvalidOperation("Not a git repository.".into()))?;
-
-    let git_store = MemoryStore::open(&git_dir, None).map_err(|e| {
-        crate::Error::InvalidOperation(format!("Failed to open memory branch: {e}"))
-    })?;
+    let (_git_dir, git_store) = open_memory_store()?;
 
     let count = git_store.unpushed_commit_count().map_err(|e| {
         crate::Error::InvalidOperation(format!("Failed to count unpushed commits: {e}"))
@@ -437,14 +438,7 @@ fn print_entry_list(entries: &[crate::entry::Entry]) {
 
 /// Push the local git memory branch to remote.
 pub async fn push_to_remote() -> crate::Result<()> {
-    let cwd = std::env::current_dir()?;
-
-    let git_dir = detect::find_git_dir(&cwd)
-        .ok_or_else(|| crate::Error::InvalidOperation("Not a git repository.".into()))?;
-
-    let git_store = MemoryStore::open(&git_dir, None).map_err(|e| {
-        crate::Error::InvalidOperation(format!("Failed to open memory branch: {e}"))
-    })?;
+    let (_git_dir, git_store) = open_memory_store()?;
 
     match git_store.push() {
         Ok(PushResult::Success) => {
@@ -484,14 +478,7 @@ pub async fn push_to_remote() -> crate::Result<()> {
 /// Looks up `id` (or ID prefix) in the local LanceDB store, converts it to an
 /// [`Entry`], and writes it to the git memory branch.
 pub async fn stage_entry(data_dir: &Path, id: &str) -> crate::Result<()> {
-    let cwd = std::env::current_dir()?;
-
-    let git_dir = detect::find_git_dir(&cwd)
-        .ok_or_else(|| crate::Error::InvalidOperation("Not a git repository.".into()))?;
-
-    let git_store = MemoryStore::open(&git_dir, None).map_err(|e| {
-        crate::Error::InvalidOperation(format!("Failed to open memory branch: {e}"))
-    })?;
+    let (_git_dir, git_store) = open_memory_store()?;
 
     let store = crate::store::StoreBackend::open_metadata(data_dir, true).await?;
 
@@ -519,14 +506,7 @@ pub async fn stage_entry(data_dir: &Path, id: &str) -> crate::Result<()> {
 /// removes it via `git rm`, and commits the removal. Note: the removal commit
 /// itself is unpushed — run `veclayer sync --push` to propagate the deletion.
 pub async fn reject_entry(id: &str) -> crate::Result<()> {
-    let cwd = std::env::current_dir()?;
-
-    let git_dir = detect::find_git_dir(&cwd)
-        .ok_or_else(|| crate::Error::InvalidOperation("Not a git repository.".into()))?;
-
-    let git_store = MemoryStore::open(&git_dir, None).map_err(|e| {
-        crate::Error::InvalidOperation(format!("Failed to open memory branch: {e}"))
-    })?;
+    let (_git_dir, git_store) = open_memory_store()?;
 
     git_store.remove_entry(id).map_err(|e| {
         crate::Error::InvalidOperation(format!("Failed to remove entry '{id}': {e}"))

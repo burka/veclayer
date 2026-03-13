@@ -808,6 +808,39 @@ async fn device_approve_handler(
 
 // ─── HTML templates ───────────────────────────────────────────────────────────
 
+/// Wraps `body` HTML in the shared page shell with common CSS.
+///
+/// Extra per-page CSS rules can be injected via `extra_css` (pass `""` for
+/// none).  Both parameters are inserted verbatim — callers are responsible for
+/// escaping any user-controlled content before passing it in.
+fn page_shell(title: &str, extra_css: &str, body: &str) -> String {
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title}</title>
+  <style>
+    body {{ font-family: sans-serif; background: #f5f5f5; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }}
+    .card {{ background: #fff; border-radius: 8px; padding: 2rem; max-width: 420px; width: 100%; box-shadow: 0 2px 12px rgba(0,0,0,.12); }}
+    h1 {{ font-size: 1.3rem; margin-top: 0; }}
+    button {{ flex: 1; padding: .7rem; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; }}
+    .buttons {{ display: flex; gap: 1rem; margin-top: 1.5rem; }}
+    .approve {{ background: #2a7a2a; color: #fff; }}
+    .deny {{ background: #e0e0e0; color: #333; }}
+    {extra_css}
+  </style>
+</head>
+<body>
+  <div class="card">
+    {body}
+  </div>
+</body>
+</html>"#
+    )
+}
+
 fn consent_page(
     client_name: &str,
     client_id: &str,
@@ -822,27 +855,8 @@ fn consent_page(
     let scope = html_escape(scope);
     let code_challenge = html_escape(code_challenge);
     let state_val = html_escape(state_val);
-    format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Authorize Access</title>
-  <style>
-    body {{ font-family: sans-serif; background: #f5f5f5; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }}
-    .card {{ background: #fff; border-radius: 8px; padding: 2rem; max-width: 420px; width: 100%; box-shadow: 0 2px 12px rgba(0,0,0,.12); }}
-    h1 {{ font-size: 1.3rem; margin-top: 0; }}
-    .scope {{ background: #eef; border-left: 4px solid #448; padding: .5rem 1rem; border-radius: 4px; margin: 1rem 0; }}
-    .buttons {{ display: flex; gap: 1rem; margin-top: 1.5rem; }}
-    button {{ flex: 1; padding: .7rem; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; }}
-    .approve {{ background: #2a7a2a; color: #fff; }}
-    .deny {{ background: #e0e0e0; color: #333; }}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>Authorize Access</h1>
+    let body = format!(
+        r#"<h1>Authorize Access</h1>
     <p><strong>{client_name}</strong> is requesting access to your VecLayer knowledge store.</p>
     <div class="scope">Requested scope: <strong>{scope}</strong></div>
     <form method="POST" action="/oauth/authorize">
@@ -855,38 +869,18 @@ fn consent_page(
         <button type="submit" name="approved" value="true" class="approve">Approve</button>
         <button type="submit" name="approved" value="false" class="deny">Deny</button>
       </div>
-    </form>
-  </div>
-</body>
-</html>"#
-    )
+    </form>"#
+    );
+    let extra_css =
+        ".scope { background: #eef; border-left: 4px solid #448; padding: .5rem 1rem; border-radius: 4px; margin: 1rem 0; }";
+    page_shell("Authorize Access", extra_css, &body)
 }
 
 fn device_verification_page(server_url: &str, prefill_code: &str) -> String {
     let _ = server_url; // available for future use if needed
     let prefill_code = html_escape(prefill_code);
-    format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Device Authorization</title>
-  <style>
-    body {{ font-family: sans-serif; background: #f5f5f5; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }}
-    .card {{ background: #fff; border-radius: 8px; padding: 2rem; max-width: 420px; width: 100%; box-shadow: 0 2px 12px rgba(0,0,0,.12); }}
-    h1 {{ font-size: 1.3rem; margin-top: 0; }}
-    label {{ display: block; margin-bottom: .3rem; font-weight: bold; }}
-    input[type=text], select {{ width: 100%; box-sizing: border-box; padding: .6rem; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem; margin-bottom: 1rem; }}
-    .buttons {{ display: flex; gap: 1rem; margin-top: .5rem; }}
-    button {{ flex: 1; padding: .7rem; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; }}
-    .approve {{ background: #2a7a2a; color: #fff; }}
-    .deny {{ background: #e0e0e0; color: #333; }}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>Authorize Device</h1>
+    let body = format!(
+        r#"<h1>Authorize Device</h1>
     <p>Enter the code shown on your device to grant it access.</p>
     <form method="POST" action="/oauth/device">
       <label for="user_code">Device Code</label>
@@ -901,79 +895,33 @@ fn device_verification_page(server_url: &str, prefill_code: &str) -> String {
         <button type="submit" name="approved" value="true" class="approve">Approve</button>
         <button type="submit" name="approved" value="false" class="deny">Deny</button>
       </div>
-    </form>
-  </div>
-</body>
-</html>"#
-    )
+    </form>"#
+    );
+    let extra_css = "label { display: block; margin-bottom: .3rem; font-weight: bold; } \
+        input[type=text], select { width: 100%; box-sizing: border-box; padding: .6rem; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem; margin-bottom: 1rem; } \
+        .buttons { margin-top: .5rem; }";
+    page_shell("Device Authorization", extra_css, &body)
 }
 
 fn device_success_page() -> String {
-    r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Device Authorized</title>
-  <style>
-    body { font-family: sans-serif; background: #f5f5f5; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
-    .card { background: #fff; border-radius: 8px; padding: 2rem; max-width: 420px; width: 100%; box-shadow: 0 2px 12px rgba(0,0,0,.12); text-align: center; }
-    h1 { color: #2a7a2a; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>Device Authorized</h1>
-    <p>Your device has been successfully authorized. You may close this page.</p>
-  </div>
-</body>
-</html>"#
-    .to_owned()
+    let body = r#"<h1 style="color:#2a7a2a">Device Authorized</h1>
+    <p>Your device has been successfully authorized. You may close this page.</p>"#;
+    page_shell("Device Authorized", ".card { text-align: center; }", body)
 }
 
 fn device_denied_page() -> String {
-    r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Access Denied</title>
-  <style>
-    body { font-family: sans-serif; background: #f5f5f5; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
-    .card { background: #fff; border-radius: 8px; padding: 2rem; max-width: 420px; width: 100%; box-shadow: 0 2px 12px rgba(0,0,0,.12); text-align: center; }
-    h1 { color: #c0392b; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>Access Denied</h1>
-    <p>You denied access to the device. You may close this page.</p>
-  </div>
-</body>
-</html>"#
-    .to_owned()
+    let body = r#"<h1 style="color:#c0392b">Access Denied</h1>
+    <p>You denied access to the device. You may close this page.</p>"#;
+    page_shell("Access Denied", ".card { text-align: center; }", body)
 }
 
 fn error_page(message: &str) -> String {
     let message = html_escape(message);
-    format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Error</title>
-  <style>
-    body {{ font-family: sans-serif; background: #f5f5f5; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }}
-    .card {{ background: #fff; border-radius: 8px; padding: 2rem; max-width: 420px; width: 100%; box-shadow: 0 2px 12px rgba(0,0,0,.12); }}
-    h1 {{ color: #c0392b; }}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>Error</h1>
-    <p>{message}</p>
-  </div>
-</body>
-</html>"#
-    )
+    let body = format!(
+        r#"<h1 style="color:#c0392b">Error</h1>
+    <p>{message}</p>"#
+    );
+    page_shell("Error", "", &body)
 }
 
 // ─── Redirect helpers ─────────────────────────────────────────────────────────
@@ -1698,7 +1646,8 @@ mod tests {
         assert_eq!(t1.len(), 43, "opaque token must be 43 chars");
         assert_ne!(t1, t2, "tokens must be unique");
         assert!(
-            t1.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'),
+            t1.chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_'),
             "token must be URL-safe: {t1}"
         );
     }
@@ -1842,12 +1791,7 @@ mod tests {
             .expect("request");
 
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-        let location = resp
-            .headers()
-            .get("location")
-            .unwrap()
-            .to_str()
-            .unwrap();
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(location.contains("error=invalid_request"));
     }
 
@@ -1870,12 +1814,7 @@ mod tests {
             .expect("request");
 
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-        let location = resp
-            .headers()
-            .get("location")
-            .unwrap()
-            .to_str()
-            .unwrap();
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(location.contains("error=invalid_scope"));
     }
 
@@ -1897,12 +1836,7 @@ mod tests {
             .expect("request");
 
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-        let location = resp
-            .headers()
-            .get("location")
-            .unwrap()
-            .to_str()
-            .unwrap();
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(location.contains("error=invalid_request"));
     }
 
@@ -1953,12 +1887,7 @@ mod tests {
             .expect("request");
 
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-        let location = resp
-            .headers()
-            .get("location")
-            .unwrap()
-            .to_str()
-            .unwrap();
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(
             location.contains("code="),
             "expected code in location: {location}"
@@ -1984,12 +1913,7 @@ mod tests {
             .expect("request");
 
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-        let location = resp
-            .headers()
-            .get("location")
-            .unwrap()
-            .to_str()
-            .unwrap();
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(location.contains("error=access_denied"));
     }
 
@@ -2045,12 +1969,7 @@ mod tests {
             .expect("request");
 
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-        let location = resp
-            .headers()
-            .get("location")
-            .unwrap()
-            .to_str()
-            .unwrap();
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(location.contains("error=invalid_scope"));
     }
 
@@ -2101,11 +2020,7 @@ mod tests {
         let authorize_uri = format!(
             "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&code_challenge_method=S256"
         );
-        let resp = app
-            .clone()
-            .oneshot(get_req(&authorize_uri))
-            .await
-            .unwrap();
+        let resp = app.clone().oneshot(get_req(&authorize_uri)).await.unwrap();
         let location = resp
             .headers()
             .get("location")
@@ -2146,11 +2061,7 @@ mod tests {
         let authorize_uri = format!(
             "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&code_challenge_method=S256"
         );
-        let resp = app
-            .clone()
-            .oneshot(get_req(&authorize_uri))
-            .await
-            .unwrap();
+        let resp = app.clone().oneshot(get_req(&authorize_uri)).await.unwrap();
         let location = resp
             .headers()
             .get("location")
@@ -2192,11 +2103,7 @@ mod tests {
         let authorize_uri = format!(
             "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&code_challenge_method=S256"
         );
-        let resp = app
-            .clone()
-            .oneshot(get_req(&authorize_uri))
-            .await
-            .unwrap();
+        let resp = app.clone().oneshot(get_req(&authorize_uri)).await.unwrap();
         let location = resp
             .headers()
             .get("location")
@@ -2300,11 +2207,7 @@ mod tests {
         let authorize_uri = format!(
             "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&code_challenge_method=S256"
         );
-        let resp = app
-            .clone()
-            .oneshot(get_req(&authorize_uri))
-            .await
-            .unwrap();
+        let resp = app.clone().oneshot(get_req(&authorize_uri)).await.unwrap();
         let location = resp
             .headers()
             .get("location")

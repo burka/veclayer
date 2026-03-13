@@ -8,10 +8,13 @@
 //! requires an LLM — and it's optional.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::chunk::{ChunkRelation, EntryType, HierarchicalChunk};
 use crate::identity::{self, IdentitySnapshot};
 use crate::llm::{LlmProvider, Message};
+use crate::store::StoreBackend;
+use crate::util::preview;
 use crate::{Embedder, Result, VectorStore};
 
 /// Result of a think cycle.
@@ -163,7 +166,7 @@ pub async fn execute<L: LlmProvider>(
             entries_created.push(ThinkEntry {
                 id: id.clone(),
                 entry_type: EntryType::Meta,
-                content_preview: truncate(narrative_text, 100),
+                content_preview: preview(narrative_text, 100),
                 perspectives: vec![],
             });
             narrative_id = Some(id);
@@ -200,7 +203,7 @@ pub async fn execute<L: LlmProvider>(
         entries_created.push(ThinkEntry {
             id,
             entry_type: EntryType::Summary,
-            content_preview: truncate(&consolidation.content, 100),
+            content_preview: preview(&consolidation.content, 100),
             perspectives: consolidation.perspectives.clone(),
         });
         consolidations_added += 1;
@@ -227,7 +230,7 @@ pub async fn execute<L: LlmProvider>(
         entries_created.push(ThinkEntry {
             id,
             entry_type: EntryType::Meta,
-            content_preview: truncate(&learning.content, 100),
+            content_preview: preview(&learning.content, 100),
             perspectives: learning.perspectives.clone(),
         });
         learnings_added += 1;
@@ -315,6 +318,161 @@ async fn validate_entry_ids(store: &impl VectorStore, ids: &[String]) -> Vec<Str
     valid
 }
 
+// --- Discover ---
+
+/// A discovered pair: two entries that are semantically similar but have no explicit relation.
+struct DiscoveredPair {
+    entry_a: HierarchicalChunk,
+    entry_b: HierarchicalChunk,
+    similarity: f32,
+}
+
+/// Find entries that are semantically similar but share no explicit relation, returning
+/// a formatted markdown report.
+///
+/// Algorithm:
+/// 1. List up to `scan_limit * 2` entries as candidates.
+/// 2. For each candidate that has an embedding, search for its top-5 ANN neighbors.
+/// 3. For each (candidate, neighbor) pair, check whether a relation already exists in either direction.
+/// 4. Deduplicate symmetric pairs using a sorted-ID set key.
+/// 5. Sort by similarity descending and return up to `output_limit`.
+pub async fn discover_unlinked_pairs(
+    store: &Arc<StoreBackend>,
+    output_limit: usize,
+) -> Result<String> {
+    const SCAN_LIMIT: usize = 100;
+    const NEIGHBORS_PER_ENTRY: usize = 5;
+
+    let candidates = store.list_entries(None, None, None, SCAN_LIMIT).await?;
+
+    if candidates.is_empty() {
+        return Ok("No entries in the store. Nothing to discover.".to_string());
+    }
+
+    let mut seen_pairs: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
+    let mut pairs: Vec<DiscoveredPair> = Vec::new();
+
+    for entry in &candidates {
+        let embedding = match &entry.embedding {
+            Some(e) => e,
+            None => continue,
+        };
+
+        let neighbors = store
+            .search(embedding, NEIGHBORS_PER_ENTRY + 1, None, None)
+            .await?;
+
+        for neighbor_result in &neighbors {
+            let neighbor = &neighbor_result.chunk;
+
+            if neighbor.id == entry.id {
+                continue;
+            }
+
+            // Canonical pair key: smaller ID first so A↔B == B↔A
+            let pair_key = if entry.id < neighbor.id {
+                (entry.id.clone(), neighbor.id.clone())
+            } else {
+                (neighbor.id.clone(), entry.id.clone())
+            };
+
+            if seen_pairs.contains(&pair_key) {
+                continue;
+            }
+
+            let already_related = entry.relations.iter().any(|r| r.target_id == neighbor.id)
+                || neighbor.relations.iter().any(|r| r.target_id == entry.id);
+
+            if already_related {
+                seen_pairs.insert(pair_key);
+                continue;
+            }
+
+            seen_pairs.insert(pair_key);
+            pairs.push(DiscoveredPair {
+                entry_a: entry.clone(),
+                entry_b: neighbor.clone(),
+                similarity: neighbor_result.score,
+            });
+        }
+    }
+
+    if pairs.is_empty() {
+        return Ok(
+            "No unlinked similar entries found. All semantically close pairs are already related."
+                .to_string(),
+        );
+    }
+
+    crate::chunk::sort_f32_desc(&mut pairs, |p| p.similarity);
+    pairs.truncate(output_limit);
+
+    format_discovered_pairs(&pairs)
+}
+
+/// Format discovered pairs as a markdown report.
+fn format_discovered_pairs(pairs: &[DiscoveredPair]) -> Result<String> {
+    let mut report = String::from("## Discover: Unlinked Similar Entries\n\n");
+    report.push_str("These entry pairs are semantically close but share no explicit relation.\n");
+    report
+        .push_str("Consider linking them with `think(action='relate')` or consolidating them.\n\n");
+
+    for (i, pair) in pairs.iter().enumerate() {
+        let heading_a = pair
+            .entry_a
+            .heading
+            .as_deref()
+            .unwrap_or_else(|| pair.entry_a.content.lines().next().unwrap_or("(untitled)"));
+        let heading_b = pair
+            .entry_b
+            .heading
+            .as_deref()
+            .unwrap_or_else(|| pair.entry_b.content.lines().next().unwrap_or("(untitled)"));
+
+        let preview_a = preview(heading_a, 100);
+        let preview_b = preview(heading_b, 100);
+
+        report.push_str(&format!(
+            "### Discovery {} (similarity: {:.2})\n\n",
+            i + 1,
+            pair.similarity
+        ));
+        report.push_str(&format!(
+            "**Entry A:** `{}` — \"{}\"\n",
+            crate::chunk::short_id(&pair.entry_a.id),
+            preview_a
+        ));
+        if !pair.entry_a.perspectives.is_empty() {
+            report.push_str(&format!(
+                "  perspectives: {}\n",
+                pair.entry_a.perspectives.join(", ")
+            ));
+        }
+        report.push('\n');
+        report.push_str(&format!(
+            "**Entry B:** `{}` — \"{}\"\n",
+            crate::chunk::short_id(&pair.entry_b.id),
+            preview_b
+        ));
+        if !pair.entry_b.perspectives.is_empty() {
+            report.push_str(&format!(
+                "  perspectives: {}\n",
+                pair.entry_b.perspectives.join(", ")
+            ));
+        }
+        report.push('\n');
+        report.push_str("**Potential:** These entries are semantically close but not linked.\n\n");
+    }
+
+    report.push_str(&format!(
+        "{} pair(s) found. Use `think(action='relate')` to link entries or `recall(similar_to='<id>')` to explore further.\n",
+        pairs.len()
+    ));
+
+    Ok(report)
+}
+
 /// Parse LLM response as JSON ThinkPlan.
 fn parse_response(response: &str) -> Result<ThinkPlan> {
     let json_str = extract_json(response);
@@ -322,7 +480,7 @@ fn parse_response(response: &str) -> Result<ThinkPlan> {
         crate::Error::llm(format!(
             "Failed to parse think response as JSON: {}. Response: {}",
             e,
-            truncate(response, 300)
+            preview(response, 300)
         ))
     })
 }
@@ -348,15 +506,6 @@ fn extract_json(s: &str) -> String {
     }
 
     trimmed.to_string()
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    let clean = s.replace('\n', " ");
-    if clean.len() <= max {
-        clean
-    } else {
-        format!("{}...", &clean[..max])
-    }
 }
 
 #[cfg(test)]
@@ -462,17 +611,6 @@ mod tests {
         assert!(prompt.contains("Test Entry"));
     }
 
-    #[test]
-    fn test_truncate() {
-        assert_eq!(truncate("short", 100), "short");
-        assert_eq!(truncate("hello\nworld", 100), "hello world");
-
-        let long = "a".repeat(200);
-        let result = truncate(&long, 100);
-        assert!(result.ends_with("..."));
-        assert_eq!(result.len(), 103);
-    }
-
     // ── execute() integration tests with mock LLM ─────────────────────────────
 
     use crate::embedder::Embedder;
@@ -541,8 +679,7 @@ mod tests {
         let store = open_test_store(dir.path()).await;
         let embedder = make_embedder();
         let llm = MockLlm {
-            response: r#"{"narrative": "I am.", "consolidations": [], "learnings": []}"#
-                .to_owned(),
+            response: r#"{"narrative": "I am.", "consolidations": [], "learnings": []}"#.to_owned(),
         };
 
         let result = execute(&store, &embedder, &llm, dir.path(), None)

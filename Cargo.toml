@@ -14,7 +14,7 @@ exclude = [".claude/", ".mcp.json", "opencode.json"]
 rust-version = "1.91"
 
 [features]
-default = []
+default = ["full"]
 store-lance = ["dep:lancedb", "dep:arrow-array", "dep:arrow-schema", "dep:futures"]
 store-sqlite = ["dep:rusqlite"]
 parser = ["dep:pulldown-cmark"]

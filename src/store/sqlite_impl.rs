@@ -110,12 +110,7 @@ fn bytes_to_vec(b: &[u8]) -> Vec<f32> {
 // --- Row mapping ---
 
 fn entry_type_from_str(s: &str) -> EntryType {
-    match s {
-        "summary" => EntryType::Summary,
-        "meta" => EntryType::Meta,
-        "impression" => EntryType::Impression,
-        _ => EntryType::Raw,
-    }
+    s.parse().unwrap_or_default()
 }
 
 fn row_to_chunk(row: &rusqlite::Row) -> rusqlite::Result<HierarchicalChunk> {
@@ -425,11 +420,7 @@ impl VectorStore for SqliteStore {
                 })
                 .collect();
 
-            scored.sort_by(|a, b| {
-                b.score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+            crate::chunk::sort_f32_desc(&mut scored, |r| r.score);
             scored.truncate(limit);
 
             Ok(scored)
@@ -1211,7 +1202,10 @@ mod tests {
 
         let mut chunk = make_chunk("original", "dup.md");
         let id = chunk.id.clone();
-        store.insert_chunks(vec![chunk.clone()]).await.expect("insert 1");
+        store
+            .insert_chunks(vec![chunk.clone()])
+            .await
+            .expect("insert 1");
 
         // Replace with updated content (same id since INSERT OR REPLACE)
         chunk.visibility = "always".to_string();
@@ -1283,10 +1277,8 @@ mod tests {
         let (store, _dir) = create_test_store().await;
 
         // c_close is almost identical to query; c_far is orthogonal
-        let c_close =
-            make_chunk_with_embedding("close", "sim.md", vec![1.0, 0.0, 0.0, 0.0]);
-        let c_far =
-            make_chunk_with_embedding("far", "sim.md", vec![0.0, 1.0, 0.0, 0.0]);
+        let c_close = make_chunk_with_embedding("close", "sim.md", vec![1.0, 0.0, 0.0, 0.0]);
+        let c_far = make_chunk_with_embedding("far", "sim.md", vec![0.0, 1.0, 0.0, 0.0]);
 
         store
             .insert_chunks(vec![c_close.clone(), c_far.clone()])
@@ -1325,10 +1317,7 @@ mod tests {
             .await
             .expect("insert");
 
-        let children = store
-            .get_children(&parent_id)
-            .await
-            .expect("get_children");
+        let children = store.get_children(&parent_id).await.expect("get_children");
 
         assert_eq!(children.len(), 2);
         let ids: Vec<&str> = children.iter().map(|c| c.id.as_str()).collect();
@@ -1391,10 +1380,7 @@ mod tests {
     async fn get_by_id_prefix_missing_returns_none() {
         let (store, _dir) = create_test_store().await;
 
-        let result = store
-            .get_by_id_prefix("deadbeef")
-            .await
-            .expect("query ok");
+        let result = store.get_by_id_prefix("deadbeef").await.expect("query ok");
 
         assert!(result.is_none());
     }
@@ -1577,10 +1563,8 @@ mod tests {
     async fn list_entries_perspective_filter() {
         let (store, _dir) = create_test_store().await;
 
-        let c_dec = make_chunk("a decision", "lp.md")
-            .with_perspective("decisions");
-        let c_learn = make_chunk("a learning", "lp.md")
-            .with_perspective("learnings");
+        let c_dec = make_chunk("a decision", "lp.md").with_perspective("decisions");
+        let c_learn = make_chunk("a learning", "lp.md").with_perspective("learnings");
         let c_none = make_chunk("no perspective", "lp.md");
 
         store
@@ -1671,7 +1655,8 @@ mod tests {
     async fn insert_preserves_all_metadata_fields() {
         let (store, _dir) = create_test_store().await;
 
-        let mut chunk = make_chunk_with_embedding("rich chunk", "meta.md", vec![0.1, 0.2, 0.3, 0.4]);
+        let mut chunk =
+            make_chunk_with_embedding("rich chunk", "meta.md", vec![0.1, 0.2, 0.3, 0.4]);
         chunk.heading = Some("Rich Heading".to_string());
         chunk.start_offset = 42;
         chunk.end_offset = 99;
@@ -1760,7 +1745,10 @@ mod tests {
         let stale = store.get_stale_chunks(1000, 10).await.expect("get_stale");
 
         let ids: Vec<&str> = stale.iter().map(|c| c.id.as_str()).collect();
-        assert!(ids.contains(&stale_normal.id.as_str()), "normal should appear");
+        assert!(
+            ids.contains(&stale_normal.id.as_str()),
+            "normal should appear"
+        );
         assert!(
             !ids.contains(&stale_deep.id.as_str()),
             "deep_only must not appear"

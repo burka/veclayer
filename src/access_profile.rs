@@ -436,7 +436,10 @@ mod tests {
 
     #[test]
     fn test_recency_window_alias_week() {
-        assert_eq!(RecencyWindow::from_str_opt("week"), Some(RecencyWindow::Week));
+        assert_eq!(
+            RecencyWindow::from_str_opt("week"),
+            Some(RecencyWindow::Week)
+        );
     }
 
     #[test]

@@ -242,7 +242,6 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
     /// 4. Record access and compute combined scores (vector + relevancy)
     pub async fn search(&self, query: &str) -> Result<Vec<HierarchicalSearchResult>> {
         let query_embedding = self.embed_query(query)?;
-        let now = now_epoch_secs();
 
         // Fetch more than top_k so we still have enough after visibility filtering
         let fetch_k = if self.config.deep {
@@ -262,61 +261,8 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
             )
             .await?;
 
-        let mut hierarchical_results = Vec::new();
-        let mut access_updates = Vec::new();
-        let mut seen_ids: HashSet<String> = HashSet::new();
-
-        for result in top_results {
-            if result.score < self.config.min_score {
-                continue;
-            }
-
-            // Step 2: Visibility filter (skip unless deep mode)
-            if !self.config.deep && !result.chunk.is_visible_standard() {
-                continue;
-            }
-
-            // Deduplicate: the same entry can have multiple vectors in the index
-            // (e.g., inline text and from a file). Keep the first (highest-scoring) hit.
-            if !seen_ids.insert(result.chunk.id.clone()) {
-                continue;
-            }
-
-            // Stop once we have enough results
-            if hierarchical_results.len() >= self.config.top_k {
-                break;
-            }
-
-            // Build the hierarchy path (from root to this chunk)
-            let hierarchy_path = self.build_hierarchy_path(&result.chunk).await?;
-
-            // Get relevant children
-            let relevant_children = self
-                .search_children(&query_embedding, &result.chunk)
-                .await?;
-
-            // Record access and compute combined score
-            let mut chunk = result.chunk;
-            let vector_score = result.score;
-            chunk.access_profile.record_access_at(now);
-            let final_score = self.config.blend_score(vector_score, &chunk);
-
-            access_updates.push((chunk.id.clone(), chunk.access_profile.clone()));
-
-            hierarchical_results.push(HierarchicalSearchResult {
-                chunk,
-                score: final_score,
-                hierarchy_path,
-                relevant_children,
-            });
-        }
-
-        // Persist access tracking (best effort — don't fail search)
-        if !access_updates.is_empty() {
-            let _ = self.store.update_access_profiles(access_updates).await;
-        }
-
-        Ok(hierarchical_results)
+        self.process_results(top_results, &query_embedding, self.config.top_k, None)
+            .await
     }
 
     /// Search for entries similar to a given entry ID.
@@ -346,8 +292,6 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
             ))
         })?;
 
-        let now = now_epoch_secs();
-
         // +1 to account for the source entry itself appearing in ANN results (excluded below)
         let fetch_k = limit + 1;
 
@@ -361,13 +305,70 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
             )
             .await?;
 
+        self.process_results(top_results, &query_embedding, limit, Some(&target_full_id))
+            .await
+    }
+
+    /// Search within a specific subtree (starting from a parent chunk)
+    pub async fn search_subtree(
+        &self,
+        query: &str,
+        parent_id: &str,
+    ) -> Result<Vec<HierarchicalSearchResult>> {
+        let query_embedding = self.embed_query(query)?;
+
+        // Get all children of this parent
+        let children = self.store.get_children(parent_id).await?;
+
+        if children.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Score each child against the query
+        let mut scored_children: Vec<SearchResult> = children
+            .into_iter()
+            .filter_map(|child| {
+                let score = cosine_similarity(&query_embedding, child.embedding.as_ref()?);
+                Some(SearchResult {
+                    chunk: child,
+                    score,
+                })
+            })
+            .collect();
+
+        sort_by_score_desc(&mut scored_children);
+
+        let candidates: Vec<SearchResult> = scored_children
+            .into_iter()
+            .filter(|r| r.score >= self.config.min_score)
+            .filter(|r| self.config.deep || r.chunk.is_visible_standard())
+            .take(self.config.top_k)
+            .collect();
+
+        self.process_results(candidates, &query_embedding, self.config.top_k, None)
+            .await
+    }
+
+    /// Process raw search results into hierarchical results with scoring, dedup, and access tracking.
+    ///
+    /// Shared pipeline used by `search`, `search_by_embedding`, and `search_subtree`.
+    async fn process_results(
+        &self,
+        top_results: Vec<SearchResult>,
+        query_embedding: &[f32],
+        limit: usize,
+        exclude_id: Option<&str>,
+    ) -> Result<Vec<HierarchicalSearchResult>> {
+        let now = now_epoch_secs();
         let mut hierarchical_results = Vec::new();
         let mut access_updates = Vec::new();
         let mut seen_ids: HashSet<String> = HashSet::new();
 
         for result in top_results {
-            if result.chunk.id == target_full_id {
-                continue;
+            if let Some(eid) = exclude_id {
+                if result.chunk.id == eid {
+                    continue;
+                }
             }
 
             if result.score < self.config.min_score {
@@ -378,8 +379,6 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
                 continue;
             }
 
-            // Deduplicate: the same entry can have multiple vectors in the index.
-            // Keep the first (highest-scoring) hit.
             if !seen_ids.insert(result.chunk.id.clone()) {
                 continue;
             }
@@ -389,9 +388,7 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
             }
 
             let hierarchy_path = self.build_hierarchy_path(&result.chunk).await?;
-            let relevant_children = self
-                .search_children(&query_embedding, &result.chunk)
-                .await?;
+            let relevant_children = self.search_children(query_embedding, &result.chunk).await?;
 
             let mut chunk = result.chunk;
             let vector_score = result.score;
@@ -413,78 +410,6 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
         }
 
         Ok(hierarchical_results)
-    }
-
-    /// Search within a specific subtree (starting from a parent chunk)
-    pub async fn search_subtree(
-        &self,
-        query: &str,
-        parent_id: &str,
-    ) -> Result<Vec<HierarchicalSearchResult>> {
-        let query_embedding = self.embed_query(query)?;
-        let now = now_epoch_secs();
-
-        // Get all children of this parent
-        let children = self.store.get_children(parent_id).await?;
-
-        if children.is_empty() {
-            return Ok(vec![]);
-        }
-
-        // Score each child against the query
-        let mut scored_children: Vec<SearchResult> = Vec::new();
-        for child in children {
-            if let Some(ref embedding) = child.embedding {
-                let score = cosine_similarity(&query_embedding, embedding);
-                scored_children.push(SearchResult {
-                    chunk: child,
-                    score,
-                });
-            }
-        }
-
-        // Sort by score descending
-        sort_by_score_desc(&mut scored_children);
-
-        // Take top results, applying visibility filter
-        let top_children: Vec<_> = scored_children
-            .into_iter()
-            .filter(|r| r.score >= self.config.min_score)
-            .filter(|r| self.config.deep || r.chunk.is_visible_standard())
-            .take(self.config.top_k)
-            .collect();
-
-        let mut results = Vec::new();
-        let mut access_updates = Vec::new();
-
-        for result in top_children {
-            let hierarchy_path = self.build_hierarchy_path(&result.chunk).await?;
-            let relevant_children = self
-                .search_children(&query_embedding, &result.chunk)
-                .await?;
-
-            // Record access and compute combined score
-            let mut chunk = result.chunk;
-            let vector_score = result.score;
-            chunk.access_profile.record_access_at(now);
-            let final_score = self.config.blend_score(vector_score, &chunk);
-
-            access_updates.push((chunk.id.clone(), chunk.access_profile.clone()));
-
-            results.push(HierarchicalSearchResult {
-                chunk,
-                score: final_score,
-                hierarchy_path,
-                relevant_children,
-            });
-        }
-
-        // Persist access tracking (best effort)
-        if !access_updates.is_empty() {
-            let _ = self.store.update_access_profiles(access_updates).await;
-        }
-
-        Ok(results)
     }
 
     /// Build the path from root to the given chunk
@@ -554,11 +479,7 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
 
 /// Sort search results by score in descending order
 fn sort_by_score_desc(results: &mut [SearchResult]) {
-    results.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    crate::chunk::sort_f32_desc(results, |r| r.score);
 }
 
 /// Compute cosine similarity between two vectors
