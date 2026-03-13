@@ -955,9 +955,17 @@ async fn think_history(store: &Arc<StoreBackend>, input: &ThinkInput) -> Result<
     Ok(report)
 }
 
+#[cfg(feature = "llm")]
 async fn think_discover(store: &Arc<StoreBackend>, input: &ThinkInput) -> Result<String> {
     let limit = input.hot_limit.unwrap_or(10);
     crate::think::discover_unlinked_pairs(store, limit).await
+}
+
+#[cfg(not(feature = "llm"))]
+async fn think_discover(_store: &Arc<StoreBackend>, _input: &ThinkInput) -> Result<String> {
+    Err(crate::Error::config(
+        "think(discover) requires the 'llm' feature",
+    ))
 }
 
 async fn think_sync(

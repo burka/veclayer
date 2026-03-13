@@ -1,3 +1,4 @@
+#![cfg(feature = "full")]
 //! Integration tests requiring a running Ollama instance.
 //!
 //! Run with: `cargo test --test ollama_integration -- --ignored`

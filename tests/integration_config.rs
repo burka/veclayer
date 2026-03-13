@@ -1,3 +1,4 @@
+#![cfg(feature = "config")]
 //! Integration tests for cascading match-based configuration.
 
 use std::path::Path;
