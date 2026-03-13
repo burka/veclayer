@@ -82,7 +82,8 @@ pub struct RecallInput {
     /// Include all visibilities (deep_only, expired, custom)
     #[serde(default)]
     pub deep: bool,
-    /// Recency window for relevancy boosting: "24h", "7d", "30d"
+    /// Recency window for relevancy boosting. Valid values: "24h" (or "day"), "7d" (or "week"), "30d" (or "month").
+    /// Invalid values will return an error.
     #[serde(default)]
     pub recency: Option<String>,
     /// Filter by perspective (e.g. "decisions", "learnings")
@@ -235,8 +236,12 @@ pub struct ThinkInput {
     pub visibility: Option<String>,
 
     // ── relate parameters ──
+    /// Source entry ID for `relate` action (the entry that has the relation).
+    /// Note: use `source_id`, not `id`, for relate — `id` is for promote/demote.
     pub source_id: Option<String>,
+    /// Target entry ID for `relate` action (the entry being related to).
     pub target_id: Option<String>,
+    /// Relation kind for `relate`: superseded_by, summarized_by, related_to, derived_from, version_of
     pub kind: Option<String>,
 
     // ── configure_aging parameters ──

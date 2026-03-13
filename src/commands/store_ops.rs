@@ -156,6 +156,27 @@ pub async fn stats(data_dir: &Path) -> Result<StatsResult> {
     })
 }
 
+/// Controls the output format for `stale`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OutputMode {
+    Text,
+    LlmNudge,
+}
+
+impl std::str::FromStr for OutputMode {
+    type Err = crate::Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "text" => Ok(Self::Text),
+            "llm-nudge" => Ok(Self::LlmNudge),
+            other => Err(crate::Error::InvalidOperation(format!(
+                "Unknown output mode '{other}'. Valid modes: text, llm-nudge"
+            ))),
+        }
+    }
+}
+
 /// Check whether any knowledge was stored recently.
 ///
 /// `since` is a duration string (e.g. "15min", "1h") parsed by `parse_temporal`.
@@ -163,6 +184,7 @@ pub async fn stats(data_dir: &Path) -> Result<StatsResult> {
 /// (machine-friendly, returns exit code 2 when stale).
 /// `hooks_enabled` mirrors the `hooks_enabled` config field — when `false`, exits 0 silently.
 pub async fn stale(data_dir: &Path, since: &str, output: &str, hooks_enabled: bool) -> Result<i32> {
+    let output_mode: OutputMode = output.parse()?;
     // Config-level opt-out (veclayer.toml: hooks_enabled = false, or VECLAYER_HOOKS_ENABLED=false)
     if !hooks_enabled {
         return Ok(0);
@@ -199,20 +221,20 @@ pub async fn stale(data_dir: &Path, since: &str, output: &str, hooks_enabled: bo
     let now = crate::chunk::now_epoch_secs();
 
     let exit_code = match recent.first() {
-        None => print_stale_result(output, None, now),
+        None => print_stale_result(&output_mode, None, now),
         Some(chunk) => {
             let created_at = chunk.access_profile.created_at;
             let is_fresh = created_at >= threshold_epoch;
-            print_stale_result(output, Some((created_at, is_fresh)), now)
+            print_stale_result(&output_mode, Some((created_at, is_fresh)), now)
         }
     };
     Ok(exit_code)
 }
 
-fn print_stale_result(output: &str, entry: Option<(i64, bool)>, now: i64) -> i32 {
+fn print_stale_result(output: &OutputMode, entry: Option<(i64, bool)>, now: i64) -> i32 {
     match output {
-        "llm-nudge" => print_llm_nudge(entry, now),
-        _ => {
+        OutputMode::LlmNudge => print_llm_nudge(entry, now),
+        OutputMode::Text => {
             print_text(entry, now);
             0
         }
@@ -792,42 +814,70 @@ mod tests {
         assert_eq!(minutes_ago(1000, 500), 0);
     }
 
+    // ── OutputMode::from_str ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_output_mode_parses_text() {
+        let mode: OutputMode = "text".parse().unwrap();
+        assert_eq!(mode, OutputMode::Text);
+    }
+
+    #[test]
+    fn test_output_mode_parses_llm_nudge() {
+        let mode: OutputMode = "llm-nudge".parse().unwrap();
+        assert_eq!(mode, OutputMode::LlmNudge);
+    }
+
+    #[test]
+    fn test_output_mode_rejects_unknown_with_helpful_message() {
+        let err = "bogus".parse::<OutputMode>().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Unknown output mode 'bogus'"),
+            "expected unknown-mode message, got: {msg}"
+        );
+        assert!(
+            msg.contains("text") && msg.contains("llm-nudge"),
+            "error should list valid modes, got: {msg}"
+        );
+    }
+
     // ── print_stale_result ────────────────────────────────────────────────────
 
     #[test]
     fn test_print_stale_result_text_returns_zero() {
-        let code = print_stale_result("text", None, 1000);
+        let code = print_stale_result(&OutputMode::Text, None, 1000);
         assert_eq!(code, 0);
     }
 
     #[test]
     fn test_print_stale_result_text_fresh_returns_zero() {
-        let code = print_stale_result("text", Some((900, true)), 1000);
+        let code = print_stale_result(&OutputMode::Text, Some((900, true)), 1000);
         assert_eq!(code, 0);
     }
 
     #[test]
     fn test_print_stale_result_text_stale_returns_zero() {
         // text mode always returns 0 regardless of freshness
-        let code = print_stale_result("text", Some((100, false)), 1000);
+        let code = print_stale_result(&OutputMode::Text, Some((100, false)), 1000);
         assert_eq!(code, 0);
     }
 
     #[test]
     fn test_print_stale_result_llm_nudge_no_entries_returns_two() {
-        let code = print_stale_result("llm-nudge", None, 1000);
+        let code = print_stale_result(&OutputMode::LlmNudge, None, 1000);
         assert_eq!(code, 2);
     }
 
     #[test]
     fn test_print_stale_result_llm_nudge_fresh_returns_zero() {
-        let code = print_stale_result("llm-nudge", Some((900, true)), 1000);
+        let code = print_stale_result(&OutputMode::LlmNudge, Some((900, true)), 1000);
         assert_eq!(code, 0);
     }
 
     #[test]
     fn test_print_stale_result_llm_nudge_stale_returns_two() {
-        let code = print_stale_result("llm-nudge", Some((100, false)), 1000);
+        let code = print_stale_result(&OutputMode::LlmNudge, Some((100, false)), 1000);
         assert_eq!(code, 2);
     }
 

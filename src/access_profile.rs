@@ -63,6 +63,18 @@ impl RecencyWindow {
     }
 }
 
+impl std::str::FromStr for RecencyWindow {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_str_opt(s).ok_or_else(|| {
+            format!(
+                "Unknown recency window '{s}'. Valid values: 24h (or day), 7d (or week), 30d (or month)"
+            )
+        })
+    }
+}
+
 /// Internal weight configuration for relevancy scoring.
 struct RecencyWeights {
     w_hour: f32,
@@ -618,5 +630,26 @@ mod tests {
         assert_eq!(via_default.month, 0);
         assert_eq!(via_default.year, 0);
         assert_eq!(via_default.total, 0);
+    }
+
+    #[test]
+    fn test_recency_window_parse_valid() {
+        for s in ["24h", "day", "7d", "week", "30d", "month"] {
+            assert!(
+                s.parse::<RecencyWindow>().is_ok(),
+                "expected '{s}' to parse successfully"
+            );
+        }
+    }
+
+    #[test]
+    fn test_recency_window_parse_invalid() {
+        for s in ["invalid", "48h", ""] {
+            let err = s.parse::<RecencyWindow>().unwrap_err();
+            assert!(
+                err.contains("Unknown recency window"),
+                "expected 'Unknown recency window' in error for '{s}', got: {err}"
+            );
+        }
     }
 }

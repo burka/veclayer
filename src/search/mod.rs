@@ -120,6 +120,24 @@ impl SearchConfig {
         }
     }
 
+    /// Build a SearchConfig from common query parameters, returning an error for invalid recency.
+    ///
+    /// Unlike [`for_query`](Self::for_query), an unrecognised recency string is an error rather
+    /// than being silently ignored.
+    pub fn try_for_query(top_k: usize, deep: bool, recency: Option<&str>) -> crate::Result<Self> {
+        let recency_window = match recency {
+            Some(s) => Some(s.parse::<RecencyWindow>().map_err(crate::Error::parse)?),
+            None => None,
+        };
+        Ok(Self {
+            top_k,
+            deep,
+            recency_window,
+            recency_alpha: Self::alpha_for_window(recency_window),
+            ..Default::default()
+        })
+    }
+
     /// Add a perspective filter to this config.
     pub fn with_perspective(mut self, perspective: Option<String>) -> Self {
         self.perspective = perspective;
@@ -2268,5 +2286,19 @@ mod tests {
             results.iter().any(|r| r.chunk.visibility == "deep_only"),
             "Should include deep_only visibility entries"
         );
+    }
+
+    #[test]
+    fn test_try_for_query_valid_recency() {
+        let result = SearchConfig::try_for_query(10, false, Some("7d"));
+        assert!(result.is_ok(), "expected Ok for recency='7d', got: {result:?}");
+        let config = result.unwrap();
+        assert_eq!(config.recency_window, Some(RecencyWindow::Week));
+    }
+
+    #[test]
+    fn test_try_for_query_invalid_recency() {
+        let result = SearchConfig::try_for_query(10, false, Some("invalid"));
+        assert!(result.is_err(), "expected Err for recency='invalid'");
     }
 }

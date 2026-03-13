@@ -112,7 +112,7 @@ enum Commands {
         impression_hint: Option<String>,
 
         /// Impression strength: 0.0–1.0 (default 1.0, only for entry_type=impression)
-        #[arg(long, default_value = "1.0")]
+        #[arg(long, default_value = "1.0", value_parser = parse_impression_strength)]
         impression_strength: f32,
 
         /// This entry supersedes the target (auto-demotes target)
@@ -548,6 +548,20 @@ enum AgingAction {
     Rotate,
 }
 
+/// Clap value parser for impression_strength that enforces the 0.0–1.0 range.
+fn parse_impression_strength(s: &str) -> std::result::Result<f32, String> {
+    let v: f32 = s
+        .parse()
+        .map_err(|_| format!("'{s}' is not a valid float"))?;
+    if (0.0..=1.0).contains(&v) {
+        Ok(v)
+    } else {
+        Err(format!(
+            "impression_strength must be between 0.0 and 1.0, got {v}"
+        ))
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Disable ANSI escape codes when stdout is not a TTY (e.g. piped output)
@@ -639,6 +653,27 @@ async fn main() -> Result<()> {
     );
 
     init_logging(cli.verbose, cli.quiet);
+
+    // When --quiet is set, redirect stdout to /dev/null so all println! output is silenced.
+    // Errors still surface via stderr (tracing is already filtered to error-only by init_logging).
+    #[cfg(unix)]
+    if cli.quiet {
+        use std::os::unix::io::AsRawFd;
+        extern "C" {
+            fn dup2(oldfd: i32, newfd: i32) -> i32;
+        }
+        match std::fs::File::options().write(true).open("/dev/null") {
+            Ok(devnull) => {
+                let ret = unsafe { dup2(devnull.as_raw_fd(), 1) };
+                if ret == -1 {
+                    eprintln!("warning: --quiet: failed to redirect stdout");
+                } else {
+                    std::mem::forget(devnull);
+                }
+            }
+            Err(e) => eprintln!("warning: --quiet: could not open /dev/null: {e}"),
+        }
+    }
 
     let command = match cli.command {
         Some(cmd) => cmd,

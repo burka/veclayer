@@ -148,6 +148,18 @@ fn commit_to_git(
     }
 }
 
+/// Validate that impression_strength is in the [0.0, 1.0] range.
+fn validate_impression_strength(value: Option<f32>) -> Result<()> {
+    if let Some(v) = value {
+        if !(0.0..=1.0).contains(&v) {
+            return Err(crate::Error::parse(format!(
+                "impression_strength must be between 0.0 and 1.0, got {v}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Store a single entry and return (chunk_id, git_status).
 /// Pass `Some(embedding)` for immediate embedding, or `None` for deferred (pending).
 async fn store_single_entry(
@@ -324,7 +336,7 @@ pub async fn execute_recall(
         } else {
             input.limit
         };
-        let config = SearchConfig::for_query(fetch_limit, input.deep, input.recency.as_deref())
+        let config = SearchConfig::try_for_query(fetch_limit, input.deep, input.recency.as_deref())?
             .with_perspective(input.perspective.clone())
             .with_min_salience(input.min_salience)
             .with_min_score(input.min_score);
@@ -356,7 +368,7 @@ pub async fn execute_recall(
             } else {
                 input.limit
             };
-            let config = SearchConfig::for_query(fetch_limit, input.deep, input.recency.as_deref())
+            let config = SearchConfig::try_for_query(fetch_limit, input.deep, input.recency.as_deref())?
                 .with_perspective(input.perspective.clone())
                 .with_min_salience(input.min_salience)
                 .with_min_score(input.min_score);
@@ -477,6 +489,12 @@ pub async fn execute_focus(ctx: &ToolContext, input: FocusInput) -> Result<Focus
 }
 
 pub async fn execute_store(ctx: &ToolContext, input: StoreInput) -> Result<serde_json::Value> {
+    // Validate impression_strength on the top-level input and on all batch items.
+    validate_impression_strength(input.impression_strength)?;
+    for item in &input.items {
+        validate_impression_strength(item.impression_strength)?;
+    }
+
     let embedder = &ctx.embedder;
     if !input.items.is_empty() {
         let mut ids = Vec::new();
@@ -3087,5 +3105,25 @@ mod tests {
         .await
         .unwrap();
         assert!(result.contains("Total chunks: 1"), "got: {result}");
+    }
+
+    #[test]
+    fn test_validate_impression_strength_valid() {
+        assert!(validate_impression_strength(None).is_ok());
+        assert!(validate_impression_strength(Some(0.0)).is_ok());
+        assert!(validate_impression_strength(Some(0.5)).is_ok());
+        assert!(validate_impression_strength(Some(1.0)).is_ok());
+    }
+
+    #[test]
+    fn test_validate_impression_strength_invalid() {
+        let expected_msg = "impression_strength must be between 0.0 and 1.0";
+        for bad in [1.1_f32, -0.1, 2.5] {
+            let err = validate_impression_strength(Some(bad)).unwrap_err();
+            assert!(
+                err.to_string().contains(expected_msg),
+                "expected message to contain '{expected_msg}', got: {err}"
+            );
+        }
     }
 }

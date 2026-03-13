@@ -112,7 +112,7 @@ pub async fn search_results(
         options.top_k
     };
 
-    let config = SearchConfig::for_query(fetch_limit, options.deep, options.recent.as_deref())
+    let config = SearchConfig::try_for_query(fetch_limit, options.deep, options.recent.as_deref())?
         .with_perspective(options.perspective.clone())
         .with_min_salience(options.min_salience)
         .with_min_score(options.min_score);
