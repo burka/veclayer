@@ -1,3 +1,161 @@
+# VecLayer — Findings
+
+## 2026-03-17: claude-mem Hook-Architektur — Analyse & Anwendbarkeit auf VecLayer
+
+### Kontext
+
+Analyse von [claude-mem](https://github.com/thedotmack/claude-mem) — einem Claude Code Plugin, das über Lifecycle-Hooks automatisch Memory extrahiert. Ziel: identifizieren, welche Mechanismen wir für VecLayer adaptieren können.
+
+### Wie claude-mem funktioniert
+
+**6 Lifecycle-Hooks über 5 Zeitpunkte:**
+
+| Hook | Was passiert |
+|------|-------------|
+| Setup (pre-hook) | Dependencies prüfen/installieren, Worker starten |
+| SessionStart | Worker-Service hochfahren, Context-Injection vorbereiten |
+| UserPromptSubmit | Session-Init, User-Input erfassen |
+| **PostToolUse** | **Jedes Tool-Ergebnis wird als "Observation" an den Worker geschickt** |
+| Stop | Zusammenfassung der Session generieren (AI-komprimiert) |
+| SessionEnd | Finale Kompression, Cleanup |
+
+**Kernmechanismus: PostToolUse-Hook**
+- Nach *jedem* Tool-Aufruf (Read, Edit, Bash, etc.) wird das Ergebnis automatisch an einen Background-Worker geschickt
+- Der Worker komprimiert die Observation via AI und speichert sie in SQLite + Chroma (Vektor-DB)
+- Es braucht **keine bewusste Entscheidung des Agenten** — alles wird passiv mitgeschnitten
+
+**Worker-Architektur:**
+- Bun-basierter HTTP-Service auf Port 37777
+- Läuft im Hintergrund, verarbeitet Observations asynchron
+- Bietet Web-UI zum Durchsuchen der Memory
+
+**Progressive Disclosure (Token-sparend):**
+1. `search` → gibt nur IDs + kurze Snippets zurück (~50-100 Tokens)
+2. `timeline` → chronologischer Kontext um Ergebnisse
+3. `get_observations` → volle Details nur für gefilterte IDs
+
+**Privacy:** `<private>` Tags werden am Hook-Layer gestrippt, bevor Daten den Worker erreichen.
+
+### Was VecLayer bereits hat
+
+| Fähigkeit | VecLayer | claude-mem |
+|-----------|----------|------------|
+| Lifecycle-Hooks | PreCompact, Stop | Setup, SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd |
+| Automatische Observation-Erfassung | Nein (Agent muss `store` aufrufen) | Ja (PostToolUse fängt alles ab) |
+| Session-Start Priming | Per CLAUDE.md-Instruktion (`recall`) | Automatisch via SessionStart-Hook |
+| Token-Effizienz | Hierarchische Suche mit Blend-Score | Progressive Disclosure (3 Stufen) |
+| Aging/Vergessen | RRD-Buckets + Salience-Protection | AI-Kompression |
+| Vektor-Suche | LanceDB (lokal, serverless) | Chroma |
+| Background-Service | MCP-Server (stdio) | HTTP-Worker (Port 37777) |
+| Summarization | Think-Cycle (LLM-gestützt) | AI-Kompression im Worker |
+
+### Konkrete Ideen für VecLayer
+
+#### 1. PostToolUse-Hook (Hoch prioritär)
+
+**Problem:** Aktuell muss der Agent *bewusst entscheiden*, etwas zu speichern. Bei komplexen Sessions geht Wissen verloren.
+
+**Lösung:** Ein `PostToolUse`-Hook, der relevante Tool-Ergebnisse automatisch als `impression`-Einträge speichert.
+
+```json
+"PostToolUse": [{
+  "hooks": [{
+    "type": "command",
+    "command": "veclayer observe --from-stdin"
+  }]
+}]
+```
+
+**Filterung nötig:** Nicht jedes Tool-Ergebnis ist memory-würdig. Ein leichtgewichtiger Heuristik-Filter (z.B. nur bei Edit, Bash mit Exit-Code != 0, oder Ergebnisse > N Zeilen) verhindert Noise.
+
+**Vorteil gegenüber claude-mem:** VecLayer hat bereits Salience-Scoring und Aging — automatisch erfasste Observations werden natürlich degradiert, wenn sie nicht wieder aufgegriffen werden. claude-mem muss das über AI-Kompression lösen.
+
+#### 2. SessionStart-Hook (Hoch prioritär)
+
+**Problem:** CLAUDE.md *instruiert* den Agent, `recall` auszuführen — aber das ist eine Bitte, keine Garantie. Der Agent kann es vergessen oder überspringen.
+
+**Lösung:** Ein `SessionStart`-Hook, der automatisch Priming-Context in stderr injiziert.
+
+```json
+"SessionStart": [{
+  "hooks": [{
+    "type": "command",
+    "command": "veclayer priming --output llm-nudge"
+  }]
+}]
+```
+
+Der Hook gibt die Identity-Snapshot-Zusammenfassung aus, die dann als System-Context in die Session fließt — ohne dass der Agent aktiv etwas tun muss.
+
+#### 3. SessionEnd-Hook (Mittel prioritär)
+
+**Problem:** Der Stop-Hook zeigt stale Knowledge an, aber erzwingt keine Persistierung. Wenn der Agent die Session beendet (nicht stoppt), fehlt der Hook ganz.
+
+**Lösung:** Ein `SessionEnd`-Hook, der einen automatischen Think-Cycle triggert.
+
+```json
+"SessionEnd": [{
+  "hooks": [{
+    "type": "command",
+    "command": "veclayer think --auto-compact"
+  }]
+}]
+```
+
+#### 4. Progressive Disclosure für MCP-Tools (Niedrig prioritär)
+
+**Idee:** Statt alle Suchergebnisse mit vollem Content zurückzugeben, könnte die `recall`-MCP-Methode zuerst nur IDs + Scores + Heading zurückgeben, und ein zweiter Aufruf (`recall --detail <ids>`) die vollen Inhalte.
+
+**Bewertung:** VecLayer's hierarchische Suche mit parent/children-Navigation löst das Problem bereits anders — durch die Hierarchie bekommt man automatisch kontextgerechte Granularität. Eher nice-to-have.
+
+#### 5. `observe`-Subcommand (Neu)
+
+Ein neuer CLI/MCP-Befehl speziell für automatische Observations:
+
+```bash
+# Stdin lesen, als impression speichern, mit automatischem Perspective-Tagging
+echo "Fixed the off-by-one in pagination" | veclayer observe --perspective learnings
+
+# Oder mit Tool-Kontext
+veclayer observe --tool Edit --file src/main.rs --summary "Refactored error handling"
+```
+
+Eigenschaften:
+- Speichert als `entry_type: impression`
+- Niedrige initiale Salience (wird nur durch Wiederauffinden erhöht)
+- Aging degradiert automatisch irrelevante Observations
+- Schnell genug für PostToolUse (<100ms)
+
+### Was wir NICHT übernehmen sollten
+
+1. **Background-HTTP-Worker**: VecLayer ist ein einzelnes Binary. Ein separater HTTP-Service widerspricht dem "no external services"-Prinzip. Der MCP-Server über stdio reicht.
+
+2. **Alles speichern**: claude-mem speichert *jede* Tool-Interaction. Das erzeugt Noise, den sie mit AI-Kompression bekämpfen müssen. Besser: selektiv erfassen + natürliches Aging.
+
+3. **SQLite + Chroma Dualität**: VecLayer hat LanceDB — das reicht. Keine zweite Storage-Engine einführen.
+
+4. **AI-Kompression als Primärstrategie**: claude-mem komprimiert Observations *nachträglich* mit AI. VecLayer's Ansatz (summarize im Think-Cycle, Aging über RRD) ist eleganter und braucht weniger LLM-Aufrufe.
+
+### Zusammenfassung: Prioritäten
+
+| Priorität | Maßnahme | Aufwand |
+|-----------|----------|---------|
+| Hoch | SessionStart-Hook mit automatischem Priming | Klein (Hook-Config + `priming --output llm-nudge`) |
+| Hoch | PostToolUse-Hook mit `observe`-Subcommand | Mittel (neuer Command + Heuristik-Filter) |
+| Mittel | SessionEnd-Hook mit Auto-Think | Klein (Hook-Config) |
+| Niedrig | Progressive Disclosure in MCP | Groß (API-Redesign) |
+
+### Kernerkenntnis
+
+claude-mem's größte Stärke ist die **passive Erfassung** — der Agent muss nichts aktiv tun. VecLayer setzt aktuell auf **aktive Erfassung** (Agent ruft `store` auf). Die Kombination beider Ansätze wäre ideal:
+
+- **Passiv** (Hooks): SessionStart-Priming, PostToolUse-Observations, SessionEnd-Think
+- **Aktiv** (Agent): Gezielte `store`-Aufrufe für wichtige Entscheidungen, `think` für Reflexion
+
+So entsteht ein zweischichtiges System: die passive Schicht fängt alles auf (und lässt es natürlich altern), die aktive Schicht hebt Wichtiges hervor (höhere Salience).
+
+---
+
 # VecLayer Git Memory Feature — Test Findings
 
 > Comprehensive testing from an agentic user perspective.
