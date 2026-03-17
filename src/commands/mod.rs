@@ -356,8 +356,8 @@ pub use store_ops::{
 #[cfg(feature = "llm")]
 pub use think::think;
 pub use think::{
-    think_aging_apply, think_aging_configure, think_demote, think_discover, think_promote,
-    think_relate,
+    think_aging_apply, think_aging_configure, think_demote, think_discover, think_prepare,
+    think_promote, think_relate,
 };
 
 #[cfg(test)]

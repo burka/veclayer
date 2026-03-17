@@ -73,7 +73,7 @@ fn default_learnings_perspective() -> Vec<String> {
 
 // --- System prompt ---
 
-const THINK_SYSTEM_PROMPT: &str = r#"You are reflecting on a knowledge base to consolidate and distill learnings.
+pub(crate) const THINK_SYSTEM_PROMPT: &str = r#"You are reflecting on a knowledge base to consolidate and distill learnings.
 
 You will receive an identity briefing showing the current state of memory. Based on this:
 
@@ -107,6 +107,60 @@ Rules:
 - If nothing needs consolidation, return empty arrays
 - Keep each consolidation to 1-3 concise sentences
 - perspectives must use existing perspective IDs from the briefing"#;
+
+// --- Preparation (LLM-free) ---
+
+/// Data needed for a caller to perform the think cycle itself.
+///
+/// Returned by [`prepare()`] when the caller wants to reason about
+/// consolidation without an LLM — e.g. when Ollama is unreachable and
+/// the MCP caller (Claude) can do the reasoning.
+#[derive(Debug)]
+pub struct ThinkPreparation {
+    /// The system prompt that would have been sent to the LLM.
+    pub system_prompt: &'static str,
+    /// The user prompt (priming + entry ID reference).
+    pub user_prompt: String,
+    /// Entry IDs with their headings, for reference in consolidations.
+    pub entry_ids: Vec<(String, String)>,
+}
+
+/// Gather reflection data without calling an LLM.
+///
+/// Returns `None` if the store is empty (nothing to think about).
+/// The caller can use the returned data to reason about consolidations
+/// and then call `store()` for each result.
+pub async fn prepare(
+    store: &impl VectorStore,
+    data_dir: &Path,
+) -> Result<Option<ThinkPreparation>> {
+    let snapshot = identity::compute_identity(store, data_dir, None, None).await?;
+
+    if snapshot.core_entries.is_empty() {
+        return Ok(None);
+    }
+
+    let priming = identity::generate_priming(&snapshot);
+    let prompt = build_prompt(&priming, &snapshot);
+
+    let entry_ids: Vec<(String, String)> = snapshot
+        .core_entries
+        .iter()
+        .map(|e| {
+            let heading = e
+                .heading
+                .clone()
+                .unwrap_or_else(|| "(untitled)".to_string());
+            (e.id.clone(), heading)
+        })
+        .collect();
+
+    Ok(Some(ThinkPreparation {
+        system_prompt: THINK_SYSTEM_PROMPT,
+        user_prompt: prompt,
+        entry_ids,
+    }))
+}
 
 // --- Main entry point ---
 
@@ -477,7 +531,7 @@ fn format_discovered_pairs(pairs: &[DiscoveredPair]) -> Result<String> {
 fn parse_response(response: &str) -> Result<ThinkPlan> {
     let json_str = extract_json(response);
     serde_json::from_str(&json_str).map_err(|e| {
-        crate::Error::llm(format!(
+        crate::Error::parse(format!(
             "Failed to parse think response as JSON: {}. Response: {}",
             e,
             preview(response, 300)
@@ -952,6 +1006,74 @@ mod tests {
     }
 
     // ── build_prompt with untitled entry ─────────────────────────────────────
+
+    // ── prepare() tests ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_prepare_empty_store_returns_none() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = open_test_store(dir.path()).await;
+        let result = prepare(&store, dir.path()).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_prepare_with_entries_returns_data() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = open_test_store(dir.path()).await;
+
+        let chunk = make_hot_test_chunk(
+            "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344",
+            "Architecture decision about async",
+        );
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let result = prepare(&store, dir.path()).await.unwrap();
+        assert!(result.is_some());
+
+        let prep = result.unwrap();
+        assert_eq!(prep.system_prompt, THINK_SYSTEM_PROMPT);
+        assert!(!prep.user_prompt.is_empty());
+        assert!(!prep.entry_ids.is_empty());
+        assert_eq!(
+            prep.entry_ids[0].0,
+            "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prepare_entry_ids_include_headings() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = open_test_store(dir.path()).await;
+
+        let mut chunk = make_hot_test_chunk(
+            "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344",
+            "Content text here",
+        );
+        chunk.heading = Some("My Heading".to_string());
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let prep = prepare(&store, dir.path()).await.unwrap().unwrap();
+        assert_eq!(prep.entry_ids[0].1, "My Heading");
+    }
+
+    #[tokio::test]
+    async fn test_prepare_untitled_entry_gets_placeholder() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = open_test_store(dir.path()).await;
+
+        let mut chunk = make_hot_test_chunk(
+            "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344",
+            "Content without heading",
+        );
+        chunk.heading = None;
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let prep = prepare(&store, dir.path()).await.unwrap().unwrap();
+        assert_eq!(prep.entry_ids[0].1, "(untitled)");
+    }
+
+    // ── build_prompt tests ──────────────────────────────────────────────
 
     #[test]
     fn test_build_prompt_untitled_entry() {

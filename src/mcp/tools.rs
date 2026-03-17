@@ -10,6 +10,7 @@ const THINK_ACTIONS: &[&str] = &[
     "apply_aging",
     "salience",
     "consolidate",
+    "prepare",
     "discover",
     "perspectives",
     "status",
@@ -336,10 +337,11 @@ pub async fn execute_recall(
         } else {
             input.limit
         };
-        let config = SearchConfig::try_for_query(fetch_limit, input.deep, input.recency.as_deref())?
-            .with_perspective(input.perspective.clone())
-            .with_min_salience(input.min_salience)
-            .with_min_score(input.min_score);
+        let config =
+            SearchConfig::try_for_query(fetch_limit, input.deep, input.recency.as_deref())?
+                .with_perspective(input.perspective.clone())
+                .with_min_salience(input.min_salience)
+                .with_min_score(input.min_score);
         let search =
             HierarchicalSearch::new(Arc::clone(store), Arc::clone(embedder)).with_config(config);
         let results = search.search_by_embedding(target_id, fetch_limit).await?;
@@ -368,10 +370,11 @@ pub async fn execute_recall(
             } else {
                 input.limit
             };
-            let config = SearchConfig::try_for_query(fetch_limit, input.deep, input.recency.as_deref())?
-                .with_perspective(input.perspective.clone())
-                .with_min_salience(input.min_salience)
-                .with_min_score(input.min_score);
+            let config =
+                SearchConfig::try_for_query(fetch_limit, input.deep, input.recency.as_deref())?
+                    .with_perspective(input.perspective.clone())
+                    .with_min_salience(input.min_salience)
+                    .with_min_score(input.min_score);
             let search = HierarchicalSearch::new(Arc::clone(store), Arc::clone(embedder))
                 .with_config(config);
             let results = search.search(query).await?;
@@ -612,6 +615,7 @@ pub async fn execute_think(
         Some("configure_aging") => think_configure_aging(data_dir, &input),
         Some("apply_aging") => think_apply_aging(store, data_dir).await,
         Some("consolidate") => think_consolidate(store, data_dir, blob_store).await,
+        Some("prepare") => think_prepare(store, data_dir).await,
         Some("salience") => think_salience(store, &input).await,
         Some("perspectives") => think_perspectives(data_dir),
         Some("status") => think_status(store, data_dir, git_store, push_mode).await,
@@ -734,14 +738,27 @@ async fn think_consolidate(
     let embedder = crate::embedder::from_config(&config.embedder)
         .map_err(|e| crate::Error::llm(format!("Failed to init embedder: {}", e)))?;
 
-    let result = crate::think::execute(
+    let result = match crate::think::execute(
         store.as_ref(),
         embedder.as_ref(),
         &llm,
         data_dir,
         Some(blob_store.as_ref()),
     )
-    .await?;
+    .await
+    {
+        Ok(result) => result,
+        Err(crate::Error::Llm(_)) => {
+            // LLM unreachable — fall back to nudge.
+            // No need to re-check emptiness: execute() returns Ok(empty) before
+            // reaching the LLM call when the store is empty.
+            return Ok(format_consolidate_nudge(
+                &config.llm.provider,
+                &config.llm.model,
+            ));
+        }
+        Err(e) => return Err(e),
+    };
 
     if result.entries_created.is_empty() {
         return Ok("Nothing to consolidate. Memory is well-organized.".to_string());
@@ -773,9 +790,56 @@ async fn think_consolidate(
     _data_dir: &std::path::Path,
     _blob_store: &Arc<crate::blob_store::BlobStore>,
 ) -> Result<String> {
-    Err(crate::Error::config(
-        "think(consolidate) requires the 'llm' feature",
-    ))
+    // Without LLM feature, nudge the caller to do it themselves
+    Ok(format_consolidate_nudge("none", "none"))
+}
+
+/// Format a short nudge telling MCP callers how to self-consolidate.
+fn format_consolidate_nudge(provider: &str, model: &str) -> String {
+    format!(
+        "Think: LLM unavailable ({}/{} not reachable).\n\n\
+         You can consolidate memory yourself:\n\
+         1. Call think(action=\"prepare\") to get the reflection data\n\
+         2. Reason about consolidations and learnings\n\
+         3. Call store() for each result with entry_type \"meta\" or \"summary\"\n\n\
+         This keeps your context clean — only fetch the data when ready to act on it.",
+        provider, model
+    )
+}
+
+/// Gather reflection data for a caller to reason about consolidation.
+async fn think_prepare(store: &Arc<StoreBackend>, data_dir: &std::path::Path) -> Result<String> {
+    let prep = crate::think::prepare(store.as_ref(), data_dir).await?;
+
+    let Some(prep) = prep else {
+        return Ok("Nothing to prepare. Memory is empty.".to_string());
+    };
+
+    let mut report = String::from("## Think Preparation\n\n");
+
+    report.push_str("### Task\n\n");
+    report.push_str(prep.system_prompt);
+    report.push_str("\n\n");
+
+    report.push_str("### Memory State\n\n");
+    report.push_str(&prep.user_prompt);
+    report.push_str("\n\n");
+
+    report.push_str("### How to Apply\n\n");
+    report.push_str("Reason about the memory state above, then call store() for each result:\n\n");
+    report.push_str(
+        "- **Narrative:** store(text=\"...\", heading=\"[think:narrative]\", entry_type=\"meta\")\n",
+    );
+    report.push_str(
+        "- **Consolidation:** store(text=\"...\", heading=\"[think:consolidation]\", \
+         entry_type=\"summary\", relations=[{kind: \"summarizes\", target_id: \"<id>\"}])\n",
+    );
+    report.push_str(
+        "- **Learning:** store(text=\"...\", heading=\"[think:learning]\", \
+         entry_type=\"meta\", perspectives=[\"learnings\"])\n",
+    );
+
+    Ok(report)
 }
 
 async fn think_salience(store: &Arc<StoreBackend>, input: &ThinkInput) -> Result<String> {
@@ -3125,5 +3189,100 @@ mod tests {
                 "expected message to contain '{expected_msg}', got: {err}"
             );
         }
+    }
+
+    // ── execute_think: prepare action ────────────────────────────────────
+
+    #[tokio::test]
+    async fn execute_think_prepare_empty_store() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+        let input = ThinkInput {
+            action: Some("prepare".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            result.contains("Nothing to prepare"),
+            "expected empty-store message, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_think_prepare_with_entries_returns_preparation() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+        let mut chunk = make_test_chunk(
+            "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344",
+            "Architecture decision about async",
+        );
+        chunk.access_profile.record_access();
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let input = ThinkInput {
+            action: Some("prepare".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            result.contains("## Think Preparation"),
+            "expected preparation header, got: {result}"
+        );
+        assert!(
+            result.contains("### Task"),
+            "expected Task section, got: {result}"
+        );
+        assert!(
+            result.contains("### Memory State"),
+            "expected Memory State section, got: {result}"
+        );
+        assert!(
+            result.contains("### How to Apply"),
+            "expected How to Apply section, got: {result}"
+        );
+        assert!(
+            result.contains("store()"),
+            "expected store() instruction, got: {result}"
+        );
     }
 }

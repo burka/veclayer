@@ -10,9 +10,9 @@ use veclayer::commands::{
     add, archive, browse, compact, export_entries, focus, history, import_entries, init, merge,
     orientation, perspective_add, perspective_list, perspective_remove, print_sources,
     rebuild_index, reflect, search, serve, show_config, stale, status, think_aging_apply,
-    think_aging_configure, think_demote, think_discover, think_promote, think_relate, AddOptions,
-    CompactAction, CompactOptions, ExportOptions, FocusOptions, ImportOptions, MergeOptions,
-    SearchOptions, ServeOptions,
+    think_aging_configure, think_demote, think_discover, think_prepare, think_promote,
+    think_relate, AddOptions, CompactAction, CompactOptions, ExportOptions, FocusOptions,
+    ImportOptions, MergeOptions, SearchOptions, ServeOptions,
 };
 #[cfg(feature = "auth")]
 use veclayer::commands::{auth_login, auth_status, auth_token, identity_init, identity_show};
@@ -521,6 +521,9 @@ enum ThinkAction {
         limit: usize,
     },
 
+    /// Prepare reflection data for manual consolidation (no LLM needed)
+    Prepare,
+
     /// Manage aging rules
     Aging {
         #[command(subcommand)]
@@ -989,6 +992,9 @@ async fn main() -> Result<()> {
             }
             Some(ThinkAction::Discover { limit }) => {
                 think_discover(&data_dir, limit).await?;
+            }
+            Some(ThinkAction::Prepare) => {
+                think_prepare(&data_dir).await?;
             }
             Some(ThinkAction::Aging { action }) => match action {
                 AgingAction::Apply => {

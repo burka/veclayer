@@ -2291,7 +2291,10 @@ mod tests {
     #[test]
     fn test_try_for_query_valid_recency() {
         let result = SearchConfig::try_for_query(10, false, Some("7d"));
-        assert!(result.is_ok(), "expected Ok for recency='7d', got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "expected Ok for recency='7d', got: {result:?}"
+        );
         let config = result.unwrap();
         assert_eq!(config.recency_window, Some(RecencyWindow::Week));
     }

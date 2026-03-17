@@ -14,8 +14,25 @@ pub async fn think(data_dir: &Path) -> Result<()> {
         config.llm.model, config.llm.provider
     );
 
-    let result =
-        crate::think::execute(&store, &embedder, &llm, data_dir, Some(&blob_store)).await?;
+    let result = match crate::think::execute(&store, &embedder, &llm, data_dir, Some(&blob_store))
+        .await
+    {
+        Ok(result) => result,
+        Err(crate::Error::Llm(msg)) => {
+            eprintln!(
+                    "Think: LLM unavailable ({}/{} not reachable).\n\
+                     Error: {}\n\n\
+                     You can consolidate memory yourself:\n\
+                     1. Run `veclayer think prepare` to get the reflection data\n\
+                     2. Reason about consolidations and learnings\n\
+                     3. Run `veclayer store` for each result with --entry-type meta or summary\n\n\
+                     Or configure an LLM: VECLAYER_LLM_PROVIDER=openai VECLAYER_LLM_API_KEY=... veclayer think",
+                    config.llm.provider, config.llm.model, msg
+                );
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    };
 
     if result.entries_created.is_empty() {
         println!("\nNothing to consolidate. Memory is either empty or already well-organized.");
@@ -59,6 +76,37 @@ pub async fn think(data_dir: &Path) -> Result<()> {
     }
 
     println!("\nAging applied. Run `veclayer reflect` to see updated identity.");
+
+    Ok(())
+}
+
+/// Gather reflection data for manual consolidation (no LLM needed).
+pub async fn think_prepare(data_dir: &Path) -> Result<()> {
+    let store = StoreBackend::open_metadata(data_dir, true).await?;
+    let prep = crate::think::prepare(&store, data_dir).await?;
+
+    let Some(prep) = prep else {
+        println!("Nothing to prepare. Memory is empty.");
+        return Ok(());
+    };
+
+    println!("## Think Preparation\n");
+
+    println!("### Task\n");
+    println!("{}\n", prep.system_prompt);
+
+    println!("### Memory State\n");
+    println!("{}\n", prep.user_prompt);
+
+    println!("### How to Apply\n");
+    println!("Reason about the memory state above, then run:\n");
+    println!("- veclayer store --heading \"[think:narrative]\" --entry-type meta \"...\"");
+    println!(
+        "- veclayer store --heading \"[think:consolidation]\" --entry-type summary --rel-summarizes <id> \"...\""
+    );
+    println!(
+        "- veclayer store --heading \"[think:learning]\" --entry-type meta -P learnings \"...\""
+    );
 
     Ok(())
 }
