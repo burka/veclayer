@@ -132,12 +132,36 @@ pub async fn status(data_dir: &Path) -> Result<()> {
             );
         }
     }
-    println!("\nSource files: {}", result.source_files.len());
+    println!(
+        "{}  {}",
+        "Sources:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+        result.source_files.len()
+    );
 
-    if !result.source_files.is_empty() {
-        println!("\nNext: `veclayer recall \"query\"` or `veclayer store <path>`");
+    // Usage guide
+    println!(
+        "\n{}",
+        "MCP tools (via Claude Code / MCP client):".if_supports_color(Stream::Stdout, |s| s.bold())
+    );
+    println!("  store(content, heading, perspectives)  Save a decision or learning");
+    println!("  recall(query)                          Search memory semantically");
+    println!("  think(action=\"prepare\")                Reflect without LLM");
+    println!("  think(action=\"consolidate\")            Full LLM-powered reflection");
+    println!("  focus(id)                              Drill into an entry");
+
+    println!(
+        "\n{}",
+        "CLI (shell):".if_supports_color(Stream::Stdout, |s| s.bold())
+    );
+    println!("  veclayer store \"text\" --heading \"...\" -P decisions");
+    println!("  veclayer recall \"query\"");
+    println!("  veclayer think prepare");
+    println!("  veclayer context --brief");
+
+    if result.source_files.is_empty() {
+        println!("\nStore is empty. Run `veclayer setup claude --apply` to get started.");
     } else {
-        println!("\nStore is empty. Use `veclayer store <path>` to add knowledge.");
+        println!("\nPersist decisions and learnings as you work. Run think between tasks.");
     }
 
     Ok(())

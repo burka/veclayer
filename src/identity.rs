@@ -628,6 +628,11 @@ pub fn generate_brief_priming(snapshot: &IdentitySnapshot) -> String {
         priming.push('\n');
     }
 
+    priming.push_str(
+        "Use recall/store/think/focus via MCP tools. \
+         Run `veclayer status` for usage help.\n",
+    );
+
     priming
 }
 
