@@ -15,6 +15,7 @@ const VECLAYER_MCP_KEY: &str = "veclayer";
 
 const SESSION_START_COMMAND: &str = "veclayer context --brief";
 const POST_TOOL_USE_COMMAND: &str = "veclayer observe";
+const PRE_COMPACT_COMMAND: &str = "veclayer stale --output llm-nudge";
 const POST_COMPACT_COMMAND: &str = "veclayer context --brief";
 const STOP_COMMAND: &str = "veclayer stale --output llm-nudge";
 
@@ -52,12 +53,23 @@ fn claude_config() -> Value {
                     ]
                 }
             ],
+            "PreCompact": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": PRE_COMPACT_COMMAND
+                        }
+                    ]
+                }
+            ],
             "PostCompact": [
                 {
                     "hooks": [
                         {
                             "type": "command",
-                            "command": POST_COMPACT_COMMAND
+                            "command": POST_COMPACT_COMMAND,
+                            "timeout": 10
                         }
                     ]
                 }
@@ -114,6 +126,8 @@ pub fn setup_claude() {
     println!("               Injects a memory briefing at the start of each session.\n");
     println!("  PostToolUse  → {POST_TOOL_USE_COMMAND}");
     println!("               Captures compact observations for Bash/Write/Edit/WebFetch/WebSearch/Agent.\n");
+    println!("  PreCompact   → {PRE_COMPACT_COMMAND}");
+    println!("               Nudges the agent to persist knowledge before compaction.\n");
     println!("  PostCompact  → {POST_COMPACT_COMMAND}");
     println!("               Re-injects memory briefing after context compaction.\n");
     println!("  Stop         → veclayer stale");
@@ -142,6 +156,8 @@ pub struct ApplyReport {
     pub session_start_skipped: bool,
     pub post_tool_use_added: bool,
     pub post_tool_use_skipped: bool,
+    pub pre_compact_added: bool,
+    pub pre_compact_skipped: bool,
     pub post_compact_added: bool,
     pub post_compact_skipped: bool,
     pub stop_added: bool,
@@ -210,6 +226,19 @@ pub fn merge_claude_config(existing: Value) -> (Value, ApplyReport) {
         },
         &mut report.post_tool_use_added,
         &mut report.post_tool_use_skipped,
+    );
+
+    merge_hook(
+        hooks,
+        "PreCompact",
+        PRE_COMPACT_COMMAND,
+        || {
+            json!({
+                "hooks": [{ "type": "command", "command": PRE_COMPACT_COMMAND }]
+            })
+        },
+        &mut report.pre_compact_added,
+        &mut report.pre_compact_skipped,
     );
 
     merge_hook(
@@ -366,6 +395,11 @@ fn print_apply_report(path: &str, report: &ApplyReport) {
         "Hook: PostToolUse → veclayer observe",
         report.post_tool_use_added,
         report.post_tool_use_skipped,
+    );
+    print_action(
+        "Hook: PreCompact → veclayer stale",
+        report.pre_compact_added,
+        report.pre_compact_skipped,
     );
     print_action(
         "Hook: PostCompact → veclayer context --brief",

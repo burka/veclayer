@@ -16,6 +16,16 @@
         "matcher": "Bash|Write|Edit|WebFetch|WebSearch|Agent"
       }
     ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "command": "veclayer stale --output llm-nudge",
+            "type": "command"
+          }
+        ]
+      }
+    ],
     "PostCompact": [
       {
         "hooks": [
