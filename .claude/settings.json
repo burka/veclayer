@@ -30,7 +30,7 @@
       {
         "hooks": [
           {
-            "command": "veclayer context",
+            "command": "veclayer context --brief",
             "timeout": 10,
             "type": "command"
           }

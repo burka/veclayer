@@ -13,7 +13,7 @@ use crate::Result;
 
 const VECLAYER_MCP_KEY: &str = "veclayer";
 
-const SESSION_START_COMMAND: &str = "veclayer context";
+const SESSION_START_COMMAND: &str = "veclayer context --brief";
 const POST_TOOL_USE_COMMAND: &str = "veclayer observe";
 const PRE_COMPACT_COMMAND: &str =
     "echo 'Compaction imminent — persist important knowledge to veclayer now!' >&2";
@@ -359,7 +359,7 @@ fn print_apply_report(path: &str, report: &ApplyReport) {
         report.mcp_server_skipped,
     );
     print_action(
-        "Hook: SessionStart → veclayer context",
+        "Hook: SessionStart → veclayer context --brief",
         report.session_start_added,
         report.session_start_skipped,
     );
@@ -444,7 +444,7 @@ mod tests {
                     {
                         "matcher": "startup|resume",
                         "hooks": [
-                            { "type": "command", "command": "veclayer context", "timeout": 10 }
+                            { "type": "command", "command": "veclayer context --brief", "timeout": 10 }
                         ]
                     }
                 ]
