@@ -30,10 +30,12 @@ pub mod data;
 #[cfg(feature = "auth")]
 pub mod identity;
 pub mod merge;
+pub mod observe;
 pub mod perspective_ops;
 pub mod reflect;
 pub mod search;
 pub mod serve;
+pub mod setup;
 pub mod store_ops;
 pub mod sync;
 pub mod think;
@@ -346,10 +348,12 @@ pub use data::{export_entries, import_entries, rebuild_index};
 #[cfg(feature = "auth")]
 pub use identity::{identity_init, identity_show};
 pub use merge::merge;
+pub use observe::{context, observe};
 pub use perspective_ops::{perspective_add, perspective_list, perspective_remove};
 pub use reflect::{compact, reflect, CompactAction};
 pub use search::{browse, focus, search, search_results};
 pub use serve::serve;
+pub use setup::{setup, setup_claude, setup_claude_apply};
 pub use store_ops::{
     archive, history, init, orientation, print_sources, show_config, sources, stale, stats, status,
 };

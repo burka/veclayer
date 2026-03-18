@@ -7,12 +7,13 @@ use tracing_subscriber::EnvFilter;
 #[cfg(feature = "llm")]
 use veclayer::commands::think;
 use veclayer::commands::{
-    add, archive, browse, compact, export_entries, focus, history, import_entries, init, merge,
-    orientation, perspective_add, perspective_list, perspective_remove, print_sources,
-    rebuild_index, reflect, search, serve, show_config, stale, status, think_aging_apply,
-    think_aging_configure, think_demote, think_discover, think_prepare, think_promote,
-    think_relate, AddOptions, CompactAction, CompactOptions, ExportOptions, FocusOptions,
-    ImportOptions, MergeOptions, SearchOptions, ServeOptions,
+    add, archive, browse, compact, context, export_entries, focus, history, import_entries, init,
+    merge, observe, orientation, perspective_add, perspective_list, perspective_remove,
+    print_sources, rebuild_index, reflect, search, serve, setup, setup_claude, setup_claude_apply,
+    show_config, stale, status, think_aging_apply, think_aging_configure, think_demote,
+    think_discover, think_prepare, think_promote, think_relate, AddOptions, CompactAction,
+    CompactOptions, ExportOptions, FocusOptions, ImportOptions, MergeOptions, SearchOptions,
+    ServeOptions,
 };
 #[cfg(feature = "auth")]
 use veclayer::commands::{auth_login, auth_status, auth_token, identity_init, identity_show};
@@ -353,6 +354,37 @@ enum Commands {
         action: Option<ThinkAction>,
     },
 
+    /// Set up VecLayer integrations (Claude Code, etc.)
+    Setup {
+        #[command(subcommand)]
+        target: Option<SetupTarget>,
+    },
+
+    /// Capture a tool observation from a Claude Code PostToolUse hook
+    #[command(
+        long_about = "Read a PostToolUse JSON payload from stdin, filter out noise \
+(Read/Glob/Grep/LS and failed tools), and store a compact observation in memory.\n\n\
+Designed to be wired as a Claude Code PostToolUse hook:\n\
+  matcher: \"Bash|Write|Edit|WebFetch|WebSearch|Agent\"\n\
+  command: \"veclayer observe\"\n\n\
+Exits 0 always — errors go to stderr so the hook never blocks the session.\n\
+Run `veclayer setup claude` to see the full hook configuration."
+    )]
+    Observe,
+
+    /// Print identity briefing to stdout for Claude Code SessionStart injection
+    #[command(
+        long_about = "Compute an identity snapshot from stored memory and print a \
+structured briefing to stdout. Claude Code's SessionStart hook injects this into the \
+session context so the agent starts each conversation with relevant background.\n\n\
+Designed to be wired as a Claude Code SessionStart hook:\n\
+  matcher: \"startup|resume\"\n\
+  command: \"veclayer context\"\n\n\
+Prints nothing if the store is empty or inaccessible — safe to run unconditionally.\n\
+Run `veclayer setup claude` to see the full hook configuration."
+    )]
+    Context,
+
     /// Sync memory from git scopes into the local index
     Sync {
         /// Only sync a specific scope by name
@@ -551,6 +583,28 @@ enum AgingAction {
     Rotate,
 }
 
+#[derive(Subcommand)]
+enum SetupTarget {
+    /// Configure Claude Code integration (MCP server + 4 lifecycle hooks)
+    #[command(
+        long_about = "Show or apply the Claude Code integration configuration.\n\n\
+Without --apply: prints the JSON snippet to add to .claude/settings.json.\n\
+With --apply:    merges the configuration into .claude/settings.json,\n\
+                 creating the file if absent and preserving all existing settings.\n\n\
+What gets configured:\n\
+  MCP server:  veclayer serve --mcp-stdio  (tools: recall, store, focus, think …)\n\
+  SessionStart hook → veclayer context     (inject memory briefing at session start)\n\
+  PostToolUse hook  → veclayer observe     (capture Bash/Write/Edit observations)\n\
+  PreCompact hook   → compaction warning   (nudge agent to persist before compact)\n\
+  Stop hook         → veclayer stale       (warn agent if memory has gone stale)"
+    )]
+    Claude {
+        /// Merge configuration into .claude/settings.json without clobbering existing settings
+        #[arg(long)]
+        apply: bool,
+    },
+}
+
 /// Clap value parser for impression_strength that enforces the 0.0–1.0 range.
 fn parse_impression_strength(s: &str) -> std::result::Result<f32, String> {
     let v: f32 = s
@@ -692,7 +746,12 @@ async fn main() -> Result<()> {
         }
     };
 
-    if using_global_store_fallback && !matches!(command, Commands::Init { .. }) {
+    if using_global_store_fallback
+        && !matches!(
+            command,
+            Commands::Init { .. } | Commands::Setup { .. } | Commands::Observe | Commands::Context
+        )
+    {
         eprintln!(
             "Warning: no local store found, using global store at {}. Run 'veclayer init' to create a project store.",
             data_dir.display()
@@ -1008,6 +1067,23 @@ async fn main() -> Result<()> {
                 }
             },
         },
+        Commands::Setup { target } => match target {
+            None => {
+                setup();
+            }
+            Some(SetupTarget::Claude { apply: false }) => {
+                setup_claude();
+            }
+            Some(SetupTarget::Claude { apply: true }) => {
+                setup_claude_apply(&cwd)?;
+            }
+        },
+        Commands::Observe => {
+            observe(&data_dir).await?;
+        }
+        Commands::Context => {
+            context(&data_dir).await?;
+        }
         Commands::Sync {
             scope,
             migrate,

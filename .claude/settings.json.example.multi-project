@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "memory": {
+    "veclayer": {
       "command": "veclayer",
       "args": [
         "-d",
@@ -11,5 +11,51 @@
         "myapp"
       ]
     }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "veclayer context",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Write|Edit|WebFetch|WebSearch|Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "veclayer observe",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Compaction imminent — persist important knowledge to veclayer now!' >&2"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "veclayer stale --output llm-nudge"
+          }
+        ]
+      }
+    ]
   }
 }

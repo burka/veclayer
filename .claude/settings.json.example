@@ -1,11 +1,35 @@
 {
   "mcpServers": {
-    "memory": {
+    "veclayer": {
       "command": "veclayer",
       "args": ["serve", "--mcp-stdio"]
     }
   },
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "veclayer context",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Write|Edit|WebFetch|WebSearch|Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "veclayer observe",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "PreCompact": [
       {
         "hooks": [
