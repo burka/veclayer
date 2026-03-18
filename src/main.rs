@@ -381,9 +381,15 @@ Designed to be wired as a Claude Code SessionStart hook:\n\
   matcher: \"startup|resume\"\n\
   command: \"veclayer context\"\n\n\
 Prints nothing if the store is empty or inaccessible — safe to run unconditionally.\n\
-Run `veclayer setup claude` to see the full hook configuration."
+Run `veclayer setup claude` to see the full hook configuration.\n\n\
+Use --brief for a compact briefing (~500 tokens) with only top 5 entries, \
+open threads, and recent learnings."
     )]
-    Context,
+    Context {
+        /// Compact briefing (~500 tokens): top 5 entries, open threads, recent learnings
+        #[arg(long)]
+        brief: bool,
+    },
 
     /// Sync memory from git scopes into the local index
     Sync {
@@ -753,7 +759,10 @@ async fn main() -> Result<()> {
     if using_global_store_fallback
         && !matches!(
             command,
-            Commands::Init { .. } | Commands::Setup { .. } | Commands::Observe | Commands::Context
+            Commands::Init { .. }
+                | Commands::Setup { .. }
+                | Commands::Observe
+                | Commands::Context { .. }
         )
     {
         eprintln!(
@@ -1088,8 +1097,8 @@ async fn main() -> Result<()> {
         Commands::Observe => {
             observe(&data_dir).await?;
         }
-        Commands::Context => {
-            context(&data_dir).await?;
+        Commands::Context { brief } => {
+            context(&data_dir, brief).await?;
         }
         Commands::Sync {
             scope,

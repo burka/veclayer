@@ -574,6 +574,63 @@ pub fn generate_priming(snapshot: &IdentitySnapshot) -> String {
     priming
 }
 
+/// Generate a compact briefing (~500 tokens) with only the most actionable context.
+///
+/// Includes: top 5 core entries, open threads, and recent learnings.
+/// Omits: perspective coverage, emergent clusters, other branches.
+pub fn generate_brief_priming(snapshot: &IdentitySnapshot) -> String {
+    if snapshot.is_empty() {
+        return String::new();
+    }
+
+    let mut priming = String::new();
+
+    priming.push_str("# Memory Briefing (compact)\n\n");
+
+    // Top 5 core entries only
+    if !snapshot.core_entries.is_empty() {
+        priming.push_str("## Key Knowledge\n\n");
+        for entry in snapshot.core_entries.iter().take(5) {
+            let heading = entry.heading.as_deref().unwrap_or("(untitled)");
+            let persp = if entry.perspectives.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", entry.perspectives.join(", "))
+            };
+            priming.push_str(&format!(
+                "- **{}**{}: {}\n",
+                heading, persp, entry.content_preview
+            ));
+        }
+        priming.push('\n');
+    }
+
+    // Open threads — always show, these are actionable
+    if !snapshot.open_threads.is_empty() {
+        priming.push_str("## Open Threads\n\n");
+        for thread in &snapshot.open_threads {
+            let heading = thread.heading.as_deref().unwrap_or("(untitled)");
+            priming.push_str(&format!("- **{}**: {}\n", heading, thread.reason));
+        }
+        priming.push('\n');
+    }
+
+    // Recent learnings — compact, high signal
+    if !snapshot.recent_learnings.is_empty() {
+        priming.push_str("## Recent Learnings\n\n");
+        for learning in snapshot.recent_learnings.iter().take(3) {
+            let heading = learning.heading.as_deref().unwrap_or("(untitled)");
+            priming.push_str(&format!(
+                "- **{}**: {}\n",
+                heading, learning.content_preview
+            ));
+        }
+        priming.push('\n');
+    }
+
+    priming
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -188,7 +188,9 @@ pub async fn observe(data_dir: &Path) -> Result<()> {
 /// `veclayer context` — output an identity briefing for SessionStart hook injection.
 ///
 /// Prints to stdout. If the store is empty or any error occurs, prints nothing.
-pub async fn context(data_dir: &Path) -> Result<()> {
+/// When `brief` is true, outputs a compact briefing (~500 tokens) with only the
+/// top 5 entries, open threads, and recent learnings.
+pub async fn context(data_dir: &Path, brief: bool) -> Result<()> {
     let store = match crate::store::StoreBackend::open_metadata(data_dir, true).await {
         Ok(s) => s,
         Err(e) => {
@@ -205,7 +207,11 @@ pub async fn context(data_dir: &Path) -> Result<()> {
         }
     };
 
-    let priming = crate::identity::generate_priming(&snapshot);
+    let priming = if brief {
+        crate::identity::generate_brief_priming(&snapshot)
+    } else {
+        crate::identity::generate_priming(&snapshot)
+    };
     if !priming.is_empty() {
         print!("{}", priming);
     }
@@ -379,7 +385,7 @@ mod tests {
     async fn test_context_empty_store() -> Result<()> {
         let dir = TempDir::new()?;
         // Should succeed with no output (empty store → no priming)
-        context(dir.path()).await?;
+        context(dir.path(), false).await?;
         Ok(())
     }
 
@@ -399,7 +405,7 @@ mod tests {
         drop(store);
 
         // context() writes to stdout; we just ensure it does not error out.
-        context(dir.path()).await?;
+        context(dir.path(), false).await?;
         Ok(())
     }
 }
