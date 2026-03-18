@@ -16,11 +16,12 @@
         "matcher": "Bash|Write|Edit|WebFetch|WebSearch|Agent"
       }
     ],
-    "PreCompact": [
+    "PostCompact": [
       {
         "hooks": [
           {
-            "command": "command -v veclayer >/dev/null 2>&1 && echo 'Compaction imminent — persist important knowledge to veclayer now!' >&2",
+            "command": "veclayer context --brief",
+            "timeout": 10,
             "type": "command"
           }
         ]

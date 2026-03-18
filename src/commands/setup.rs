@@ -15,8 +15,7 @@ const VECLAYER_MCP_KEY: &str = "veclayer";
 
 const SESSION_START_COMMAND: &str = "veclayer context --brief";
 const POST_TOOL_USE_COMMAND: &str = "veclayer observe";
-const PRE_COMPACT_COMMAND: &str =
-    "echo 'Compaction imminent — persist important knowledge to veclayer now!' >&2";
+const POST_COMPACT_COMMAND: &str = "veclayer context --brief";
 const STOP_COMMAND: &str = "veclayer stale --output llm-nudge";
 
 /// Build the canonical Claude Code MCP + hooks configuration block.
@@ -53,12 +52,12 @@ fn claude_config() -> Value {
                     ]
                 }
             ],
-            "PreCompact": [
+            "PostCompact": [
                 {
                     "hooks": [
                         {
                             "type": "command",
-                            "command": PRE_COMPACT_COMMAND
+                            "command": POST_COMPACT_COMMAND
                         }
                     ]
                 }
@@ -115,8 +114,8 @@ pub fn setup_claude() {
     println!("               Injects a memory briefing at the start of each session.\n");
     println!("  PostToolUse  → {POST_TOOL_USE_COMMAND}");
     println!("               Captures compact observations for Bash/Write/Edit/WebFetch/WebSearch/Agent.\n");
-    println!("  PreCompact   → compaction warning");
-    println!("               Nudges the agent to persist important knowledge before context is compacted.\n");
+    println!("  PostCompact  → {POST_COMPACT_COMMAND}");
+    println!("               Re-injects memory briefing after context compaction.\n");
     println!("  Stop         → veclayer stale");
     println!(
         "               Warns the agent at session end if memory hasn't been updated recently.\n"
@@ -143,8 +142,8 @@ pub struct ApplyReport {
     pub session_start_skipped: bool,
     pub post_tool_use_added: bool,
     pub post_tool_use_skipped: bool,
-    pub pre_compact_added: bool,
-    pub pre_compact_skipped: bool,
+    pub post_compact_added: bool,
+    pub post_compact_skipped: bool,
     pub stop_added: bool,
     pub stop_skipped: bool,
 }
@@ -215,15 +214,15 @@ pub fn merge_claude_config(existing: Value) -> (Value, ApplyReport) {
 
     merge_hook(
         hooks,
-        "PreCompact",
-        PRE_COMPACT_COMMAND,
+        "PostCompact",
+        POST_COMPACT_COMMAND,
         || {
             json!({
-                "hooks": [{ "type": "command", "command": PRE_COMPACT_COMMAND }]
+                "hooks": [{ "type": "command", "command": POST_COMPACT_COMMAND }]
             })
         },
-        &mut report.pre_compact_added,
-        &mut report.pre_compact_skipped,
+        &mut report.post_compact_added,
+        &mut report.post_compact_skipped,
     );
 
     merge_hook(
@@ -369,9 +368,9 @@ fn print_apply_report(path: &str, report: &ApplyReport) {
         report.post_tool_use_skipped,
     );
     print_action(
-        "Hook: PreCompact → compaction warning",
-        report.pre_compact_added,
-        report.pre_compact_skipped,
+        "Hook: PostCompact → veclayer context --brief",
+        report.post_compact_added,
+        report.post_compact_skipped,
     );
     print_action(
         "Hook: Stop → veclayer stale",
@@ -465,21 +464,21 @@ mod tests {
         // All four hook types present
         assert!(result["hooks"]["SessionStart"].is_array());
         assert!(result["hooks"]["PostToolUse"].is_array());
-        assert!(result["hooks"]["PreCompact"].is_array());
+        assert!(result["hooks"]["PostCompact"].is_array());
         assert!(result["hooks"]["Stop"].is_array());
 
         // Everything was added
         assert!(report.mcp_server_added);
         assert!(report.session_start_added);
         assert!(report.post_tool_use_added);
-        assert!(report.pre_compact_added);
+        assert!(report.post_compact_added);
         assert!(report.stop_added);
 
         // Nothing was skipped
         assert!(!report.mcp_server_skipped);
         assert!(!report.session_start_skipped);
         assert!(!report.post_tool_use_skipped);
-        assert!(!report.pre_compact_skipped);
+        assert!(!report.post_compact_skipped);
         assert!(!report.stop_skipped);
     }
 
@@ -546,13 +545,13 @@ mod tests {
         assert!(report.mcp_server_skipped);
         assert!(report.session_start_skipped);
         assert!(report.post_tool_use_skipped);
-        assert!(report.pre_compact_skipped);
+        assert!(report.post_compact_skipped);
         assert!(report.stop_skipped);
 
         assert!(!report.mcp_server_added);
         assert!(!report.session_start_added);
         assert!(!report.post_tool_use_added);
-        assert!(!report.pre_compact_added);
+        assert!(!report.post_compact_added);
         assert!(!report.stop_added);
 
         // Result is structurally identical
@@ -583,11 +582,11 @@ mod tests {
 
         // PostToolUse and PreCompact should be added
         assert!(report.post_tool_use_added);
-        assert!(report.pre_compact_added);
+        assert!(report.post_compact_added);
 
         // Both arrays exist now
         assert!(result["hooks"]["PostToolUse"].is_array());
-        assert!(result["hooks"]["PreCompact"].is_array());
+        assert!(result["hooks"]["PostCompact"].is_array());
     }
 
     // --- test_merge_detects_existing_stop_hook ---
@@ -624,7 +623,7 @@ mod tests {
             mcp_server_added: true,
             session_start_added: true,
             post_tool_use_added: true,
-            pre_compact_added: true,
+            post_compact_added: true,
             stop_added: true,
             ..Default::default()
         };
@@ -637,7 +636,7 @@ mod tests {
             mcp_server_skipped: true,
             session_start_skipped: true,
             post_tool_use_skipped: true,
-            pre_compact_skipped: true,
+            post_compact_skipped: true,
             stop_skipped: true,
             ..Default::default()
         };

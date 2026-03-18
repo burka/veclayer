@@ -37,12 +37,13 @@
         ]
       }
     ],
-    "PreCompact": [
+    "PostCompact": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "echo 'Compaction imminent — persist important knowledge to veclayer now!' >&2"
+            "command": "veclayer context --brief",
+            "timeout": 10
           }
         ]
       }
