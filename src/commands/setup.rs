@@ -89,8 +89,11 @@ pub fn setup() {
     println!("      Print the Claude Code configuration snippet (MCP server + 4 hooks).");
     println!();
     println!("  veclayer setup claude --apply");
-    println!("      Merge configuration into .claude/settings.json.");
+    println!("      Merge configuration into .claude/settings.json (project only).");
     println!("      Safe to run on an existing file — preserves all current settings.");
+    println!();
+    println!("  veclayer setup claude --apply --global");
+    println!("      Merge configuration into ~/.claude/settings.json (all projects).");
     println!();
     println!("Run `veclayer setup claude --help` for details on what gets configured.");
 }
@@ -122,7 +125,9 @@ pub fn setup_claude() {
     println!("```json");
     println!("{json_str}");
     println!("```\n");
-    println!("To apply automatically: veclayer setup claude --apply");
+    println!("To apply automatically:");
+    println!("  veclayer setup claude --apply           (project: .claude/settings.json)");
+    println!("  veclayer setup claude --apply --global  (global:  ~/.claude/settings.json)");
 }
 
 // ---------------------------------------------------------------------------
@@ -291,9 +296,27 @@ fn entry_contains_command(entry: &Value, needle: &str) -> bool {
     false
 }
 
-/// Apply Claude Code configuration to `.claude/settings.json` relative to `cwd`.
-pub fn setup_claude_apply(cwd: &Path) -> Result<()> {
-    let settings_dir = cwd.join(".claude");
+/// Resolve the `.claude` directory based on whether `--global` was requested.
+///
+/// Global mode uses `$HOME/.claude`; project mode uses `cwd/.claude`.
+/// Pure function — no I/O — so it can be unit-tested without touching the filesystem.
+fn settings_dir(cwd: &Path, global: bool) -> Result<std::path::PathBuf> {
+    if global {
+        let home = std::env::var("HOME").map_err(|_| {
+            crate::Error::config("HOME not set — cannot determine global settings path")
+        })?;
+        Ok(std::path::PathBuf::from(home).join(".claude"))
+    } else {
+        Ok(cwd.join(".claude"))
+    }
+}
+
+/// Apply Claude Code configuration to `.claude/settings.json`.
+///
+/// When `global` is true, writes to `~/.claude/settings.json` (all projects).
+/// When `global` is false, writes to `cwd/.claude/settings.json` (project only).
+pub fn setup_claude_apply(cwd: &Path, global: bool) -> Result<()> {
+    let settings_dir = settings_dir(cwd, global)?;
     let settings_path = settings_dir.join("settings.json");
 
     let existing = read_existing_settings(&settings_path)?;
@@ -623,10 +646,35 @@ mod tests {
 
     // --- file I/O integration test ---
 
+    // --- settings_dir helper ---
+
+    #[test]
+    fn test_settings_dir_project() {
+        use std::path::{Path, PathBuf};
+        let dir = Path::new("/tmp/myproject");
+        let result = settings_dir(dir, false).unwrap();
+        assert_eq!(result, PathBuf::from("/tmp/myproject/.claude"));
+    }
+
+    #[test]
+    fn test_settings_dir_global() {
+        // HOME is always set in CI/dev environments; verify path ends with .claude
+        let result = settings_dir(std::path::Path::new("/unused"), true);
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        assert!(
+            path.to_str().unwrap().ends_with(".claude"),
+            "expected path ending in .claude, got: {}",
+            path.display()
+        );
+    }
+
+    // --- file I/O integration tests ---
+
     #[test]
     fn test_setup_claude_apply_creates_file() {
         let dir = tempfile::TempDir::new().unwrap();
-        let result = setup_claude_apply(dir.path());
+        let result = setup_claude_apply(dir.path(), false);
         assert!(result.is_ok());
 
         let settings_path = dir.path().join(".claude").join("settings.json");
@@ -644,11 +692,11 @@ mod tests {
         let settings_path = dir.path().join(".claude").join("settings.json");
 
         // First apply
-        setup_claude_apply(dir.path()).unwrap();
+        setup_claude_apply(dir.path(), false).unwrap();
         let content_first = fs::read_to_string(&settings_path).unwrap();
 
         // Second apply
-        setup_claude_apply(dir.path()).unwrap();
+        setup_claude_apply(dir.path(), false).unwrap();
         let content_second = fs::read_to_string(&settings_path).unwrap();
 
         assert_eq!(content_first, content_second, "apply must be idempotent");
@@ -657,15 +705,15 @@ mod tests {
     #[test]
     fn test_setup_claude_apply_rejects_malformed_json() {
         let dir = tempfile::TempDir::new().unwrap();
-        let settings_dir = dir.path().join(".claude");
-        fs::create_dir_all(&settings_dir).unwrap();
+        let settings_dir_path = dir.path().join(".claude");
+        fs::create_dir_all(&settings_dir_path).unwrap();
         fs::write(
-            settings_dir.join("settings.json"),
+            settings_dir_path.join("settings.json"),
             "{ invalid json, trailing comma, }",
         )
         .unwrap();
 
-        let result = setup_claude_apply(dir.path());
+        let result = setup_claude_apply(dir.path(), false);
         assert!(result.is_err(), "should reject malformed JSON");
         let msg = result.unwrap_err().to_string();
         assert!(

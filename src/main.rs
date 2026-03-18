@@ -590,7 +590,8 @@ enum SetupTarget {
         long_about = "Show or apply the Claude Code integration configuration.\n\n\
 Without --apply: prints the JSON snippet to add to .claude/settings.json.\n\
 With --apply:    merges the configuration into .claude/settings.json,\n\
-                 creating the file if absent and preserving all existing settings.\n\n\
+                 creating the file if absent and preserving all existing settings.\n\
+With --apply --global: writes to ~/.claude/settings.json (all projects).\n\n\
 What gets configured:\n\
   MCP server:  veclayer serve --mcp-stdio  (tools: recall, store, focus, think …)\n\
   SessionStart hook → veclayer context     (inject memory briefing at session start)\n\
@@ -602,6 +603,9 @@ What gets configured:\n\
         /// Merge configuration into .claude/settings.json without clobbering existing settings
         #[arg(long)]
         apply: bool,
+        /// Apply to global settings (~/.claude/settings.json) instead of project settings
+        #[arg(long)]
+        global: bool,
     },
 }
 
@@ -1071,11 +1075,14 @@ async fn main() -> Result<()> {
             None => {
                 setup();
             }
-            Some(SetupTarget::Claude { apply: false }) => {
+            Some(SetupTarget::Claude { apply: false, .. }) => {
                 setup_claude();
             }
-            Some(SetupTarget::Claude { apply: true }) => {
-                setup_claude_apply(&cwd)?;
+            Some(SetupTarget::Claude {
+                apply: true,
+                global,
+            }) => {
+                setup_claude_apply(&cwd, global)?;
             }
         },
         Commands::Observe => {

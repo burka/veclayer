@@ -1,33 +1,66 @@
 {
-  "permissions": {
-    "allow": [
-      "mcp__veclayer__*"
-    ]
-  },
   "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "veclayer"
   ],
   "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "veclayer observe",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash|Write|Edit|WebFetch|WebSearch|Agent"
+      }
+    ],
     "PreCompact": [
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "command -v veclayer >/dev/null 2>&1 && echo 'Compaction imminent — persist important knowledge to veclayer now!' >&2"
+            "command": "command -v veclayer >/dev/null 2>&1 && echo 'Compaction imminent — persist important knowledge to veclayer now!' >&2",
+            "type": "command"
           }
         ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "veclayer context",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "startup|resume"
       }
     ],
     "Stop": [
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "command -v veclayer >/dev/null 2>&1 && veclayer stale --output llm-nudge"
+            "command": "command -v veclayer >/dev/null 2>&1 && veclayer stale --output llm-nudge",
+            "type": "command"
           }
         ]
       }
+    ]
+  },
+  "mcpServers": {
+    "veclayer": {
+      "args": [
+        "serve",
+        "--mcp-stdio"
+      ],
+      "command": "veclayer"
+    }
+  },
+  "permissions": {
+    "allow": [
+      "mcp__veclayer__*"
     ]
   }
 }
