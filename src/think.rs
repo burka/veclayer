@@ -18,7 +18,7 @@ use crate::util::preview;
 use crate::{Embedder, Result, VectorStore};
 
 /// Result of a think cycle.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ThinkResult {
     /// ID of the narrative entry (if generated).
     pub narrative_id: Option<String>,
@@ -70,6 +70,8 @@ struct Learning {
 fn default_learnings_perspective() -> Vec<String> {
     vec!["learnings".to_string()]
 }
+
+const UNTITLED: &str = "(untitled)";
 
 // --- System prompt ---
 
@@ -147,10 +149,7 @@ pub async fn prepare(
         .core_entries
         .iter()
         .map(|e| {
-            let heading = e
-                .heading
-                .clone()
-                .unwrap_or_else(|| "(untitled)".to_string());
+            let heading = e.heading.clone().unwrap_or_else(|| UNTITLED.to_string());
             (e.id.clone(), heading)
         })
         .collect();
@@ -178,12 +177,7 @@ pub async fn execute<L: LlmProvider>(
 
     // Nothing to think about if memory is empty
     if snapshot.core_entries.is_empty() {
-        return Ok(ThinkResult {
-            narrative_id: None,
-            consolidations_added: 0,
-            learnings_added: 0,
-            entries_created: vec![],
-        });
+        return Ok(ThinkResult::default());
     }
 
     // 2. Build prompt with full entry IDs for reference
@@ -312,7 +306,7 @@ fn build_prompt(priming: &str, snapshot: &IdentitySnapshot) -> String {
     prompt.push_str("\n## Entry ID Reference\n\n");
     prompt.push_str("Use these full IDs when referencing entries in consolidations:\n\n");
     for entry in &snapshot.core_entries {
-        let heading = entry.heading.as_deref().unwrap_or("(untitled)");
+        let heading = entry.heading.as_deref().unwrap_or(UNTITLED);
         prompt.push_str(&format!("- `{}` — {}\n", entry.id, heading));
     }
 

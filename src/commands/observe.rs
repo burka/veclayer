@@ -199,7 +199,10 @@ pub async fn context(data_dir: &Path) -> Result<()> {
 
     let snapshot = match crate::identity::compute_identity(&store, data_dir, None, None).await {
         Ok(s) => s,
-        Err(_) => return Ok(()),
+        Err(e) => {
+            eprintln!("veclayer context: failed to compute identity: {e}");
+            return Ok(());
+        }
     };
 
     let priming = crate::identity::generate_priming(&snapshot);

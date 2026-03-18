@@ -111,9 +111,9 @@ pub fn setup_claude() {
     println!("Configures the following in .claude/settings.json:\n");
     println!("  MCP server:  veclayer serve --mcp-stdio");
     println!("               Exposes recall, store, focus, think and other tools via MCP.\n");
-    println!("  SessionStart → veclayer context");
+    println!("  SessionStart → {SESSION_START_COMMAND}");
     println!("               Injects a memory briefing at the start of each session.\n");
-    println!("  PostToolUse  → veclayer observe");
+    println!("  PostToolUse  → {POST_TOOL_USE_COMMAND}");
     println!("               Captures compact observations for Bash/Write/Edit/WebFetch/WebSearch/Agent.\n");
     println!("  PreCompact   → compaction warning");
     println!("               Nudges the agent to persist important knowledge before context is compacted.\n");
