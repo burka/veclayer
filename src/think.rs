@@ -104,11 +104,13 @@ Respond ONLY with valid JSON (no markdown fences, no commentary):
 Rules:
 - Use full 64-character entry IDs from the briefing, not short IDs
 - Narrative should be 2-3 sentences in first person
-- Only consolidate entries that genuinely belong together
+- Only consolidate entries that genuinely belong together (same project or topic)
 - Learnings should be genuine meta-observations, not repetitions of existing entries
 - If nothing needs consolidation, return empty arrays
 - Keep each consolidation to 1-3 concise sentences
-- perspectives must use existing perspective IDs from the briefing"#;
+- perspectives must use existing perspective IDs from the briefing
+- Look for contradictions: entries that conflict with each other. Note them in learnings
+- Look for progress patterns: tasks started, completed, or stalled across entries"#;
 
 // --- Preparation (LLM-free) ---
 
