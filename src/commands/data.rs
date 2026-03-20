@@ -7,8 +7,9 @@ use super::*;
 /// Export all entries (or filtered by perspective) to JSONL on stdout.
 pub async fn export_entries(data_dir: &Path, options: &ExportOptions) -> Result<()> {
     let store = StoreBackend::open_metadata(data_dir, true).await?;
+    let perspective_refs: Vec<&str> = options.perspectives.iter().map(String::as_str).collect();
     let mut entries = store
-        .list_entries(options.perspective.as_deref(), None, None, 10_000)
+        .list_entries(&perspective_refs, None, None, 10_000)
         .await?;
 
     entries.sort_by(|a, b| a.id.cmp(&b.id));
@@ -179,7 +180,7 @@ mod tests {
     #[test]
     fn test_export_options_default() {
         let opts = ExportOptions::default();
-        assert!(opts.perspective.is_none());
+        assert!(opts.perspectives.is_empty());
     }
 
     #[test]
@@ -206,7 +207,7 @@ mod tests {
         let jsonl_file = dir.path().join("export.jsonl");
         let entry_count = {
             let store = StoreBackend::open_metadata(dir.path(), true).await?;
-            let entries = store.list_entries(None, None, None, 10_000).await?;
+            let entries = store.list_entries(&[], None, None, 10_000).await?;
             let jsonl: String = entries
                 .iter()
                 .map(|c| serde_json::to_string(&c.clone().without_embedding()).unwrap() + "\n")
@@ -240,7 +241,7 @@ mod tests {
                 ])
                 .await?;
 
-            let entries = store.list_entries(None, None, None, 10_000).await?;
+            let entries = store.list_entries(&[], None, None, 10_000).await?;
             let mut sorted = entries.clone();
             sorted.sort_by(|a, b| a.id.cmp(&b.id));
             let jsonl: String = sorted
@@ -261,7 +262,7 @@ mod tests {
         {
             let target_store = StoreBackend::open_metadata(target_dir.path(), true).await?;
             let imported_entries = target_store
-                .list_entries(None, None, None, usize::MAX)
+                .list_entries(&[], None, None, usize::MAX)
                 .await?;
             assert_eq!(imported_entries.len(), 2);
         }
@@ -334,7 +335,7 @@ mod tests {
             .await?;
 
         let opts = ExportOptions {
-            perspective: Some("decisions".to_string()),
+            perspectives: vec!["decisions".to_string()],
         };
         export_entries(dir.path(), &opts).await?;
         Ok(())

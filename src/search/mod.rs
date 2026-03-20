@@ -70,8 +70,8 @@ pub struct SearchConfig {
     /// Blending factor: 0.0 = pure vector similarity, 1.0 = pure relevancy.
     /// Default: 0.15 (or 0.3 when recency window is active).
     pub recency_alpha: f32,
-    /// Optional perspective filter. Only return entries in this perspective.
-    pub perspective: Option<String>,
+    /// Perspective filters. Only return entries in any of these perspectives. Empty = no filter.
+    pub perspectives: Vec<String>,
     /// Weight for salience within the relevancy signal [0.0, 1.0].
     /// 0.0 = ignore salience (pure recency), 1.0 = ignore recency (pure salience).
     /// Default: 0.3
@@ -90,7 +90,7 @@ impl Default for SearchConfig {
             deep: false,
             recency_window: None,
             recency_alpha: DEFAULT_RECENCY_ALPHA,
-            perspective: None,
+            perspectives: Vec::new(),
             salience_weight: DEFAULT_SALIENCE_WEIGHT,
             min_salience: None,
         }
@@ -138,9 +138,9 @@ impl SearchConfig {
         })
     }
 
-    /// Add a perspective filter to this config.
-    pub fn with_perspective(mut self, perspective: Option<String>) -> Self {
-        self.perspective = perspective;
+    /// Add perspective filters to this config. Empty vec = no filter.
+    pub fn with_perspectives(mut self, perspectives: Vec<String>) -> Self {
+        self.perspectives = perspectives;
         self
     }
 
@@ -232,7 +232,7 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
                 &query_embedding,
                 self.config.top_k,
                 Some(ChunkLevel::H1),
-                None,
+                &[],
             )
             .await?;
 
@@ -244,7 +244,7 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
                     &query_embedding,
                     self.config.top_k - results.len(),
                     Some(ChunkLevel::H2),
-                    None,
+                    &[],
                 )
                 .await?;
             results.extend(h2_results);
@@ -268,14 +268,15 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
             self.config.top_k * 2
         };
 
-        // Step 1: Find top-level matches (optionally filtered by perspective)
+        // Step 1: Find top-level matches (optionally filtered by perspectives)
+        let perspective_refs: Vec<&str> = self.config.perspectives.iter().map(String::as_str).collect();
         let top_results = self
             .store
             .search(
                 &query_embedding,
                 fetch_k,
                 None,
-                self.config.perspective.as_deref(),
+                &perspective_refs,
             )
             .await?;
 
@@ -313,13 +314,14 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
         // +1 to account for the source entry itself appearing in ANN results (excluded below)
         let fetch_k = limit + 1;
 
+        let perspective_refs: Vec<&str> = self.config.perspectives.iter().map(String::as_str).collect();
         let top_results = self
             .store
             .search(
                 &query_embedding,
                 fetch_k,
                 None,
-                self.config.perspective.as_deref(),
+                &perspective_refs,
             )
             .await?;
 
@@ -556,7 +558,7 @@ mod tests {
             _query_embedding: &[f32],
             limit: usize,
             level_filter: Option<ChunkLevel>,
-            perspective: Option<&str>,
+            perspectives: &[&str],
         ) -> Result<Vec<SearchResult>> {
             let results = self.search_results.lock().unwrap();
             let filtered: Vec<_> = results
@@ -567,8 +569,8 @@ mod tests {
                             return false;
                         }
                     }
-                    if let Some(p) = perspective {
-                        if !r.chunk.perspectives.iter().any(|pp| pp == p) {
+                    if !perspectives.is_empty() {
+                        if !perspectives.iter().any(|p| r.chunk.perspectives.iter().any(|pp| pp == p)) {
                             return false;
                         }
                     }
@@ -660,7 +662,7 @@ mod tests {
 
         async fn list_entries(
             &self,
-            _perspective: Option<&str>,
+            _perspectives: &[&str],
             _since: Option<i64>,
             _until: Option<i64>,
             _limit: usize,
@@ -1297,7 +1299,7 @@ mod tests {
         assert!(config.deep);
         assert!(config.recency_window.is_none());
         assert_eq!(config.recency_alpha, DEFAULT_RECENCY_ALPHA);
-        assert!(config.perspective.is_none());
+        assert!(config.perspectives.is_empty());
         assert_eq!(config.salience_weight, DEFAULT_SALIENCE_WEIGHT);
         // Inherited defaults
         assert_eq!(config.children_k, 3);
@@ -1321,14 +1323,14 @@ mod tests {
     #[test]
     fn test_with_perspective() {
         let config =
-            SearchConfig::for_query(5, false, None).with_perspective(Some("decisions".to_string()));
-        assert_eq!(config.perspective.as_deref(), Some("decisions"));
+            SearchConfig::for_query(5, false, None).with_perspectives(vec!["decisions".to_string()]);
+        assert_eq!(config.perspectives, vec!["decisions".to_string()]);
     }
 
     #[test]
     fn test_with_perspective_none() {
-        let config = SearchConfig::for_query(5, false, None).with_perspective(None);
-        assert!(config.perspective.is_none());
+        let config = SearchConfig::for_query(5, false, None).with_perspectives(vec![]);
+        assert!(config.perspectives.is_empty());
     }
 
     /// Helper: create a minimal chunk for blend_score tests.
@@ -1624,7 +1626,7 @@ mod tests {
             ]);
 
             let config = SearchConfig::for_query(10, false, None)
-                .with_perspective(Some("decisions".to_string()));
+                .with_perspectives(vec!["decisions".to_string()]);
             let search = HierarchicalSearch::new(store, MockEmbedder::new(3)).with_config(config);
             let results = search.search("test").await.unwrap();
             assert_eq!(results.len(), 1);

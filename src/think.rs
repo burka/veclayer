@@ -391,7 +391,7 @@ pub async fn discover_unlinked_pairs(
     const SCAN_LIMIT: usize = 100;
     const NEIGHBORS_PER_ENTRY: usize = 5;
 
-    let candidates = store.list_entries(None, None, None, SCAN_LIMIT).await?;
+    let candidates = store.list_entries(&[], None, None, SCAN_LIMIT).await?;
 
     if candidates.is_empty() {
         return Ok("No entries in the store. Nothing to discover.".to_string());
@@ -408,7 +408,7 @@ pub async fn discover_unlinked_pairs(
         };
 
         let neighbors = store
-            .search(embedding, NEIGHBORS_PER_ENTRY + 1, None, None)
+            .search(embedding, NEIGHBORS_PER_ENTRY + 1, None, &[])
             .await?;
 
         for neighbor_result in &neighbors {

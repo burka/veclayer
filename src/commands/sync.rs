@@ -262,8 +262,8 @@ async fn index_entries(
 /// Filters that can be applied when migrating entries from LanceDB to git.
 #[derive(Debug, Default)]
 pub struct MigrateFilters {
-    /// Only include entries with this perspective.
-    pub perspective: Option<String>,
+    /// Only include entries matching any of these perspectives. Empty = no filter.
+    pub perspectives: Vec<String>,
     /// Exclude entries with this perspective.
     pub exclude_perspective: Option<String>,
     /// Only include entries created after this Unix epoch timestamp.
@@ -273,8 +273,8 @@ pub struct MigrateFilters {
 impl MigrateFilters {
     /// Return `true` if `entry` passes all active filters.
     pub fn accepts(&self, entry: &crate::HierarchicalChunk) -> bool {
-        if let Some(ref p) = self.perspective {
-            if !entry.perspectives.contains(p) {
+        if !self.perspectives.is_empty() {
+            if !self.perspectives.iter().any(|p| entry.perspectives.contains(p)) {
                 return false;
             }
         }
@@ -307,7 +307,7 @@ pub async fn migrate(data_dir: &Path, filters: &MigrateFilters) -> crate::Result
     let (_git_dir, git_store) = open_memory_store()?;
 
     let store = crate::store::StoreBackend::open_metadata(data_dir, true).await?;
-    let all_chunks = store.list_entries(None, None, None, usize::MAX).await?;
+    let all_chunks = store.list_entries(&[], None, None, usize::MAX).await?;
 
     if all_chunks.is_empty() {
         println!("No local entries to migrate.");
@@ -584,13 +584,13 @@ mod tests {
         .with_perspectives(vec!["decisions".to_string()]);
 
         let filters = MigrateFilters {
-            perspective: Some("decisions".to_string()),
+            perspectives: vec!["decisions".to_string()],
             ..Default::default()
         };
         assert!(filters.accepts(&chunk));
 
         let filters = MigrateFilters {
-            perspective: Some("knowledge".to_string()),
+            perspectives: vec!["knowledge".to_string()],
             ..Default::default()
         };
         assert!(!filters.accepts(&chunk));
@@ -663,7 +663,7 @@ mod tests {
 
         // Both conditions pass
         let filters = MigrateFilters {
-            perspective: Some("decisions".to_string()),
+            perspectives: vec!["decisions".to_string()],
             since: Some(500_000),
             ..Default::default()
         };
@@ -671,7 +671,7 @@ mod tests {
 
         // Perspective matches but since fails
         let filters = MigrateFilters {
-            perspective: Some("decisions".to_string()),
+            perspectives: vec!["decisions".to_string()],
             since: Some(2_000_000),
             ..Default::default()
         };
@@ -679,7 +679,7 @@ mod tests {
 
         // since passes but perspective fails
         let filters = MigrateFilters {
-            perspective: Some("knowledge".to_string()),
+            perspectives: vec!["knowledge".to_string()],
             since: Some(500_000),
             ..Default::default()
         };
@@ -700,7 +700,7 @@ mod tests {
 
         // Require perspective "knowledge" (not present) — rejected
         let filters = MigrateFilters {
-            perspective: Some("knowledge".to_string()),
+            perspectives: vec!["knowledge".to_string()],
             exclude_perspective: Some("learnings".to_string()),
             ..Default::default()
         };
@@ -723,7 +723,7 @@ mod tests {
 
         // Require specific perspective → rejects (no perspectives on chunk)
         let filters = MigrateFilters {
-            perspective: Some("decisions".to_string()),
+            perspectives: vec!["decisions".to_string()],
             ..Default::default()
         };
         assert!(!filters.accepts(&chunk));

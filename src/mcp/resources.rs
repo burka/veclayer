@@ -197,7 +197,7 @@ async fn read_recent(
     branch: Option<&str>,
 ) -> Result<ReadResourceResult, rmcp::ErrorData> {
     let entries = store
-        .list_entries(None, None, None, 20)
+        .list_entries(&[], None, None, 20)
         .await
         .map_err(|e| {
             rmcp::ErrorData::internal_error(format!("Failed to list entries: {e}"), None)
@@ -266,7 +266,7 @@ async fn read_perspective_entries(
     }
 
     let entries = store
-        .list_entries(Some(perspective_id), None, None, 20)
+        .list_entries(&[perspective_id], None, None, 20)
         .await
         .map_err(|e| {
             rmcp::ErrorData::internal_error(format!("Failed to list entries: {e}"), None)

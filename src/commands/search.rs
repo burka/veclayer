@@ -113,7 +113,7 @@ pub async fn search_results(
     };
 
     let config = SearchConfig::try_for_query(fetch_limit, options.deep, options.recent.as_deref())?
-        .with_perspective(options.perspective.clone())
+        .with_perspectives(options.perspectives.clone())
         .with_min_salience(options.min_salience)
         .with_min_score(options.min_score);
 
@@ -306,9 +306,10 @@ pub async fn browse(data_dir: &Path, options: &SearchOptions) -> Result<()> {
         options.top_k
     };
 
+    let perspective_refs: Vec<&str> = options.perspectives.iter().map(String::as_str).collect();
     let all_entries = store
         .list_entries(
-            options.perspective.as_deref(),
+            &perspective_refs,
             since_epoch,
             until_epoch,
             fetch_limit,
@@ -436,7 +437,7 @@ mod tests {
     async fn test_browse_with_perspective_filter_empty_store() -> Result<()> {
         let dir = TempDir::new()?;
         let opts = SearchOptions {
-            perspective: Some("decisions".to_string()),
+            perspectives: vec!["decisions".to_string()],
             ..Default::default()
         };
         browse(dir.path(), &opts).await?;
@@ -453,7 +454,7 @@ mod tests {
             subtree: Some("parent-id".to_string()),
             deep: true,
             recent: Some("1h".to_string()),
-            perspective: Some("decisions".to_string()),
+            perspectives: vec!["decisions".to_string()],
             similar_to: None,
             min_salience: Some(0.5),
             min_score: Some(0.3),
@@ -466,7 +467,7 @@ mod tests {
         assert_eq!(opts.subtree.as_deref(), Some("parent-id"));
         assert!(opts.deep);
         assert_eq!(opts.recent.as_deref(), Some("1h"));
-        assert_eq!(opts.perspective.as_deref(), Some("decisions"));
+        assert_eq!(opts.perspectives, vec!["decisions".to_string()]);
         assert!(opts.similar_to.is_none());
         assert_eq!(opts.min_salience, Some(0.5));
         assert_eq!(opts.min_score, Some(0.3));

@@ -832,7 +832,7 @@ impl VectorStore for LanceStore {
         query_embedding: &[f32],
         limit: usize,
         level_filter: Option<ChunkLevel>,
-        perspective: Option<&str>,
+        perspectives: &[&str],
     ) -> Result<Vec<SearchResult>> {
         let table = self.get_table().await?;
 
@@ -846,9 +846,12 @@ impl VectorStore for LanceStore {
         if let Some(level) = level_filter {
             query = query.only_if(format!("level = {}", level.depth()));
         }
-        if let Some(p) = perspective {
-            let escaped = sql_escape(p);
-            query = query.only_if(format!("perspectives LIKE '%\"{}%'", escaped));
+        if !perspectives.is_empty() {
+            let clauses: Vec<String> = perspectives
+                .iter()
+                .map(|p| format!("perspectives LIKE '%\"{}%'", sql_escape(p)))
+                .collect();
+            query = query.only_if(format!("({})", clauses.join(" OR ")));
         }
 
         let results = query
@@ -1185,7 +1188,7 @@ impl VectorStore for LanceStore {
 
     async fn list_entries(
         &self,
-        perspective: Option<&str>,
+        perspectives: &[&str],
         since: Option<i64>,
         until: Option<i64>,
         limit: usize,
@@ -1193,9 +1196,12 @@ impl VectorStore for LanceStore {
         let table = self.get_table().await?;
 
         let mut filters = Vec::new();
-        if let Some(p) = perspective {
-            let escaped = sql_escape(p);
-            filters.push(format!("perspectives LIKE '%\"{}%'", escaped));
+        if !perspectives.is_empty() {
+            let clauses: Vec<String> = perspectives
+                .iter()
+                .map(|p| format!("perspectives LIKE '%\"{}%'", sql_escape(p)))
+                .collect();
+            filters.push(format!("({})", clauses.join(" OR ")));
         }
         if let Some(s) = since {
             filters.push(format!("created_at >= {}", s));
@@ -1459,7 +1465,7 @@ mod tests {
             .unwrap();
 
         let query_embedding = vec![0.1; 384];
-        let results = store.search(&query_embedding, 2, None, None).await.unwrap();
+        let results = store.search(&query_embedding, 2, None, &[]).await.unwrap();
 
         assert_eq!(results.len(), 2);
         assert!(results[0].score >= 0.0 && results[0].score <= 1.0);
@@ -1480,7 +1486,7 @@ mod tests {
 
         let query_embedding = vec![0.1; 384];
         let results = store
-            .search(&query_embedding, 10, Some(ChunkLevel::H1), None)
+            .search(&query_embedding, 10, Some(ChunkLevel::H1), &[])
             .await
             .unwrap();
 
@@ -1714,7 +1720,7 @@ mod tests {
 
         // Vector search should only return the embedded chunk
         let query = vec![0.1f32; 384];
-        let results = store.search(&query, 10, None, None).await.unwrap();
+        let results = store.search(&query, 10, None, &[]).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].chunk.id, "emb-1");
     }
@@ -1749,7 +1755,7 @@ mod tests {
 
         // Not searchable yet
         let query = vec![0.1f32; 384];
-        let results = store.search(&query, 10, None, None).await.unwrap();
+        let results = store.search(&query, 10, None, &[]).await.unwrap();
         assert!(results.is_empty());
 
         // Update with real embedding
@@ -1759,7 +1765,7 @@ mod tests {
             .unwrap();
 
         // Now searchable
-        let results = store.search(&query, 10, None, None).await.unwrap();
+        let results = store.search(&query, 10, None, &[]).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].chunk.id, "upd-1");
         assert!(results[0].chunk.embedding.is_some());
@@ -2092,7 +2098,7 @@ mod tests {
     async fn test_list_entries_empty() {
         let (store, _temp) = create_test_store().await;
 
-        let result = store.list_entries(None, None, None, 10).await.unwrap();
+        let result = store.list_entries(&[], None, None, 10).await.unwrap();
         assert!(result.is_empty());
     }
 
@@ -2114,7 +2120,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = store.list_entries(None, None, None, 10).await.unwrap();
+        let result = store.list_entries(&[], None, None, 10).await.unwrap();
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].id, "list-3");
         assert_eq!(result[1].id, "list-2");
@@ -2134,7 +2140,7 @@ mod tests {
         store.insert_chunks(vec![chunk1, chunk2]).await.unwrap();
 
         let result = store
-            .list_entries(Some("decisions"), None, None, 10)
+            .list_entries(&["decisions"], None, None, 10)
             .await
             .unwrap();
         assert_eq!(result.len(), 1);
@@ -2160,7 +2166,7 @@ mod tests {
             .unwrap();
 
         let result = store
-            .list_entries(None, Some(1500), Some(2500), 10)
+            .list_entries(&[], Some(1500), Some(2500), 10)
             .await
             .unwrap();
         assert_eq!(result.len(), 1);
@@ -2185,7 +2191,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = store.list_entries(None, None, None, 2).await.unwrap();
+        let result = store.list_entries(&[], None, None, 2).await.unwrap();
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].id, "ll-3");
         assert_eq!(result[1].id, "ll-2");

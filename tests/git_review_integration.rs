@@ -311,7 +311,7 @@ fn migrate_filters_no_filters_accept_all() {
     let filters = MigrateFilters::default();
     // We verify the behaviour indirectly: MigrateFilters with no fields set
     // should produce a struct whose public fields are all None.
-    assert!(filters.perspective.is_none());
+    assert!(filters.perspectives.is_empty());
     assert!(filters.exclude_perspective.is_none());
     assert!(filters.since.is_none());
 }
@@ -320,7 +320,7 @@ fn migrate_filters_no_filters_accept_all() {
 #[test]
 fn migrate_filters_include_perspective_matches() {
     let filters = MigrateFilters {
-        perspective: Some("decisions".to_string()),
+        perspectives: vec!["decisions".to_string()],
         ..Default::default()
     };
 
@@ -403,11 +403,11 @@ fn migrate_filters_since_timestamp_stored() {
 #[test]
 fn migrate_filters_combined_fields_independent() {
     let filters = MigrateFilters {
-        perspective: Some("decisions".to_string()),
+        perspectives: vec!["decisions".to_string()],
         since: Some(500_000),
         ..Default::default()
     };
-    assert_eq!(filters.perspective.as_deref(), Some("decisions"));
+    assert_eq!(filters.perspectives, vec!["decisions".to_string()]);
     assert_eq!(filters.since, Some(500_000));
     assert!(filters.exclude_perspective.is_none());
 }

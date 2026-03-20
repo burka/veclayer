@@ -379,10 +379,10 @@ impl VectorStore for SqliteStore {
         query_embedding: &[f32],
         limit: usize,
         level_filter: Option<ChunkLevel>,
-        perspective: Option<&str>,
+        perspectives: &[&str],
     ) -> impl std::future::Future<Output = Result<Vec<SearchResult>>> + Send {
         let query_vec = query_embedding.to_vec();
-        let perspective_owned = perspective.map(str::to_owned);
+        let perspectives_owned: Vec<String> = perspectives.iter().map(|s| s.to_string()).collect();
 
         self.with_conn(move |conn| {
             let mut sql = String::from("SELECT * FROM chunks WHERE embedding_status = 'embedded'");
@@ -391,12 +391,12 @@ impl VectorStore for SqliteStore {
                 sql.push_str(&format!(" AND level = {}", level.0));
             }
 
-            if let Some(ref p) = perspective_owned {
-                let escaped = escape_like(p);
-                sql.push_str(&format!(
-                    " AND perspectives LIKE '%\"{}\"%' ESCAPE '\\'",
-                    escaped
-                ));
+            if !perspectives_owned.is_empty() {
+                let clauses: Vec<String> = perspectives_owned
+                    .iter()
+                    .map(|p| format!("perspectives LIKE '%\"{}\"%' ESCAPE '\\'", escape_like(p)))
+                    .collect();
+                sql.push_str(&format!(" AND ({})", clauses.join(" OR ")));
             }
 
             let mut stmt = conn
@@ -753,21 +753,24 @@ impl VectorStore for SqliteStore {
 
     fn list_entries(
         &self,
-        perspective: Option<&str>,
+        perspectives: &[&str],
         since: Option<i64>,
         until: Option<i64>,
         limit: usize,
     ) -> impl std::future::Future<Output = Result<Vec<HierarchicalChunk>>> + Send {
-        let perspective_owned = perspective.map(str::to_owned);
+        let perspectives_owned: Vec<String> = perspectives.iter().map(|s| s.to_string()).collect();
 
         self.with_conn(move |conn| {
             let mut conditions: Vec<String> = Vec::new();
             let mut values: Vec<i64> = Vec::new();
             let mut idx = 1usize;
 
-            if let Some(ref p) = perspective_owned {
-                let escaped = escape_like(p);
-                conditions.push(format!("perspectives LIKE '%\"{}\"%' ESCAPE '\\'", escaped));
+            if !perspectives_owned.is_empty() {
+                let clauses: Vec<String> = perspectives_owned
+                    .iter()
+                    .map(|p| format!("perspectives LIKE '%\"{}\"%' ESCAPE '\\'", escape_like(p)))
+                    .collect();
+                conditions.push(format!("({})", clauses.join(" OR ")));
             }
             if let Some(ts) = since {
                 conditions.push(format!("created_at >= ?{idx}"));
@@ -952,7 +955,7 @@ mod tests {
 
         // Unfiltered search — query is close to [1, 0, 0, 0]
         let results = store
-            .search(&[1.0, 0.0, 0.0, 0.0], 10, None, None)
+            .search(&[1.0, 0.0, 0.0, 0.0], 10, None, &[])
             .await
             .expect("search");
 
@@ -960,7 +963,7 @@ mod tests {
 
         // Perspective-filtered: only "decisions"
         let filtered = store
-            .search(&[1.0, 0.0, 0.0, 0.0], 10, None, Some("decisions"))
+            .search(&[1.0, 0.0, 0.0, 0.0], 10, None, &["decisions"])
             .await
             .expect("search with perspective");
 
@@ -972,7 +975,7 @@ mod tests {
 
         // Level filter — level 2 returns nothing (all inserted at H1 = depth 1)
         let level_filtered = store
-            .search(&[1.0, 0.0, 0.0, 0.0], 10, Some(ChunkLevel::H2), None)
+            .search(&[1.0, 0.0, 0.0, 0.0], 10, Some(ChunkLevel::H2), &[])
             .await
             .expect("level filter search");
 
@@ -1080,7 +1083,7 @@ mod tests {
 
         // Should now be searchable
         let results = store
-            .search(&[0.1, 0.2, 0.3, 0.4], 5, None, None)
+            .search(&[0.1, 0.2, 0.3, 0.4], 5, None, &[])
             .await
             .expect("search after batch update");
 
@@ -1225,7 +1228,7 @@ mod tests {
         let (store, _dir) = create_test_store().await;
 
         let results = store
-            .search(&[1.0, 0.0, 0.0, 0.0], 10, None, None)
+            .search(&[1.0, 0.0, 0.0, 0.0], 10, None, &[])
             .await
             .expect("search");
 
@@ -1241,7 +1244,7 @@ mod tests {
         store.insert_chunks(vec![chunk]).await.expect("insert");
 
         let results = store
-            .search(&[1.0, 0.0, 0.0, 0.0], 10, None, None)
+            .search(&[1.0, 0.0, 0.0, 0.0], 10, None, &[])
             .await
             .expect("search");
 
@@ -1265,7 +1268,7 @@ mod tests {
         store.insert_chunks(chunks).await.expect("insert");
 
         let results = store
-            .search(&[1.0, 0.0, 0.0, 0.0], 3, None, None)
+            .search(&[1.0, 0.0, 0.0, 0.0], 3, None, &[])
             .await
             .expect("search");
 
@@ -1286,7 +1289,7 @@ mod tests {
             .expect("insert");
 
         let results = store
-            .search(&[1.0, 0.0, 0.0, 0.0], 10, None, None)
+            .search(&[1.0, 0.0, 0.0, 0.0], 10, None, &[])
             .await
             .expect("search");
 
@@ -1531,7 +1534,7 @@ mod tests {
             .expect("insert");
 
         let entries = store
-            .list_entries(None, None, None, 100)
+            .list_entries(&[], None, None, 100)
             .await
             .expect("list_entries");
 
@@ -1552,7 +1555,7 @@ mod tests {
         store.insert_chunks(chunks).await.expect("insert");
 
         let entries = store
-            .list_entries(None, None, None, 4)
+            .list_entries(&[], None, None, 4)
             .await
             .expect("list_entries");
 
@@ -1573,7 +1576,7 @@ mod tests {
             .expect("insert");
 
         let entries = store
-            .list_entries(Some("decisions"), None, None, 100)
+            .list_entries(&["decisions"], None, None, 100)
             .await
             .expect("list_entries");
 
@@ -1601,7 +1604,7 @@ mod tests {
             .expect("insert");
 
         let entries = store
-            .list_entries(None, Some(now - 500), None, 100)
+            .list_entries(&[], Some(now - 500), None, 100)
             .await
             .expect("list_entries since");
 
@@ -1629,7 +1632,7 @@ mod tests {
             .expect("insert");
 
         let entries = store
-            .list_entries(None, None, Some(now - 500), 100)
+            .list_entries(&[], None, Some(now - 500), 100)
             .await
             .expect("list_entries until");
 
@@ -1642,7 +1645,7 @@ mod tests {
         let (store, _dir) = create_test_store().await;
 
         let entries = store
-            .list_entries(None, None, None, 100)
+            .list_entries(&[], None, None, 100)
             .await
             .expect("list_entries");
 
@@ -1779,7 +1782,7 @@ mod tests {
 
         // Searching with a zero query should not panic (cosine of zero vector is undefined)
         let _results = store
-            .search(&[0.0, 0.0, 0.0, 0.0], 5, None, None)
+            .search(&[0.0, 0.0, 0.0, 0.0], 5, None, &[])
             .await
             .expect("search with zero vector");
     }

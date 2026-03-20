@@ -203,7 +203,7 @@ impl<E: Embedder> VecLayer<E> {
     /// Raw vector search without hierarchical enrichment.
     pub async fn search_raw(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         let embedding = self.embed_one(query)?;
-        self.store.search(&embedding, limit, None, None).await
+        self.store.search(&embedding, limit, None, &[]).await
     }
 
     /// Focus on a specific entry: returns it with its children.
@@ -259,14 +259,14 @@ impl<E: Embedder> VecLayer<E> {
         self.store.get_by_id_prefix(id).await
     }
 
-    /// List entries, optionally filtered by perspective.
+    /// List entries, optionally filtered by perspectives. Empty slice = no filter.
     pub async fn list(
         &self,
-        perspective: Option<&str>,
+        perspectives: &[&str],
         limit: usize,
     ) -> Result<Vec<HierarchicalChunk>> {
         self.store
-            .list_entries(perspective, None, None, limit)
+            .list_entries(perspectives, None, None, limit)
             .await
     }
 
@@ -530,11 +530,11 @@ mod tests {
                 .await
                 .unwrap();
 
-            let decisions = vl.list(Some("decisions"), 100).await.unwrap();
+            let decisions = vl.list(&["decisions"], 100).await.unwrap();
             assert_eq!(decisions.len(), 1);
             assert_eq!(decisions[0].content, "A decision");
 
-            let all = vl.list(None, 100).await.unwrap();
+            let all = vl.list(&[], 100).await.unwrap();
             assert_eq!(all.len(), 2);
         }
 

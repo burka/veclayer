@@ -43,13 +43,14 @@ pub trait VectorStore: Send + Sync {
     ) -> impl Future<Output = Result<()>> + Send;
 
     /// Search for similar chunks using a query embedding.
-    /// Optionally filter by perspective (entries tagged with that perspective).
+    /// Optionally filter by perspectives (entries tagged with any of the given perspectives).
+    /// Empty slice = no filter.
     fn search(
         &self,
         query_embedding: &[f32],
         limit: usize,
         level_filter: Option<ChunkLevel>,
-        perspective: Option<&str>,
+        perspectives: &[&str],
     ) -> impl Future<Output = Result<Vec<SearchResult>>> + Send;
 
     /// Get all children of a chunk by parent ID.
@@ -115,10 +116,11 @@ pub trait VectorStore: Send + Sync {
         limit: usize,
     ) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
 
-    /// List entries without vector search, optionally filtered by perspective and time range.
+    /// List entries without vector search, optionally filtered by perspectives and time range.
+    /// Empty slice = no filter.
     fn list_entries(
         &self,
-        perspective: Option<&str>,
+        perspectives: &[&str],
         since: Option<i64>,
         until: Option<i64>,
         limit: usize,
@@ -242,11 +244,11 @@ impl VectorStore for StoreBackend {
         query_embedding: &[f32],
         limit: usize,
         level_filter: Option<ChunkLevel>,
-        perspective: Option<&str>,
+        perspectives: &[&str],
     ) -> impl Future<Output = Result<Vec<SearchResult>>> + Send {
         dispatch!(
             self,
-            search(query_embedding, limit, level_filter, perspective)
+            search(query_embedding, limit, level_filter, perspectives)
         )
     }
 
@@ -326,12 +328,12 @@ impl VectorStore for StoreBackend {
 
     fn list_entries(
         &self,
-        perspective: Option<&str>,
+        perspectives: &[&str],
         since: Option<i64>,
         until: Option<i64>,
         limit: usize,
     ) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send {
-        dispatch!(self, list_entries(perspective, since, until, limit))
+        dispatch!(self, list_entries(perspectives, since, until, limit))
     }
 
     fn get_pending_embeddings(
@@ -356,7 +358,7 @@ impl VectorStore for StoreBackend {
 // Implement VectorStore for Arc<T> where T: VectorStore
 crate::arc_impl!(VectorStore {
     fn insert_chunks(&self, chunks: Vec<HierarchicalChunk>) -> impl Future<Output = Result<()>> + Send;
-    fn search(&self, query_embedding: &[f32], limit: usize, level_filter: Option<ChunkLevel>, perspective: Option<&str>) -> impl Future<Output = Result<Vec<SearchResult>>> + Send;
+    fn search(&self, query_embedding: &[f32], limit: usize, level_filter: Option<ChunkLevel>, perspectives: &[&str]) -> impl Future<Output = Result<Vec<SearchResult>>> + Send;
     fn get_children(&self, parent_id: &str) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
     fn get_by_id(&self, id: &str) -> impl Future<Output = Result<Option<HierarchicalChunk>>> + Send;
     fn get_by_id_prefix(&self, prefix: &str) -> impl Future<Output = Result<Option<HierarchicalChunk>>> + Send;
@@ -368,7 +370,7 @@ crate::arc_impl!(VectorStore {
     fn add_relation(&self, chunk_id: &str, relation: ChunkRelation) -> impl Future<Output = Result<()>> + Send;
     fn get_hot_chunks(&self, limit: usize) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
     fn get_stale_chunks(&self, stale_seconds: i64, limit: usize) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
-    fn list_entries(&self, perspective: Option<&str>, since: Option<i64>, until: Option<i64>, limit: usize) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
+    fn list_entries(&self, perspectives: &[&str], since: Option<i64>, until: Option<i64>, limit: usize) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
     fn get_pending_embeddings(&self, limit: usize) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
     fn batch_update_embeddings(&self, updates: Vec<(String, Vec<f32>)>) -> impl Future<Output = Result<()>> + Send;
     fn count_pending_embeddings(&self) -> impl Future<Output = Result<usize>> + Send;

@@ -179,7 +179,7 @@ pub struct SearchOptions {
     pub subtree: Option<String>,
     pub deep: bool,
     pub recent: Option<String>,
-    pub perspective: Option<String>,
+    pub perspectives: Vec<String>,
     pub similar_to: Option<String>,
     pub min_salience: Option<f32>,
     pub min_score: Option<f32>,
@@ -196,7 +196,7 @@ impl Default for SearchOptions {
             subtree: None,
             deep: false,
             recent: None,
-            perspective: None,
+            perspectives: Vec::new(),
             similar_to: None,
             min_salience: None,
             min_score: None,
@@ -264,7 +264,7 @@ impl Default for ServeOptions {
 /// Options for exporting entries to JSONL
 #[derive(Debug, Clone, Default)]
 pub struct ExportOptions {
-    pub perspective: Option<String>,
+    pub perspectives: Vec<String>,
 }
 
 /// Options for importing entries from JSONL

@@ -302,7 +302,7 @@ mod tests {
             _query_embedding: &[f32],
             _limit: usize,
             _level_filter: Option<ChunkLevel>,
-            _perspective: Option<&str>,
+            _perspectives: &[&str],
         ) -> Result<Vec<SearchResult>> {
             Ok(vec![])
         }
@@ -364,7 +364,7 @@ mod tests {
 
         async fn list_entries(
             &self,
-            _perspective: Option<&str>,
+            _perspectives: &[&str],
             _since: Option<i64>,
             _until: Option<i64>,
             _limit: usize,

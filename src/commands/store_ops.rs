@@ -240,7 +240,7 @@ pub async fn stale(data_dir: &Path, since: &str, output: &str, hooks_enabled: bo
 
     let store = StoreBackend::open_metadata(data_dir, true).await?;
     // list_entries returns newest-first; one entry is enough to check freshness.
-    let recent = store.list_entries(None, None, None, 1).await?;
+    let recent = store.list_entries(&[], None, None, 1).await?;
 
     let now = crate::chunk::now_epoch_secs();
 

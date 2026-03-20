@@ -339,7 +339,7 @@ pub async fn execute_recall(
         };
         let config =
             SearchConfig::try_for_query(fetch_limit, input.deep, input.recency.as_deref())?
-                .with_perspective(input.perspective.clone())
+                .with_perspectives(input.perspectives.clone().unwrap_or_default())
                 .with_min_salience(input.min_salience)
                 .with_min_score(input.min_score);
         let search =
@@ -372,7 +372,7 @@ pub async fn execute_recall(
             };
             let config =
                 SearchConfig::try_for_query(fetch_limit, input.deep, input.recency.as_deref())?
-                    .with_perspective(input.perspective.clone())
+                    .with_perspectives(input.perspectives.clone().unwrap_or_default())
                     .with_min_salience(input.min_salience)
                     .with_min_score(input.min_score);
             let search = HierarchicalSearch::new(Arc::clone(store), Arc::clone(embedder))
@@ -397,9 +397,10 @@ pub async fn execute_recall(
         _ => {
             // Browse mode: list entries without vector search
             let needs_client_filter = open_thread_ids.is_some() || project.is_some();
+            let perspectives_refs: Vec<&str> = input.perspectives.as_deref().unwrap_or_default().iter().map(String::as_str).collect();
             let entries = store
                 .list_entries(
-                    input.perspective.as_deref(),
+                    &perspectives_refs,
                     since_epoch,
                     until_epoch,
                     if needs_client_filter {
@@ -1769,7 +1770,7 @@ mod tests {
             limit: 10,
             deep: false,
             recency: None,
-            perspective: None,
+            perspectives: None,
             similar_to: None,
             min_salience: None,
             min_score: None,
@@ -1801,7 +1802,7 @@ mod tests {
             limit: 10,
             deep: false,
             recency: None,
-            perspective: None,
+            perspectives: None,
             similar_to: None,
             min_salience: None,
             min_score: None,
@@ -1846,7 +1847,7 @@ mod tests {
             limit: 10,
             deep: false,
             recency: None,
-            perspective: None,
+            perspectives: None,
             similar_to: None,
             min_salience: None,
             min_score: None,
@@ -1868,7 +1869,7 @@ mod tests {
             limit: 10,
             deep: false,
             recency: None,
-            perspective: None,
+            perspectives: None,
             similar_to: None,
             min_salience: None,
             min_score: None,
@@ -1896,7 +1897,7 @@ mod tests {
             limit: 10,
             deep: false,
             recency: None,
-            perspective: None,
+            perspectives: None,
             similar_to: None,
             min_salience: None,
             min_score: None,
@@ -2252,7 +2253,7 @@ mod tests {
         .await
         .unwrap();
 
-        let entries = store.list_entries(None, None, None, 10).await.unwrap();
+        let entries = store.list_entries(&[], None, None, 10).await.unwrap();
         assert_eq!(entries.len(), 1);
         assert!(
             entries[0]
@@ -2292,7 +2293,7 @@ mod tests {
         .await
         .unwrap();
 
-        let entries = store.list_entries(None, None, None, 10).await.unwrap();
+        let entries = store.list_entries(&[], None, None, 10).await.unwrap();
         assert_eq!(entries.len(), 1);
         assert!(
             !entries[0]
@@ -2360,7 +2361,7 @@ mod tests {
         let msg = result.as_str().unwrap();
         assert!(msg.contains("Stored 2 entries"), "got: {msg}");
 
-        let entries = store.list_entries(None, None, None, 10).await.unwrap();
+        let entries = store.list_entries(&[], None, None, 10).await.unwrap();
         assert_eq!(entries.len(), 2);
     }
 
@@ -2455,7 +2456,7 @@ mod tests {
         .await
         .unwrap();
 
-        let entries = store.list_entries(None, None, None, 10).await.unwrap();
+        let entries = store.list_entries(&[], None, None, 10).await.unwrap();
         assert_eq!(entries.len(), 1);
         let persp = &entries[0].perspectives;
         assert!(
@@ -3023,7 +3024,7 @@ mod tests {
             limit: 10,
             deep: false,
             recency: None,
-            perspective: None,
+            perspectives: None,
             similar_to: None,
             min_salience: None,
             min_score: None,
@@ -3073,7 +3074,7 @@ mod tests {
             limit: 10,
             deep: false,
             recency: None,
-            perspective: None,
+            perspectives: None,
             similar_to: None,
             min_salience: None,
             min_score: None,

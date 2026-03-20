@@ -86,9 +86,9 @@ pub struct RecallInput {
     /// Invalid values will return an error.
     #[serde(default)]
     pub recency: Option<String>,
-    /// Filter by perspective (e.g. "decisions", "learnings")
-    #[serde(default)]
-    pub perspective: Option<String>,
+    /// Filter by perspectives (e.g. ["decisions", "learnings"])
+    #[serde(default, deserialize_with = "string_or_option_vec")]
+    pub perspectives: Option<Vec<String>>,
     /// Find entries similar to this entry ID (uses entry's embedding for search)
     #[serde(default)]
     pub similar_to: Option<String>,

@@ -174,7 +174,7 @@ pub async fn compute_identity<S: VectorStore>(
 
         // Get all entries and find unique branch tags
         let all_entries = store
-            .list_entries(None, None, None, 1000)
+            .list_entries(&[], None, None, 1000)
             .await
             .unwrap_or_default();
 
@@ -386,7 +386,7 @@ fn discover_clusters(
 /// Scans all entries (not just hot ones) so that unresolved items are surfaced
 /// regardless of access count.
 pub async fn open_threads_from_store<S: VectorStore>(store: &S) -> crate::Result<Vec<OpenThread>> {
-    let all = store.list_entries(None, None, None, usize::MAX).await?;
+    let all = store.list_entries(&[], None, None, usize::MAX).await?;
     Ok(find_open_threads(&all))
 }
 

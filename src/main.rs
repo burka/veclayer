@@ -178,9 +178,9 @@ enum Commands {
         #[arg(long)]
         recent: Option<String>,
 
-        /// Filter by perspective (e.g. "decisions", "learnings")
-        #[arg(short = 'P', long)]
-        perspective: Option<String>,
+        /// Filter by perspective (repeatable, e.g. -P decisions -P learnings)
+        #[arg(short = 'P', long = "perspective")]
+        perspectives: Vec<String>,
 
         /// Search for entries similar to this entry ID (mutually exclusive with query)
         #[arg(long)]
@@ -296,9 +296,9 @@ enum Commands {
 
     /// Export all entries to JSONL (stdout), sorted by id
     Export {
-        /// Filter by perspective (e.g. "decisions", "learnings")
-        #[arg(short = 'P', long)]
-        perspective: Option<String>,
+        /// Filter by perspective (repeatable, e.g. -P decisions -P learnings)
+        #[arg(short = 'P', long = "perspective")]
+        perspectives: Vec<String>,
     },
 
     /// Import entries from a JSONL file (or stdin with "-")
@@ -417,9 +417,9 @@ open threads, and recent learnings."
         #[arg(long, value_name = "ID", conflicts_with_all = ["migrate", "pending", "push", "stage"])]
         reject: Option<String>,
 
-        /// Filter migrate to entries with this perspective
-        #[arg(long, value_name = "NAME")]
-        perspective: Option<String>,
+        /// Filter migrate to entries matching any of these perspectives (repeatable)
+        #[arg(long = "perspective", value_name = "NAME")]
+        perspectives: Vec<String>,
 
         /// Filter migrate to exclude entries with this perspective
         #[arg(long, value_name = "NAME")]
@@ -876,7 +876,7 @@ async fn main() -> Result<()> {
             subtree,
             deep,
             recent,
-            perspective,
+            perspectives,
             similar_to,
             min_salience,
             min_score,
@@ -890,7 +890,7 @@ async fn main() -> Result<()> {
                 subtree,
                 deep,
                 recent,
-                perspective,
+                perspectives,
                 similar_to,
                 min_salience,
                 min_score,
@@ -979,8 +979,8 @@ async fn main() -> Result<()> {
         Commands::Archive { ids } => {
             archive(&data_dir, &ids).await?;
         }
-        Commands::Export { perspective } => {
-            let options = ExportOptions { perspective };
+        Commands::Export { perspectives } => {
+            let options = ExportOptions { perspectives };
             export_entries(&data_dir, &options).await?;
         }
         Commands::Import { path } => {
@@ -1148,7 +1148,7 @@ async fn main() -> Result<()> {
             push,
             stage,
             reject,
-            perspective,
+            perspectives,
             exclude_perspective,
             since,
             dry_run,
@@ -1176,7 +1176,7 @@ async fn main() -> Result<()> {
             if migrate {
                 let since_ts = since.as_deref().and_then(veclayer::resolve::parse_temporal);
                 let filters = veclayer::commands::sync::MigrateFilters {
-                    perspective,
+                    perspectives,
                     exclude_perspective,
                     since: since_ts,
                 };
