@@ -1,4 +1,4 @@
-#![cfg(feature = "config")]
+#![cfg(feature = "cli")]
 //! Integration tests for the git memory review workflow.
 //!
 //! Covers: MemoryStore operations, PushMode behavior, MigrateFilters logic,

@@ -1930,6 +1930,7 @@ mod tests {
         chunk
     }
 
+    #[cfg(feature = "llm")]
     #[tokio::test]
     async fn test_discover_empty_store() {
         let (store, blob_store, dir) = make_test_store_with_dir().await;
@@ -1963,7 +1964,7 @@ mod tests {
         assert!(result.contains("Nothing to discover") || result.contains("No entries"));
     }
 
-    #[cfg(feature = "embedding-local")]
+    #[cfg(all(feature = "embedding-local", feature = "llm"))]
     #[tokio::test]
     async fn test_discover_finds_unlinked_similar_pair() {
         let (store, blob_store, dir) = make_test_store_with_dir().await;
@@ -2020,7 +2021,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "embedding-local")]
+    #[cfg(all(feature = "embedding-local", feature = "llm"))]
     #[tokio::test]
     async fn test_discover_skips_already_linked_pair() {
         let (store, blob_store, dir) = make_test_store_with_dir().await;

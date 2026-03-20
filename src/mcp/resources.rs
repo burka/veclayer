@@ -369,7 +369,7 @@ fn format_epoch(epoch: i64) -> String {
         .unwrap_or_else(|| "(unknown)".to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "store-lance"))]
 mod tests {
     use super::*;
     use tempfile::TempDir;

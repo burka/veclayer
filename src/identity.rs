@@ -636,7 +636,7 @@ pub fn generate_brief_priming(snapshot: &IdentitySnapshot) -> String {
     priming
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "store-lance"))]
 mod tests {
     use super::*;
     use crate::{ChunkLevel, ChunkRelation};
