@@ -139,7 +139,7 @@ pub use entry::{EmbeddingCache, Entry, StoredBlob};
 pub use error::{Error, Result};
 pub use facade::{FocusResult, StoreOptions, VecLayer};
 #[cfg(feature = "llm")]
-pub use llm::{LlmBackend, LlmProvider};
+pub use llm::{DynLlmProvider, LlmBackend, LlmProvider};
 #[cfg(feature = "parser")]
 pub use parser::DocumentParser;
 pub use salience::SalienceWeights;

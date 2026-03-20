@@ -29,7 +29,7 @@
 //! # }
 //! ```
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::blob_store::BlobStore;
@@ -47,9 +47,12 @@ use crate::{ChunkRelation, HierarchicalChunk, Result};
 /// and embedder directly via [`store()`](VecLayer::store_backend) and
 /// [`embedder()`](VecLayer::embedder).
 pub struct VecLayer<E: Embedder = Box<dyn Embedder>> {
+    data_dir: PathBuf,
     store: Arc<StoreBackend>,
     embedder: Arc<E>,
     blob_store: BlobStore,
+    #[cfg(feature = "llm")]
+    llm: std::sync::RwLock<Option<Arc<dyn crate::llm::DynLlmProvider>>>,
 }
 
 /// Options for storing an entry.
@@ -91,9 +94,12 @@ impl<E: Embedder> VecLayer<E> {
         let store = Arc::new(StoreBackend::open(data_dir, dimension, read_only).await?);
         let blob_store = BlobStore::open(data_dir)?;
         Ok(Self {
+            data_dir: data_dir.to_path_buf(),
             store,
             embedder: Arc::new(embedder),
             blob_store,
+            #[cfg(feature = "llm")]
+            llm: std::sync::RwLock::new(None),
         })
     }
 
@@ -119,9 +125,12 @@ impl<E: Embedder> VecLayer<E> {
         let store = Arc::new(StoreBackend::open_sqlite(data_dir, dimension, read_only).await?);
         let blob_store = BlobStore::open(data_dir)?;
         Ok(Self {
+            data_dir: data_dir.to_path_buf(),
             store,
             embedder: Arc::new(embedder),
             blob_store,
+            #[cfg(feature = "llm")]
+            llm: std::sync::RwLock::new(None),
         })
     }
 
@@ -162,6 +171,10 @@ impl<E: Embedder> VecLayer<E> {
         for perspective in &options.perspectives {
             chunk = chunk.with_perspective(perspective);
         }
+
+        // Record initial access so newly stored entries are "hot" (visible to
+        // identity/think cycles that use get_hot_chunks).
+        chunk.access_profile.record_access();
 
         let id = chunk.id.clone();
 
@@ -307,6 +320,62 @@ impl<E: Embedder> VecLayer<E> {
     /// Access the blob store.
     pub fn blob_store(&self) -> &BlobStore {
         &self.blob_store
+    }
+
+    /// Access the data directory path.
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
+    /// Set the LLM provider for think cycles.
+    ///
+    /// The provider is stored as a type-erased trait object and used by
+    /// [`think()`](Self::think). Can be called multiple times to swap providers.
+    #[cfg(feature = "llm")]
+    pub fn configure_llm(&self, llm: impl crate::llm::LlmProvider + 'static) {
+        *self.llm.write().unwrap() = Some(Arc::new(crate::llm::DynLlmProviderWrapper(llm)));
+    }
+
+    /// Run a think cycle using the configured LLM provider.
+    ///
+    /// Returns an error if no LLM has been configured via [`configure_llm()`](Self::configure_llm).
+    /// Use [`think_with()`](Self::think_with) for one-off calls with a specific provider.
+    #[cfg(feature = "llm")]
+    pub async fn think(&self) -> Result<crate::think::ThinkResult> {
+        let llm = {
+            let guard = self.llm.read().unwrap();
+            Arc::clone(
+                guard
+                    .as_ref()
+                    .ok_or_else(|| crate::Error::llm("no LLM configured — call configure_llm() first"))?,
+            )
+        }; // guard dropped here, before await
+        crate::think::execute_dyn(
+            self.store.as_ref(),
+            self.embedder.as_ref(),
+            llm.as_ref(),
+            &self.data_dir,
+            Some(&self.blob_store),
+        )
+        .await
+    }
+
+    /// Run a think cycle with a specific LLM provider (one-off override).
+    ///
+    /// Does not require or modify the configured LLM slot.
+    #[cfg(feature = "llm")]
+    pub async fn think_with(
+        &self,
+        llm: &dyn crate::llm::DynLlmProvider,
+    ) -> Result<crate::think::ThinkResult> {
+        crate::think::execute_dyn(
+            self.store.as_ref(),
+            self.embedder.as_ref(),
+            llm,
+            &self.data_dir,
+            Some(&self.blob_store),
+        )
+        .await
     }
 }
 

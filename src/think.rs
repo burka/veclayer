@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use crate::chunk::{ChunkRelation, EntryType, HierarchicalChunk};
 use crate::identity::{self, IdentitySnapshot};
-use crate::llm::{LlmProvider, Message};
+use crate::llm::{DynLlmProvider, LlmProvider, Message};
 use crate::store::StoreBackend;
 use crate::util::preview;
 use crate::{Embedder, Result, VectorStore};
@@ -175,7 +175,6 @@ pub async fn execute<L: LlmProvider>(
     let snapshot = identity::compute_identity(store, data_dir, None, None).await?;
     let priming = identity::generate_priming(&snapshot);
 
-    // Nothing to think about if memory is empty
     if snapshot.core_entries.is_empty() {
         return Ok(ThinkResult::default());
     }
@@ -188,10 +187,53 @@ pub async fn execute<L: LlmProvider>(
         .complete(&[Message::system(THINK_SYSTEM_PROMPT), Message::user(prompt)])
         .await?;
 
-    // 4. Parse response
-    let plan = parse_response(&response)?;
+    // 4. Parse and write back
+    write_think_results(store, embedder, &response, data_dir, blob_store).await
+}
 
-    // 5. Write back: create entries
+/// Execute one think cycle with a type-erased LLM provider.
+///
+/// Same as [`execute`] but accepts `&dyn DynLlmProvider` for use from
+/// the facade where the LLM is stored as a trait object.
+pub async fn execute_dyn(
+    store: &impl VectorStore,
+    embedder: &dyn Embedder,
+    llm: &dyn DynLlmProvider,
+    data_dir: &Path,
+    blob_store: Option<&crate::blob_store::BlobStore>,
+) -> Result<ThinkResult> {
+    // 1. Reflect: compute identity snapshot
+    let snapshot = identity::compute_identity(store, data_dir, None, None).await?;
+    let priming = identity::generate_priming(&snapshot);
+
+    if snapshot.core_entries.is_empty() {
+        return Ok(ThinkResult::default());
+    }
+
+    // 2. Build prompt with full entry IDs for reference
+    let prompt = build_prompt(&priming, &snapshot);
+
+    // 3. Call LLM (via type-erased DynLlmProvider)
+    let response = llm
+        .complete(&[Message::system(THINK_SYSTEM_PROMPT), Message::user(prompt)])
+        .await?;
+
+    // 4. Parse and write back
+    write_think_results(store, embedder, &response, data_dir, blob_store).await
+}
+
+// --- Helpers ---
+
+/// Parse LLM response and write entries (narrative, consolidations, learnings) to the store.
+async fn write_think_results(
+    store: &impl VectorStore,
+    embedder: &dyn Embedder,
+    response: &str,
+    data_dir: &Path,
+    blob_store: Option<&crate::blob_store::BlobStore>,
+) -> Result<ThinkResult> {
+    let plan = parse_response(response)?;
+
     let mut entries_created = Vec::new();
     let mut consolidations_added = 0;
     let mut learnings_added = 0;
@@ -227,7 +269,6 @@ pub async fn execute<L: LlmProvider>(
             continue;
         }
 
-        // Validate that referenced entries exist
         let valid_ids = validate_entry_ids(store, &consolidation.entry_ids).await;
         if valid_ids.is_empty() {
             continue;
@@ -284,7 +325,7 @@ pub async fn execute<L: LlmProvider>(
         learnings_added += 1;
     }
 
-    // 6. Compact: apply aging
+    // Compact: apply aging
     let aging_config = crate::aging::AgingConfig::load(data_dir);
     let _ = crate::aging::apply_aging(store, &aging_config).await;
 
@@ -295,8 +336,6 @@ pub async fn execute<L: LlmProvider>(
         entries_created,
     })
 }
-
-// --- Helpers ---
 
 /// Build the user prompt from priming + entry ID reference.
 fn build_prompt(priming: &str, snapshot: &IdentitySnapshot) -> String {

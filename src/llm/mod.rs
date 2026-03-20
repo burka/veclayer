@@ -59,6 +59,41 @@ pub trait LlmProvider: Send + Sync {
     fn name(&self) -> &str;
 }
 
+/// Object-safe version of [`LlmProvider`] for type-erased storage.
+///
+/// The main `LlmProvider` trait uses RPITIT (`-> impl Future`) which prevents
+/// `dyn LlmProvider`. This wrapper uses boxed futures for object safety,
+/// allowing `Box<dyn DynLlmProvider>` in the facade.
+pub trait DynLlmProvider: Send + Sync {
+    fn complete(
+        &self,
+        messages: &[Message],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::Result<String>> + Send + '_>>;
+
+    fn dyn_name(&self) -> &str;
+}
+
+/// Wrapper that adapts any [`LlmProvider`] into a [`DynLlmProvider`].
+///
+/// Use this to box a concrete `LlmProvider` for storage in the facade.
+pub struct DynLlmProviderWrapper<T>(pub T);
+
+impl<T: LlmProvider> DynLlmProvider for DynLlmProviderWrapper<T> {
+    fn complete(
+        &self,
+        messages: &[Message],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::Result<String>> + Send + '_>>
+    {
+        // Clone messages into an owned Vec so the future doesn't borrow the slice.
+        let owned: Vec<Message> = messages.to_vec();
+        Box::pin(async move { LlmProvider::complete(&self.0, &owned).await })
+    }
+
+    fn dyn_name(&self) -> &str {
+        LlmProvider::name(&self.0)
+    }
+}
+
 // LlmConfig lives in config.rs (not feature-gated). Re-export for convenience.
 pub use crate::config::LlmConfig;
 
