@@ -184,6 +184,17 @@ impl SearchConfig {
                 recency
             };
 
+            // Boost recently created entries to surface fresh knowledge
+            let age_secs = now_epoch_secs() - chunk.access_profile.created_at;
+            let creation_boost = if age_secs < 86400 {
+                0.05
+            } else if age_secs < 604_800 {
+                0.02
+            } else {
+                0.0
+            };
+            let relevancy_signal = relevancy_signal + creation_boost;
+
             vector_score * (1.0 - self.recency_alpha) + relevancy_signal * self.recency_alpha
         } else {
             vector_score
