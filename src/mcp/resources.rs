@@ -196,12 +196,9 @@ async fn read_recent(
     project: Option<&str>,
     branch: Option<&str>,
 ) -> Result<ReadResourceResult, rmcp::ErrorData> {
-    let entries = store
-        .list_entries(&[], None, None, 20)
-        .await
-        .map_err(|e| {
-            rmcp::ErrorData::internal_error(format!("Failed to list entries: {e}"), None)
-        })?;
+    let entries = store.list_entries(&[], None, None, 20).await.map_err(|e| {
+        rmcp::ErrorData::internal_error(format!("Failed to list entries: {e}"), None)
+    })?;
 
     let filtered: Vec<_> = entries
         .into_iter()

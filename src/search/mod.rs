@@ -269,15 +269,15 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
         };
 
         // Step 1: Find top-level matches (optionally filtered by perspectives)
-        let perspective_refs: Vec<&str> = self.config.perspectives.iter().map(String::as_str).collect();
+        let perspective_refs: Vec<&str> = self
+            .config
+            .perspectives
+            .iter()
+            .map(String::as_str)
+            .collect();
         let top_results = self
             .store
-            .search(
-                &query_embedding,
-                fetch_k,
-                None,
-                &perspective_refs,
-            )
+            .search(&query_embedding, fetch_k, None, &perspective_refs)
             .await?;
 
         self.process_results(top_results, &query_embedding, self.config.top_k, None)
@@ -314,15 +314,15 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
         // +1 to account for the source entry itself appearing in ANN results (excluded below)
         let fetch_k = limit + 1;
 
-        let perspective_refs: Vec<&str> = self.config.perspectives.iter().map(String::as_str).collect();
+        let perspective_refs: Vec<&str> = self
+            .config
+            .perspectives
+            .iter()
+            .map(String::as_str)
+            .collect();
         let top_results = self
             .store
-            .search(
-                &query_embedding,
-                fetch_k,
-                None,
-                &perspective_refs,
-            )
+            .search(&query_embedding, fetch_k, None, &perspective_refs)
             .await?;
 
         self.process_results(top_results, &query_embedding, limit, Some(&target_full_id))
@@ -570,7 +570,10 @@ mod tests {
                         }
                     }
                     if !perspectives.is_empty() {
-                        if !perspectives.iter().any(|p| r.chunk.perspectives.iter().any(|pp| pp == p)) {
+                        if !perspectives
+                            .iter()
+                            .any(|p| r.chunk.perspectives.iter().any(|pp| pp == p))
+                        {
                             return false;
                         }
                     }
@@ -1322,8 +1325,8 @@ mod tests {
 
     #[test]
     fn test_with_perspective() {
-        let config =
-            SearchConfig::for_query(5, false, None).with_perspectives(vec!["decisions".to_string()]);
+        let config = SearchConfig::for_query(5, false, None)
+            .with_perspectives(vec!["decisions".to_string()]);
         assert_eq!(config.perspectives, vec!["decisions".to_string()]);
     }
 

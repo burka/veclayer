@@ -308,12 +308,7 @@ pub async fn browse(data_dir: &Path, options: &SearchOptions) -> Result<()> {
 
     let perspective_refs: Vec<&str> = options.perspectives.iter().map(String::as_str).collect();
     let all_entries = store
-        .list_entries(
-            &perspective_refs,
-            since_epoch,
-            until_epoch,
-            fetch_limit,
-        )
+        .list_entries(&perspective_refs, since_epoch, until_epoch, fetch_limit)
         .await?;
 
     let entries: Vec<_> = all_entries

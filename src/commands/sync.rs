@@ -274,7 +274,11 @@ impl MigrateFilters {
     /// Return `true` if `entry` passes all active filters.
     pub fn accepts(&self, entry: &crate::HierarchicalChunk) -> bool {
         if !self.perspectives.is_empty() {
-            if !self.perspectives.iter().any(|p| entry.perspectives.contains(p)) {
+            if !self
+                .perspectives
+                .iter()
+                .any(|p| entry.perspectives.contains(p))
+            {
                 return false;
             }
         }

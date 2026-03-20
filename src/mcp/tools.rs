@@ -397,7 +397,13 @@ pub async fn execute_recall(
         _ => {
             // Browse mode: list entries without vector search
             let needs_client_filter = open_thread_ids.is_some() || project.is_some();
-            let perspectives_refs: Vec<&str> = input.perspectives.as_deref().unwrap_or_default().iter().map(String::as_str).collect();
+            let perspectives_refs: Vec<&str> = input
+                .perspectives
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(String::as_str)
+                .collect();
             let entries = store
                 .list_entries(
                     &perspectives_refs,
