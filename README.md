@@ -113,6 +113,13 @@ Models download automatically on first use.
 
 Use an external HTTP server for GPU-accelerated embeddings. VecLayer tries Ollama format first (`/api/embed`), then falls back to OpenAI-compatible (`/v1/embeddings`).
 
+Quick setup:
+
+```bash
+ollama pull nomic-embed-text
+veclayer setup ollama --apply
+```
+
 **Config** (`.veclayer/config.toml` or `~/.config/veclayer/config.toml`):
 
 ```toml
@@ -130,6 +137,12 @@ VECLAYER_EMBEDDER=ollama
 VECLAYER_OLLAMA_MODEL=nomic-embed-text
 VECLAYER_OLLAMA_URL=http://localhost:11434
 VECLAYER_OLLAMA_DIMENSION=768
+```
+
+If you want to build without FastEmbed entirely, use a custom feature set instead of the default `full` feature bundle. `full` still includes FastEmbed so the default binary keeps working out of the box.
+
+```bash
+cargo build --no-default-features --features "cli store-sqlite llm mcp config parser"
 ```
 
 **TEI example** (Hugging Face Text Embeddings Inference):

@@ -7,6 +7,10 @@ use serde_json::{json, Value};
 
 use crate::Result;
 
+const DEFAULT_OLLAMA_EMBED_MODEL: &str = "nomic-embed-text";
+const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
+const DEFAULT_OLLAMA_DIMENSION: usize = 768;
+
 // ---------------------------------------------------------------------------
 // Claude Code configuration constants
 // ---------------------------------------------------------------------------
@@ -96,6 +100,16 @@ fn claude_config() -> Value {
 pub fn setup() {
     println!("VecLayer Setup\n");
     println!("Available integrations:\n");
+    println!("  veclayer setup ollama");
+    println!("      Print local Ollama embedding setup and config.");
+    println!();
+    println!("  veclayer setup ollama --apply");
+    println!("      Write .veclayer/config.toml with an external Ollama embedder.");
+    println!("      Existing non-embedder settings are preserved.");
+    println!();
+    println!("  veclayer setup ollama --apply --global");
+    println!("      Write ~/.config/veclayer/config.toml (or VECLAYER_USER_CONFIG path).");
+    println!();
     println!("  veclayer setup claude");
     println!("      Print the Claude Code configuration snippet (MCP server + 4 hooks).");
     println!();
@@ -106,7 +120,139 @@ pub fn setup() {
     println!("  veclayer setup claude --apply --global");
     println!("      Merge configuration into ~/.claude/settings.json (all projects).");
     println!();
-    println!("Run `veclayer setup claude --help` for details on what gets configured.");
+    println!("Run `veclayer setup <target> --help` for details on what gets configured.");
+}
+
+fn ollama_embedder_toml(model: &str, base_url: &str, dimension: usize) -> String {
+    format!(
+        "[embedder]\n\
+type = \"ollama\"\n\
+model = \"{model}\"\n\
+base_url = \"{base_url}\"\n\
+dimension = {dimension}\n"
+    )
+}
+
+pub fn setup_ollama() {
+    println!("## Local Ollama Embedding Setup\n");
+    println!("VecLayer already supports external embedding providers.");
+    println!(
+        "This setup keeps VecLayer working out of the box by leaving the default build unchanged,"
+    );
+    println!(
+        "but configures this installation to use a local Ollama server instead of FastEmbed.\n"
+    );
+    println!("1. Install and start Ollama.");
+    println!("2. Pull the embedding model:");
+    println!("   ollama pull {DEFAULT_OLLAMA_EMBED_MODEL}\n");
+    println!("3. Write this config to .veclayer/config.toml (or use --apply):\n");
+    println!("```toml");
+    print!(
+        "{}",
+        ollama_embedder_toml(
+            DEFAULT_OLLAMA_EMBED_MODEL,
+            DEFAULT_OLLAMA_BASE_URL,
+            DEFAULT_OLLAMA_DIMENSION
+        )
+    );
+    println!("```\n");
+    println!("Environment-variable equivalent:\n");
+    println!("  VECLAYER_EMBEDDER=ollama");
+    println!("  VECLAYER_OLLAMA_MODEL={DEFAULT_OLLAMA_EMBED_MODEL}");
+    println!("  VECLAYER_OLLAMA_URL={DEFAULT_OLLAMA_BASE_URL}");
+    println!("  VECLAYER_OLLAMA_DIMENSION={DEFAULT_OLLAMA_DIMENSION}\n");
+    println!("To apply automatically:");
+    println!("  veclayer setup ollama --apply");
+    println!("  veclayer setup ollama --apply --global");
+}
+
+fn ollama_config_path(cwd: &Path, global: bool) -> std::path::PathBuf {
+    if global {
+        crate::config::user_config_path()
+    } else {
+        cwd.join(".veclayer/config.toml")
+    }
+}
+
+fn read_existing_toml(path: &Path) -> Result<toml::Value> {
+    if !path.exists() {
+        return Ok(toml::Value::Table(toml::map::Map::new()));
+    }
+
+    let content = fs::read_to_string(path)?;
+    toml::from_str(&content).map_err(|e| {
+        crate::Error::config(format!(
+            "Cannot parse {}: {}. Fix the TOML syntax before running --apply.",
+            path.display(),
+            e
+        ))
+    })
+}
+
+fn merge_ollama_embedder_config(
+    existing: toml::Value,
+    model: &str,
+    base_url: &str,
+    dimension: usize,
+) -> toml::Value {
+    let mut root = match existing {
+        toml::Value::Table(table) => table,
+        _ => toml::map::Map::new(),
+    };
+
+    let embedder = root
+        .entry("embedder")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let embedder_table = embedder.as_table_mut().expect("embedder must be a table");
+
+    embedder_table.insert(
+        "type".to_string(),
+        toml::Value::String("ollama".to_string()),
+    );
+    embedder_table.insert("model".to_string(), toml::Value::String(model.to_string()));
+    embedder_table.insert(
+        "base_url".to_string(),
+        toml::Value::String(base_url.to_string()),
+    );
+    embedder_table.insert(
+        "dimension".to_string(),
+        toml::Value::Integer(dimension as i64),
+    );
+
+    toml::Value::Table(root)
+}
+
+pub fn setup_ollama_apply(
+    cwd: &Path,
+    global: bool,
+    model: Option<&str>,
+    base_url: Option<&str>,
+    dimension: Option<usize>,
+) -> Result<()> {
+    let model = model.unwrap_or(DEFAULT_OLLAMA_EMBED_MODEL);
+    let base_url = base_url.unwrap_or(DEFAULT_OLLAMA_BASE_URL);
+    let dimension = dimension.unwrap_or(DEFAULT_OLLAMA_DIMENSION);
+
+    let config_path = ollama_config_path(cwd, global);
+    let existing = read_existing_toml(&config_path)?;
+    let merged = merge_ollama_embedder_config(existing, model, base_url, dimension);
+    let rendered = toml::to_string_pretty(&merged)
+        .map_err(|e| crate::Error::config(format!("TOML serialization failed: {e}")))?;
+
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&config_path, format!("{rendered}\n"))?;
+
+    println!("Ollama embedder configured in {}:", config_path.display());
+    println!("  model = {model}");
+    println!("  base_url = {base_url}");
+    println!("  dimension = {dimension}");
+    println!();
+    println!("Next step:");
+    println!("  ollama pull {model}");
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -753,5 +899,47 @@ mod tests {
             msg.contains("Fix the JSON syntax"),
             "error should guide the user, got: {msg}"
         );
+    }
+
+    #[test]
+    fn test_setup_ollama_apply_creates_project_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        setup_ollama_apply(
+            dir.path(),
+            false,
+            Some("nomic-embed-text"),
+            Some("http://localhost:11434"),
+            Some(768),
+        )
+        .unwrap();
+
+        let config_path = dir.path().join(".veclayer").join("config.toml");
+        let content = fs::read_to_string(&config_path).unwrap();
+        assert!(content.contains("type = \"ollama\""));
+        assert!(content.contains("model = \"nomic-embed-text\""));
+        assert!(content.contains("base_url = \"http://localhost:11434\""));
+        assert!(content.contains("dimension = 768"));
+    }
+
+    #[test]
+    fn test_setup_ollama_apply_preserves_existing_settings() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let veclayer_dir = dir.path().join(".veclayer");
+        fs::create_dir_all(&veclayer_dir).unwrap();
+        fs::write(
+            veclayer_dir.join("config.toml"),
+            "project = \"demo\"\n[auth]\nauth_required = true\n",
+        )
+        .unwrap();
+
+        setup_ollama_apply(dir.path(), false, None, None, None).unwrap();
+
+        let content = fs::read_to_string(veclayer_dir.join("config.toml")).unwrap();
+        assert!(content.contains("project = \"demo\""));
+        assert!(content.contains("[auth]"));
+        assert!(content.contains("auth_required = true"));
+        assert!(content.contains("[embedder]"));
+        assert!(content.contains("type = \"ollama\""));
     }
 }

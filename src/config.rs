@@ -1104,6 +1104,32 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_embedder_ollama_from_env() {
+        std::env::set_var("VECLAYER_EMBEDDER", "ollama");
+        std::env::set_var("VECLAYER_OLLAMA_MODEL", "nomic-embed-text");
+        std::env::set_var("VECLAYER_OLLAMA_URL", "http://localhost:11434");
+        std::env::set_var("VECLAYER_OLLAMA_DIMENSION", "768");
+
+        let embedder = Config::resolve_embedder(None);
+
+        std::env::remove_var("VECLAYER_EMBEDDER");
+        std::env::remove_var("VECLAYER_OLLAMA_MODEL");
+        std::env::remove_var("VECLAYER_OLLAMA_URL");
+        std::env::remove_var("VECLAYER_OLLAMA_DIMENSION");
+
+        assert!(matches!(
+            embedder,
+            EmbedderConfig::Ollama {
+                ref model,
+                ref base_url,
+                dimension
+            } if model == "nomic-embed-text"
+                && base_url == "http://localhost:11434"
+                && dimension == 768
+        ));
+    }
+
+    #[test]
     fn test_file_config_load_toml() {
         let dir = tempfile::TempDir::new().unwrap();
         let toml_path = dir.path().join("veclayer.toml");

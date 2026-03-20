@@ -19,14 +19,14 @@ store-lance = ["dep:lancedb", "dep:arrow-array", "dep:arrow-schema", "dep:future
 store-sqlite = ["dep:rusqlite"]
 parser = ["dep:pulldown-cmark"]
 config = ["dep:toml", "dep:glob", "dep:directories", "dep:shellexpand", "dep:regex", "dep:serde_yml", "dep:walkdir"]
-cli = ["store-lance", "mcp", "embedding-local", "config", "parser", "dep:clap", "dep:owo-colors", "dep:tracing-subscriber"]
+cli = ["store-lance", "mcp", "config", "parser", "dep:clap", "dep:owo-colors", "dep:tracing-subscriber"]
 mcp = ["config", "dep:rmcp", "dep:schemars"]
 embedding-local = ["config", "dep:fastembed"]
 llm = ["dep:reqwest", "dep:linfa", "dep:linfa-clustering", "dep:ndarray"]
 http = ["auth", "mcp", "dep:axum", "dep:tower", "dep:tower-http", "rmcp/transport-streamable-http-server"]
 auth = ["dep:ed25519-dalek", "dep:jsonwebtoken", "dep:aes-gcm", "dep:argon2", "dep:rpassword", "dep:uuid", "dep:zeroize", "dep:bs58", "dep:base64", "dep:percent-encoding", "dep:rand"]
 sync = []
-full = ["cli", "store-sqlite", "llm", "http", "auth"]
+full = ["cli", "embedding-local", "store-sqlite", "llm", "http", "auth"]
 
 [dependencies]
 # CLI (gated behind "cli" feature)
@@ -124,3 +124,13 @@ required-features = ["cli"]
 tempfile = "3"
 serial_test = "3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0
+
+[profile.release]
+debug = 0
+codegen-units = 256

@@ -10,10 +10,10 @@ use veclayer::commands::{
     add, archive, browse, compact, context, export_entries, focus, history, import_entries, init,
     merge, observe, orientation, perspective_add, perspective_list, perspective_remove,
     print_sources, rebuild_index, reflect, search, serve, setup, setup_claude, setup_claude_apply,
-    show_config, stale, status, think_aging_apply, think_aging_configure, think_demote,
-    think_discover, think_prepare, think_promote, think_relate, AddOptions, CompactAction,
-    CompactOptions, ExportOptions, FocusOptions, ImportOptions, MergeOptions, SearchOptions,
-    ServeOptions,
+    setup_ollama, setup_ollama_apply, show_config, stale, status, think_aging_apply,
+    think_aging_configure, think_demote, think_discover, think_prepare, think_promote,
+    think_relate, AddOptions, CompactAction, CompactOptions, ExportOptions, FocusOptions,
+    ImportOptions, MergeOptions, SearchOptions, ServeOptions,
 };
 #[cfg(feature = "auth")]
 use veclayer::commands::{auth_login, auth_status, auth_token, identity_init, identity_show};
@@ -591,6 +591,35 @@ enum AgingAction {
 
 #[derive(Subcommand)]
 enum SetupTarget {
+    /// Configure a local Ollama server as the embedding backend
+    #[command(
+        long_about = "Show or apply VecLayer's Ollama embedding configuration.\n\n\
+Without --apply: prints the commands and TOML snippet needed to use a local Ollama server.\n\
+With --apply:    writes the [embedder] section into .veclayer/config.toml,\n\
+                 preserving unrelated existing settings.\n\
+With --apply --global: writes to the user config path (~/.config/veclayer/config.toml\n\
+                       or VECLAYER_USER_CONFIG when set).\n\n\
+Recommended local model:\n\
+  ollama pull nomic-embed-text"
+    )]
+    Ollama {
+        /// Write the configuration file instead of only printing it
+        #[arg(long)]
+        apply: bool,
+        /// Apply to the user config path instead of project-local .veclayer/config.toml
+        #[arg(long)]
+        global: bool,
+        /// Ollama embedding model name
+        #[arg(long, default_value = "nomic-embed-text")]
+        model: String,
+        /// Ollama base URL
+        #[arg(long, default_value = "http://localhost:11434")]
+        base_url: String,
+        /// Embedding dimension returned by the model
+        #[arg(long, default_value_t = 768)]
+        dimension: usize,
+    },
+
     /// Configure Claude Code integration (MCP server + 4 lifecycle hooks)
     #[command(
         long_about = "Show or apply the Claude Code integration configuration.\n\n\
@@ -1083,6 +1112,18 @@ async fn main() -> Result<()> {
         Commands::Setup { target } => match target {
             None => {
                 setup();
+            }
+            Some(SetupTarget::Ollama { apply: false, .. }) => {
+                setup_ollama();
+            }
+            Some(SetupTarget::Ollama {
+                apply: true,
+                global,
+                model,
+                base_url,
+                dimension,
+            }) => {
+                setup_ollama_apply(&cwd, global, Some(&model), Some(&base_url), Some(dimension))?;
             }
             Some(SetupTarget::Claude { apply: false, .. }) => {
                 setup_claude();

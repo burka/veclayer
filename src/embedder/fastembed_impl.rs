@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 
 use super::Embedder;
@@ -10,8 +12,14 @@ fn fastembed_cache_dir() -> std::path::PathBuf {
 
 /// FastEmbed-based embedder using local ONNX models.
 /// Runs entirely on CPU, no external API required.
+///
+/// The underlying ONNX session is initialized lazily on first real embed call.
+/// This keeps MCP stdio startup cheap for short-lived sessions that only need
+/// initialization metadata and never actually run semantic operations.
 pub struct FastEmbedder {
-    model: TextEmbedding,
+    model: OnceLock<std::result::Result<TextEmbedding, String>>,
+    model_type: EmbeddingModel,
+    cache_dir: std::path::PathBuf,
     dimension: usize,
     model_name: String,
 }
@@ -27,15 +35,28 @@ impl FastEmbedder {
         let model_name = format!("{:?}", model_type);
         let dimension = Self::get_dimension(&model_type);
 
-        let options = InitOptions::new(model_type).with_cache_dir(fastembed_cache_dir());
-        let model = TextEmbedding::try_new(options)
-            .map_err(|e| Error::embedding(format!("Failed to initialize FastEmbed: {}", e)))?;
-
         Ok(Self {
-            model,
+            model: OnceLock::new(),
+            model_type,
+            cache_dir: fastembed_cache_dir(),
             dimension,
             model_name,
         })
+    }
+
+    fn get_or_init_model(&self) -> Result<&TextEmbedding> {
+        let init = self.model.get_or_init(|| {
+            tracing::debug!("Initializing FastEmbed model {}", self.model_name);
+            let options =
+                InitOptions::new(self.model_type.clone()).with_cache_dir(self.cache_dir.clone());
+            TextEmbedding::try_new(options)
+                .map_err(|e| format!("Failed to initialize FastEmbed: {e}"))
+        });
+
+        match init {
+            Ok(model) => Ok(model),
+            Err(msg) => Err(Error::embedding(msg.clone())),
+        }
     }
 
     fn get_dimension(model: &EmbeddingModel) -> usize {
@@ -63,8 +84,9 @@ impl Embedder for FastEmbedder {
         }
 
         let texts: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
+        let model = self.get_or_init_model()?;
 
-        self.model
+        model
             .embed(texts, None)
             .map_err(|e| Error::embedding(format!("Embedding failed: {}", e)))
     }

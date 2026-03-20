@@ -7,3 +7,4 @@
 .claude/settings.local.json
 *.rlib
 veclayer.toml
+.cargo/
