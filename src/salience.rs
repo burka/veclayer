@@ -62,6 +62,15 @@ pub fn compute(chunk: &HierarchicalChunk, weights: &SalienceWeights) -> Salience
         + perspective * weights.w_perspective
         + revision * weights.w_revision;
 
+    // Consolidated entries (those that have been summarized) are inherently important.
+    let has_summary = chunk
+        .relations
+        .iter()
+        .any(|r| r.kind == crate::chunk::relation::SUMMARIZED_BY);
+    if has_summary {
+        composite += 0.1;
+    }
+
     // Impressions are modulated by their strength (default 1.0 = full weight)
     if chunk.entry_type == crate::chunk::EntryType::Impression {
         composite *= chunk.impression_strength;
