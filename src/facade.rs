@@ -216,7 +216,17 @@ impl<E: Embedder> VecLayer<E> {
     /// Raw vector search without hierarchical enrichment.
     pub async fn search_raw(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         let embedding = self.embed_one(query)?;
-        self.store.search(&embedding, limit, None, &[]).await
+        let results = self.store.search(&embedding, limit, None, &[]).await?;
+
+        // Track access for returned entries
+        let ids: Vec<_> = results.iter().map(|r| {
+            let mut ap = r.chunk.access_profile.clone();
+            ap.record_access();
+            (r.chunk.id.clone(), ap)
+        }).collect();
+        let _ = self.store.update_access_profiles(ids).await;
+
+        Ok(results)
     }
 
     /// Focus on a specific entry: returns it with its children.

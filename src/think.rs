@@ -30,6 +30,18 @@ pub struct ThinkResult {
     pub entries_created: Vec<ThinkEntry>,
 }
 
+impl ThinkResult {
+    /// Returns true if the think cycle produced any new entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries_created.is_empty()
+    }
+
+    /// Total number of entries created (narrative + consolidations + learnings).
+    pub fn total(&self) -> usize {
+        self.entries_created.len()
+    }
+}
+
 /// An entry created by the think cycle.
 #[derive(Debug)]
 pub struct ThinkEntry {
