@@ -751,6 +751,7 @@ async fn think_consolidate(
         &llm,
         data_dir,
         Some(blob_store.as_ref()),
+        project.as_deref(),
     )
     .await
     {

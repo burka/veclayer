@@ -164,15 +164,19 @@ pub async fn prepare(
 // --- Main entry point ---
 
 /// Execute one think cycle: reflect → LLM → add → compact.
+///
+/// When `project` is `Some`, only entries tagged with that project are
+/// considered for consolidation. When `None`, all entries are included.
 pub async fn execute<L: LlmProvider>(
     store: &impl VectorStore,
     embedder: &dyn Embedder,
     llm: &L,
     data_dir: &Path,
     blob_store: Option<&crate::blob_store::BlobStore>,
+    project: Option<&str>,
 ) -> Result<ThinkResult> {
     // 1. Reflect: compute identity snapshot
-    let snapshot = identity::compute_identity(store, data_dir, None, None).await?;
+    let snapshot = identity::compute_identity(store, data_dir, project, None).await?;
     let priming = identity::generate_priming(&snapshot);
 
     if snapshot.core_entries.is_empty() {
@@ -201,9 +205,10 @@ pub async fn execute_dyn(
     llm: &dyn DynLlmProvider,
     data_dir: &Path,
     blob_store: Option<&crate::blob_store::BlobStore>,
+    project: Option<&str>,
 ) -> Result<ThinkResult> {
     // 1. Reflect: compute identity snapshot
-    let snapshot = identity::compute_identity(store, data_dir, None, None).await?;
+    let snapshot = identity::compute_identity(store, data_dir, project, None).await?;
     let priming = identity::generate_priming(&snapshot);
 
     if snapshot.core_entries.is_empty() {
@@ -777,7 +782,7 @@ mod tests {
             response: r#"{"narrative": "I am.", "consolidations": [], "learnings": []}"#.to_owned(),
         };
 
-        let result = execute(&store, &embedder, &llm, dir.path(), None)
+        let result = execute(&store, &embedder, &llm, dir.path(), None, None)
             .await
             .expect("execute should succeed on empty store");
 
@@ -809,7 +814,7 @@ mod tests {
             .to_owned(),
         };
 
-        let result = execute(&store, &embedder, &llm, dir.path(), None)
+        let result = execute(&store, &embedder, &llm, dir.path(), None, None)
             .await
             .expect("execute");
 
@@ -842,7 +847,7 @@ mod tests {
             ),
         };
 
-        let result = execute(&store, &embedder, &llm, dir.path(), None)
+        let result = execute(&store, &embedder, &llm, dir.path(), None, None)
             .await
             .expect("execute");
 
@@ -884,7 +889,7 @@ mod tests {
             .to_owned(),
         };
 
-        let result = execute(&store, &embedder, &llm, dir.path(), None)
+        let result = execute(&store, &embedder, &llm, dir.path(), None, None)
             .await
             .expect("execute");
 
@@ -907,7 +912,7 @@ mod tests {
             response: r#"{"narrative": "   ", "consolidations": [], "learnings": []}"#.to_owned(),
         };
 
-        let result = execute(&store, &embedder, &llm, dir.path(), None)
+        let result = execute(&store, &embedder, &llm, dir.path(), None, None)
             .await
             .expect("execute");
 
@@ -933,7 +938,7 @@ mod tests {
                     .to_owned(),
         };
 
-        let result = execute(&store, &embedder, &llm, dir.path(), None)
+        let result = execute(&store, &embedder, &llm, dir.path(), None, None)
             .await
             .expect("execute");
 
@@ -956,7 +961,7 @@ mod tests {
             ),
         };
 
-        let result = execute(&store, &embedder, &llm, dir.path(), None)
+        let result = execute(&store, &embedder, &llm, dir.path(), None, None)
             .await
             .expect("execute");
 
@@ -975,7 +980,7 @@ mod tests {
         );
         store.insert_chunks(vec![chunk]).await.unwrap();
 
-        let result = execute(&store, &embedder, &FailingLlm, dir.path(), None).await;
+        let result = execute(&store, &embedder, &FailingLlm, dir.path(), None, None).await;
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -999,7 +1004,7 @@ mod tests {
             response: "not json at all".to_owned(),
         };
 
-        let result = execute(&store, &embedder, &llm, dir.path(), None).await;
+        let result = execute(&store, &embedder, &llm, dir.path(), None, None).await;
         assert!(result.is_err());
         assert!(result
             .unwrap_err()

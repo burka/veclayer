@@ -342,6 +342,15 @@ impl<E: Embedder> VecLayer<E> {
     /// Use [`think_with()`](Self::think_with) for one-off calls with a specific provider.
     #[cfg(feature = "llm")]
     pub async fn think(&self) -> Result<crate::think::ThinkResult> {
+        self.think_project(None).await
+    }
+
+    /// Run a think cycle scoped to a specific project.
+    ///
+    /// When `project` is `Some`, only entries tagged with that project are
+    /// considered. When `None`, all entries are included.
+    #[cfg(feature = "llm")]
+    pub async fn think_project(&self, project: Option<&str>) -> Result<crate::think::ThinkResult> {
         let llm = {
             let guard = self.llm.read().unwrap();
             Arc::clone(
@@ -356,6 +365,7 @@ impl<E: Embedder> VecLayer<E> {
             llm.as_ref(),
             &self.data_dir,
             Some(&self.blob_store),
+            project,
         )
         .await
     }
@@ -368,12 +378,23 @@ impl<E: Embedder> VecLayer<E> {
         &self,
         llm: &dyn crate::llm::DynLlmProvider,
     ) -> Result<crate::think::ThinkResult> {
+        self.think_with_project(llm, None).await
+    }
+
+    /// Run a think cycle with a specific LLM provider, scoped to a project.
+    #[cfg(feature = "llm")]
+    pub async fn think_with_project(
+        &self,
+        llm: &dyn crate::llm::DynLlmProvider,
+        project: Option<&str>,
+    ) -> Result<crate::think::ThinkResult> {
         crate::think::execute_dyn(
             self.store.as_ref(),
             self.embedder.as_ref(),
             llm,
             &self.data_dir,
             Some(&self.blob_store),
+            project,
         )
         .await
     }
