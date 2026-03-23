@@ -621,7 +621,7 @@ pub async fn execute_think(
         Some("relate") => think_relate(store, &input).await,
         Some("configure_aging") => think_configure_aging(data_dir, &input),
         Some("apply_aging") => think_apply_aging(store, data_dir).await,
-        Some("consolidate") => think_consolidate(store, data_dir, blob_store).await,
+        Some("consolidate") => think_consolidate(store, data_dir, blob_store, project).await,
         Some("prepare") => think_prepare(store, data_dir).await,
         Some("salience") => think_salience(store, &input).await,
         Some("perspectives") => think_perspectives(data_dir),
@@ -739,6 +739,7 @@ async fn think_consolidate(
     store: &Arc<StoreBackend>,
     data_dir: &std::path::Path,
     blob_store: &Arc<crate::blob_store::BlobStore>,
+    project: Option<&str>,
 ) -> Result<String> {
     let config = crate::Config::new().with_data_dir(data_dir);
     let llm = crate::llm::LlmBackend::from_config(&config.llm);
@@ -797,6 +798,7 @@ async fn think_consolidate(
     _store: &Arc<StoreBackend>,
     _data_dir: &std::path::Path,
     _blob_store: &Arc<crate::blob_store::BlobStore>,
+    _project: Option<&str>,
 ) -> Result<String> {
     // Without LLM feature, nudge the caller to do it themselves
     Ok(format_consolidate_nudge("none", "none"))
