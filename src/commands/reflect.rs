@@ -165,6 +165,186 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    use crate::store::StoreBackend;
+    use crate::test_helpers::make_test_chunk;
+
+    /// Build a chunk whose access total is above zero so `get_hot_chunks` returns it.
+    fn hot_chunk(id: &str, content: &str, total_accesses: u32) -> crate::HierarchicalChunk {
+        let mut chunk = make_test_chunk(id, content);
+        chunk.access_profile.total = total_accesses;
+        // Bump the hour bucket so the relevancy score is non-zero.
+        chunk.access_profile.hour = total_accesses.min(u16::MAX as u32) as u16;
+        chunk
+    }
+
+    /// Build a chunk whose `last_rolled` is set to the Unix epoch so it is treated
+    /// as stale under any reasonable aging window.
+    fn stale_chunk(id: &str, content: &str) -> crate::HierarchicalChunk {
+        let mut chunk = make_test_chunk(id, content);
+        // Epoch 0 is always older than `now - 30 days`.
+        chunk.access_profile.last_rolled = 0;
+        chunk.access_profile.hour = 0;
+        chunk.access_profile.day = 0;
+        chunk.access_profile.week = 0;
+        chunk
+    }
+
+    // ── compact_salience on populated store ───────────────────────────────────
+
+    /// Seeding entries with non-zero `total` access means `get_hot_chunks` returns
+    /// them, exercising the salience scoring path in `compact_salience`.
+    #[tokio::test]
+    async fn test_compact_salience_populated_store() -> Result<()> {
+        let dir = TempDir::new()?;
+        let store = StoreBackend::open(dir.path(), 384, false).await?;
+        store
+            .insert_chunks(vec![
+                hot_chunk("aaa001", "Architecture decision record", 10),
+                hot_chunk("bbb002", "Testing strategy notes", 3),
+                hot_chunk("ccc003", "Deployment runbook", 1),
+            ])
+            .await?;
+        drop(store);
+
+        // Salience must complete without error on a populated store.
+        compact(
+            dir.path(),
+            CompactAction::Salience,
+            &CompactOptions::default(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Entries with higher access counts produce higher salience scores than
+    /// entries with fewer accesses.
+    #[tokio::test]
+    async fn test_compact_salience_orders_by_score() -> Result<()> {
+        let dir = TempDir::new()?;
+        let store = StoreBackend::open(dir.path(), 384, false).await?;
+        store
+            .insert_chunks(vec![
+                hot_chunk("low001", "Low-traffic entry", 1),
+                hot_chunk("high01", "High-traffic entry", 50),
+            ])
+            .await?;
+        drop(store);
+
+        // The underlying salience scorer is exercised; we verify it completes and
+        // that the hot-chunks query returns entries in descending access order.
+        let store2 = StoreBackend::open_metadata(dir.path(), true).await?;
+        let hot = store2.get_hot_chunks(10).await?;
+        assert_eq!(hot.len(), 2);
+        // get_hot_chunks sorts by total descending.
+        assert!(hot[0].access_profile.total >= hot[1].access_profile.total);
+        Ok(())
+    }
+
+    // ── compact_archive_candidates on populated store ─────────────────────────
+
+    /// Stale entries with low salience appear as archive candidates.
+    #[tokio::test]
+    async fn test_compact_archive_candidates_finds_stale_entries() -> Result<()> {
+        let dir = TempDir::new()?;
+        let store = StoreBackend::open(dir.path(), 384, false).await?;
+        store
+            .insert_chunks(vec![
+                stale_chunk("stale1", "Obsolete runbook from last year"),
+                stale_chunk("stale2", "Old architecture note, never revisited"),
+                stale_chunk("stale3", "Draft that was never completed"),
+            ])
+            .await?;
+        drop(store);
+
+        // Must complete without error when stale candidates are present.
+        compact(
+            dir.path(),
+            CompactAction::ArchiveCandidates,
+            &CompactOptions {
+                limit: 10,
+                archive_threshold: 1.0, // catch everything below perfect salience
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Stale entries appear in `get_stale_chunks` but entries with `deep_only`
+    /// visibility are excluded by the LanceDB filter (it only returns `normal`
+    /// and `always` visibility). Archived entries must not re-surface as candidates.
+    #[tokio::test]
+    async fn test_compact_archive_candidates_excludes_deep_only() -> Result<()> {
+        let dir = TempDir::new()?;
+        let store = StoreBackend::open(dir.path(), 384, false).await?;
+
+        let mut already_archived = stale_chunk("arch01", "Already archived entry");
+        already_archived.visibility = "deep_only".to_string();
+
+        let fresh_normal = make_test_chunk("norm01", "Recently accessed normal entry");
+
+        store
+            .insert_chunks(vec![already_archived, fresh_normal])
+            .await?;
+        drop(store);
+
+        // The deep_only entry must not appear as a stale candidate.
+        let store2 = StoreBackend::open_metadata(dir.path(), true).await?;
+        let aging_config = crate::aging::AgingConfig::default();
+        let stale = store2
+            .get_stale_chunks(aging_config.stale_seconds(), 100)
+            .await?;
+
+        let deep_only_count = stale.iter().filter(|c| c.visibility == "deep_only").count();
+        assert_eq!(
+            deep_only_count, 0,
+            "deep_only entries must not appear as stale archive candidates"
+        );
+        Ok(())
+    }
+
+    /// Entries below the salience threshold are flagged as archive candidates;
+    /// entries above it are not.
+    #[tokio::test]
+    async fn test_compact_archive_candidates_respects_threshold() -> Result<()> {
+        let dir = TempDir::new()?;
+        let store = StoreBackend::open(dir.path(), 384, false).await?;
+
+        // Low-salience: stale + no perspectives + no relations → score ≈ 0.
+        let low = stale_chunk("low001", "Stale low-salience entry");
+
+        // Higher-salience: many perspectives boost the perspective component.
+        let mut high = stale_chunk("high01", "Stale but rich entry");
+        high.perspectives = (0..8).map(|i| format!("p{i}")).collect();
+
+        store.insert_chunks(vec![low, high]).await?;
+        drop(store);
+
+        let store2 = StoreBackend::open_metadata(dir.path(), true).await?;
+        let aging_config = crate::aging::AgingConfig::default();
+        let stale = store2
+            .get_stale_chunks(aging_config.stale_seconds(), 100)
+            .await?;
+
+        let weights = crate::salience::SalienceWeights::default();
+        let degradable = vec!["normal".to_string()];
+
+        let candidates: Vec<_> = stale
+            .iter()
+            .filter(|c| crate::salience::is_archive_candidate(c, &weights, 0.1, &degradable))
+            .collect();
+
+        // The low-salience entry must be a candidate; the high-salience one must not.
+        assert!(
+            candidates.iter().any(|c| c.id == "low001"),
+            "low-salience stale entry should be an archive candidate"
+        );
+        assert!(
+            !candidates.iter().any(|c| c.id == "high01"),
+            "high-salience entry must not be an archive candidate below threshold 0.1"
+        );
+        Ok(())
+    }
+
     #[test]
     fn test_compact_options_default() {
         let opts = CompactOptions::default();

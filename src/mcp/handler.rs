@@ -59,16 +59,41 @@ pub struct McpHandler {
 impl McpHandler {
     /// Build a `ToolContext` from the handler's fields.
     fn tool_context(&self) -> ToolContext {
-        ToolContext {
-            store: Arc::clone(&self.store),
-            embedder: Arc::clone(&self.embedder),
-            blob_store: Arc::clone(&self.blob_store),
-            data_dir: self.data_dir.clone(),
-            project: self.project.clone(),
-            branch: self.branch.clone(),
-            git_store: self.git_store.clone(),
-            push_mode: self.push_mode,
-        }
+        ToolContext::from_parts(
+            Arc::clone(&self.store),
+            Arc::clone(&self.embedder),
+            Arc::clone(&self.blob_store),
+            self.data_dir.clone(),
+            self.project.clone(),
+            self.branch.clone(),
+            self.git_store.clone(),
+            self.push_mode,
+        )
+    }
+
+    /// Build a `McpHandler` from an [`AppState`](super::http::AppState) plus
+    /// per-session parameters.
+    ///
+    /// Preferred over [`new`](Self::new) in the HTTP server, where the state
+    /// already carries all store/embedder/project fields.
+    #[cfg(feature = "http")]
+    pub fn from_state(
+        state: &super::http::AppState,
+        instructions: String,
+        capability: Capability,
+    ) -> Self {
+        Self::new(
+            Arc::clone(&state.store),
+            Arc::clone(&state.embedder),
+            Arc::clone(&state.blob_store),
+            state.data_dir.clone(),
+            state.project.clone(),
+            state.branch.clone(),
+            instructions,
+            capability,
+            state.git_store.clone(),
+            state.push_mode,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -313,5 +338,254 @@ impl ServerHandler for McpHandler {
             self.branch.as_deref(),
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use rmcp::handler::server::wrapper::Parameters;
+
+    use super::*;
+    use crate::auth::capability::Capability;
+    use crate::blob_store::BlobStore;
+    use crate::git::branch_config::PushMode;
+    use crate::store::StoreBackend;
+    use crate::{Embedder, Result};
+
+    // ── Stub embedder ─────────────────────────────────────────────────────────
+
+    struct StubEmbedder;
+
+    impl Embedder for StubEmbedder {
+        fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![0.0f32; 384]).collect())
+        }
+
+        fn dimension(&self) -> usize {
+            384
+        }
+
+        fn name(&self) -> &str {
+            "stub"
+        }
+    }
+
+    /// Build a minimal `McpHandler` backed by a temp-dir store.
+    async fn make_handler(
+        data_dir: &std::path::Path,
+        capability: Capability,
+        project: Option<String>,
+        branch: Option<String>,
+    ) -> McpHandler {
+        let store = Arc::new(StoreBackend::open(data_dir, 384, false).await.unwrap());
+        let embedder: Arc<dyn Embedder + Send + Sync> = Arc::new(StubEmbedder);
+        let blob_store = Arc::new(BlobStore::open(data_dir).unwrap());
+
+        McpHandler::new(
+            store,
+            embedder,
+            blob_store,
+            data_dir.to_path_buf(),
+            project,
+            branch,
+            "test instructions".to_string(),
+            capability,
+            None,
+            PushMode::Off,
+        )
+    }
+
+    // ── tool_error format ─────────────────────────────────────────────────────
+
+    /// `tool_error` produces a tool-level error result (not a protocol error)
+    /// with `is_error = true` and content prefixed with "Error:".
+    #[test]
+    fn tool_error_produces_error_result() {
+        let err = crate::Error::not_found("test entry".to_string());
+        let result = tool_error(err).expect("tool_error must not return McpError");
+
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "is_error flag must be set for tool-level errors"
+        );
+        assert!(!result.content.is_empty(), "error result must have content");
+
+        let text = result.content[0]
+            .as_text()
+            .expect("first content item must be text")
+            .text
+            .clone();
+        assert!(
+            text.starts_with("Error:"),
+            "error message must start with 'Error:' — got: {text}"
+        );
+    }
+
+    /// `tool_error` preserves the original error message in the content.
+    #[test]
+    fn tool_error_includes_error_message() {
+        let err = crate::Error::InvalidOperation("something went wrong".to_string());
+        let result = tool_error(err).unwrap();
+
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            text.contains("something went wrong"),
+            "error message must appear in content — got: {text}"
+        );
+    }
+
+    // ── tool_context field propagation ────────────────────────────────────────
+
+    /// `tool_context()` forwards every field from the handler without mutation.
+    #[tokio::test]
+    async fn tool_context_propagates_all_fields() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let expected_project = Some("myproject".to_string());
+        let expected_branch = Some("feature-x".to_string());
+
+        let handler = make_handler(
+            dir.path(),
+            Capability::Admin,
+            expected_project.clone(),
+            expected_branch.clone(),
+        )
+        .await;
+
+        let ctx = handler.tool_context();
+
+        assert_eq!(ctx.project, expected_project, "project must be forwarded");
+        assert_eq!(ctx.branch, expected_branch, "branch must be forwarded");
+        assert_eq!(
+            ctx.data_dir,
+            PathBuf::from(dir.path()),
+            "data_dir must be forwarded"
+        );
+        assert_eq!(ctx.push_mode, PushMode::Off, "push_mode must be forwarded");
+        assert!(
+            ctx.git_store.is_none(),
+            "git_store must be None when not configured"
+        );
+    }
+
+    /// `tool_context()` with no project/branch propagates both as `None`.
+    #[tokio::test]
+    async fn tool_context_none_project_and_branch() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let handler = make_handler(dir.path(), Capability::Write, None, None).await;
+
+        let ctx = handler.tool_context();
+        assert!(ctx.project.is_none());
+        assert!(ctx.branch.is_none());
+    }
+
+    // ── Capability enforcement ────────────────────────────────────────────────
+
+    /// A `Read`-capability handler must reject `store` (a write operation) with
+    /// a tool-level error, not a protocol error.
+    #[tokio::test]
+    async fn read_capability_blocks_store() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let handler = make_handler(dir.path(), Capability::Read, None, None).await;
+
+        let input = super::super::types::StoreInput {
+            content: "some content".to_string(),
+            parent_id: None,
+            source_file: "[agent]".to_string(),
+            heading: None,
+            visibility: "normal".to_string(),
+            perspectives: vec![],
+            relations: vec![],
+            items: vec![],
+            entry_type: None,
+            impression_hint: None,
+            impression_strength: None,
+            scope: "project".to_string(),
+        };
+
+        let result = handler
+            .store(Parameters(input))
+            .await
+            .expect("store must return Ok (tool-level error), not a protocol error");
+
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "read-only handler must return an error result for store"
+        );
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            text.contains("permission") || text.contains("Insufficient"),
+            "error must mention permission — got: {text}"
+        );
+    }
+
+    /// A `Read`-capability handler must reject `think` (a write operation).
+    #[tokio::test]
+    async fn read_capability_blocks_think() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let handler = make_handler(dir.path(), Capability::Read, None, None).await;
+
+        let input = super::super::types::ThinkInput {
+            action: Some("promote".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: Some("abc123".to_string()),
+            visibility: Some("always".to_string()),
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+
+        let result = handler
+            .think(Parameters(input))
+            .await
+            .expect("think must not return a protocol error");
+
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "read-only handler must block think (write operation)"
+        );
+    }
+
+    /// A `Write`-capability handler must allow `recall` (a read operation).
+    #[tokio::test]
+    async fn write_capability_permits_recall() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let handler = make_handler(dir.path(), Capability::Write, None, None).await;
+
+        let input = super::super::types::RecallInput {
+            query: None,
+            limit: 5,
+            deep: false,
+            recency: None,
+            perspectives: None,
+            similar_to: None,
+            min_salience: None,
+            min_score: None,
+            since: None,
+            until: None,
+            ongoing: None,
+        };
+
+        let result = handler
+            .recall(Parameters(input))
+            .await
+            .expect("recall must not return a protocol error");
+
+        // On an empty store with no query the result must succeed.
+        assert_ne!(
+            result.is_error,
+            Some(true),
+            "write-capability handler must not block read operations"
+        );
     }
 }
