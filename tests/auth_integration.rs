@@ -57,6 +57,7 @@ fn pkce_pair() -> (String, String) {
 /// Mint a JWT directly (bypasses OAuth, used only for the expired-token test).
 fn mint_jwt(key: &SigningKey, cap: Capability, iat: u64, exp: u64) -> String {
     let claims = Claims::new(
+        SERVER_DID.to_owned(),
         "did:key:zClient".to_owned(),
         SERVER_DID.to_owned(),
         cap,
@@ -100,6 +101,7 @@ async fn spawn_auth_server(auto_approve: bool) -> (String, TempDir, SigningKey) 
         refresh_expiry_secs: 86_400,
         auto_approve,
         device_codes: Arc::new(Mutex::new(HashMap::new())),
+        pending_consents: Arc::new(Mutex::new(HashMap::new())),
     };
 
     let state = AppState {
@@ -148,6 +150,39 @@ async fn register_client(base: &str, redirect_uri: &str) -> String {
     assert_eq!(resp.status(), 201, "register must return 201");
     let body: serde_json::Value = resp.json().await.unwrap();
     body["client_id"].as_str().unwrap().to_owned()
+}
+
+/// GET the consent page and extract the CSRF token from the hidden form field.
+///
+/// Used by tests that exercise the manual-consent POST flow (auto_approve=false).
+async fn get_consent_csrf(
+    base: &str,
+    client_id: &str,
+    redirect_uri: &str,
+    scope: &str,
+    challenge: &str,
+) -> String {
+    let resp = reqwest::Client::new()
+        .get(format!("{base}/oauth/authorize"))
+        .query(&[
+            ("response_type", "code"),
+            ("client_id", client_id),
+            ("redirect_uri", redirect_uri),
+            ("scope", scope),
+            ("code_challenge", challenge),
+            ("code_challenge_method", "S256"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "consent page must return 200");
+    let html = resp.text().await.unwrap();
+    html.split("name=\"csrf_token\"")
+        .nth(1)
+        .and_then(|s| s.split("value=\"").nth(1))
+        .and_then(|s| s.split('"').next())
+        .expect("csrf_token hidden field in consent page")
+        .to_owned()
 }
 
 /// Full authorization code flow → (access_token, refresh_token).
@@ -790,6 +825,9 @@ async fn test_consent_form_deny_path() {
     let client_id = register_client(&base, REDIRECT_URI).await;
     let (_, challenge) = pkce_pair();
 
+    // Fetch the consent page to obtain a valid CSRF token.
+    let csrf = get_consent_csrf(&base, &client_id, REDIRECT_URI, "write", &challenge).await;
+
     // POST /oauth/authorize simulating the deny button.
     let no_redirect = no_redirect_client();
     let resp = no_redirect
@@ -801,6 +839,7 @@ async fn test_consent_form_deny_path() {
             ("code_challenge", challenge.as_str()),
             ("state", "test-state-xyz"),
             ("approved", "false"),
+            ("csrf_token", csrf.as_str()),
         ])
         .send()
         .await

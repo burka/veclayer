@@ -156,7 +156,14 @@ mod tests {
     }
 
     fn mint_token(key: &SigningKey, cap: Capability, iat: u64, exp: u64) -> String {
-        let claims = Claims::new(CLIENT_DID.to_owned(), SERVER_DID.to_owned(), cap, iat, exp);
+        let claims = Claims::new(
+            SERVER_DID.to_owned(),
+            CLIENT_DID.to_owned(),
+            SERVER_DID.to_owned(),
+            cap,
+            iat,
+            exp,
+        );
         token::mint(key, &claims).expect("mint")
     }
 

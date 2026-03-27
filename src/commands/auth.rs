@@ -161,7 +161,7 @@ pub(crate) async fn auth_token_with_passphrase(
     let own_did = keypair::to_did(&signing_key.verifying_key());
     let aud = audience.unwrap_or(&own_did).to_string();
 
-    let claims = Claims::new(own_did, aud, cap, now, now + expiry_secs);
+    let claims = Claims::new(own_did.clone(), own_did, aud, cap, now, now + expiry_secs);
 
     let jwt =
         token::mint(&signing_key, &claims).map_err(|e| crate::Error::Crypto(e.to_string()))?;
@@ -484,6 +484,7 @@ mod tests {
         let expiry_secs = parse_duration_secs("1h").unwrap();
         let now = unix_now();
         let claims = Claims::new(
+            own_did.clone(),
             own_did.clone(),
             own_did.clone(),
             crate::auth::capability::Capability::Read,

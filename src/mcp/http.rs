@@ -64,16 +64,16 @@ pub struct AppState {
 
 impl AppState {
     fn tool_context(&self) -> ToolContext {
-        ToolContext {
-            store: Arc::clone(&self.store),
-            embedder: Arc::clone(&self.embedder),
-            blob_store: Arc::clone(&self.blob_store),
-            data_dir: self.data_dir.clone(),
-            project: self.project.clone(),
-            branch: self.branch.clone(),
-            git_store: self.git_store.clone(),
-            push_mode: self.push_mode,
-        }
+        ToolContext::from_parts(
+            Arc::clone(&self.store),
+            Arc::clone(&self.embedder),
+            Arc::clone(&self.blob_store),
+            self.data_dir.clone(),
+            self.project.clone(),
+            self.branch.clone(),
+            self.git_store.clone(),
+            self.push_mode,
+        )
     }
 }
 
@@ -193,17 +193,10 @@ pub fn build_app(state: AppState) -> Router {
                     None,
                 ))
             });
-            Ok(McpHandler::new(
-                Arc::clone(&mcp_state.store),
-                Arc::clone(&mcp_state.embedder),
-                Arc::clone(&mcp_state.blob_store),
-                mcp_state.data_dir.clone(),
-                mcp_state.project.clone(),
-                mcp_state.branch.clone(),
+            Ok(McpHandler::from_state(
+                &mcp_state,
                 instructions,
                 mcp_capability,
-                mcp_state.git_store.clone(),
-                mcp_state.push_mode,
             ))
         },
         LocalSessionManager::default().into(),
@@ -383,6 +376,9 @@ fn build_auth_setup(config: &Config) -> Result<Option<AuthSetup>> {
     }
 
     let passphrase = std::env::var("VECLAYER_PASSPHRASE").unwrap_or_default();
+    if auth_required && passphrase.is_empty() {
+        tracing::warn!("VECLAYER_PASSPHRASE not set — keystore will use empty passphrase");
+    }
     let signing_key = keystore::load(&passphrase, &keystore_path)
         .map_err(|e| crate::Error::Config(format!("Failed to load identity: {e}")))?;
 
@@ -408,6 +404,7 @@ fn build_auth_setup(config: &Config) -> Result<Option<AuthSetup>> {
         refresh_expiry_secs: config.auth.refresh_expiry_secs,
         auto_approve: config.auth.auto_approve,
         device_codes: Arc::new(Mutex::new(HashMap::new())),
+        pending_consents: Arc::new(Mutex::new(HashMap::new())),
     };
 
     let auth_state = AuthState {
@@ -585,11 +582,11 @@ async fn api_priming(
                 .into_response()
         }
         Err(e) => {
-            tracing::warn!("Priming computation failed: {e}");
+            tracing::error!("Priming computation failed: {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [("content-type", "text/plain; charset=utf-8")],
-                format!("Priming failed: {e}"),
+                "Internal server error",
             )
                 .into_response()
         }

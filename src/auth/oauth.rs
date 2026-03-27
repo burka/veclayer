@@ -35,6 +35,85 @@ use crate::util::unix_now;
 
 const DEVICE_CODE_TTL_SECS: u64 = 600;
 
+// ─── Security helpers ─────────────────────────────────────────────────────────
+
+/// Returns `true` when `server_url` resolves to a loopback address.
+///
+/// Accepts the full server URL (e.g. `http://localhost:8080`) or a bare host.
+/// Matches `localhost`, `127.x.x.x`, and `::1`.
+pub fn is_localhost(server_url: &str) -> bool {
+    // Strip scheme prefix if present.
+    let after_scheme = server_url
+        .strip_prefix("http://")
+        .or_else(|| server_url.strip_prefix("https://"))
+        .unwrap_or(server_url);
+
+    // Strip path: take everything up to the first '/'.
+    let authority = after_scheme.split('/').next().unwrap_or(after_scheme);
+
+    // IPv6 literals in URLs are enclosed in brackets: `[::1]:8080`.
+    // Bare `::1` (no brackets) is also accepted as a loopback host.
+    let host = if authority.starts_with('[') {
+        // Bracketed IPv6: strip `[` and take until `]`.
+        authority
+            .trim_start_matches('[')
+            .split(']')
+            .next()
+            .unwrap_or(authority)
+    } else if authority.contains(':') && authority.matches(':').count() > 1 {
+        // Bare IPv6 address (multiple colons, no brackets) — use as-is.
+        authority
+    } else if let Some((h, _port)) = authority.rsplit_once(':') {
+        // IPv4 or hostname with optional port: `localhost:8080` -> `localhost`.
+        h
+    } else {
+        authority
+    };
+
+    host == "localhost" || host == "::1" || host.starts_with("127.")
+}
+
+/// Validate a redirect URI for OAuth client registration.
+///
+/// Allowed:
+/// - `https://` (any host)
+/// - `http://localhost` or `http://127.x.x.x`
+/// - Custom app schemes (e.g. `myapp://`)
+///
+/// Rejected:
+/// - `javascript:`, `data:`, `file:`
+/// - `http://` with a non-localhost host
+pub fn validate_redirect_uri(uri: &str) -> bool {
+    let lower = uri.to_lowercase();
+
+    // Reject dangerous schemes unconditionally.
+    if lower.starts_with("javascript:") || lower.starts_with("data:") || lower.starts_with("file:")
+    {
+        return false;
+    }
+
+    // HTTPS is always allowed.
+    if lower.starts_with("https://") {
+        return true;
+    }
+
+    // HTTP is only allowed for loopback addresses.
+    if let Some(rest) = lower.strip_prefix("http://") {
+        let host = rest
+            .split('/')
+            .next()
+            .unwrap_or(rest)
+            .split(':')
+            .next()
+            .unwrap_or(rest);
+        return host == "localhost" || host.starts_with("127.");
+    }
+
+    // Everything else (custom app schemes like `myapp://`) is allowed,
+    // provided it is not one of the rejected schemes above.
+    uri.contains("://")
+}
+
 // ─── Shared state ─────────────────────────────────────────────────────────────
 
 /// Shared state for all OAuth endpoints.
@@ -49,6 +128,22 @@ pub struct OAuthState {
     pub auto_approve: bool,
     /// Pending device authorizations (in-memory, short-lived).
     pub device_codes: Arc<Mutex<HashMap<String, PendingDeviceAuth>>>,
+    /// Pending consent page sessions keyed by CSRF token.
+    pub pending_consents: Arc<Mutex<HashMap<String, PendingConsent>>>,
+}
+
+// ─── Consent CSRF tracking ────────────────────────────────────────────────────
+
+/// Maximum length for the OAuth `state` parameter (RFC 6749 does not mandate a
+/// limit but unbounded values are a DoS/injection risk).
+const MAX_STATE_LEN: usize = 512;
+
+/// Short-lived record created when the consent page is rendered.
+///
+/// The `csrf_token` is embedded in the HTML form and validated on POST so that
+/// a forged cross-site request cannot submit a consent decision.
+pub struct PendingConsent {
+    pub csrf_token: String,
 }
 
 // ─── Device authorization ─────────────────────────────────────────────────────
@@ -74,6 +169,24 @@ pub struct PendingDeviceAuth {
 /// let app = build_app(state).merge(oauth_router(oauth_state));
 /// ```
 pub fn oauth_router(state: OAuthState) -> Router {
+    if state.auto_approve {
+        if !is_localhost(&state.server_url) {
+            tracing::error!(
+                server_url = %state.server_url,
+                "auto_approve=true is only allowed on localhost — refusing to start"
+            );
+            panic!(
+                "Security misconfiguration: auto_approve=true is not permitted on non-localhost \
+                 address '{}'. Set auto_approve=false or bind to localhost.",
+                state.server_url
+            );
+        }
+        warn!(
+            server_url = %state.server_url,
+            "auto_approve=true: OAuth consent is bypassed — do not use in production"
+        );
+    }
+
     Router::new()
         .route(
             "/.well-known/oauth-authorization-server",
@@ -180,6 +293,26 @@ async fn register_handler(
             .into_response();
     }
 
+    if let Some(invalid) = body
+        .redirect_uris
+        .iter()
+        .find(|u| !validate_redirect_uri(u))
+    {
+        warn!("Client registration rejected: invalid redirect_uri scheme: {invalid}");
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_redirect_uri",
+                "error_description": format!(
+                    "redirect_uri '{}' uses a disallowed scheme; \
+                     only https://, http://localhost, and custom app schemes are permitted",
+                    invalid
+                )
+            })),
+        )
+            .into_response();
+    }
+
     let mut store = state.token_store.lock().unwrap_or_else(|e| e.into_inner());
 
     if store.client_count() >= MAX_REGISTERED_CLIENTS {
@@ -280,7 +413,21 @@ async fn authorize_get_handler(
         }
     };
 
-    // Step 3: Check response_type — only "code" is supported.
+    // Step 3: Validate the optional `state` parameter length.
+    if let Some(s) = params.state.as_deref() {
+        if s.len() > MAX_STATE_LEN {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "invalid_request",
+                    "error_description": "state parameter too long (max 512 bytes)"
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    // Step 4: Check response_type — only "code" is supported.
     if params.response_type.as_deref() != Some("code") {
         return redirect_with_error(
             &redirect_uri,
@@ -348,6 +495,20 @@ async fn authorize_get_handler(
         return redirect_with_code(&redirect_uri, &code, params.state.as_deref());
     }
 
+    // Generate a CSRF token for this consent session and store it server-side
+    // so the POST handler can validate it (prevents cross-site consent forgery).
+    let csrf_token = generate_opaque_token();
+    state
+        .pending_consents
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
+            csrf_token.clone(),
+            PendingConsent {
+                csrf_token: csrf_token.clone(),
+            },
+        );
+
     // Show consent page.
     Html(consent_page(
         &client_name,
@@ -356,6 +517,7 @@ async fn authorize_get_handler(
         scope_str,
         &code_challenge,
         params.state.as_deref().unwrap_or(""),
+        &csrf_token,
     ))
     .into_response()
 }
@@ -368,6 +530,11 @@ pub struct ConsentForm {
     pub code_challenge: String,
     pub state: Option<String>,
     pub approved: Option<String>,
+    /// CSRF token generated when the consent page was rendered.
+    ///
+    /// `Option` so that a missing field produces a controlled 400 rather than
+    /// axum's default 422 Unprocessable Entity.
+    pub csrf_token: Option<String>,
 }
 
 /// POST /oauth/authorize — handle consent form submission.
@@ -376,6 +543,32 @@ async fn authorize_post_handler(
     Form(form): Form<ConsentForm>,
 ) -> Response {
     let oauth_state = form.state.as_deref();
+
+    // Validate CSRF token FIRST — before any redirect — to reject forged requests.
+    // A missing or unknown token both result in 400 Bad Request.
+    {
+        let csrf_key = match form.csrf_token.as_deref() {
+            Some(k) if !k.is_empty() => k.to_owned(),
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Html(error_page("Invalid or missing CSRF token")),
+                )
+                    .into_response();
+            }
+        };
+        let mut consents = state
+            .pending_consents
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if consents.remove(&csrf_key).is_none() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html(error_page("Invalid or missing CSRF token")),
+            )
+                .into_response();
+        }
+    }
 
     // Validate client and redirect_uri BEFORE any redirect to prevent open
     // redirect via a crafted POST with an arbitrary redirect_uri.
@@ -633,6 +826,7 @@ fn mint_token_response(
     let exp = now + state.token_expiry_secs;
 
     let claims = Claims::new(
+        state.server_did.clone(),
         did.to_owned(),
         state.server_did.clone(),
         capability,
@@ -849,6 +1043,7 @@ fn consent_page(
     scope: &str,
     code_challenge: &str,
     state_val: &str,
+    csrf_token: &str,
 ) -> String {
     let client_name = html_escape(client_name);
     let client_id = html_escape(client_id);
@@ -856,6 +1051,9 @@ fn consent_page(
     let scope = html_escape(scope);
     let code_challenge = html_escape(code_challenge);
     let state_val = html_escape(state_val);
+    // CSRF token is URL-safe alphanumeric — no HTML escaping needed, but we
+    // escape defensively in case the generation scheme ever changes.
+    let csrf_token = html_escape(csrf_token);
     let body = format!(
         r#"<h1>Authorize Access</h1>
     <p><strong>{client_name}</strong> is requesting access to your VecLayer knowledge store.</p>
@@ -866,6 +1064,7 @@ fn consent_page(
       <input type="hidden" name="scope" value="{scope}">
       <input type="hidden" name="code_challenge" value="{code_challenge}">
       <input type="hidden" name="state" value="{state_val}">
+      <input type="hidden" name="csrf_token" value="{csrf_token}">
       <div class="buttons">
         <button type="submit" name="approved" value="true" class="approve">Approve</button>
         <button type="submit" name="approved" value="false" class="deny">Deny</button>
@@ -1093,6 +1292,7 @@ mod tests {
             refresh_expiry_secs: 86400,
             auto_approve,
             device_codes: Arc::new(Mutex::new(HashMap::new())),
+            pending_consents: Arc::new(Mutex::new(HashMap::new())),
         };
         (oauth_state, dir)
     }
@@ -1150,6 +1350,32 @@ mod tests {
             .expect("register");
         let json = body_json(resp).await;
         json["client_id"].as_str().expect("client_id").to_owned()
+    }
+
+    /// Render the consent page and extract the CSRF token from the hidden form field.
+    async fn get_consent_csrf_token(
+        app: &Router,
+        client_id: &str,
+        redirect_uri: &str,
+        challenge: &str,
+    ) -> String {
+        let uri = format!(
+            "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&code_challenge_method=S256"
+        );
+        let resp = app
+            .clone()
+            .oneshot(get_req(&uri))
+            .await
+            .expect("consent GET");
+        assert_eq!(resp.status(), StatusCode::OK, "expected consent page");
+        let html = String::from_utf8(body_vec(resp).await).unwrap();
+        // Extract value="..." from name="csrf_token"
+        html.split("name=\"csrf_token\"")
+            .nth(1)
+            .and_then(|s| s.split("value=\"").nth(1))
+            .and_then(|s| s.split('"').next())
+            .expect("csrf_token hidden field")
+            .to_owned()
     }
 
     // ── test_metadata_endpoint ────────────────────────────────────────────────
@@ -1878,8 +2104,9 @@ mod tests {
         let client_id = register_client(&app, redirect_uri).await;
         let (_, challenge) = pkce_pair();
 
+        let csrf = get_consent_csrf_token(&app, &client_id, redirect_uri, &challenge).await;
         let form = format!(
-            "client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&approved=true"
+            "client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&approved=true&csrf_token={csrf}"
         );
         let resp = app
             .clone()
@@ -1904,8 +2131,9 @@ mod tests {
         let client_id = register_client(&app, redirect_uri).await;
         let (_, challenge) = pkce_pair();
 
+        let csrf = get_consent_csrf_token(&app, &client_id, redirect_uri, &challenge).await;
         let form = format!(
-            "client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&approved=false"
+            "client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&approved=false&csrf_token={csrf}"
         );
         let resp = app
             .clone()
@@ -1960,8 +2188,9 @@ mod tests {
         let client_id = register_client(&app, redirect_uri).await;
         let (_, challenge) = pkce_pair();
 
+        let csrf = get_consent_csrf_token(&app, &client_id, redirect_uri, &challenge).await;
         let form = format!(
-            "client_id={client_id}&redirect_uri={redirect_uri}&scope=superuser&code_challenge={challenge}&approved=true"
+            "client_id={client_id}&redirect_uri={redirect_uri}&scope=superuser&code_challenge={challenge}&approved=true&csrf_token={csrf}"
         );
         let resp = app
             .clone()
@@ -2473,6 +2702,166 @@ mod tests {
         assert_eq!(json["error"], "expired_token");
     }
 
+    // ── is_localhost ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_is_localhost_recognizes_loopback_addresses() {
+        assert!(is_localhost("http://localhost:8080"));
+        assert!(is_localhost("http://127.0.0.1:8080"));
+        assert!(is_localhost("http://127.1.2.3"));
+        assert!(is_localhost("localhost"));
+        assert!(is_localhost("127.0.0.1"));
+        assert!(is_localhost("::1"));
+    }
+
+    #[test]
+    fn test_is_localhost_rejects_non_loopback() {
+        assert!(!is_localhost("http://example.com:8080"));
+        assert!(!is_localhost("http://192.168.1.1:8080"));
+        assert!(!is_localhost("http://0.0.0.0:8080"));
+        assert!(!is_localhost("https://myapp.example.com"));
+    }
+
+    // ── validate_redirect_uri ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_validate_redirect_uri_accepts_https() {
+        assert!(validate_redirect_uri("https://example.com/callback"));
+        assert!(validate_redirect_uri("https://app.myservice.io/oauth/cb"));
+        assert!(validate_redirect_uri("HTTPS://example.com/cb"));
+    }
+
+    #[test]
+    fn test_validate_redirect_uri_accepts_http_localhost() {
+        assert!(validate_redirect_uri("http://localhost/callback"));
+        assert!(validate_redirect_uri("http://localhost:3000/cb"));
+        assert!(validate_redirect_uri("http://127.0.0.1/callback"));
+        assert!(validate_redirect_uri("http://127.0.0.1:9000/cb"));
+    }
+
+    #[test]
+    fn test_validate_redirect_uri_accepts_custom_app_schemes() {
+        assert!(validate_redirect_uri("myapp://oauth/callback"));
+        assert!(validate_redirect_uri("com.example.app://auth"));
+    }
+
+    #[test]
+    fn test_validate_redirect_uri_rejects_javascript() {
+        assert!(!validate_redirect_uri("javascript:alert(1)"));
+        assert!(!validate_redirect_uri("JAVASCRIPT:alert(document.cookie)"));
+    }
+
+    #[test]
+    fn test_validate_redirect_uri_rejects_data_and_file() {
+        assert!(!validate_redirect_uri(
+            "data:text/html,<script>alert(1)</script>"
+        ));
+        assert!(!validate_redirect_uri("file:///etc/passwd"));
+    }
+
+    #[test]
+    fn test_validate_redirect_uri_rejects_http_non_localhost() {
+        assert!(!validate_redirect_uri("http://example.com/callback"));
+        assert!(!validate_redirect_uri("http://192.168.1.100/cb"));
+        assert!(!validate_redirect_uri("http://0.0.0.0/cb"));
+    }
+
+    // ── auto_approve production guard ─────────────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "auto_approve=true is not permitted on non-localhost")]
+    fn test_auto_approve_on_non_localhost_panics() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = TokenStore::open(dir.path()).expect("open store");
+        let signing_key = SigningKey::generate(&mut OsRng);
+
+        let state = OAuthState {
+            token_store: Arc::new(Mutex::new(store)),
+            signing_key: Arc::new(signing_key),
+            server_did: "did:key:zServer".to_owned(),
+            server_url: "http://0.0.0.0:8080".to_owned(),
+            token_expiry_secs: 3600,
+            refresh_expiry_secs: 86400,
+            auto_approve: true,
+            device_codes: Arc::new(Mutex::new(HashMap::new())),
+            pending_consents: Arc::new(Mutex::new(HashMap::new())),
+        };
+
+        let _ = oauth_router(state);
+    }
+
+    #[test]
+    fn test_auto_approve_on_localhost_does_not_panic() {
+        let (state, _dir) = make_state(true);
+        // Should succeed without panicking.
+        let _ = oauth_router(state);
+    }
+
+    // ── redirect_uri scheme validation in registration ────────────────────────
+
+    #[tokio::test]
+    async fn test_register_rejects_javascript_redirect_uri() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let resp = app
+            .oneshot(post_json(
+                "/oauth/register",
+                serde_json::json!({
+                    "client_name": "Evil Client",
+                    "redirect_uris": ["javascript:alert(document.cookie)"]
+                }),
+            ))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "invalid_redirect_uri");
+    }
+
+    #[tokio::test]
+    async fn test_register_accepts_https_redirect_uri() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let resp = app
+            .oneshot(post_json(
+                "/oauth/register",
+                serde_json::json!({
+                    "client_name": "Legit Client",
+                    "redirect_uris": ["https://app.example.com/callback"]
+                }),
+            ))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let json = body_json(resp).await;
+        assert!(!json["client_id"].as_str().unwrap_or("").is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_register_rejects_http_non_localhost_redirect_uri() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let resp = app
+            .oneshot(post_json(
+                "/oauth/register",
+                serde_json::json!({
+                    "client_name": "Bad Client",
+                    "redirect_uris": ["http://evil.example.com/callback"]
+                }),
+            ))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "invalid_redirect_uri");
+    }
+
     // ── HTML template helpers ─────────────────────────────────────────────────
 
     #[test]
@@ -2484,6 +2873,7 @@ mod tests {
             "read",
             "challenge",
             "",
+            "test-csrf-token",
         );
         assert!(!html.contains("<script>alert(1)</script>"));
         assert!(html.contains("&lt;script&gt;"));
@@ -2547,5 +2937,148 @@ mod tests {
             .to_owned();
         assert!(location.contains("error=access_denied"));
         assert!(location.contains("state=mystate"));
+    }
+
+    // ── #25 CSRF protection ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_consent_post_missing_csrf_returns_400() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (_, challenge) = pkce_pair();
+
+        // POST without csrf_token field at all.
+        let form = format!(
+            "client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&approved=true"
+        );
+        let resp = app
+            .oneshot(post_form("/oauth/authorize", &form))
+            .await
+            .expect("request");
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "missing csrf_token must return 400"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_consent_post_invalid_csrf_returns_400() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (_, challenge) = pkce_pair();
+
+        // POST with a forged csrf_token that was never issued.
+        let form = format!(
+            "client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&approved=true&csrf_token=forged-token-value"
+        );
+        let resp = app
+            .oneshot(post_form("/oauth/authorize", &form))
+            .await
+            .expect("request");
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "invalid csrf_token must return 400"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_consent_post_replayed_csrf_returns_400() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (_, challenge) = pkce_pair();
+
+        // Obtain a real CSRF token by GETting the consent page.
+        let csrf = get_consent_csrf_token(&app, &client_id, redirect_uri, &challenge).await;
+
+        let form = format!(
+            "client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&approved=true&csrf_token={csrf}"
+        );
+
+        // First POST consumes the token.
+        app.clone()
+            .oneshot(post_form("/oauth/authorize", &form))
+            .await
+            .expect("first post");
+
+        // Second POST with the same token must fail.
+        let resp = app
+            .oneshot(post_form("/oauth/authorize", &form))
+            .await
+            .expect("second post");
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "replayed csrf_token must return 400"
+        );
+    }
+
+    // ── #26 state parameter length cap ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_authorize_get_state_too_long_returns_400() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (_, challenge) = pkce_pair();
+        let long_state = "x".repeat(513);
+
+        let authorize_uri = format!(
+            "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&code_challenge_method=S256&state={long_state}"
+        );
+        let resp = app.oneshot(get_req(&authorize_uri)).await.expect("request");
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "state > 512 bytes must return 400"
+        );
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "invalid_request");
+        assert!(
+            json["error_description"]
+                .as_str()
+                .unwrap_or("")
+                .contains("512"),
+            "error must mention the 512-byte limit"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_authorize_get_state_at_limit_is_accepted() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (_, challenge) = pkce_pair();
+        let state_at_limit = "x".repeat(512);
+
+        let authorize_uri = format!(
+            "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&code_challenge_method=S256&state={state_at_limit}"
+        );
+        let resp = app.oneshot(get_req(&authorize_uri)).await.expect("request");
+
+        // 200 (consent page shown) — state length is exactly at the limit.
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "state of exactly 512 bytes must be accepted"
+        );
     }
 }

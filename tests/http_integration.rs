@@ -251,6 +251,7 @@ mod auth {
     fn mint_token(key: &SigningKey, cap: Capability) -> String {
         let t = now();
         let claims = Claims::new(
+            SERVER_DID.to_owned(),
             "did:key:zClient".to_owned(),
             SERVER_DID.to_owned(),
             cap,
@@ -285,6 +286,7 @@ mod auth {
             refresh_expiry_secs: 86_400,
             auto_approve: false,
             device_codes: Arc::new(Mutex::new(HashMap::new())),
+            pending_consents: Arc::new(Mutex::new(HashMap::new())),
         };
 
         let state = AppState {

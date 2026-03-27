@@ -37,12 +37,16 @@ pub enum AuthError {
 /// JWT claims carried by a VecLayer auth token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
+    /// Issuer — the DID of the server that minted this token.
+    pub iss: String,
     /// Subject — the DID of the token holder.
     pub sub: String,
     /// Audience — the DID of the server (prevents token replay across servers).
     pub aud: String,
     /// Capability level granted by this token.
     pub cap: Capability,
+    /// Not before (Unix timestamp) — same as `iat`; prevents premature use.
+    pub nbf: u64,
     /// Issued at (Unix timestamp).
     pub iat: u64,
     /// Expires at (Unix timestamp).
@@ -53,11 +57,15 @@ pub struct Claims {
 
 impl Claims {
     /// Create a new Claims value with a generated JTI.
-    pub fn new(sub: String, aud: String, cap: Capability, iat: u64, exp: u64) -> Self {
+    ///
+    /// `iss` should be the server's DID. `nbf` is set equal to `iat`.
+    pub fn new(iss: String, sub: String, aud: String, cap: Capability, iat: u64, exp: u64) -> Self {
         Self {
+            iss,
             sub,
             aud,
             cap,
+            nbf: iat,
             iat,
             exp,
             jti: Uuid::new_v4().to_string(),
@@ -84,11 +92,24 @@ pub fn mint(signing_key: &SigningKey, claims: &Claims) -> Result<String, AuthErr
 
 /// Verify a JWT token and extract claims.
 ///
-/// Checks: signature, expiry, and audience (if `expected_audience` is `Some`).
+/// Checks: signature, expiry, `nbf`, and audience (if `expected_audience` is `Some`).
+/// Use [`verify_with_issuer`] when `iss` validation is also required.
 pub fn verify(
     token: &str,
     verifying_key: &VerifyingKey,
     expected_audience: Option<&str>,
+) -> Result<Claims, AuthError> {
+    verify_with_issuer(token, verifying_key, expected_audience, None)
+}
+
+/// Verify a JWT token, additionally requiring a specific issuer DID.
+///
+/// Checks: signature, expiry, `nbf`, `iss`, and audience.
+pub fn verify_with_issuer(
+    token: &str,
+    verifying_key: &VerifyingKey,
+    expected_audience: Option<&str>,
+    expected_issuer: Option<&str>,
 ) -> Result<Claims, AuthError> {
     // jsonwebtoken's rust_crypto EdDSA verifier reads the first 32 bytes as raw
     // public key bytes — it does not parse DER/SPKI structure despite the method name.
@@ -97,6 +118,12 @@ pub fn verify(
     let mut validation = Validation::new(Algorithm::EdDSA);
     // Audience is validated manually after decoding so we can return a precise error.
     validation.validate_aud = false;
+
+    if let Some(iss) = expected_issuer {
+        validation.set_issuer(&[iss]);
+    }
+    // When no expected issuer is given, leave `validation.iss` as `None` so that
+    // any `iss` value in the token (or its absence) is accepted.
 
     let data = jsonwebtoken::decode::<Claims>(token, &decoding_key, &validation).map_err(|e| {
         if e.kind() == &jsonwebtoken::errors::ErrorKind::ExpiredSignature {
@@ -144,6 +171,7 @@ mod tests {
 
     fn make_claims(cap: Capability, iat: u64, exp: u64) -> Claims {
         Claims::new(
+            "did:key:zServer".to_owned(),
             "did:key:zAlice".to_owned(),
             "did:key:zServer".to_owned(),
             cap,
@@ -162,9 +190,11 @@ mod tests {
         let recovered =
             verify(&token, &key.verifying_key(), Some("did:key:zServer")).expect("verify");
 
+        assert_eq!(recovered.iss, claims.iss);
         assert_eq!(recovered.sub, claims.sub);
         assert_eq!(recovered.aud, claims.aud);
         assert_eq!(recovered.cap, claims.cap);
+        assert_eq!(recovered.nbf, claims.nbf);
         assert_eq!(recovered.iat, claims.iat);
         assert_eq!(recovered.exp, claims.exp);
         assert_eq!(recovered.jti, claims.jti);
@@ -237,22 +267,76 @@ mod tests {
     fn test_claims_serde() {
         let t = now();
         let claims = Claims {
+            iss: "did:key:zServer".to_owned(),
             sub: "did:key:zAlice".to_owned(),
             aud: "did:key:zServer".to_owned(),
             cap: Capability::Write,
+            nbf: t,
             iat: t,
             exp: t + 3600,
             jti: "test-jti-uuid".to_owned(),
         };
 
         let json = serde_json::to_string(&claims).expect("serialize");
+        assert!(json.contains("\"iss\":\"did:key:zServer\""));
         assert!(json.contains("\"sub\":\"did:key:zAlice\""));
         assert!(json.contains("\"cap\":\"write\""));
         assert!(json.contains("\"jti\":\"test-jti-uuid\""));
+        assert!(json.contains("\"nbf\""));
 
         let recovered: Claims = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(recovered.iss, claims.iss);
         assert_eq!(recovered.sub, claims.sub);
         assert_eq!(recovered.cap, claims.cap);
         assert_eq!(recovered.jti, claims.jti);
+        assert_eq!(recovered.nbf, claims.nbf);
+    }
+
+    #[test]
+    fn test_issuer_validation_accepted() {
+        let key = generate_key();
+        let t = now();
+        let claims = make_claims(Capability::Read, t, t + 3600);
+
+        let token = mint(&key, &claims).expect("mint");
+        let recovered = verify_with_issuer(
+            &token,
+            &key.verifying_key(),
+            Some("did:key:zServer"),
+            Some("did:key:zServer"),
+        )
+        .expect("valid issuer");
+        assert_eq!(recovered.iss, "did:key:zServer");
+    }
+
+    #[test]
+    fn test_issuer_validation_rejected() {
+        let key = generate_key();
+        let t = now();
+        let claims = make_claims(Capability::Read, t, t + 3600);
+
+        let token = mint(&key, &claims).expect("mint");
+        let err = verify_with_issuer(
+            &token,
+            &key.verifying_key(),
+            None,
+            Some("did:key:zWrongServer"),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, AuthError::InvalidToken(_)),
+            "expected InvalidToken for wrong issuer, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_nbf_present_in_minted_token() {
+        let key = generate_key();
+        let t = now();
+        let claims = make_claims(Capability::Read, t, t + 3600);
+
+        let token = mint(&key, &claims).expect("mint");
+        let recovered = verify(&token, &key.verifying_key(), None).expect("verify");
+        assert_eq!(recovered.nbf, t, "nbf must equal iat");
     }
 }
