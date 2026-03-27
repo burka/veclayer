@@ -29,8 +29,7 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use ed25519_dalek::SigningKey;
-use rand::rngs::OsRng;
-use rand::RngCore;
+use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 

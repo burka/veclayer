@@ -20,7 +20,8 @@ use axum::{Json, Router};
 use base64::Engine;
 use ed25519_dalek::SigningKey;
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
-use rand::{Rng, RngCore};
+use rand::Rng;
+use rand_core::{OsRng, RngCore};
 use serde::Deserialize;
 
 use tracing::{info, warn};
@@ -970,7 +971,7 @@ fn token_error(error_type: &str, description: &str) -> Response {
 /// Generate a cryptographically random URL-safe token string.
 fn generate_opaque_token() -> String {
     let mut bytes = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    OsRng.fill_bytes(&mut bytes);
     base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(bytes)
         .chars()
@@ -984,9 +985,9 @@ fn generate_opaque_token() -> String {
 /// 8 characters from a 32-symbol alphabet gives ~40 bits of entropy.
 fn generate_user_code() -> String {
     const CHARS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // unambiguous chars
-    let mut rng = rand::rngs::OsRng;
+    let mut rng = rand::rng();
     (0..8)
-        .map(|_| CHARS[rng.gen_range(0..CHARS.len())] as char)
+        .map(|_| CHARS[rng.random_range(0..CHARS.len())] as char)
         .collect()
 }
 
@@ -1063,7 +1064,7 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+    use rand_core::OsRng;
     use sha2::{Digest, Sha256};
     use tempfile::TempDir;
     use tower::ServiceExt;

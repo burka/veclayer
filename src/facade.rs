@@ -363,11 +363,9 @@ impl<E: Embedder> VecLayer<E> {
     pub async fn think_project(&self, project: Option<&str>) -> Result<crate::think::ThinkResult> {
         let llm = {
             let guard = self.llm.read().unwrap();
-            Arc::clone(
-                guard
-                    .as_ref()
-                    .ok_or_else(|| crate::Error::llm("no LLM configured — call configure_llm() first"))?,
-            )
+            Arc::clone(guard.as_ref().ok_or_else(|| {
+                crate::Error::llm("no LLM configured — call configure_llm() first")
+            })?)
         }; // guard dropped here, before await
         crate::think::execute_dyn(
             self.store.as_ref(),

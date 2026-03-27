@@ -224,7 +224,7 @@ mod auth {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+    use rand_core::OsRng;
     use tempfile::TempDir;
     use tokio::net::TcpListener;
     use veclayer::auth::capability::Capability;

@@ -11,7 +11,7 @@ authors = ["Florian Burka"]
 keywords = ["vector", "embedding", "memory", "llm", "rag"]
 categories = ["database", "command-line-utilities"]
 exclude = [".claude/", ".mcp.json", "opencode.json"]
-rust-version = "1.91"
+rust-version = "1.93"
 
 [features]
 default = ["full"]
@@ -24,7 +24,7 @@ mcp = ["config", "dep:rmcp", "dep:schemars"]
 embedding-local = ["config", "dep:fastembed"]
 llm = ["dep:reqwest", "dep:linfa", "dep:linfa-clustering", "dep:ndarray"]
 http = ["auth", "mcp", "dep:axum", "dep:tower", "dep:tower-http", "rmcp/transport-streamable-http-server"]
-auth = ["dep:ed25519-dalek", "dep:jsonwebtoken", "dep:aes-gcm", "dep:argon2", "dep:rpassword", "dep:uuid", "dep:zeroize", "dep:bs58", "dep:base64", "dep:percent-encoding", "dep:rand"]
+auth = ["dep:ed25519-dalek", "dep:jsonwebtoken", "dep:aes-gcm", "dep:argon2", "dep:rpassword", "dep:uuid", "dep:zeroize", "dep:bs58", "dep:base64", "dep:percent-encoding", "dep:rand", "dep:rand_core"]
 sync = []
 full = ["cli", "embedding-local", "store-sqlite", "llm", "http", "auth"]
 
@@ -85,7 +85,8 @@ uuid = { version = "1", features = ["v4"], optional = true }
 zeroize = { version = "1", optional = true }
 aes-gcm = { version = "0.10", optional = true }
 argon2 = { version = "0.5", optional = true }
-rand = { version = "0.8", optional = true }
+rand = { version = "0.9", optional = true }
+rand_core = { version = "0.6", features = ["getrandom"], optional = true }
 rpassword = { version = "7", optional = true }
 bs58 = { version = "0.5", optional = true }
 base64 = { version = "0.22", optional = true }
@@ -124,6 +125,7 @@ required-features = ["cli"]
 tempfile = "3"
 serial_test = "3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 
 [profile.dev]
 debug = 0
@@ -133,4 +135,4 @@ debug = 0
 
 [profile.release]
 debug = 0
-codegen-units = 256
+lto = "thin"

@@ -6,7 +6,7 @@
 //! to the 32-byte raw public key and encoding the result as base58-btc with a `z` prefix.
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use rand::rngs::OsRng;
+use rand_core::OsRng;
 
 use super::CryptoError;
 

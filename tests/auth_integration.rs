@@ -20,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use ed25519_dalek::SigningKey;
-use rand::rngs::OsRng;
+use rand_core::OsRng;
 use reqwest::redirect::Policy;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;

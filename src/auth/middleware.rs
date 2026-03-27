@@ -133,7 +133,7 @@ mod tests {
         Router,
     };
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+    use rand_core::OsRng;
     use tower::ServiceExt;
 
     use super::*;

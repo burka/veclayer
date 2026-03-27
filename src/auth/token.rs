@@ -127,7 +127,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+    use rand_core::OsRng;
 
     use super::*;
 
