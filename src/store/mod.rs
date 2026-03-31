@@ -213,10 +213,6 @@ impl StoreBackend {
 ///
 /// Uses an async block so all arms resolve to the same opaque future type,
 /// which is required when more than one backend is compiled.
-/// Dispatch a VectorStore method to the active backend variant.
-///
-/// Uses an async block so all arms resolve to the same opaque future type,
-/// which is required when more than one backend is compiled.
 macro_rules! dispatch {
     ($self:expr, $method:ident ( $($arg:expr),* $(,)? )) => {
         async move {
