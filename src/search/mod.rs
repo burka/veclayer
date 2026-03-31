@@ -1348,14 +1348,19 @@ mod tests {
     }
 
     /// Helper: create a minimal chunk for blend_score tests.
+    /// `created_at` is set to a far-past timestamp so `creation_boost` is always 0.0,
+    /// making blend_score assertions independent of wall-clock time.
     fn blend_test_chunk() -> HierarchicalChunk {
-        HierarchicalChunk::new(
+        let mut chunk = HierarchicalChunk::new(
             "blend test".to_string(),
             ChunkLevel::CONTENT,
             None,
             String::new(),
             "test.md".to_string(),
-        )
+        );
+        // Age > 7 days → creation_boost = 0.0
+        chunk.access_profile.created_at = 1_000_000;
+        chunk
     }
 
     #[test]
