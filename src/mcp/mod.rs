@@ -82,7 +82,7 @@ Your curation hub. Without an action, returns a reflection report: hot chunks, s
 salience scores, and suggested actions. With an action, executes curation:
 - `action: 'promote'` — Make important knowledge always visible
 - `action: 'demote'` — Archive outdated knowledge
-- `action: 'relate'` — Connect knowledge (superseded_by, summarized_by, related_to, derived_from)
+- `action: 'relate'` — Connect knowledge (supersedes, summarizes, related_to, derived_from)
 - `action: 'configure_aging'` — Set automatic degradation rules
 - `action: 'apply_aging'` — Execute aging rules now (respects salience protection)
 - `action: 'salience'` — See which entries are most/least important
@@ -114,12 +114,12 @@ When related knowledge accumulates, synthesize:
 2. `focus` on interesting nodes to read children
 3. Write a summary
 4. `store` it with `parent_id` to place in hierarchy
-5. `think(action='relate', kind='summarized_by')` to link originals to the summary
+5. `think(action='relate', kind='summarizes')` to link originals to the summary
 
 ### Curate between tasks
 Run `think` when you have time: start of session, end of session, between tasks. Review what's \
 hot, what's stale, what needs promoting or archiving. Mark outdated knowledge with \
-`think(action='relate', kind='superseded_by')`.
+`think(action='relate', kind='supersedes')`.
 
 ### Act on Stop hook feedback
 A Stop hook may block you from stopping and provide a reason (e.g., \"Persist before stopping: ...\"). \

@@ -312,6 +312,9 @@ pub struct AddResult {
     pub total_entries: usize,
     pub summary_entries: usize,
     pub files_processed: usize,
+    /// Non-fatal warnings from git staging failures. Non-empty means some
+    /// entries were not staged on the shared branch.
+    pub git_warnings: Vec<String>,
 }
 
 pub type IngestOptions = AddOptions;

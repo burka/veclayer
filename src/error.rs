@@ -52,6 +52,10 @@ pub enum Error {
     #[error("Crypto error: {0}")]
     Crypto(String),
 
+    #[cfg(feature = "config")]
+    #[error("git: {0}")]
+    Git(#[from] crate::git::GitError),
+
     #[cfg(feature = "sync")]
     #[error("Sync error: {0}")]
     Sync(String),

@@ -241,7 +241,7 @@ pub struct ThinkInput {
     pub source_id: Option<String>,
     /// Target entry ID for `relate` action (the entry being related to).
     pub target_id: Option<String>,
-    /// Relation kind for `relate`: superseded_by, summarized_by, related_to, derived_from, version_of
+    /// Relation kind for `relate`: supersedes, summarizes, related_to, derived_from, version_of
     pub kind: Option<String>,
 
     // ── configure_aging parameters ──

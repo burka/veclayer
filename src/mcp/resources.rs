@@ -138,7 +138,8 @@ async fn read_status(
     data_dir: &Path,
 ) -> Result<ReadResourceResult, rmcp::ErrorData> {
     let stats = store.stats().await.map_err(|e| {
-        rmcp::ErrorData::internal_error(format!("Failed to read store stats: {e}"), None)
+        tracing::error!("Failed to read store stats: {e}");
+        rmcp::ErrorData::internal_error("Internal server error", None)
     })?;
     let aging_config = crate::aging::AgingConfig::load(data_dir);
     let md = format::format_store_status(&stats, &aging_config);
@@ -147,7 +148,8 @@ async fn read_status(
 
 fn read_perspectives(uri: &str, data_dir: &Path) -> Result<ReadResourceResult, rmcp::ErrorData> {
     let perspectives = crate::perspective::load(data_dir).map_err(|e| {
-        rmcp::ErrorData::internal_error(format!("Failed to load perspectives: {e}"), None)
+        tracing::error!("Failed to load perspectives: {e}");
+        rmcp::ErrorData::internal_error("Internal server error", None)
     })?;
 
     if perspectives.is_empty() {
@@ -171,7 +173,8 @@ async fn read_hot(
     branch: Option<&str>,
 ) -> Result<ReadResourceResult, rmcp::ErrorData> {
     let hot = store.get_hot_chunks(20).await.map_err(|e| {
-        rmcp::ErrorData::internal_error(format!("Failed to get hot chunks: {e}"), None)
+        tracing::error!("Failed to get hot chunks: {e}");
+        rmcp::ErrorData::internal_error("Internal server error", None)
     })?;
 
     let filtered: Vec<_> = hot
@@ -197,7 +200,8 @@ async fn read_recent(
     branch: Option<&str>,
 ) -> Result<ReadResourceResult, rmcp::ErrorData> {
     let entries = store.list_entries(&[], None, None, 20).await.map_err(|e| {
-        rmcp::ErrorData::internal_error(format!("Failed to list entries: {e}"), None)
+        tracing::error!("Failed to list entries: {e}");
+        rmcp::ErrorData::internal_error("Internal server error", None)
     })?;
 
     let filtered: Vec<_> = entries
@@ -232,7 +236,8 @@ async fn read_identity(
     let snapshot = crate::identity::compute_identity(store, data_dir, project, branch)
         .await
         .map_err(|e| {
-            rmcp::ErrorData::internal_error(format!("Failed to compute identity: {e}"), None)
+            tracing::error!("Failed to compute identity: {e}");
+            rmcp::ErrorData::internal_error("Internal server error", None)
         })?;
 
     let priming = crate::identity::generate_priming(&snapshot);
@@ -253,7 +258,8 @@ async fn read_perspective_entries(
 ) -> Result<ReadResourceResult, rmcp::ErrorData> {
     // Validate the perspective exists
     let perspectives = crate::perspective::load(data_dir).map_err(|e| {
-        rmcp::ErrorData::internal_error(format!("Failed to load perspectives: {e}"), None)
+        tracing::error!("Failed to load perspectives: {e}");
+        rmcp::ErrorData::internal_error("Internal server error", None)
     })?;
     if !perspectives.iter().any(|p| p.id == perspective_id) {
         return Err(rmcp::ErrorData::invalid_params(
@@ -266,7 +272,8 @@ async fn read_perspective_entries(
         .list_entries(&[perspective_id], None, None, 20)
         .await
         .map_err(|e| {
-            rmcp::ErrorData::internal_error(format!("Failed to list entries: {e}"), None)
+            tracing::error!("Failed to list entries: {e}");
+            rmcp::ErrorData::internal_error("Internal server error", None)
         })?;
 
     let filtered: Vec<_> = entries
@@ -308,7 +315,8 @@ async fn read_entry(
         })?;
 
     let children = store.get_children(&chunk.id).await.map_err(|e| {
-        rmcp::ErrorData::internal_error(format!("Failed to get children: {e}"), None)
+        tracing::error!("Failed to get children: {e}");
+        rmcp::ErrorData::internal_error("Internal server error", None)
     })?;
 
     let md = format::format_entry_detail(&chunk, &children);

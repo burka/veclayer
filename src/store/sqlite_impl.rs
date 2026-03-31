@@ -22,13 +22,20 @@ use crate::{
     AccessProfile, ChunkLevel, ChunkRelation, ClusterMembership, HierarchicalChunk, Result,
 };
 
-/// Escape SQL LIKE wildcards (`%`, `_`) and single quotes for safe interpolation
-/// into a LIKE pattern. The caller must append `ESCAPE '\'` to the clause.
-fn escape_like(s: &str) -> String {
-    s.replace('\\', "\\\\")
+/// Build a parameterized LIKE pattern that matches a perspective stored as a
+/// JSON string element (e.g. `["decisions","learnings"]`).
+///
+/// The returned string has the form `%"perspective"%` with LIKE wildcards
+/// (`%`, `_`) and backslash escaped so the caller can bind it as a query
+/// parameter with `ESCAPE '\'`.  SQL structural characters are never
+/// interpolated into the query text, so injection is impossible regardless of
+/// what the caller passes in.
+fn perspective_like_pattern(perspective: &str) -> String {
+    let escaped = perspective
+        .replace('\\', "\\\\")
         .replace('%', "\\%")
-        .replace('_', "\\_")
-        .replace('\'', "''")
+        .replace('_', "\\_");
+    format!("%\"{escaped}\"%")
 }
 
 // --- Schema ---
@@ -386,15 +393,20 @@ impl VectorStore for SqliteStore {
 
         self.with_conn(move |conn| {
             let mut sql = String::from("SELECT * FROM chunks WHERE embedding_status = 'embedded'");
+            let mut bound: Vec<rusqlite::types::Value> = Vec::new();
 
             if let Some(level) = level_filter {
-                sql.push_str(&format!(" AND level = {}", level.0));
+                bound.push(rusqlite::types::Value::Integer(i64::from(level.0)));
+                sql.push_str(&format!(" AND level = ?{}", bound.len()));
             }
 
             if !perspectives_owned.is_empty() {
-                let clauses: Vec<String> = perspectives_owned
-                    .iter()
-                    .map(|p| format!("perspectives LIKE '%\"{}\"%' ESCAPE '\\'", escape_like(p)))
+                let clause_start = bound.len() + 1;
+                for p in &perspectives_owned {
+                    bound.push(rusqlite::types::Value::Text(perspective_like_pattern(p)));
+                }
+                let clauses: Vec<String> = (clause_start..=bound.len())
+                    .map(|i| format!("perspectives LIKE ?{i} ESCAPE '\\'"))
                     .collect();
                 sql.push_str(&format!(" AND ({})", clauses.join(" OR ")));
             }
@@ -404,7 +416,7 @@ impl VectorStore for SqliteStore {
                 .map_err(|e| Error::store(format!("search prepare: {e}")))?;
 
             let rows: Vec<HierarchicalChunk> = stmt
-                .query_map([], row_to_chunk)
+                .query_map(rusqlite::params_from_iter(bound), row_to_chunk)
                 .map_err(|e| Error::store(format!("search query: {e}")))?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(|e| Error::store(format!("row parse: {e}")))?;
@@ -762,25 +774,25 @@ impl VectorStore for SqliteStore {
 
         self.with_conn(move |conn| {
             let mut conditions: Vec<String> = Vec::new();
-            let mut values: Vec<i64> = Vec::new();
-            let mut idx = 1usize;
+            let mut bound: Vec<rusqlite::types::Value> = Vec::new();
 
             if !perspectives_owned.is_empty() {
-                let clauses: Vec<String> = perspectives_owned
-                    .iter()
-                    .map(|p| format!("perspectives LIKE '%\"{}\"%' ESCAPE '\\'", escape_like(p)))
+                let clause_start = bound.len() + 1;
+                for p in &perspectives_owned {
+                    bound.push(rusqlite::types::Value::Text(perspective_like_pattern(p)));
+                }
+                let clauses: Vec<String> = (clause_start..=bound.len())
+                    .map(|i| format!("perspectives LIKE ?{i} ESCAPE '\\'"))
                     .collect();
                 conditions.push(format!("({})", clauses.join(" OR ")));
             }
             if let Some(ts) = since {
-                conditions.push(format!("created_at >= ?{idx}"));
-                values.push(ts);
-                idx += 1;
+                bound.push(rusqlite::types::Value::Integer(ts));
+                conditions.push(format!("created_at >= ?{}", bound.len()));
             }
             if let Some(ts) = until {
-                conditions.push(format!("created_at <= ?{idx}"));
-                values.push(ts);
-                idx += 1;
+                bound.push(rusqlite::types::Value::Integer(ts));
+                conditions.push(format!("created_at <= ?{}", bound.len()));
             }
 
             let where_clause = if conditions.is_empty() {
@@ -789,16 +801,18 @@ impl VectorStore for SqliteStore {
                 format!(" WHERE {}", conditions.join(" AND "))
             };
 
-            let sql =
-                format!("SELECT * FROM chunks{where_clause} ORDER BY created_at DESC LIMIT ?{idx}");
-            values.push(limit as i64);
+            bound.push(rusqlite::types::Value::Integer(limit as i64));
+            let sql = format!(
+                "SELECT * FROM chunks{where_clause} ORDER BY created_at DESC LIMIT ?{}",
+                bound.len()
+            );
 
             let mut stmt = conn
                 .prepare(&sql)
                 .map_err(|e| Error::store(format!("list_entries prepare: {e}")))?;
 
             let chunks: Vec<HierarchicalChunk> = stmt
-                .query_map(rusqlite::params_from_iter(values), row_to_chunk)
+                .query_map(rusqlite::params_from_iter(bound), row_to_chunk)
                 .map_err(|e| Error::store(format!("list_entries query: {e}")))?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(|e| Error::store(format!("row parse: {e}")))?;
@@ -1785,5 +1799,99 @@ mod tests {
             .search(&[0.0, 0.0, 0.0, 0.0], 5, None, &[])
             .await
             .expect("search with zero vector");
+    }
+
+    // --- SQL injection resistance ---
+
+    /// A crafted perspective containing SQL metacharacters must not allow the
+    /// attacker to break out of the LIKE pattern and execute arbitrary SQL.
+    ///
+    /// Before the fix, the clause was built by string interpolation, so a value
+    /// like `x%" OR 1=1--` would expand to:
+    ///
+    ///   perspectives LIKE '%"x%" OR 1=1--"%' ESCAPE '\'
+    ///
+    /// causing the LIKE to short-circuit and every row to match.
+    ///
+    /// With parameterized queries the entire pattern is a single bound value;
+    /// the SQL parser never sees the user string, so injection is impossible.
+    #[tokio::test]
+    async fn search_perspective_sql_injection_returns_no_false_positives() {
+        let (store, _dir) = create_test_store().await;
+
+        // Insert a chunk that has a legitimate "safe" perspective.
+        let safe_chunk =
+            make_chunk_with_embedding("safe chunk", "safe.md", vec![1.0, 0.0, 0.0, 0.0])
+                .with_perspective("safe");
+
+        store.insert_chunks(vec![safe_chunk]).await.expect("insert");
+
+        // Crafted payloads that would previously break out of the LIKE context.
+        let injection_attempts = [
+            r#"x%" OR 1=1--"#,
+            r#"' OR '1'='1"#,
+            r#"safe"%' OR '1'='1' --"#,
+            r#"%" OR embedding_status='embedded' --"#,
+        ];
+
+        for payload in &injection_attempts {
+            let results = store
+                .search(&[1.0, 0.0, 0.0, 0.0], 100, None, &[payload])
+                .await
+                .unwrap_or_else(|_| vec![]);
+
+            assert!(
+                results.is_empty(),
+                "injection payload '{payload}' leaked rows through search perspective filter"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn list_entries_perspective_sql_injection_returns_no_false_positives() {
+        let (store, _dir) = create_test_store().await;
+
+        let safe_chunk = make_chunk("safe entry", "safe.md").with_perspective("safe");
+        store.insert_chunks(vec![safe_chunk]).await.expect("insert");
+
+        let injection_attempts = [
+            r#"x%" OR 1=1--"#,
+            r#"' OR '1'='1"#,
+            r#"safe"%' OR '1'='1' --"#,
+        ];
+
+        for payload in &injection_attempts {
+            let entries = store
+                .list_entries(&[payload], None, None, 100)
+                .await
+                .unwrap_or_else(|_| vec![]);
+
+            assert!(
+                entries.is_empty(),
+                "injection payload '{payload}' leaked rows through list_entries perspective filter"
+            );
+        }
+    }
+
+    /// LIKE wildcards in perspective names must be treated as literals, not
+    /// as pattern characters, so they cannot be used to match unintended rows.
+    #[tokio::test]
+    async fn search_perspective_like_wildcards_treated_as_literals() {
+        let (store, _dir) = create_test_store().await;
+
+        let chunk = make_chunk_with_embedding("wildcard chunk", "wc.md", vec![1.0, 0.0, 0.0, 0.0])
+            .with_perspective("decisions");
+        store.insert_chunks(vec![chunk]).await.expect("insert");
+
+        // A LIKE wildcard "%" should NOT match "decisions".
+        let results = store
+            .search(&[1.0, 0.0, 0.0, 0.0], 100, None, &["%"])
+            .await
+            .expect("search");
+
+        assert!(
+            results.is_empty(),
+            "bare '%' perspective should not match any stored chunk"
+        );
     }
 }

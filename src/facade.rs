@@ -93,14 +93,12 @@ impl<E: Embedder> VecLayer<E> {
         let dimension = embedder.dimension();
         let store = Arc::new(StoreBackend::open(data_dir, dimension, read_only).await?);
         let blob_store = BlobStore::open(data_dir)?;
-        Ok(Self {
-            data_dir: data_dir.to_path_buf(),
+        Ok(Self::from_parts(
+            data_dir.to_path_buf(),
             store,
-            embedder: Arc::new(embedder),
+            embedder,
             blob_store,
-            #[cfg(feature = "llm")]
-            llm: std::sync::RwLock::new(None),
-        })
+        ))
     }
 
     /// Open a VecLayer store backed by SQLite.
@@ -124,14 +122,28 @@ impl<E: Embedder> VecLayer<E> {
         let dimension = embedder.dimension();
         let store = Arc::new(StoreBackend::open_sqlite(data_dir, dimension, read_only).await?);
         let blob_store = BlobStore::open(data_dir)?;
-        Ok(Self {
-            data_dir: data_dir.to_path_buf(),
+        Ok(Self::from_parts(
+            data_dir.to_path_buf(),
+            store,
+            embedder,
+            blob_store,
+        ))
+    }
+
+    fn from_parts(
+        data_dir: PathBuf,
+        store: Arc<StoreBackend>,
+        embedder: E,
+        blob_store: BlobStore,
+    ) -> Self {
+        Self {
+            data_dir,
             store,
             embedder: Arc::new(embedder),
             blob_store,
             #[cfg(feature = "llm")]
             llm: std::sync::RwLock::new(None),
-        })
+        }
     }
 
     /// Store text content and return its entry ID.
@@ -343,7 +355,8 @@ impl<E: Embedder> VecLayer<E> {
     /// [`think()`](Self::think). Can be called multiple times to swap providers.
     #[cfg(feature = "llm")]
     pub fn configure_llm(&self, llm: impl crate::llm::LlmProvider + 'static) {
-        *self.llm.write().unwrap() = Some(Arc::new(crate::llm::DynLlmProviderWrapper(llm)));
+        *self.llm.write().unwrap_or_else(|p| p.into_inner()) =
+            Some(Arc::new(crate::llm::DynLlmProviderWrapper(llm)));
     }
 
     /// Run a think cycle using the configured LLM provider.
@@ -362,7 +375,7 @@ impl<E: Embedder> VecLayer<E> {
     #[cfg(feature = "llm")]
     pub async fn think_project(&self, project: Option<&str>) -> Result<crate::think::ThinkResult> {
         let llm = {
-            let guard = self.llm.read().unwrap();
+            let guard = self.llm.read().unwrap_or_else(|p| p.into_inner());
             Arc::clone(guard.as_ref().ok_or_else(|| {
                 crate::Error::llm("no LLM configured — call configure_llm() first")
             })?)

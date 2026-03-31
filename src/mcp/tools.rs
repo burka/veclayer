@@ -44,6 +44,36 @@ pub struct ToolContext {
     pub push_mode: crate::git::branch_config::PushMode,
 }
 
+impl ToolContext {
+    /// Construct a `ToolContext` from its constituent parts.
+    ///
+    /// Both [`McpHandler`](super::handler::McpHandler) and
+    /// [`AppState`](super::http::AppState) delegate to this to avoid duplicating
+    /// field-by-field construction.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        store: Arc<StoreBackend>,
+        embedder: Arc<dyn Embedder + Send + Sync>,
+        blob_store: Arc<crate::blob_store::BlobStore>,
+        data_dir: std::path::PathBuf,
+        project: Option<String>,
+        branch: Option<String>,
+        git_store: Option<Arc<crate::git::memory_store::MemoryStore>>,
+        push_mode: crate::git::branch_config::PushMode,
+    ) -> Self {
+        Self {
+            store,
+            embedder,
+            blob_store,
+            data_dir,
+            project,
+            branch,
+            git_store,
+            push_mode,
+        }
+    }
+}
+
 /// Helper: check if a chunk passes project filter.
 /// Returns true if:
 /// - No project is set (no filtering)
@@ -80,6 +110,26 @@ pub(super) fn passes_scope_filter(
     }
 
     true
+}
+
+/// Apply temporal, scope, and ongoing filters to a search result.
+///
+/// Returns `true` when the result passes all active filters and should be
+/// included in the response.
+fn apply_recall_filters(
+    result: &crate::search::HierarchicalSearchResult,
+    project: Option<&str>,
+    branch: Option<&str>,
+    since_epoch: Option<i64>,
+    until_epoch: Option<i64>,
+    open_thread_ids: &Option<std::collections::HashSet<String>>,
+) -> bool {
+    passes_scope_filter(&result.chunk, project, branch) && {
+        let created = result.chunk.access_profile.created_at;
+        since_epoch.is_none_or(|s| created >= s)
+            && until_epoch.is_none_or(|u| created <= u)
+            && crate::identity::passes_ongoing_filter(open_thread_ids, &result.chunk.id)
+    }
 }
 
 /// Helper: map HierarchicalSearchResult to SearchResultResponse
@@ -190,8 +240,6 @@ async fn store_single_entry(
         (crate::chunk::ChunkLevel(1), input.source_file.clone())
     };
 
-    let chunk_id = crate::chunk::content_hash(&input.content);
-
     let entry_type = match input.entry_type.as_deref() {
         None => crate::chunk::EntryType::default(),
         Some(s) => s.parse().map_err(|e: String| crate::Error::config(e))?,
@@ -228,28 +276,27 @@ async fn store_single_entry(
         }
     };
 
-    let chunk = crate::HierarchicalChunk {
-        id: chunk_id.clone(),
-        content: input.content,
-        embedding,
+    let mut chunk = crate::HierarchicalChunk::new(
+        input.content,
         level,
-        parent_id: parent_id.map(String::from),
+        parent_id.map(String::from),
         path,
-        source_file: input.source_file,
-        heading: input.heading,
-        start_offset: 0,
-        end_offset: 0,
-        cluster_memberships: vec![],
-        entry_type,
-        summarizes: vec![],
-        perspectives,
-        visibility: input.visibility,
-        relations: vec![],
-        access_profile: crate::AccessProfile::new(),
-        expires_at: None,
-        impression_hint: input.impression_hint,
-        impression_strength: input.impression_strength.unwrap_or(1.0),
-    };
+        input.source_file,
+    )
+    .with_entry_type(entry_type)
+    .with_perspectives(perspectives)
+    .with_visibility(input.visibility);
+
+    if let Some(emb) = embedding {
+        chunk = chunk.with_embedding(emb);
+    }
+    if let Some(ref h) = input.heading {
+        chunk = chunk.with_heading(h);
+    }
+    chunk.impression_hint = input.impression_hint;
+    chunk.impression_strength = input.impression_strength.unwrap_or(1.0);
+
+    let chunk_id = chunk.id.clone();
 
     // Persist to blob store
     let blob = crate::entry::StoredBlob::from_chunk_and_embedding(&chunk, embedder.name());
@@ -349,12 +396,14 @@ pub async fn execute_recall(
         let filtered: Vec<_> = results
             .into_iter()
             .filter(|r| {
-                passes_scope_filter(&r.chunk, project, branch) && {
-                    let created = r.chunk.access_profile.created_at;
-                    since_epoch.is_none_or(|s| created >= s)
-                        && until_epoch.is_none_or(|u| created <= u)
-                        && crate::identity::passes_ongoing_filter(&open_thread_ids, &r.chunk.id)
-                }
+                apply_recall_filters(
+                    r,
+                    project,
+                    branch,
+                    since_epoch,
+                    until_epoch,
+                    &open_thread_ids,
+                )
             })
             .take(input.limit)
             .collect();
@@ -382,12 +431,14 @@ pub async fn execute_recall(
             let filtered: Vec<_> = results
                 .into_iter()
                 .filter(|r| {
-                    passes_scope_filter(&r.chunk, project, branch) && {
-                        let created = r.chunk.access_profile.created_at;
-                        since_epoch.is_none_or(|s| created >= s)
-                            && until_epoch.is_none_or(|u| created <= u)
-                            && crate::identity::passes_ongoing_filter(&open_thread_ids, &r.chunk.id)
-                    }
+                    apply_recall_filters(
+                        r,
+                        project,
+                        branch,
+                        since_epoch,
+                        until_epoch,
+                        &open_thread_ids,
+                    )
                 })
                 .take(input.limit)
                 .collect();

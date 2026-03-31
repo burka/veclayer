@@ -559,6 +559,9 @@ enum ThinkAction {
         limit: usize,
     },
 
+    /// Run a full LLM-powered consolidation cycle (same as `think` with no subcommand)
+    Consolidate,
+
     /// Prepare reflection data for manual consolidation (no LLM needed)
     Prepare,
 
@@ -771,34 +774,29 @@ async fn main() -> Result<()> {
         }
     }
 
-    let command = match cli.command {
-        Some(cmd) => cmd,
-        None => {
-            if using_global_store_fallback {
-                eprintln!(
-                    "Warning: no local store found, using global store at {}. Run 'veclayer init' to create a project store.",
-                    data_dir.display()
-                );
-            }
-            orientation(&data_dir).await?;
-            return Ok(());
-        }
-    };
-
-    if using_global_store_fallback
-        && !matches!(
-            command,
+    let suppress_fallback_warning = matches!(
+        cli.command,
+        Some(
             Commands::Init { .. }
                 | Commands::Setup { .. }
                 | Commands::Observe
                 | Commands::Context { .. }
         )
-    {
+    );
+    if using_global_store_fallback && !suppress_fallback_warning {
         eprintln!(
             "Warning: no local store found, using global store at {}. Run 'veclayer init' to create a project store.",
             data_dir.display()
         );
     }
+
+    let command = match cli.command {
+        Some(cmd) => cmd,
+        None => {
+            orientation(&data_dir).await?;
+            return Ok(());
+        }
+    };
 
     match command {
         Commands::Config => {
@@ -808,6 +806,7 @@ async fn main() -> Result<()> {
                 &user_resolved,
                 git_info.remote.as_deref(),
                 git_info.branch.as_deref(),
+                &data_dir,
             )?;
         }
         Commands::Init { share } => {
@@ -867,7 +866,10 @@ async fn main() -> Result<()> {
             } else {
                 None
             };
-            add(&data_dir, &input, options, git_store.as_ref()).await?;
+            let result = add(&data_dir, &input, options, git_store.as_ref()).await?;
+            for warning in &result.git_warnings {
+                eprintln!("Warning: {warning}");
+            }
         }
         Commands::Recall {
             query,
@@ -1093,6 +1095,18 @@ async fn main() -> Result<()> {
             }
             Some(ThinkAction::Discover { limit }) => {
                 think_discover(&data_dir, limit).await?;
+            }
+            Some(ThinkAction::Consolidate) => {
+                #[cfg(feature = "llm")]
+                {
+                    think(&data_dir).await?;
+                }
+                #[cfg(not(feature = "llm"))]
+                {
+                    eprintln!("Error: `think consolidate` requires the 'llm' feature.");
+                    eprintln!("Build with `cargo build` (default features) or `cargo build --features llm`.");
+                    std::process::exit(1);
+                }
             }
             Some(ThinkAction::Prepare) => {
                 think_prepare(&data_dir).await?;

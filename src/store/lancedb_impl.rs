@@ -64,8 +64,50 @@ fn migration_default(field_name: &str) -> Option<&'static str> {
     }
 }
 
+/// Escape a string value for safe inclusion in a LanceDB/DataFusion SQL filter.
+///
+/// # Safety model
+///
+/// LanceDB uses Apache DataFusion as its SQL engine. DataFusion string literals
+/// follow standard SQL escaping rules:
+///
+/// - Single quotes are escaped by doubling them (`'` → `''`). This is the
+///   standard SQL escaping mechanism and closes the only structural injection
+///   vector in `column = '...'` expressions.
+/// - Backslashes are **not** treated as escape characters by DataFusion in
+///   string literals (DataFusion uses `E'...'` Postgres-style syntax for that,
+///   which we never emit). Plain single-quoted literals treat `\` literally,
+///   so no backslash escaping is needed.
+/// - Null bytes (`\0`) cannot appear in Arrow string columns (Arrow Utf8 is
+///   valid UTF-8, which excludes embedded NUL). We strip them defensively
+///   so a malformed input cannot terminate the string early in any downstream
+///   processing layer.
+///
+/// Characters that are special in SQL LIKE patterns (`%`, `_`) are **not**
+/// escaped here because `eq_filter` uses `=`, not `LIKE`. For LIKE usage see
+/// `like_escape_pattern`.
 fn sql_escape(s: &str) -> String {
-    s.replace('\'', "''")
+    // Strip NUL bytes (defensive; Arrow Utf8 rejects them anyway).
+    // Double single quotes to prevent string literal breakout.
+    s.replace('\0', "").replace('\'', "''")
+}
+
+/// Escape a value for safe use as the pattern operand in a LIKE expression.
+///
+/// Escapes:
+/// - `\` → `\\`  (our chosen ESCAPE character, must come first)
+/// - `%` → `\%`  (LIKE: match zero-or-more chars)
+/// - `_` → `\_`  (LIKE: match exactly one char)
+/// - `'` → `''`  (SQL string literal breakout)
+/// - `\0` stripped (see `sql_escape`)
+///
+/// The caller is responsible for appending `ESCAPE '\'` to the LIKE clause.
+fn like_escape_pattern(s: &str) -> String {
+    s.replace('\0', "")
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+        .replace('\'', "''")
 }
 
 fn eq_filter(column: &str, value: &str) -> String {
@@ -81,6 +123,14 @@ fn is_commit_conflict(e: &lancedb::Error) -> bool {
         .contains("commit conflict")
 }
 
+/// Build a range filter that matches rows where `column` starts with `prefix`.
+///
+/// # Safety
+///
+/// `get_by_id_prefix` — the only caller — validates that `prefix` contains only
+/// ASCII hex digits (`[0-9a-f]`) before calling this function. That input set
+/// contains no SQL-special characters, so `sql_escape` is applied for defense
+/// in depth but makes no material difference for valid inputs.
 fn starts_with_filter(column: &str, prefix: &str) -> String {
     format!(
         "{} >= '{}' AND {} < '{}'",
@@ -847,9 +897,18 @@ impl VectorStore for LanceStore {
             query = query.only_if(format!("level = {}", level.depth()));
         }
         if !perspectives.is_empty() {
+            // Perspectives are stored as a JSON array (e.g. `["decisions","knowledge"]`).
+            // We match by looking for `"<name>` anywhere in the serialized array.
+            // `like_escape_pattern` escapes LIKE metacharacters (%, _) so a perspective
+            // name containing those characters matches exactly rather than broadly.
             let clauses: Vec<String> = perspectives
                 .iter()
-                .map(|p| format!("perspectives LIKE '%\"{}%'", sql_escape(p)))
+                .map(|p| {
+                    format!(
+                        "perspectives LIKE '%\"{}%' ESCAPE '\\'",
+                        like_escape_pattern(p)
+                    )
+                })
                 .collect();
             query = query.only_if(format!("({})", clauses.join(" OR ")));
         }
@@ -960,7 +1019,7 @@ impl VectorStore for LanceStore {
 
         let results = table
             .query()
-            .only_if(format!("source_file = '{}'", sql_escape(source_file)))
+            .only_if(eq_filter("source_file", source_file))
             .execute()
             .await
             .map_err(|e| Error::search(format!("Failed to query by source: {}", e)))?
@@ -978,7 +1037,7 @@ impl VectorStore for LanceStore {
             let before = self.get_by_source(source_file).await?.len();
 
             table
-                .delete(&format!("source_file = '{}'", sql_escape(source_file)))
+                .delete(&eq_filter("source_file", source_file))
                 .await
                 .map_err(|e| Error::store(format!("Failed to delete by source: {}", e)))?;
 
@@ -1199,7 +1258,12 @@ impl VectorStore for LanceStore {
         if !perspectives.is_empty() {
             let clauses: Vec<String> = perspectives
                 .iter()
-                .map(|p| format!("perspectives LIKE '%\"{}%'", sql_escape(p)))
+                .map(|p| {
+                    format!(
+                        "perspectives LIKE '%\"{}%' ESCAPE '\\'",
+                        like_escape_pattern(p)
+                    )
+                })
                 .collect();
             filters.push(format!("({})", clauses.join(" OR ")));
         }
@@ -1258,6 +1322,9 @@ impl VectorStore for LanceStore {
         }
 
         self.with_write_lock(|| async {
+            // IDs come from entries already stored in LanceDB (SHA-256 hex strings),
+            // so they contain only [0-9a-f] in practice. `sql_escape` is applied
+            // for defense in depth in case a caller passes a non-canonical ID.
             let id_list: String = updates
                 .iter()
                 .map(|(id, _)| format!("'{}'", sql_escape(id)))
@@ -3041,5 +3108,199 @@ mod tests {
         LanceStore::open(temp_dir.path(), 384, true)
             .await
             .expect("read-only open must succeed concurrently with read-write stores");
+    }
+
+    // --- SQL filter safety unit tests ---
+
+    /// `sql_escape` doubles single quotes and strips NUL bytes.
+    #[test]
+    fn test_sql_escape_single_quote() {
+        assert_eq!(sql_escape("it's"), "it''s");
+        assert_eq!(sql_escape("''"), "''''");
+        assert_eq!(sql_escape("no quotes"), "no quotes");
+    }
+
+    #[test]
+    fn test_sql_escape_strips_null_bytes() {
+        assert_eq!(sql_escape("abc\0def"), "abcdef");
+        assert_eq!(sql_escape("\0"), "");
+    }
+
+    #[test]
+    fn test_sql_escape_backslash_unchanged() {
+        // Backslashes are literal in DataFusion single-quoted strings.
+        // Escaping them would corrupt the value.
+        assert_eq!(sql_escape(r"a\b"), r"a\b");
+    }
+
+    /// `like_escape_pattern` escapes LIKE metacharacters (`%`, `_`, `\`)
+    /// and also handles single quotes and NUL bytes.
+    #[test]
+    fn test_like_escape_pattern_percent() {
+        // A bare % would act as wildcard; after escaping it becomes a literal.
+        assert_eq!(like_escape_pattern("100%"), r"100\%");
+    }
+
+    #[test]
+    fn test_like_escape_pattern_underscore() {
+        assert_eq!(like_escape_pattern("a_b"), r"a\_b");
+    }
+
+    #[test]
+    fn test_like_escape_pattern_backslash() {
+        // Backslash is our ESCAPE char in LIKE; it must be doubled.
+        assert_eq!(like_escape_pattern(r"a\b"), r"a\\b");
+    }
+
+    #[test]
+    fn test_like_escape_pattern_single_quote() {
+        assert_eq!(like_escape_pattern("it's"), "it''s");
+    }
+
+    #[test]
+    fn test_like_escape_pattern_null_byte() {
+        assert_eq!(like_escape_pattern("abc\0def"), r"abcdef");
+    }
+
+    #[test]
+    fn test_like_escape_pattern_combined() {
+        // "100%_done\work" → all three metacharacters at once
+        assert_eq!(like_escape_pattern(r"100%_done\work"), r"100\%\_done\\work");
+    }
+
+    // --- SQL injection integration tests ---
+
+    /// Source file names containing SQL-special characters roundtrip correctly
+    /// through `get_by_source` and `delete_by_source`.
+    #[tokio::test]
+    async fn test_source_file_with_sql_special_chars_roundtrips() {
+        let (store, _temp) = create_test_store().await;
+
+        let tricky_sources = [
+            "'; DROP TABLE chunks; --",
+            "path/to/file's notes.md",
+            r"C:\Users\Alice\notes.md",
+            "file with % wildcard.md",
+            "file_with_underscores.md",
+        ];
+
+        for (i, source) in tricky_sources.iter().enumerate() {
+            let mut chunk = create_test_chunk(&format!("src-sql-{i}"), "content", ChunkLevel::H1);
+            chunk.source_file = source.to_string();
+            store
+                .insert_chunks(vec![chunk])
+                .await
+                .unwrap_or_else(|e| panic!("insert failed for source {:?}: {}", source, e));
+
+            let retrieved = store
+                .get_by_source(source)
+                .await
+                .unwrap_or_else(|e| panic!("get_by_source failed for {:?}: {}", source, e));
+            assert_eq!(
+                retrieved.len(),
+                1,
+                "expected exactly one chunk for source {:?}, got {}",
+                source,
+                retrieved.len()
+            );
+            assert_eq!(retrieved[0].source_file, *source);
+
+            let deleted = store
+                .delete_by_source(source)
+                .await
+                .unwrap_or_else(|e| panic!("delete_by_source failed for {:?}: {}", source, e));
+            assert_eq!(
+                deleted, 1,
+                "expected one deleted chunk for source {:?}",
+                source
+            );
+
+            // Confirm it's really gone.
+            let after = store.get_by_source(source).await.unwrap();
+            assert!(
+                after.is_empty(),
+                "chunk for source {:?} must be gone after delete",
+                source
+            );
+        }
+    }
+
+    /// Perspective names with LIKE metacharacters match only the intended entries,
+    /// not broader sets that would result from un-escaped `%` or `_`.
+    #[tokio::test]
+    async fn test_perspective_filter_with_like_metacharacters() {
+        let (store, _temp) = create_test_store().await;
+
+        // "100%" should match only chunks with that exact perspective,
+        // not every chunk (which a bare `%` wildcard would return).
+        let mut chunk_pct =
+            create_test_chunk("persp-pct", "percentage perspective", ChunkLevel::H1);
+        chunk_pct.perspectives = vec!["100%".to_string()];
+
+        let mut chunk_normal =
+            create_test_chunk("persp-normal", "normal perspective", ChunkLevel::H1);
+        chunk_normal.perspectives = vec!["decisions".to_string()];
+
+        // "a_b" should not match "axb" — underscore is a literal here.
+        let mut chunk_under =
+            create_test_chunk("persp-under", "underscore perspective", ChunkLevel::H1);
+        chunk_under.perspectives = vec!["a_b".to_string()];
+
+        let mut chunk_axb = create_test_chunk("persp-axb", "axb perspective", ChunkLevel::H1);
+        chunk_axb.perspectives = vec!["axb".to_string()];
+
+        store
+            .insert_chunks(vec![chunk_pct, chunk_normal, chunk_under, chunk_axb])
+            .await
+            .unwrap();
+
+        // Filter by "100%" — must return exactly one chunk, not all chunks.
+        let query_vec = vec![0.1f32; 384];
+        let results = store.search(&query_vec, 10, None, &["100%"]).await.unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "100% perspective must match exactly one chunk"
+        );
+        assert_eq!(results[0].chunk.id, "persp-pct");
+
+        // list_entries path
+        let listed = store.list_entries(&["100%"], None, None, 10).await.unwrap();
+        assert_eq!(
+            listed.len(),
+            1,
+            "list_entries: 100% must match exactly one chunk"
+        );
+        assert_eq!(listed[0].id, "persp-pct");
+
+        // Filter by "a_b" — must not match "axb".
+        let results_under = store.search(&query_vec, 10, None, &["a_b"]).await.unwrap();
+        assert_eq!(
+            results_under.len(),
+            1,
+            "a_b must match only the a_b perspective, not axb"
+        );
+        assert_eq!(results_under[0].chunk.id, "persp-under");
+    }
+
+    /// Chunk IDs containing SQL-special characters are stored and retrieved correctly.
+    /// (In practice IDs are SHA-256 hex, but the escape layer must be correct.)
+    #[tokio::test]
+    async fn test_chunk_id_with_sql_special_chars() {
+        let (store, _temp) = create_test_store().await;
+
+        // IDs with a single-quote — the only SQL-special char reachable via the
+        // ID column in normal operation (sha256 hex is safe, but test the guard).
+        let tricky_id = "abc'def";
+        let mut chunk = create_test_chunk(tricky_id, "tricky id", ChunkLevel::H1);
+        chunk.id = tricky_id.to_string();
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let retrieved = store.get_by_id(tricky_id).await.unwrap();
+        assert!(
+            retrieved.is_some(),
+            "chunk with quote in ID must be retrievable"
+        );
+        assert_eq!(retrieved.unwrap().id, tricky_id);
     }
 }

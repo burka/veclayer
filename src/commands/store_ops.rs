@@ -205,6 +205,16 @@ impl std::str::FromStr for OutputMode {
 ///
 /// `since` is a duration string (e.g. "15min", "1h") parsed by `parse_temporal`.
 /// `output` controls the output mode: "text" (human-readable) or "llm-nudge"
+/// Return the OS-temp-dir path of the per-`data_dir` stale-check marker file.
+fn stale_marker_path(data_dir: &Path) -> std::path::PathBuf {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    data_dir.hash(&mut h);
+    let digest = h.finish();
+    std::env::temp_dir().join(format!(".veclayer_stale_{digest:x}"))
+}
+
 /// (machine-friendly, returns exit code 2 when stale).
 /// `hooks_enabled` mirrors the `hooks_enabled` config field — when `false`, exits 0 silently.
 pub async fn stale(data_dir: &Path, since: &str, output: &str, hooks_enabled: bool) -> Result<i32> {
@@ -220,7 +230,7 @@ pub async fn stale(data_dir: &Path, since: &str, output: &str, hooks_enabled: bo
     // Deduplicate: if another stale check ran within the last 5 seconds for the
     // same data_dir, skip silently. This prevents duplicate output when both global
     // and project-level hooks invoke `veclayer stale`.
-    let marker = data_dir.join(".stale_check");
+    let marker = stale_marker_path(data_dir);
     if let Ok(meta) = std::fs::metadata(&marker) {
         if let Ok(modified) = meta.modified() {
             if modified.elapsed().unwrap_or_default() < std::time::Duration::from_secs(5) {
@@ -430,6 +440,7 @@ pub fn show_config(
     resolved: &crate::config::ResolvedConfig,
     git_remote: Option<&str>,
     git_branch: Option<&str>,
+    data_dir: &Path,
 ) -> Result<()> {
     println!("Configuration for: {}", cwd.display().cyan());
 
@@ -496,14 +507,7 @@ pub fn show_config(
         "  project: {}",
         resolved.project.as_deref().unwrap_or("(none)").yellow()
     );
-    // Note: resolved.data_dir only reflects user-config match overrides.
-    // The project-local data_dir (from .veclayer/ discovery) is resolved in
-    // main() and is not threaded through ResolvedConfig, so it always appears
-    // as "(default)" here even when a project-local store is active.
-    println!(
-        "  data_dir: {}",
-        resolved.data_dir.as_deref().unwrap_or("(default)").cyan()
-    );
+    println!("  data_dir: {}", data_dir.display().to_string().cyan());
     println!(
         "  host: {}",
         resolved.host.as_deref().unwrap_or("(default)").cyan()
@@ -728,9 +732,10 @@ mod tests {
     #[tokio::test]
     async fn test_stale_dedup_no_marker_runs_normally() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let marker = temp_dir.path().join(".stale_check");
+        let marker = stale_marker_path(temp_dir.path());
 
-        // Ensure no marker exists
+        // Ensure no marker exists (clean temp dir)
+        let _ = std::fs::remove_file(&marker);
         assert!(!marker.exists());
 
         // Should run normally (no marker = no dedup)
@@ -752,7 +757,7 @@ mod tests {
 
         // Marker should NOT be created when hooks are disabled
         assert!(
-            !temp_dir.path().join(".stale_check").exists(),
+            !stale_marker_path(temp_dir.path()).exists(),
             "no marker when hooks disabled"
         );
 

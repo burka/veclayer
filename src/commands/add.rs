@@ -51,6 +51,7 @@ async fn add_files(
     debug!("Found {} files to process", files.len());
 
     let mut all_chunks = Vec::new();
+    let mut git_warnings: Vec<String> = Vec::new();
 
     for file in &files {
         debug!("Processing {:?}...", file);
@@ -98,10 +99,10 @@ async fn add_files(
             for chunk in &chunks {
                 let entry = crate::entry::Entry::from_chunk(chunk);
                 if let Err(e) = gs.store_entry(&entry) {
-                    eprintln!("Warning: failed to stage entry in git: {e}");
+                    git_warnings.push(format!("failed to stage entry in git: {e}"));
                 } else if let Some(emb) = chunk.embedding.as_deref() {
                     if let Err(e) = gs.store_embedding(&entry, embedder.name(), emb) {
-                        eprintln!("Warning: failed to cache embedding in git: {e}");
+                        git_warnings.push(format!("failed to cache embedding in git: {e}"));
                     }
                 }
             }
@@ -172,6 +173,7 @@ async fn add_files(
         total_entries,
         summary_entries,
         files_processed: files.len(),
+        git_warnings,
     })
 }
 
@@ -184,7 +186,9 @@ async fn add_text(
 ) -> Result<AddResult> {
     let (_config, embedder, store, blob_store) = super::open_store(data_dir).await?;
 
-    let entry_type: crate::chunk::EntryType = options.entry_type.parse().unwrap_or_default();
+    let entry_type: crate::chunk::EntryType = options.entry_type.parse().map_err(|_| {
+        crate::Error::parse(format!("invalid entry type: '{}'", options.entry_type))
+    })?;
 
     let (level, path, resolved_parent_id) = if let Some(ref pid) = options.parent_id {
         let parent = resolve_entry(&store, pid).await?;
@@ -239,12 +243,13 @@ async fn add_text(
     let store = std::sync::Arc::new(store);
     store.insert_chunks(vec![chunk]).await?;
 
+    let mut git_warnings: Vec<String> = Vec::new();
     if let Some(gs) = git_store {
         if let Err(e) = gs.store_entry(&git_entry) {
-            eprintln!("Warning: failed to stage entry in git: {e}");
+            git_warnings.push(format!("failed to stage entry in git: {e}"));
         } else if let Some(emb) = git_embedding.as_deref() {
             if let Err(e) = gs.store_embedding(&git_entry, &embedder_name, emb) {
-                eprintln!("Warning: failed to cache embedding in git: {e}");
+                git_warnings.push(format!("failed to cache embedding in git: {e}"));
             }
         }
     }
@@ -268,6 +273,7 @@ async fn add_text(
         total_entries: 1,
         summary_entries: 0,
         files_processed: 0,
+        git_warnings,
     })
 }
 
@@ -541,6 +547,28 @@ mod tests {
                     .contains("unknown perspective")
                 || err.to_string().to_lowercase().contains("invalid"),
             "expected perspective error, got: {err}"
+        );
+    }
+
+    // ── entry_type: invalid value returns an error ────────────────────────────
+
+    #[tokio::test]
+    async fn test_add_text_invalid_entry_type_returns_error() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let opts = AddOptions {
+            entry_type: "not_a_real_type".to_string(),
+            ..Default::default()
+        };
+
+        let err = super::super::add::add(temp_dir.path(), "some text", opts, None)
+            .await
+            .unwrap_err();
+
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("invalid entry type") || msg.contains("not_a_real_type"),
+            "expected invalid-entry-type error, got: {err}"
         );
     }
 
