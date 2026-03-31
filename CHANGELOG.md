@@ -2,6 +2,60 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-03-31
+
+### Security
+- [`9f6ce37`](https://github.com/burka/veclayer/commit/9f6ce37b27aef488cb780ca7e3a0fa6fb0210fb4) Harden OAuth consent CSRF, state length cap, and JWT iss/nbf claims
+- [`5584b71`](https://github.com/burka/veclayer/commit/5584b7147240dcaf80e89b17a52c97dec5947a1b) Fix SQL injection, harden error handling, improve UX
+
+### Added
+- [`c992561`](https://github.com/burka/veclayer/commit/c992561bae8d85e6d90ffd6bed0a702ece1607a0) *(auth)* Ed25519 identity, OAuth 2.0, JWT tokens, HTTP auth
+- [`ff7957c`](https://github.com/burka/veclayer/commit/ff7957cf9e48b4561cd6837aac4837151956d83c) *(git)* Implement workspace-safe git memory storage and review workflow
+- [`9b24e53`](https://github.com/burka/veclayer/commit/9b24e53ab0d0a400ee4579853b8cb3ab93b5a905) *(git)* Sync indexes into LanceDB, think(sync/status), error handling
+- [`1fe2e56`](https://github.com/burka/veclayer/commit/1fe2e56bfa5e163782bb7487258d17bf310ddb38) *(git)* Pre-recall pull, sync CLI polish, conflict guidance
+- [`d7eebd9`](https://github.com/burka/veclayer/commit/d7eebd9ae5ba2ad19ceb5337f8d5ff9e34f34158) *(mcp)* rmcp SDK migration, resources, priming, HTTP improvements
+- [`a48704c`](https://github.com/burka/veclayer/commit/a48704cbf75b9ae45fa58c351f5ec67ecddf7e6c) *(facade)* Add think cycle API with DynLlmProvider type erasure
+- [`e471445`](https://github.com/burka/veclayer/commit/e471445d7d301ec6de6c167e9c64dbf791ccc19f) Add VecLayer facade: high-level API with embedder injection
+- [`a2ff645`](https://github.com/burka/veclayer/commit/a2ff645904737c6c28026b54c4fc2fdb0c0c94de) Add SQLite storage backend and simplify VectorStore trait
+- [`df41b0a`](https://github.com/burka/veclayer/commit/df41b0a538ecc680df949e44469e6cadbe265ba3) *(search)* Add creation-time recency boost to blend_score
+- [`0962e64`](https://github.com/burka/veclayer/commit/0962e6459f0f3624b4abf16385e19229f0256481) *(think)* Auto-demote summarized entries to deep_only after consolidation
+- [`c722cb8`](https://github.com/burka/veclayer/commit/c722cb8b0d17732fb810cbc8d18283945bf20b69) *(think)* Add project parameter to execute/execute_dyn for scoped think
+- [`57af98b`](https://github.com/burka/veclayer/commit/57af98b8c0d091c2faf7020757d21f017ad9d534) *(think)* Enhance system prompt - detect contradictions and progress
+- [`799c123`](https://github.com/burka/veclayer/commit/799c123de41bbbe9170625d47247135c0fc62fa8) *(salience)* Boost score for entries that have been consolidated
+- [`4cf12d3`](https://github.com/burka/veclayer/commit/4cf12d304cd5bdd7dd59efaab950c06a952caaad) Track access on search_raw + ThinkResult convenience methods
+- [`bc4c30b`](https://github.com/burka/veclayer/commit/bc4c30b02168821f15b20ea19fb39944aee088dc) Replace single perspective filter with multi-perspective slice throughout the stack
+- [`24f1d22`](https://github.com/burka/veclayer/commit/24f1d2271a37cb11d6fd722a0b4d03f8c3f2df82) Add `veclayer stale` command for memory freshness checks
+- [`2f6eca6`](https://github.com/burka/veclayer/commit/2f6eca6b3ec31438cf2ace30a16fb678d5b8ccba) Add lazy FastEmbed init, Ollama setup command, and decouple CLI from embedding-local
+- [`0acc279`](https://github.com/burka/veclayer/commit/0acc2797e545c3fd9c76db3f20da0411e129b51d) Add hook-based auto-capture and guided setup for Claude Code
+- [`8e95750`](https://github.com/burka/veclayer/commit/8e95750f594c1b66d4d522f3bc872ac44e9e5fdc) Add --global flag to setup claude and apply to project + global
+- [`8645329`](https://github.com/burka/veclayer/commit/86453296170dcda7ac6dd914828b9ee4037767d5) Add --brief flag to context command for compact session injection
+- [`08b7b57`](https://github.com/burka/veclayer/commit/08b7b5744a5a43c55ab502cc01a6be170cd88e5f) Add graceful think fallback when LLM is unavailable
+- [`fca41c5`](https://github.com/burka/veclayer/commit/fca41c5a3cbc90eb90da54d2c662044f6b07d2b5) Add comprehensive tests across all modules - 1189 tests, 85% coverage
+
+### Changed
+- [`33eba31`](https://github.com/burka/veclayer/commit/33eba316c2cdddbbb97d96555d93e4cd9f0b47e6) Make library slim by default via feature flags
+- [`8bcba92`](https://github.com/burka/veclayer/commit/8bcba925f7d4fa26c66222bf040e8eb559ccbe1b) Gate non-core deps behind config and parser features
+- [`3e00ccc`](https://github.com/burka/veclayer/commit/3e00ccc8add2e00921ac37ca5815eb4f99f2ba93) Gate auth and http features behind feature flags ([#74](https://github.com/burka/veclayer/issues/74))
+- [`0bfb1d3`](https://github.com/burka/veclayer/commit/0bfb1d36dc6cd2203fbecbc3700e2220e59f8422) Replace native-tls with rustls-tls to remove OpenSSL system dependency
+- [`6f295b7`](https://github.com/burka/veclayer/commit/6f295b7394aa64230246403b5f1cffa6abe388c0) Use system cache dir for fastembed models instead of CWD
+- [`26644c3`](https://github.com/burka/veclayer/commit/26644c3692cfbdd7c6b1c5306f35b843c8c73b6b) Simplify codebase: eliminate DRY/SRP/SOLID violations across 30 files
+- [`0f4131e`](https://github.com/burka/veclayer/commit/0f4131e70f56beb837d045b4be0409d3f52c2931) Extract ToolContext to replace repeated parameters in MCP tool functions
+- [`de5f95b`](https://github.com/burka/veclayer/commit/de5f95bffa89590c863b5c6b7beb41ec434bafa6) Replace PreCompact warning with PostCompact context re-injection
+- [`c1b971c`](https://github.com/burka/veclayer/commit/c1b971c3e44a1022ea8fa2c5806c031d00f04620) Update rust-version, upgrade rand to 0.9, fix release profile
+
+### Fixed
+- [`dc64ee4`](https://github.com/burka/veclayer/commit/dc64ee45514785d089e670a4d3fb32a8ee7233e9) 12 bugs from git memory feature testing
+- [`42d4ae3`](https://github.com/burka/veclayer/commit/42d4ae3045fcb1fac754fb06481de5710daa33b7) *(git)* Wave 2 - 8 more bugs from git memory feature testing
+- [`2e370b7`](https://github.com/burka/veclayer/commit/2e370b74845d6ecb5e86eca934e3f074b0453698) *(git)* Review fixes - security, correctness, robustness, and test coverage
+- [`7d27858`](https://github.com/burka/veclayer/commit/7d27858dff7732a4abf0eb85b8a9d551602565fc) *(git)* Review fixes - security, correctness, robustness, and test coverage
+- [`f07472d`](https://github.com/burka/veclayer/commit/f07472de51fcc4ef02b23586bf23826400372c35) *(think)* Pass project parameter to think_consolidate
+- [`61c1ef1`](https://github.com/burka/veclayer/commit/61c1ef175efac4a1a582cdf60d498039eecee4d0) *(search)* Stabilize blend_score tests after recency boost addition
+- [`ba9d1e8`](https://github.com/burka/veclayer/commit/ba9d1e807c729527a6003da959cd9ccd8887ffd2) Fix LanceDB commit conflicts on concurrent store access
+- [`588e054`](https://github.com/burka/veclayer/commit/588e054b9da164979d7b36376d81b658388ea5df) Fix code review findings: dup2 error handling and missing test coverage
+- [`3571884`](https://github.com/burka/veclayer/commit/3571884e9f01132942b1da20823cdd5ae0befdb9) *(ci)* Pin Rust toolchain to 1.93.1 via rust-toolchain.toml
+- [`5fafaf8`](https://github.com/burka/veclayer/commit/5fafaf8a9d75a41c83c5fa68ab16c2733bc7a06e) Fix feature-gate compilation issues in MCP tools and integration tests
+- [`8a79295`](https://github.com/burka/veclayer/commit/8a79295ee65fda87301cc3fedf4b4bedc628a0c0) Fix feature-gate compilation across all feature flag combinations
+
 ## [0.1.0] - 2026-03-03
 
 ### Bug Fixes

@@ -89,6 +89,30 @@ fn write_git_storage_config(data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Format a model selection line showing the selected model and available alternatives.
+///
+/// Output examples:
+/// - `qwen3.5:9b (selected) | also: llama3.2:3b, mistral`
+/// - `(none detected — run: ollama pull nomic-embed-text)`
+#[cfg(feature = "llm")]
+fn format_model_line(selected: Option<&str>, all: &[String], pull_hint: &str) -> String {
+    match selected {
+        None => format!("(none detected — run: {pull_hint})"),
+        Some(best) => {
+            let others: Vec<&str> = all
+                .iter()
+                .filter(|m| m.as_str() != best)
+                .map(String::as_str)
+                .collect();
+            if others.is_empty() {
+                format!("{best} (selected)")
+            } else {
+                format!("{best} (selected) | also: {}", others.join(", "))
+            }
+        }
+    }
+}
+
 /// Print store status (statistics).
 pub async fn status(data_dir: &Path) -> Result<()> {
     let result = stats(data_dir).await?;
@@ -137,6 +161,57 @@ pub async fn status(data_dir: &Path) -> Result<()> {
         "Sources:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
         result.source_files.len()
     );
+
+    // Ollama availability
+    #[cfg(feature = "llm")]
+    {
+        use owo_colors::OwoColorize;
+
+        println!(
+            "\n{}",
+            "[Integrations]".if_supports_color(Stream::Stdout, |s| s.bold())
+        );
+
+        match crate::ollama_discover::detect_ollama() {
+            Some(info) => {
+                println!(
+                    "  {}  detected {}",
+                    "Ollama:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+                    info.base_url
+                );
+
+                // Chat model line
+                let chat_line = format_model_line(
+                    info.best_chat_model(),
+                    &info.chat_models,
+                    "ollama pull qwen3",
+                );
+                println!(
+                    "    {}  {}",
+                    "chat:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+                    chat_line
+                );
+
+                // Embedding model line
+                let embed_line = format_model_line(
+                    info.best_embedding_model(),
+                    &info.embedding_models,
+                    "ollama pull nomic-embed-text",
+                );
+                println!(
+                    "    {}  {}",
+                    "embed:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+                    embed_line
+                );
+            }
+            None => {
+                println!(
+                    "  {}  not detected",
+                    "Ollama:".if_supports_color(Stream::Stdout, |s| s.dimmed())
+                );
+            }
+        }
+    }
 
     // Usage guide
     println!(
@@ -560,6 +635,48 @@ pub fn show_config(
                     .if_supports_color(Stream::Stdout, |s| s.cyan()),
                 scope.push.if_supports_color(Stream::Stdout, |s| s.dimmed()),
             );
+        }
+    }
+
+    // Ollama integration status
+    #[cfg(feature = "llm")]
+    {
+        println!("\n{}", "[Integrations]".bold());
+        match crate::ollama_discover::detect_ollama() {
+            Some(info) => {
+                println!(
+                    "  Ollama:  {} {}",
+                    "detected".if_supports_color(Stream::Stdout, |s| s.green()),
+                    info.base_url
+                        .if_supports_color(Stream::Stdout, |s| s.dimmed())
+                );
+                let chat_line = format_model_line(
+                    info.best_chat_model(),
+                    &info.chat_models,
+                    "ollama pull qwen3.5",
+                );
+                println!(
+                    "    {}  {}",
+                    "chat:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+                    chat_line
+                );
+                let embed_line = format_model_line(
+                    info.best_embedding_model(),
+                    &info.embedding_models,
+                    "ollama pull nomic-embed-text",
+                );
+                println!(
+                    "    {}  {}",
+                    "embed:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+                    embed_line
+                );
+            }
+            None => {
+                println!(
+                    "  Ollama:  {}",
+                    "not detected".if_supports_color(Stream::Stdout, |s| s.dimmed())
+                );
+            }
         }
     }
 

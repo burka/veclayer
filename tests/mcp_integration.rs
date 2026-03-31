@@ -13,6 +13,16 @@ async fn spawn_server() -> (String, TempDir) {
 
 /// Spin up a server with optional project/branch scope.
 async fn spawn_server_with(project: Option<String>, branch: Option<String>) -> (String, TempDir) {
+    let (base, tmp, _) = spawn_server_with_state(project, branch).await;
+    (base, tmp)
+}
+
+/// Like `spawn_server_with` but also returns the `AppState` so callers can
+/// spawn the background embed worker at a controlled point in the test.
+async fn spawn_server_with_state(
+    project: Option<String>,
+    branch: Option<String>,
+) -> (String, TempDir, AppState) {
     let tmp = TempDir::new().unwrap();
     let embedder: Arc<dyn veclayer::Embedder + Send + Sync> = Arc::from(
         veclayer::embedder::from_config(&veclayer::config::EmbedderConfig::default()).unwrap(),
@@ -33,12 +43,13 @@ async fn spawn_server_with(project: Option<String>, branch: Option<String>) -> (
         push_mode: veclayer::git::branch_config::PushMode::Off,
     };
 
+    let returned_state = state.clone();
     let app = build_app(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
-    (format!("http://127.0.0.1:{port}"), tmp)
+    (format!("http://127.0.0.1:{port}"), tmp, returned_state)
 }
 
 /// POST a raw JSON body to `/mcp` and return `(status, headers, body_text)`.
@@ -249,12 +260,15 @@ async fn mcp_tools_list_returns_five_tools() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn mcp_store_and_recall_roundtrip() {
-    let (base, _tmp) = spawn_server().await;
+    // Use spawn_server_with_state so we can spawn the embed worker after
+    // storing, avoiding the 10-second idle sleep that fires when the worker
+    // starts before any entries exist.
+    let (base, _tmp, state) = spawn_server_with_state(None, None).await;
     let client = reqwest::Client::new();
 
     let (session_id, _) = initialize_session(&client, &base).await;
 
-    // Store a piece of knowledge.
+    // Store a piece of knowledge — embedding is now deferred.
     let (status, _, store_json) = post_mcp(
         &client,
         &base,
@@ -287,28 +301,51 @@ async fn mcp_store_and_recall_roundtrip() {
         "store result must contain 'Stored. ID:', got: {store_text}"
     );
 
-    // Recall by semantic query — must surface the stored entry.
-    let (status, _, recall_json) = post_mcp(
-        &client,
-        &base,
-        Some(&session_id),
-        serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "tools/call",
-            "params": {
-                "name": "recall",
-                "arguments": {"query": "systems programming"}
-            }
-        }),
-    )
-    .await;
+    // Spawn the embed worker now that there is a pending entry to process.
+    // This avoids the idle-poll sleep that fires when no entries are pending
+    // on the worker's first iteration.
+    let _worker = veclayer::mcp::embed_worker::spawn(
+        Arc::clone(&state.store),
+        Arc::clone(&state.embedder),
+        Arc::clone(&state.blob_store),
+    );
 
-    assert_eq!(status, 200);
+    // Poll recall until the background worker has embedded the entry and it
+    // becomes searchable.  The worker processes its first batch immediately,
+    // so this normally resolves within a few hundred milliseconds.
+    let mut recall_text = String::new();
+    for id in 4u32.. {
+        let (status, _, recall_json) = post_mcp(
+            &client,
+            &base,
+            Some(&session_id),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": {
+                    "name": "recall",
+                    "arguments": {"query": "systems programming"}
+                }
+            }),
+        )
+        .await;
 
-    let recall_text = recall_json["result"]["content"][0]["text"]
-        .as_str()
-        .expect("recall result must have text content");
+        assert_eq!(status, 200);
+
+        recall_text = recall_json["result"]["content"][0]["text"]
+            .as_str()
+            .expect("recall result must have text content")
+            .to_owned();
+
+        if recall_text.contains("Rust") {
+            break;
+        }
+        if id >= 24 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
     assert!(
         recall_text.contains("Rust"),
         "recall result must mention 'Rust', got: {recall_text}"
@@ -592,11 +629,15 @@ async fn mcp_read_entry_after_store() {
         .as_str()
         .expect("store result must have text content");
 
-    // The format is "Stored. ID: <short_id>".
+    // The format is "Stored. ID: <short_id>. Embedding is being computed…"
+    // Extract the first token after the "Stored. ID: " prefix.
     let stored_id = store_text
         .strip_prefix("Stored. ID: ")
         .unwrap_or(store_text)
-        .trim();
+        .split_whitespace()
+        .next()
+        .map(|s| s.trim_end_matches('.'))
+        .unwrap_or(store_text);
 
     // Read the entry via resources/read
     let entry_uri = format!("veclayer://entries/{stored_id}");

@@ -14,8 +14,15 @@ pub async fn think(data_dir: &Path) -> Result<()> {
         config.llm.model, config.llm.provider
     );
 
-    let result = match crate::think::execute(&store, &embedder, &llm, data_dir, Some(&blob_store), None)
-        .await
+    let result = match crate::think::execute(
+        &store,
+        &embedder,
+        &llm,
+        data_dir,
+        Some(&blob_store),
+        None,
+    )
+    .await
     {
         Ok(result) => result,
         Err(crate::Error::Llm(msg)) => {

@@ -556,7 +556,6 @@ pub async fn execute_store(ctx: &ToolContext, input: StoreInput) -> Result<serde
         validate_impression_strength(item.impression_strength)?;
     }
 
-    let embedder = &ctx.embedder;
     if !input.items.is_empty() {
         let mut ids = Vec::new();
         let mut long_entries = 0usize;
@@ -617,11 +616,6 @@ pub async fn execute_store(ctx: &ToolContext, input: StoreInput) -> Result<serde
         Ok(serde_json::json!(msg))
     } else {
         let content_len = input.content.len();
-        let embeddings = embedder.embed(&[input.content.as_str()])?;
-        let embedding = embeddings
-            .into_iter()
-            .next()
-            .ok_or_else(|| crate::Error::embedding("Failed to generate embedding"))?;
         let (id, git_status) = store_single_entry(
             ctx,
             StoreSingleInput {
@@ -637,10 +631,14 @@ pub async fn execute_store(ctx: &ToolContext, input: StoreInput) -> Result<serde
                 impression_strength: input.impression_strength,
                 scope: input.scope,
             },
-            Some(embedding),
+            None, // deferred — background worker will embed
         )
         .await?;
-        let mut msg = format!("Stored. ID: {}", crate::short_id(&id));
+        let mut msg = format!(
+            "Stored. ID: {}. Embedding is being computed in the background \
+             — entry becomes searchable as it completes.",
+            crate::short_id(&id)
+        );
         if let Some(status) = git_status {
             msg.push_str(&format!(" {status}"));
         }

@@ -231,11 +231,14 @@ impl<E: Embedder> VecLayer<E> {
         let results = self.store.search(&embedding, limit, None, &[]).await?;
 
         // Track access for returned entries
-        let ids: Vec<_> = results.iter().map(|r| {
-            let mut ap = r.chunk.access_profile.clone();
-            ap.record_access();
-            (r.chunk.id.clone(), ap)
-        }).collect();
+        let ids: Vec<_> = results
+            .iter()
+            .map(|r| {
+                let mut ap = r.chunk.access_profile.clone();
+                ap.record_access();
+                (r.chunk.id.clone(), ap)
+            })
+            .collect();
         let _ = self.store.update_access_profiles(ids).await;
 
         Ok(results)

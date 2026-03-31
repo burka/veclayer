@@ -27,21 +27,26 @@ async fn open_state(tmp: &TempDir) -> AppState {
     }
 }
 
-/// Spin up a real HTTP server on a random port, return the base URL.
-async fn spawn_server() -> (String, TempDir) {
+/// Spin up a real HTTP server on a random port.
+///
+/// Returns the base URL, the temp directory keeping the store alive, and the
+/// `AppState` so callers can spawn the background embed worker at the right
+/// moment (after storing entries, to avoid the worker sleeping through them).
+async fn spawn_server() -> (String, TempDir, AppState) {
     let tmp = TempDir::new().unwrap();
     let state = open_state(&tmp).await;
+    let returned_state = state.clone();
     let app = build_app(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (format!("http://127.0.0.1:{port}"), tmp)
+    (format!("http://127.0.0.1:{port}"), tmp, returned_state)
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn health_returns_ok() {
-    let (base, _tmp) = spawn_server().await;
+    let (base, _tmp, _state) = spawn_server().await;
     let resp = reqwest::get(format!("{base}/health")).await.unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().await.unwrap(), "OK");
@@ -50,7 +55,7 @@ async fn health_returns_ok() {
 #[tokio::test]
 #[serial_test::serial]
 async fn recall_empty_store_returns_empty() {
-    let (base, _tmp) = spawn_server().await;
+    let (base, _tmp, _state) = spawn_server().await;
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("{base}/api/recall"))
@@ -66,10 +71,10 @@ async fn recall_empty_store_returns_empty() {
 #[tokio::test]
 #[serial_test::serial]
 async fn store_and_recall_roundtrip() {
-    let (base, _tmp) = spawn_server().await;
+    let (base, _tmp, state) = spawn_server().await;
     let client = reqwest::Client::new();
 
-    // Store
+    // Store — embedding is deferred to the background worker.
     let resp = client
         .post(format!("{base}/api/store"))
         .json(&serde_json::json!({
@@ -84,16 +89,37 @@ async fn store_and_recall_roundtrip() {
     let stored: String = resp.json().await.unwrap();
     assert!(stored.starts_with("Stored. ID:"));
 
-    // Recall
-    let resp = client
-        .post(format!("{base}/api/recall"))
-        .json(&serde_json::json!({"query": "systems programming"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let results: Vec<serde_json::Value> = resp.json().await.unwrap();
-    assert!(!results.is_empty());
+    // Spawn the embed worker now that there is a pending entry to process.
+    // Starting it after the store avoids the worker's 10-second idle sleep
+    // (which triggers when the first pass finds nothing).
+    let _worker = veclayer::mcp::embed_worker::spawn(
+        Arc::clone(&state.store),
+        Arc::clone(&state.embedder),
+        Arc::clone(&state.blob_store),
+    );
+
+    // Poll recall until the background worker has embedded the entry and it
+    // becomes searchable.  The worker runs its first pass immediately, so this
+    // normally resolves within a few hundred milliseconds.
+    let mut results: Vec<serde_json::Value> = vec![];
+    for _ in 0..20 {
+        let resp = client
+            .post(format!("{base}/api/recall"))
+            .json(&serde_json::json!({"query": "systems programming"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        results = resp.json().await.unwrap();
+        if !results.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    assert!(
+        !results.is_empty(),
+        "entry never became searchable after embedding"
+    );
     assert!(results[0]["chunk"]["content"]
         .as_str()
         .unwrap()
@@ -103,7 +129,7 @@ async fn store_and_recall_roundtrip() {
 #[tokio::test]
 #[serial_test::serial]
 async fn store_empty_content_returns_400() {
-    let (base, _tmp) = spawn_server().await;
+    let (base, _tmp, _state) = spawn_server().await;
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("{base}/api/store"))
@@ -122,7 +148,7 @@ async fn store_empty_content_returns_400() {
 #[tokio::test]
 #[serial_test::serial]
 async fn malformed_json_returns_400() {
-    let (base, _tmp) = spawn_server().await;
+    let (base, _tmp, _state) = spawn_server().await;
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("{base}/api/store"))
@@ -137,7 +163,7 @@ async fn malformed_json_returns_400() {
 #[tokio::test]
 #[serial_test::serial]
 async fn stats_returns_counts() {
-    let (base, _tmp) = spawn_server().await;
+    let (base, _tmp, _state) = spawn_server().await;
     let resp = reqwest::get(format!("{base}/api/stats")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
@@ -147,7 +173,7 @@ async fn stats_returns_counts() {
 #[tokio::test]
 #[serial_test::serial]
 async fn think_reflection_returns_report() {
-    let (base, _tmp) = spawn_server().await;
+    let (base, _tmp, _state) = spawn_server().await;
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("{base}/api/think"))
@@ -161,7 +187,7 @@ async fn think_reflection_returns_report() {
 #[tokio::test]
 #[serial_test::serial]
 async fn identity_returns_briefing() {
-    let (base, _tmp) = spawn_server().await;
+    let (base, _tmp, _state) = spawn_server().await;
     let resp = reqwest::get(format!("{base}/api/identity")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
@@ -172,7 +198,7 @@ async fn identity_returns_briefing() {
 #[tokio::test]
 #[serial_test::serial]
 async fn priming_returns_plain_text() {
-    let (base, _tmp) = spawn_server().await;
+    let (base, _tmp, _state) = spawn_server().await;
     let resp = reqwest::get(format!("{base}/api/priming")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let ct = resp
@@ -189,7 +215,7 @@ async fn priming_returns_plain_text() {
 #[tokio::test]
 #[serial_test::serial]
 async fn share_returns_token() {
-    let (base, _tmp) = spawn_server().await;
+    let (base, _tmp, _state) = spawn_server().await;
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("{base}/api/share"))
@@ -203,7 +229,7 @@ async fn share_returns_token() {
 #[tokio::test]
 #[serial_test::serial]
 async fn focus_nonexistent_id_returns_error() {
-    let (base, _tmp) = spawn_server().await;
+    let (base, _tmp, _state) = spawn_server().await;
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("{base}/api/focus"))

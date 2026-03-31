@@ -80,6 +80,8 @@ pub(crate) mod macros;
 #[cfg(feature = "mcp")]
 #[doc(hidden)]
 pub mod mcp;
+#[cfg(feature = "llm")]
+pub mod ollama_discover;
 #[cfg(feature = "parser")]
 pub mod parser;
 pub mod perspective;

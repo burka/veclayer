@@ -572,6 +572,21 @@ const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 #[cfg(feature = "config")]
 const DEFAULT_OLLAMA_DIMENSION: usize = 768;
 
+/// Summarised result of Ollama auto-discovery, used inside `Config::new()`.
+///
+/// Kept in a plain struct (no feature gate) so the same type can be threaded
+/// through both the `llm`-gated detection path and the always-present
+/// `resolve_embedder` / `resolve_llm` signatures without conditional compilation
+/// complexity at the call sites.
+#[cfg(feature = "config")]
+struct DetectedOllama {
+    base_url: String,
+    /// Best available embedding model, or `None` if Ollama has no embed models.
+    embed_model: Option<String>,
+    /// Best available chat model, or `None` if Ollama has no chat models.
+    chat_model: Option<String>,
+}
+
 #[cfg(feature = "config")]
 impl Config {
     /// Build config with full layered resolution: ENV > TOML file > Defaults.
@@ -610,8 +625,14 @@ impl Config {
             .or(file.search_children_k)
             .unwrap_or(DEFAULT_SEARCH_CHILDREN_K);
 
-        let embedder = Self::resolve_embedder(file.embedder);
-        let llm = Self::resolve_llm(file.llm);
+        // Auto-discover a local Ollama instance when the user has not explicitly
+        // configured an embedder or LLM provider via env vars or the config file.
+        // The probe uses a 500 ms timeout so it never meaningfully delays startup.
+        // Returns (base_url, embed_model, chat_model) or None.
+        let detected_ollama = Self::maybe_detect_ollama(&file.embedder, &file.llm);
+
+        let embedder = Self::resolve_embedder(file.embedder, detected_ollama.as_ref());
+        let llm = Self::resolve_llm(file.llm, detected_ollama.as_ref());
         let auth = Self::resolve_auth(file.auth);
 
         Self {
@@ -632,25 +653,79 @@ impl Config {
         }
     }
 
-    fn resolve_embedder(file_embedder: Option<FileEmbedderConfig>) -> EmbedderConfig {
-        let embedder_type = env_or(
-            "VECLAYER_EMBEDDER",
-            file_embedder.as_ref().map(|e| e.embedder_type.clone()),
-            "fastembed".to_string(),
-        );
+    /// Run Ollama auto-discovery when neither the embedder nor the LLM provider
+    /// has been explicitly configured (no env var, no TOML entry).
+    ///
+    /// Returns `None` immediately when explicit configuration is present, so the
+    /// 500 ms probe never fires for users who have already set up their stack.
+    fn maybe_detect_ollama(
+        file_embedder: &Option<FileEmbedderConfig>,
+        file_llm: &Option<FileLlmConfig>,
+    ) -> Option<DetectedOllama> {
+        let embedder_explicitly_set =
+            std::env::var("VECLAYER_EMBEDDER").is_ok() || file_embedder.is_some();
+        let llm_explicitly_set =
+            std::env::var("VECLAYER_LLM_PROVIDER").is_ok() || file_llm.is_some();
+
+        if embedder_explicitly_set && llm_explicitly_set {
+            return None;
+        }
+
+        #[cfg(feature = "llm")]
+        if let Some(info) = crate::ollama_discover::detect_ollama() {
+            tracing::info!(
+                "Detected local Ollama at {} with models: embed=[{}] chat=[{}]",
+                info.base_url,
+                info.embedding_models.join(", "),
+                info.chat_models.join(", "),
+            );
+            return Some(DetectedOllama {
+                embed_model: info.best_embedding_model().map(str::to_string),
+                chat_model: info.best_chat_model().map(str::to_string),
+                base_url: info.base_url,
+            });
+        }
+
+        None
+    }
+
+    fn resolve_embedder(
+        file_embedder: Option<FileEmbedderConfig>,
+        detected: Option<&DetectedOllama>,
+    ) -> EmbedderConfig {
+        // Determine the embedder type.  When no explicit config is present and
+        // Ollama was detected with at least one embedding model, switch to Ollama.
+        let explicit_type = std::env::var("VECLAYER_EMBEDDER")
+            .ok()
+            .or_else(|| file_embedder.as_ref().map(|e| e.embedder_type.clone()));
+
+        let use_ollama_auto = explicit_type.is_none()
+            && detected
+                .as_ref()
+                .and_then(|d| d.embed_model.as_deref())
+                .is_some();
+
+        let embedder_type = explicit_type.unwrap_or_else(|| {
+            if use_ollama_auto {
+                "ollama".to_string()
+            } else {
+                "fastembed".to_string()
+            }
+        });
 
         match embedder_type.as_str() {
             "ollama" => {
-                let model = env_or(
-                    "VECLAYER_OLLAMA_MODEL",
-                    file_embedder.as_ref().and_then(|e| e.model.clone()),
-                    DEFAULT_OLLAMA_MODEL.to_string(),
-                );
-                let base_url = env_or(
-                    "VECLAYER_OLLAMA_URL",
-                    file_embedder.as_ref().and_then(|e| e.base_url.clone()),
-                    DEFAULT_OLLAMA_URL.to_string(),
-                );
+                // Prefer: env var > TOML file > auto-detected model > hardcoded default
+                let model = std::env::var("VECLAYER_OLLAMA_MODEL")
+                    .ok()
+                    .or_else(|| file_embedder.as_ref().and_then(|e| e.model.clone()))
+                    .or_else(|| detected.and_then(|d| d.embed_model.clone()))
+                    .unwrap_or_else(|| DEFAULT_OLLAMA_MODEL.to_string());
+                let base_url = std::env::var("VECLAYER_OLLAMA_URL")
+                    .ok()
+                    .or_else(|| file_embedder.as_ref().and_then(|e| e.base_url.clone()))
+                    .or_else(|| detected.map(|d| d.base_url.clone()))
+                    .unwrap_or_else(|| DEFAULT_OLLAMA_URL.to_string());
                 let dimension = std::env::var("VECLAYER_OLLAMA_DIMENSION")
                     .ok()
                     .and_then(|v| v.parse().ok())
@@ -673,22 +748,27 @@ impl Config {
         }
     }
 
-    fn resolve_llm(file_llm: Option<FileLlmConfig>) -> LlmConfig {
+    fn resolve_llm(
+        file_llm: Option<FileLlmConfig>,
+        detected: Option<&DetectedOllama>,
+    ) -> LlmConfig {
+        // Auto-configure LLM when no explicit provider is set and Ollama was
+        // detected with a chat model.  ENV > TOML > auto-detected > hardcoded default.
         let provider = env_or(
             "VECLAYER_LLM_PROVIDER",
             file_llm.as_ref().map(|l| l.provider.clone()),
             "ollama".to_string(),
         );
-        let model = env_or(
-            "VECLAYER_LLM_MODEL",
-            file_llm.as_ref().and_then(|l| l.model.clone()),
-            "llama3.2".to_string(),
-        );
-        let base_url = env_or(
-            "VECLAYER_LLM_BASE_URL",
-            file_llm.as_ref().and_then(|l| l.base_url.clone()),
-            "http://localhost:11434".to_string(),
-        );
+        let model = std::env::var("VECLAYER_LLM_MODEL")
+            .ok()
+            .or_else(|| file_llm.as_ref().and_then(|l| l.model.clone()))
+            .or_else(|| detected.and_then(|d| d.chat_model.clone()))
+            .unwrap_or_else(|| "llama3.2".to_string());
+        let base_url = std::env::var("VECLAYER_LLM_BASE_URL")
+            .ok()
+            .or_else(|| file_llm.as_ref().and_then(|l| l.base_url.clone()))
+            .or_else(|| detected.map(|d| d.base_url.clone()))
+            .unwrap_or_else(|| "http://localhost:11434".to_string());
         if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
             tracing::error!(
                 "LLM base_url must start with http:// or https://, got: {base_url} — \
@@ -1110,7 +1190,7 @@ mod tests {
         std::env::set_var("VECLAYER_OLLAMA_URL", "http://localhost:11434");
         std::env::set_var("VECLAYER_OLLAMA_DIMENSION", "768");
 
-        let embedder = Config::resolve_embedder(None);
+        let embedder = Config::resolve_embedder(None, None);
 
         std::env::remove_var("VECLAYER_EMBEDDER");
         std::env::remove_var("VECLAYER_OLLAMA_MODEL");
