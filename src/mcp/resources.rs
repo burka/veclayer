@@ -202,16 +202,7 @@ async fn read_recent(
     project: Option<&str>,
     branch: Option<&str>,
 ) -> Result<ReadResourceResult, rmcp::ErrorData> {
-    let entries = store.list_entries(&[], None, None, 20).await.map_err(|e| {
-        tracing::error!("Failed to list entries: {e}");
-        rmcp::ErrorData::internal_error("Internal server error", None)
-    })?;
-
-    let filtered: Vec<_> = entries
-        .into_iter()
-        .filter(|c| passes_scope_filter(c, project, branch))
-        .take(10)
-        .collect();
+    let filtered = list_filtered_entries(store, &[] as &[&str], project, branch).await?;
 
     let md = format_entries_list("Recent Entries", &filtered, "No entries found.");
     Ok(text_resource(uri, &md))
@@ -259,19 +250,7 @@ async fn read_perspective_entries(
         ));
     }
 
-    let entries = store
-        .list_entries(&[perspective_id], None, None, 20)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to list entries: {e}");
-            rmcp::ErrorData::internal_error("Internal server error", None)
-        })?;
-
-    let filtered: Vec<_> = entries
-        .into_iter()
-        .filter(|c| passes_scope_filter(c, project, branch))
-        .take(10)
-        .collect();
+    let filtered = list_filtered_entries(store, &[perspective_id], project, branch).await?;
 
     let md = format_entries_list(
         &format!("Perspective: {}", perspective_id),
@@ -375,6 +354,30 @@ fn format_entries_list(
     }
     md.push_str(&format!("\n_{} entry(ies)._\n", chunks.len()));
     md
+}
+
+/// List and filter entries from the store (shared between read_recent and read_perspective_entries).
+async fn list_filtered_entries<'a>(
+    store: &StoreBackend,
+    perspective_ids: &'a [&str],
+    project: Option<&str>,
+    branch: Option<&str>,
+) -> Result<Vec<HierarchicalChunk>, rmcp::ErrorData> {
+    let entries = store
+        .list_entries(perspective_ids, None, None, 20)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to list entries: {e}");
+            rmcp::ErrorData::internal_error("Internal server error", None)
+        })?;
+
+    let filtered: Vec<_> = entries
+        .into_iter()
+        .filter(|c| passes_scope_filter(c, project, branch))
+        .take(10)
+        .collect();
+
+    Ok(filtered)
 }
 
 #[cfg(all(test, feature = "store-lance"))]
