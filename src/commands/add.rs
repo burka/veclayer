@@ -574,39 +574,35 @@ mod tests {
 
     // ── add: perspective comma splitting logic ────────────────────────────────
 
+    /// Split comma-separated perspective strings, trimming whitespace and removing empty parts.
+    fn split_perspectives(raw: &[String]) -> Vec<String> {
+        raw.iter()
+            .flat_map(|p| p.split(',').map(|s| s.trim().to_string()))
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+
     #[test]
     fn test_add_options_perspectives_can_be_comma_separated_conceptually() {
         // The add() function splits comma-separated perspectives.
         // We test the splitting logic itself by verifying the expected result
         // of what add() does to perspectives before validation.
         let raw = ["decisions,knowledge".to_string(), "learnings".to_string()];
-        let split: Vec<String> = raw
-            .iter()
-            .flat_map(|p| p.split(',').map(|s| s.trim().to_string()))
-            .filter(|s| !s.is_empty())
-            .collect();
+        let split = split_perspectives(&raw);
         assert_eq!(split, vec!["decisions", "knowledge", "learnings"]);
     }
 
     #[test]
     fn test_add_options_perspectives_comma_splits_with_spaces() {
         let raw = ["  decisions , knowledge  ".to_string()];
-        let split: Vec<String> = raw
-            .iter()
-            .flat_map(|p| p.split(',').map(|s| s.trim().to_string()))
-            .filter(|s| !s.is_empty())
-            .collect();
+        let split = split_perspectives(&raw);
         assert_eq!(split, vec!["decisions", "knowledge"]);
     }
 
     #[test]
     fn test_add_options_perspectives_empty_after_split_removed() {
         let raw = [",,,".to_string()];
-        let split: Vec<String> = raw
-            .iter()
-            .flat_map(|p| p.split(',').map(|s| s.trim().to_string()))
-            .filter(|s| !s.is_empty())
-            .collect();
+        let split = split_perspectives(&raw);
         assert!(split.is_empty());
     }
 }
