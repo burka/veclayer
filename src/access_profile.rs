@@ -6,13 +6,16 @@
 
 use serde::{Deserialize, Serialize};
 
-// --- Time constants for RRD bucket boundaries ---
-
-const SECS_PER_HOUR: i64 = 3_600;
-const SECS_PER_DAY: i64 = 86_400;
-const SECS_PER_WEEK: i64 = 604_800;
-const SECS_PER_MONTH: i64 = 2_592_000; // 30 days
-const SECS_PER_YEAR: i64 = 31_536_000; // 365 days
+// Time constants (i64 for timestamp arithmetic). Values are identical to
+// util::SECS_PER_* — kept here to avoid forcing AccessProfile fields to u64.
+mod time {
+    pub const SECS_PER_HOUR: i64 = 3_600;
+    pub const SECS_PER_DAY: i64 = 86_400;
+    pub const SECS_PER_WEEK: i64 = 604_800;
+    pub const SECS_PER_MONTH: i64 = 2_592_000;
+    pub const SECS_PER_YEAR: i64 = 31_536_000;
+}
+use time::{SECS_PER_DAY, SECS_PER_HOUR, SECS_PER_MONTH, SECS_PER_WEEK, SECS_PER_YEAR};
 
 /// RRD-style access tracking with fixed time-window buckets.
 ///

@@ -92,7 +92,7 @@ pub async fn search_results(
     data_dir: &Path,
     query_str: &str,
     options: &SearchOptions,
-) -> Result<Vec<SearchResult>> {
+) -> Result<Vec<crate::HierarchicalSearchResult>> {
     let since_epoch = options
         .since
         .as_deref()
@@ -139,23 +139,7 @@ pub async fn search_results(
         })
         .take(options.top_k);
 
-    Ok(filtered
-        .map(|r| SearchResult {
-            chunk: r.chunk,
-            score: r.score,
-            hierarchy_path: r.hierarchy_path,
-            relevant_children: r
-                .relevant_children
-                .into_iter()
-                .map(|c| SearchResult {
-                    chunk: c.chunk,
-                    score: c.score,
-                    hierarchy_path: vec![],
-                    relevant_children: vec![],
-                })
-                .collect(),
-        })
-        .collect())
+    Ok(filtered.collect())
 }
 
 /// Focus on an entry: show details and children.

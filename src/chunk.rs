@@ -215,7 +215,7 @@ impl ChunkRelation {
     }
 }
 
-fn default_visibility() -> String {
+pub(crate) fn default_visibility() -> String {
     visibility::NORMAL.to_string()
 }
 

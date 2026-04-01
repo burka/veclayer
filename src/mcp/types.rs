@@ -146,7 +146,7 @@ pub struct StoreItem {
     pub parent_id: Option<String>,
     #[serde(default)]
     pub heading: Option<String>,
-    #[serde(default = "default_visibility")]
+    #[serde(default = "crate::chunk::default_visibility")]
     pub visibility: String,
     #[serde(default, deserialize_with = "string_or_vec")]
     pub perspectives: Vec<String>,
@@ -181,7 +181,7 @@ pub struct StoreInput {
     /// Optional heading/title
     pub heading: Option<String>,
     /// Visibility: always, normal, deep_only (default: normal)
-    #[serde(default = "default_visibility")]
+    #[serde(default = "crate::chunk::default_visibility")]
     pub visibility: String,
     /// Perspectives to tag this entry with
     #[serde(default, deserialize_with = "string_or_vec")]
@@ -209,10 +209,6 @@ pub struct StoreInput {
 
 fn default_agent_source() -> String {
     "[agent]".to_string()
-}
-
-fn default_visibility() -> String {
-    "normal".to_string()
 }
 
 fn default_scope() -> String {

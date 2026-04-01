@@ -23,10 +23,16 @@ pub const TOKEN_EXPIRY_SECS: u64 = 3_600;
 pub const REFRESH_EXPIRY_SECS: u64 = 86_400;
 /// Default refresh token max lifetime (30 days in seconds).
 pub const REFRESH_MAX_LIFETIME_SECS: u64 = 2_592_000;
-/// Seconds per hour (conversion factor for duration parsing).
+/// Seconds per hour.
 pub const SECS_PER_HOUR: u64 = 3_600;
-/// Seconds per day (conversion factor for duration parsing).
+/// Seconds per day.
 pub const SECS_PER_DAY: u64 = 86_400;
+/// Seconds per week.
+pub const SECS_PER_WEEK: u64 = 604_800;
+/// Seconds per 30-day month.
+pub const SECS_PER_MONTH: u64 = 2_592_000;
+/// Seconds per 365-day year.
+pub const SECS_PER_YEAR: u64 = 31_536_000;
 
 /// Truncate `s` to at most `max` bytes, replacing newlines with spaces.
 ///

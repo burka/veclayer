@@ -7,11 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::chunk::{ChunkLevel, ChunkRelation, EntryType, HierarchicalChunk};
-
-fn default_visibility() -> String {
-    crate::chunk::visibility::NORMAL.to_string()
-}
+use crate::chunk::{default_visibility, ChunkLevel, ChunkRelation, EntryType, HierarchicalChunk};
 
 fn default_impression_strength() -> f32 {
     1.0

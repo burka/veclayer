@@ -320,15 +320,6 @@ pub struct AddResult {
 pub type IngestOptions = AddOptions;
 pub type IngestResult = AddResult;
 
-/// Result of a search/query operation
-#[derive(Debug)]
-pub struct SearchResult {
-    pub chunk: crate::HierarchicalChunk,
-    pub score: f32,
-    pub hierarchy_path: Vec<crate::HierarchicalChunk>,
-    pub relevant_children: Vec<SearchResult>,
-}
-
 /// Store statistics
 #[derive(Debug)]
 pub struct StatsResult {
