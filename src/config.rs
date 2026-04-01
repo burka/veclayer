@@ -137,6 +137,17 @@ pub enum EmbedderConfig {
     },
 }
 
+impl EmbedderConfig {
+    /// Returns the known embedding dimension, if determinable from config alone.
+    /// FastEmbed models have well-known dimensions; Ollama config stores it explicitly.
+    pub fn dimension(&self) -> Option<usize> {
+        match self {
+            Self::FastEmbed { .. } => Some(384), // BGESmallENV15 default
+            Self::Ollama { dimension, .. } => Some(*dimension),
+        }
+    }
+}
+
 // --- TOML file schema (all fields optional, gated behind "config" feature) ---
 
 #[cfg(feature = "config")]
@@ -708,8 +719,13 @@ impl Config {
         let embedder_type = explicit_type.unwrap_or_else(|| {
             if use_ollama_auto {
                 "ollama".to_string()
-            } else {
+            } else if cfg!(feature = "embedding-local") {
                 "fastembed".to_string()
+            } else {
+                // Default to Ollama when embedding-local is not compiled in.
+                // The embedder will produce a clear error if Ollama is unreachable,
+                // and recall will fall back to keyword search.
+                "ollama".to_string()
             }
         });
 
@@ -920,8 +936,16 @@ impl Default for Config {
 
 impl Default for EmbedderConfig {
     fn default() -> Self {
-        EmbedderConfig::FastEmbed {
-            model: DEFAULT_FASTEMBED_MODEL.to_string(),
+        if cfg!(feature = "embedding-local") {
+            EmbedderConfig::FastEmbed {
+                model: DEFAULT_FASTEMBED_MODEL.to_string(),
+            }
+        } else {
+            EmbedderConfig::Ollama {
+                model: crate::util::DEFAULT_OLLAMA_EMBED_MODEL.to_string(),
+                base_url: crate::util::DEFAULT_OLLAMA_URL.to_string(),
+                dimension: crate::util::DEFAULT_OLLAMA_DIMENSION,
+            }
         }
     }
 }
@@ -1175,12 +1199,19 @@ mod tests {
     }
 
     #[test]
-    fn test_embedder_config_default_fastembed() {
+    fn test_embedder_config_default() {
         let embedder = EmbedderConfig::default();
-        assert!(
-            matches!(embedder, EmbedderConfig::FastEmbed { ref model } if model == DEFAULT_FASTEMBED_MODEL),
-            "Expected FastEmbed variant with default model"
-        );
+        if cfg!(feature = "embedding-local") {
+            assert!(
+                matches!(embedder, EmbedderConfig::FastEmbed { ref model } if model == DEFAULT_FASTEMBED_MODEL),
+                "Expected FastEmbed variant with default model when embedding-local is enabled"
+            );
+        } else {
+            assert!(
+                matches!(embedder, EmbedderConfig::Ollama { .. }),
+                "Expected Ollama variant when embedding-local is disabled"
+            );
+        }
     }
 
     #[test]

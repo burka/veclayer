@@ -116,6 +116,18 @@ pub trait VectorStore: Send + Sync {
         limit: usize,
     ) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
 
+    /// Search entries by keyword (SQL LIKE on content column).
+    /// Fallback when vector embeddings are unavailable.
+    /// Results ordered by recency (most recent first).
+    fn search_text(
+        &self,
+        query: &str,
+        perspectives: &[&str],
+        since: Option<i64>,
+        until: Option<i64>,
+        limit: usize,
+    ) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
+
     /// List entries without vector search, optionally filtered by perspectives and time range.
     /// Empty slice = no filter.
     fn list_entries(
@@ -322,6 +334,17 @@ impl VectorStore for StoreBackend {
         dispatch!(self, get_stale_chunks(stale_seconds, limit))
     }
 
+    fn search_text(
+        &self,
+        query: &str,
+        perspectives: &[&str],
+        since: Option<i64>,
+        until: Option<i64>,
+        limit: usize,
+    ) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send {
+        dispatch!(self, search_text(query, perspectives, since, until, limit))
+    }
+
     fn list_entries(
         &self,
         perspectives: &[&str],
@@ -366,6 +389,7 @@ crate::arc_impl!(VectorStore {
     fn add_relation(&self, chunk_id: &str, relation: ChunkRelation) -> impl Future<Output = Result<()>> + Send;
     fn get_hot_chunks(&self, limit: usize) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
     fn get_stale_chunks(&self, stale_seconds: i64, limit: usize) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
+    fn search_text(&self, query: &str, perspectives: &[&str], since: Option<i64>, until: Option<i64>, limit: usize) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
     fn list_entries(&self, perspectives: &[&str], since: Option<i64>, until: Option<i64>, limit: usize) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
     fn get_pending_embeddings(&self, limit: usize) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send;
     fn batch_update_embeddings(&self, updates: Vec<(String, Vec<f32>)>) -> impl Future<Output = Result<()>> + Send;

@@ -102,6 +102,11 @@ impl Error {
         Self::Llm(msg.into())
     }
 
+    /// Returns `true` if this is an embedding-related error.
+    pub fn is_embedding(&self) -> bool {
+        matches!(self, Self::Embedding(_))
+    }
+
     #[cfg(feature = "sync")]
     pub fn sync(msg: impl Into<String>) -> Self {
         Self::Sync(msg.into())

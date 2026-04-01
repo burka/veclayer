@@ -1,4 +1,4 @@
-#![cfg(feature = "full")]
+#![cfg(all(feature = "full", feature = "embedding-local"))]
 //! Integration tests requiring a running Ollama instance.
 //!
 //! Run with: `cargo test --test ollama_integration -- --ignored`

@@ -763,6 +763,79 @@ impl VectorStore for SqliteStore {
         })
     }
 
+    fn search_text(
+        &self,
+        query: &str,
+        perspectives: &[&str],
+        since: Option<i64>,
+        until: Option<i64>,
+        limit: usize,
+    ) -> impl std::future::Future<Output = Result<Vec<HierarchicalChunk>>> + Send {
+        let perspectives_owned: Vec<String> = perspectives.iter().map(|s| s.to_string()).collect();
+        let query_owned = query.to_string();
+
+        self.with_conn(move |conn| {
+            let mut conditions: Vec<String> = Vec::new();
+            let mut bound: Vec<rusqlite::types::Value> = Vec::new();
+
+            // Split query into words and require all of them (AND logic)
+            let words: Vec<&str> = query_owned.split_whitespace().collect();
+            if !words.is_empty() {
+                for word in &words {
+                    let escaped = word
+                        .replace('\\', "\\\\")
+                        .replace('%', "\\%")
+                        .replace('_', "\\_");
+                    bound.push(rusqlite::types::Value::Text(format!("%{escaped}%")));
+                    conditions.push(format!("content LIKE ?{} ESCAPE '\\'", bound.len()));
+                }
+            }
+
+            if !perspectives_owned.is_empty() {
+                let clause_start = bound.len() + 1;
+                for p in &perspectives_owned {
+                    bound.push(rusqlite::types::Value::Text(perspective_like_pattern(p)));
+                }
+                let clauses: Vec<String> = (clause_start..=bound.len())
+                    .map(|i| format!("perspectives LIKE ?{i} ESCAPE '\\'"))
+                    .collect();
+                conditions.push(format!("({})", clauses.join(" OR ")));
+            }
+            if let Some(ts) = since {
+                bound.push(rusqlite::types::Value::Integer(ts));
+                conditions.push(format!("created_at >= ?{}", bound.len()));
+            }
+            if let Some(ts) = until {
+                bound.push(rusqlite::types::Value::Integer(ts));
+                conditions.push(format!("created_at <= ?{}", bound.len()));
+            }
+
+            let where_clause = if conditions.is_empty() {
+                String::new()
+            } else {
+                format!(" WHERE {}", conditions.join(" AND "))
+            };
+
+            bound.push(rusqlite::types::Value::Integer(limit as i64));
+            let sql = format!(
+                "SELECT * FROM chunks{where_clause} ORDER BY created_at DESC LIMIT ?{}",
+                bound.len()
+            );
+
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| Error::store(format!("search_text prepare: {e}")))?;
+
+            let chunks: Vec<HierarchicalChunk> = stmt
+                .query_map(rusqlite::params_from_iter(bound), row_to_chunk)
+                .map_err(|e| Error::store(format!("search_text query: {e}")))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| Error::store(format!("row parse: {e}")))?;
+
+            Ok(chunks)
+        })
+    }
+
     fn list_entries(
         &self,
         perspectives: &[&str],

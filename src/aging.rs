@@ -371,6 +371,17 @@ mod tests {
             Ok(self.stale_chunks.clone())
         }
 
+        async fn search_text(
+            &self,
+            _query: &str,
+            _perspectives: &[&str],
+            _since: Option<i64>,
+            _until: Option<i64>,
+            _limit: usize,
+        ) -> Result<Vec<HierarchicalChunk>> {
+            Ok(vec![])
+        }
+
         async fn list_entries(
             &self,
             _perspectives: &[&str],

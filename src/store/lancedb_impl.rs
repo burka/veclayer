@@ -199,8 +199,35 @@ impl LanceStore {
         Ok(store)
     }
 
+    /// Open the store for metadata-only operations.
+    ///
+    /// Reads the embedding dimension from an existing table's schema if present,
+    /// otherwise falls back to a sensible default. This avoids requiring an
+    /// active embedder or config resolution for browse/list operations.
+    /// Detect the embedding dimension from an existing LanceDB table's schema.
+    async fn detect_dimension(path: &std::path::Path) -> Option<usize> {
+        use arrow_schema::DataType;
+
+        let uri = path.to_string_lossy().to_string();
+        let conn = connect(&uri).execute().await.ok()?;
+        let table = conn.open_table(TABLE_NAME).execute().await.ok()?;
+        let schema = table.schema().await.ok()?;
+        let field = schema.field_with_name("embedding").ok()?;
+        match field.data_type() {
+            DataType::FixedSizeList(_, size) => Some(*size as usize),
+            _ => None,
+        }
+    }
+
     pub async fn open_metadata(path: impl AsRef<Path>, read_only: bool) -> Result<Self> {
-        Self::open(path, 384, read_only).await
+        let path = path.as_ref();
+        let db_path = path.join(format!("{TABLE_NAME}.lance"));
+        let dimension = if db_path.exists() {
+            Self::detect_dimension(path).await.unwrap_or(384)
+        } else {
+            384
+        };
+        Self::open(path, dimension, read_only).await
     }
 
     async fn with_write_lock<F, Fut, T>(&self, f: F) -> Result<T>
@@ -1242,6 +1269,71 @@ impl VectorStore for LanceStore {
         all_chunks.sort_by_key(|c| c.access_profile.last_rolled);
 
         all_chunks.truncate(limit);
+        Ok(all_chunks)
+    }
+
+    async fn search_text(
+        &self,
+        query: &str,
+        perspectives: &[&str],
+        since: Option<i64>,
+        until: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<HierarchicalChunk>> {
+        let table = self.get_table().await?;
+
+        let mut filters = Vec::new();
+
+        // Split query into words and require all of them (AND logic)
+        let words: Vec<&str> = query.split_whitespace().collect();
+        for word in &words {
+            filters.push(format!(
+                "content LIKE '%{}%' ESCAPE '\\'",
+                like_escape_pattern(word)
+            ));
+        }
+
+        if !perspectives.is_empty() {
+            let clauses: Vec<String> = perspectives
+                .iter()
+                .map(|p| {
+                    format!(
+                        "perspectives LIKE '%\"{}%' ESCAPE '\\'",
+                        like_escape_pattern(p)
+                    )
+                })
+                .collect();
+            filters.push(format!("({})", clauses.join(" OR ")));
+        }
+        if let Some(s) = since {
+            filters.push(format!("created_at >= {}", s));
+        }
+        if let Some(u) = until {
+            filters.push(format!("created_at <= {}", u));
+        }
+
+        let mut q = table.query();
+        if !filters.is_empty() {
+            q = q.only_if(filters.join(" AND "));
+        }
+
+        let results = q
+            .execute()
+            .await
+            .map_err(|e| Error::search(format!("Failed to search text: {}", e)))?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| Error::search(format!("Failed to collect text search results: {}", e)))?;
+
+        let mut all_chunks = self.collect_chunks(&results)?;
+
+        all_chunks.sort_by(|a, b| {
+            b.access_profile
+                .created_at
+                .cmp(&a.access_profile.created_at)
+        });
+        all_chunks.truncate(limit);
+
         Ok(all_chunks)
     }
 

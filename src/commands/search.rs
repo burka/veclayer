@@ -126,7 +126,14 @@ pub async fn search_results(
     } else if let Some(ref parent_id) = options.subtree {
         search_engine.search_subtree(query_str, parent_id).await?
     } else {
-        search_engine.search(query_str).await?
+        match search_engine.search(query_str).await {
+            Ok(r) => r,
+            Err(e) if e.is_embedding() => {
+                warn!("Embedding unavailable, falling back to keyword search: {e}");
+                search_engine.search_text_fallback(query_str).await?
+            }
+            Err(e) => return Err(e),
+        }
     };
 
     let filtered = results

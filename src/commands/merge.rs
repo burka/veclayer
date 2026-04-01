@@ -314,7 +314,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_merge_copies_blobs_with_force() -> Result<()> {
         let source = TempDir::new().unwrap();
         let target = TempDir::new().unwrap();
@@ -332,7 +332,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_merge_skips_duplicates() -> Result<()> {
         let source = TempDir::new().unwrap();
         let target = TempDir::new().unwrap();
@@ -370,7 +370,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_merge_tags_with_project() -> Result<()> {
         let source = TempDir::new().unwrap();
         let target = TempDir::new().unwrap();
@@ -397,7 +397,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_merge_warns_without_project_scope() {
         let source = TempDir::new().unwrap();
         let target = TempDir::new().unwrap();

@@ -68,7 +68,7 @@ async fn recall_empty_store_returns_empty() {
     assert!(body.is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn store_and_recall_roundtrip() {
     let (base, _tmp, state) = spawn_server().await;

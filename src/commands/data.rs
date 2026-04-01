@@ -166,11 +166,20 @@ mod tests {
     use tempfile::TempDir;
 
     async fn seed_store(dir: &Path) -> StoreBackend {
-        let store = StoreBackend::open(dir, 384, false).await.unwrap();
+        let dim = crate::test_helpers::config_dimension();
+        let store = StoreBackend::open(dir, dim, false).await.unwrap();
         store
             .insert_chunks(vec![
-                crate::test_helpers::make_test_chunk("aaa111", "First entry about architecture"),
-                crate::test_helpers::make_test_chunk("bbb222", "Second entry about testing"),
+                crate::test_helpers::make_test_chunk_dim(
+                    "aaa111",
+                    "First entry about architecture",
+                    dim,
+                ),
+                crate::test_helpers::make_test_chunk_dim(
+                    "bbb222",
+                    "Second entry about testing",
+                    dim,
+                ),
             ])
             .await
             .unwrap();
@@ -199,7 +208,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_import_skips_existing_entries() -> Result<()> {
         let dir = TempDir::new()?;
         seed_store(dir.path()).await;
@@ -226,18 +235,27 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_export_import_roundtrip() -> Result<()> {
         let source_dir = TempDir::new()?;
         let target_dir = TempDir::new()?;
         let jsonl_file = source_dir.path().join("roundtrip.jsonl");
 
         {
-            let store = StoreBackend::open(source_dir.path(), 384, false).await?;
+            let dim = crate::test_helpers::config_dimension();
+            let store = StoreBackend::open(source_dir.path(), dim, false).await?;
             store
                 .insert_chunks(vec![
-                    crate::test_helpers::make_test_chunk("export001", "Export roundtrip entry one"),
-                    crate::test_helpers::make_test_chunk("export002", "Export roundtrip entry two"),
+                    crate::test_helpers::make_test_chunk_dim(
+                        "export001",
+                        "Export roundtrip entry one",
+                        dim,
+                    ),
+                    crate::test_helpers::make_test_chunk_dim(
+                        "export002",
+                        "Export roundtrip entry two",
+                        dim,
+                    ),
                 ])
                 .await?;
 
@@ -274,7 +292,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_import_skips_bad_lines() -> Result<()> {
         let dir = TempDir::new()?;
 

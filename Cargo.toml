@@ -26,7 +26,8 @@ llm = ["dep:reqwest", "dep:linfa", "dep:linfa-clustering", "dep:ndarray"]
 http = ["auth", "mcp", "dep:axum", "dep:tower", "dep:tower-http", "rmcp/transport-streamable-http-server"]
 auth = ["dep:ed25519-dalek", "dep:jsonwebtoken", "dep:aes-gcm", "dep:argon2", "dep:rpassword", "dep:uuid", "dep:zeroize", "dep:bs58", "dep:base64", "dep:percent-encoding", "dep:rand", "dep:rand_core"]
 sync = []
-full = ["cli", "embedding-local", "store-sqlite", "llm", "http", "auth"]
+full = ["cli", "store-sqlite", "llm", "http", "auth"]
+full-local = ["full", "embedding-local"]
 
 [dependencies]
 # CLI (gated behind "cli" feature)

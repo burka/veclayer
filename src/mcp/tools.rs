@@ -413,7 +413,7 @@ pub async fn execute_recall(
 
     match input.query {
         Some(ref query) if !query.is_empty() => {
-            // Semantic search path
+            // Semantic search path with keyword fallback
             let fetch_limit = if since_epoch.is_some() || until_epoch.is_some() {
                 input.limit * TEMPORAL_PREFETCH_FACTOR
             } else {
@@ -426,7 +426,14 @@ pub async fn execute_recall(
                     .with_min_score(input.min_score);
             let search = HierarchicalSearch::new(Arc::clone(store), Arc::clone(embedder))
                 .with_config(config);
-            let results = search.search(query).await?;
+            let results = match search.search(query).await {
+                Ok(r) => r,
+                Err(e) if e.is_embedding() => {
+                    tracing::warn!("Embedding unavailable, falling back to keyword search: {e}");
+                    search.search_text_fallback(query).await?
+                }
+                Err(e) => return Err(e),
+            };
 
             let filtered: Vec<_> = results
                 .into_iter()

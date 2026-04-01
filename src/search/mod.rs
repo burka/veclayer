@@ -295,6 +295,32 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
             .await
     }
 
+    /// Keyword-based fallback search when vector embeddings are unavailable.
+    /// Returns results ordered by recency with a fixed score of 0.0 to indicate
+    /// keyword-only matching.
+    pub async fn search_text_fallback(&self, query: &str) -> Result<Vec<HierarchicalSearchResult>> {
+        let perspective_refs: Vec<&str> = self
+            .config
+            .perspectives
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let chunks = self
+            .store
+            .search_text(query, &perspective_refs, None, None, self.config.top_k)
+            .await?;
+
+        Ok(chunks
+            .into_iter()
+            .map(|chunk| HierarchicalSearchResult {
+                chunk,
+                score: 0.0,
+                hierarchy_path: vec![],
+                relevant_children: vec![],
+            })
+            .collect())
+    }
+
     /// Search for entries similar to a given entry ID.
     /// Uses the entry's embedding as the query vector instead of text.
     pub async fn search_by_embedding(
@@ -671,6 +697,27 @@ mod tests {
             _limit: usize,
         ) -> Result<Vec<HierarchicalChunk>> {
             Ok(vec![])
+        }
+
+        async fn search_text(
+            &self,
+            query: &str,
+            _perspectives: &[&str],
+            _since: Option<i64>,
+            _until: Option<i64>,
+            _limit: usize,
+        ) -> Result<Vec<HierarchicalChunk>> {
+            let chunks = self.chunks.lock().unwrap();
+            let query_lower = query.to_lowercase();
+            let words: Vec<&str> = query_lower.split_whitespace().collect();
+            Ok(chunks
+                .values()
+                .filter(|c| {
+                    let content_lower = c.content.to_lowercase();
+                    words.iter().all(|w| content_lower.contains(w))
+                })
+                .cloned()
+                .collect())
         }
 
         async fn list_entries(
