@@ -247,6 +247,17 @@ impl TokenStore {
         let _ = self.save();
     }
 
+    /// Shared validation logic for a refresh token record (revoked + expiry checks).
+    fn check_refresh_record(record: &RefreshRecord) -> Result<()> {
+        if record.revoked {
+            return Err(Error::InvalidOperation("refresh token revoked".to_owned()));
+        }
+        if unix_now() > record.expires_at {
+            return Err(Error::InvalidOperation("refresh token expired".to_owned()));
+        }
+        Ok(())
+    }
+
     /// Validate a refresh token (test-only; production uses `validate_and_revoke_refresh`).
     #[cfg(test)]
     fn validate_refresh(&self, token: &str) -> Result<&RefreshRecord> {
@@ -255,15 +266,7 @@ impl TokenStore {
             .refresh_tokens
             .get(&hash)
             .ok_or_else(|| Error::not_found("refresh token not found"))?;
-
-        if record.revoked {
-            return Err(Error::InvalidOperation("refresh token revoked".to_owned()));
-        }
-
-        if unix_now() > record.expires_at {
-            return Err(Error::InvalidOperation("refresh token expired".to_owned()));
-        }
-
+        Self::check_refresh_record(record)?;
         Ok(record)
     }
 
@@ -296,15 +299,7 @@ impl TokenStore {
             .refresh_tokens
             .get_mut(&hash)
             .ok_or_else(|| Error::not_found("refresh token not found"))?;
-
-        if record.revoked {
-            return Err(Error::InvalidOperation("refresh token revoked".to_owned()));
-        }
-
-        if unix_now() > record.expires_at {
-            return Err(Error::InvalidOperation("refresh token expired".to_owned()));
-        }
-
+        Self::check_refresh_record(record)?;
         let result = (
             record.client_id.clone(),
             record.did.clone(),
