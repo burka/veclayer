@@ -238,15 +238,20 @@ mod tests {
         store
     }
 
+    /// Opens the metadata store and returns the entry with id "aaa111".
+    async fn get_seeded_entry(dir: &Path) -> Result<crate::HierarchicalChunk> {
+        let store = StoreBackend::open_metadata(dir, false).await?;
+        let entry = store.get_by_id("aaa111").await?.unwrap();
+        Ok(entry)
+    }
+
     #[tokio::test]
     async fn test_think_promote_changes_visibility() -> Result<()> {
         let dir = TempDir::new()?;
         let _store = seed_store(dir.path()).await;
 
         think_promote(dir.path(), "aaa111", "always").await?;
-
-        let store = StoreBackend::open_metadata(dir.path(), false).await?;
-        let entry = store.get_by_id("aaa111").await?.unwrap();
+        let entry = get_seeded_entry(dir.path()).await?;
         assert_eq!(entry.visibility, "always");
         Ok(())
     }
@@ -257,9 +262,7 @@ mod tests {
         let _store = seed_store(dir.path()).await;
 
         think_promote(dir.path(), "aaa", "always").await?;
-
-        let store = StoreBackend::open_metadata(dir.path(), false).await?;
-        let entry = store.get_by_id("aaa111").await?.unwrap();
+        let entry = get_seeded_entry(dir.path()).await?;
         assert_eq!(entry.visibility, "always");
         Ok(())
     }
