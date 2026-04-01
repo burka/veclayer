@@ -1,10 +1,7 @@
 //! Ollama LLM provider using the /api/chat endpoint.
 
-use std::time::Duration;
-
+use super::{make_standard_http_client, LlmConfig, LlmProvider, Message};
 use reqwest::Client;
-
-use super::{LlmConfig, LlmProvider, Message};
 
 pub struct OllamaLlm {
     client: Client,
@@ -16,11 +13,7 @@ pub struct OllamaLlm {
 impl OllamaLlm {
     pub fn new(config: &LlmConfig) -> Self {
         Self {
-            client: Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(120))
-                .build()
-                .expect("reqwest client"),
+            client: make_standard_http_client(),
             model: config.model.clone(),
             base_url: config.base_url.clone(),
             temperature: config.temperature,

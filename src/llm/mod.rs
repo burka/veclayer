@@ -9,6 +9,18 @@ pub mod openai;
 pub use ollama::OllamaLlm;
 pub use openai::OpenAiLlm;
 
+use std::time::Duration;
+use reqwest::Client;
+
+/// Build a reqwest `Client` with standard timeouts (10s connect, 120s overall).
+pub fn make_standard_http_client() -> Client {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(120))
+        .build()
+        .expect("reqwest client")
+}
+
 /// A message in a chat conversation.
 #[derive(Debug, Clone)]
 pub struct Message {

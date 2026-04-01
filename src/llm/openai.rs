@@ -3,11 +3,8 @@
 //! Works with OpenAI, Azure OpenAI, LM Studio, and any API that implements
 //! the /v1/chat/completions endpoint.
 
-use std::time::Duration;
-
+use super::{make_standard_http_client, LlmConfig, LlmProvider, Message};
 use reqwest::Client;
-
-use super::{LlmConfig, LlmProvider, Message};
 
 pub struct OpenAiLlm {
     client: Client,
@@ -21,11 +18,7 @@ pub struct OpenAiLlm {
 impl OpenAiLlm {
     pub fn new(config: &LlmConfig) -> Self {
         Self {
-            client: Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(120))
-                .build()
-                .expect("reqwest client"),
+            client: make_standard_http_client(),
             model: config.model.clone(),
             base_url: config.base_url.clone(),
             api_key: config.api_key.clone().unwrap_or_default(),
