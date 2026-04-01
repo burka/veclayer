@@ -216,6 +216,14 @@ mod tests {
         (dir, path)
     }
 
+    /// Tamper with a saved keystore file: set `field` to `value`.
+    fn tamper_with_field(path: &Path, field: &str, value: serde_json::Value) {
+        let raw = fs::read_to_string(path).unwrap();
+        let mut json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        json[field] = value;
+        fs::write(path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+    }
+
     fn generate_signing_key() -> SigningKey {
         keypair::generate()
     }
@@ -297,10 +305,7 @@ mod tests {
         save(&signing_key, "pass", &path).unwrap();
 
         // Tamper with the DID field.
-        let raw = fs::read_to_string(&path).unwrap();
-        let mut value: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        value["did"] = serde_json::Value::String("did:key:z6MkTampered".to_string());
-        fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+        tamper_with_field(&path, "did", serde_json::Value::String("did:key:z6MkTampered".to_string()));
 
         let err = load("pass", &path).unwrap_err();
         assert!(
@@ -325,10 +330,7 @@ mod tests {
         save(&signing_key, "pass", &path).unwrap();
 
         // Bump the version field to a value we don't support.
-        let raw = fs::read_to_string(&path).unwrap();
-        let mut value: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        value["version"] = serde_json::Value::Number(99.into());
-        fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+        tamper_with_field(&path, "version", serde_json::Value::Number(99.into()));
 
         let err = load("pass", &path).unwrap_err();
         assert!(
