@@ -180,6 +180,16 @@ mod tests {
         )
     }
 
+    /// Mint a test token with a Read capability and 1-hour expiry.
+    /// Returns (token, signing_key, issued_at).
+    fn mint_test_token() -> (String, ed25519_dalek::SigningKey, u64) {
+        let key = generate_key();
+        let t = now();
+        let claims = make_claims(Capability::Read, t, t + 3600);
+        let token = mint(&key, &claims).expect("mint");
+        (token, key, t)
+    }
+
     #[test]
     fn test_mint_verify_roundtrip() {
         let key = generate_key();
@@ -253,14 +263,10 @@ mod tests {
 
     #[test]
     fn test_audience_none_skips_check() {
-        let key = generate_key();
-        let t = now();
-        let claims = make_claims(Capability::Read, t, t + 3600);
-
-        let token = mint(&key, &claims).expect("mint");
+        let (token, key, _t) = mint_test_token();
         // passing None should succeed regardless of aud
         let recovered = verify(&token, &key.verifying_key(), None).expect("verify with None aud");
-        assert_eq!(recovered.sub, claims.sub);
+        assert_eq!(recovered.sub, "did:key:zAlice");
     }
 
     #[test]
@@ -294,11 +300,7 @@ mod tests {
 
     #[test]
     fn test_issuer_validation_accepted() {
-        let key = generate_key();
-        let t = now();
-        let claims = make_claims(Capability::Read, t, t + 3600);
-
-        let token = mint(&key, &claims).expect("mint");
+        let (token, key, _t) = mint_test_token();
         let recovered = verify_with_issuer(
             &token,
             &key.verifying_key(),
@@ -311,11 +313,7 @@ mod tests {
 
     #[test]
     fn test_issuer_validation_rejected() {
-        let key = generate_key();
-        let t = now();
-        let claims = make_claims(Capability::Read, t, t + 3600);
-
-        let token = mint(&key, &claims).expect("mint");
+        let (token, key, _t) = mint_test_token();
         let err = verify_with_issuer(
             &token,
             &key.verifying_key(),
@@ -331,11 +329,7 @@ mod tests {
 
     #[test]
     fn test_nbf_present_in_minted_token() {
-        let key = generate_key();
-        let t = now();
-        let claims = make_claims(Capability::Read, t, t + 3600);
-
-        let token = mint(&key, &claims).expect("mint");
+        let (token, key, t) = mint_test_token();
         let recovered = verify(&token, &key.verifying_key(), None).expect("verify");
         assert_eq!(recovered.nbf, t, "nbf must equal iat");
     }
