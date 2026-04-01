@@ -208,11 +208,19 @@ mod tests {
         (Arc::new(store), Arc::new(blob_store))
     }
 
+    /// Shared harness for process_batch tests with FixedEmbedder.
+    async fn batch_harness_fixed(
+        dir: &std::path::Path,
+    ) -> (Arc<StoreBackend>, Arc<BlobStore>, Arc<dyn crate::Embedder + Send + Sync>) {
+        let (store, blob_store) = make_store_and_blobs(dir).await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+        (store, blob_store, embedder)
+    }
+
     #[tokio::test]
     async fn process_batch_empty_store_returns_zero() {
         let dir = tempfile::tempdir().unwrap();
-        let (store, blob_store) = make_store_and_blobs(dir.path()).await;
-        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+        let (store, blob_store, embedder) = batch_harness_fixed(dir.path()).await;
 
         let count = process_batch(&store, &embedder, &blob_store).await.unwrap();
         assert_eq!(count, 0);
@@ -221,8 +229,7 @@ mod tests {
     #[tokio::test]
     async fn process_batch_embeds_pending_entries() {
         let dir = tempfile::tempdir().unwrap();
-        let (store, blob_store) = make_store_and_blobs(dir.path()).await;
-        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+        let (store, blob_store, embedder) = batch_harness_fixed(dir.path()).await;
 
         let mut chunk = crate::test_helpers::make_test_chunk(
             "embed001deadbeef1234567890abcdef12345678",
@@ -238,8 +245,7 @@ mod tests {
     #[tokio::test]
     async fn process_batch_already_embedded_returns_zero() {
         let dir = tempfile::tempdir().unwrap();
-        let (store, blob_store) = make_store_and_blobs(dir.path()).await;
-        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+        let (store, blob_store, embedder) = batch_harness_fixed(dir.path()).await;
 
         // make_test_chunk sets embedding = Some(vec![0.0; 384])
         let chunk = crate::test_helpers::make_test_chunk(
@@ -256,8 +262,7 @@ mod tests {
     #[tokio::test]
     async fn process_batch_processes_at_most_batch_size() {
         let dir = tempfile::tempdir().unwrap();
-        let (store, blob_store) = make_store_and_blobs(dir.path()).await;
-        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+        let (store, blob_store, embedder) = batch_harness_fixed(dir.path()).await;
 
         let chunks = make_pending_chunks(BATCH_SIZE + 5, "pend");
         store.insert_chunks(chunks).await.unwrap();
