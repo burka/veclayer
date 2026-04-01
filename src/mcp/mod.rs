@@ -286,55 +286,48 @@ mod tests {
         assert!(!check_hooks_configured(tmp.path()));
     }
 
-    #[test]
-    fn check_hooks_configured_returns_true_when_present() {
+    /// Helper: create a temp dir with a .claude/settings file of given content.
+    fn with_claude_settings(filename: &str, content: &str) -> tempfile::TempDir {
         let tmp = tempfile::tempdir().expect("temp dir");
         let claude_dir = tmp.path().join(".claude");
         std::fs::create_dir_all(&claude_dir).expect("create .claude dir");
-        std::fs::write(
-            claude_dir.join("settings.json"),
+        std::fs::write(claude_dir.join(filename), content).expect("write settings");
+        tmp
+    }
+
+    #[test]
+    fn check_hooks_configured_returns_true_when_present() {
+        let tmp = with_claude_settings(
+            "settings.json",
             r#"{"hooks":{"PreCompact":[]}}"#,
-        )
-        .expect("write settings");
+        );
         assert!(check_hooks_configured(tmp.path()));
     }
 
     #[test]
     fn check_hooks_configured_returns_true_for_stop_hook() {
-        let tmp = tempfile::tempdir().expect("temp dir");
-        let claude_dir = tmp.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).expect("create .claude dir");
-        std::fs::write(
-            claude_dir.join("settings.local.json"),
+        let tmp = with_claude_settings(
+            "settings.local.json",
             r#"{"hooks":{"Stop":[{"type":"command","command":"veclayer stale"}]}}"#,
-        )
-        .expect("write settings");
+        );
         assert!(check_hooks_configured(tmp.path()));
     }
 
     #[test]
     fn check_hooks_configured_true_for_settings_local_json() {
-        let tmp = tempfile::tempdir().expect("temp dir");
-        let claude_dir = tmp.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).expect("create .claude dir");
-        std::fs::write(
-            claude_dir.join("settings.local.json"),
+        let tmp = with_claude_settings(
+            "settings.local.json",
             r#"{"hooks":{"PreCompact":[]}}"#,
-        )
-        .expect("write settings");
+        );
         assert!(check_hooks_configured(tmp.path()));
     }
 
     #[test]
     fn check_hooks_configured_ignores_unrelated_content() {
-        let tmp = tempfile::tempdir().expect("temp dir");
-        let claude_dir = tmp.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).expect("create .claude dir");
-        std::fs::write(
-            claude_dir.join("settings.json"),
+        let tmp = with_claude_settings(
+            "settings.json",
             r#"{"permissions":{"allow":["Bash"]}}"#,
-        )
-        .expect("write settings");
+        );
         assert!(!check_hooks_configured(tmp.path()));
     }
 
