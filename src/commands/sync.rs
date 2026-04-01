@@ -684,15 +684,7 @@ mod tests {
 
     #[test]
     fn test_migrate_filters_exclude_and_include_both_set_include_wins_when_missing() {
-        use crate::chunk::{ChunkLevel, HierarchicalChunk};
-        let chunk = HierarchicalChunk::new(
-            "content".to_string(),
-            ChunkLevel::H1,
-            None,
-            String::new(),
-            "src.md".to_string(),
-        )
-        .with_perspectives(vec!["decisions".to_string()]);
+        let chunk = test_chunk_with_perspectives(vec!["decisions".to_string()]);
 
         // Require perspective "knowledge" (not present) — rejected
         let filters = MigrateFilters {
@@ -705,14 +697,7 @@ mod tests {
 
     #[test]
     fn test_migrate_filters_chunk_with_no_perspectives() {
-        use crate::chunk::{ChunkLevel, HierarchicalChunk};
-        let chunk = HierarchicalChunk::new(
-            "content".to_string(),
-            ChunkLevel::H1,
-            None,
-            String::new(),
-            "src.md".to_string(),
-        );
+        let chunk = test_chunk();
 
         // No perspective filter → accepts
         assert!(MigrateFilters::default().accepts(&chunk));
