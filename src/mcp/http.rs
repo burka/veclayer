@@ -699,6 +699,20 @@ mod tests {
         (state, dir)
     }
 
+    /// Helper: POST a JSON body to the given URI and return the response.
+    async fn post_json(app: Router, uri: &str, body: &serde_json::Value) -> Response<Body> {
+        app.oneshot(
+            Request::builder()
+                .uri(uri)
+                .method("POST")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
     // ── Route tests ──────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -767,18 +781,7 @@ mod tests {
             "tree": "projects:test",
             "can": ["recall"]
         });
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/share")
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
+        let response = post_json(app, "/api/share", &body).await;
         assert_eq!(response.status(), StatusCode::OK);
     }
 
@@ -788,18 +791,7 @@ mod tests {
         let app = build_app(state);
 
         let body = serde_json::json!({ "content": "" });
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/store")
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
+        let response = post_json(app, "/api/store", &body).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
@@ -809,18 +801,7 @@ mod tests {
         let app = build_app(state);
 
         let body = serde_json::json!({ "id": "nonexistentid" });
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/focus")
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
+        let response = post_json(app, "/api/focus", &body).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }
