@@ -49,6 +49,30 @@ struct OpenAiResponse {
 }
 
 impl OllamaEmbedder {
+    /// Low-level helper: POST a JSON body to `url` and return (status, bytes).
+    async fn http_post_json(
+        &self,
+        url: &str,
+        body: &impl Serialize,
+        err_prefix: &str,
+    ) -> Result<(u16, Vec<u8>)> {
+        let response = self
+            .client
+            .post(url)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| Error::embedding(format!("{err_prefix} HTTP request failed: {e}")))?;
+
+        let status = response.status();
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| Error::embedding(format!("{err_prefix} Failed to read response: {e}")))?;
+
+        Ok((status.as_u16(), bytes.into()))
+    }
+
     /// Create a new OllamaEmbedder.
     pub fn new(
         model: impl Into<String>,
@@ -78,25 +102,13 @@ impl OllamaEmbedder {
             input: texts,
         };
 
-        let response = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::embedding(format!("HTTP request failed: {}", e)))?;
+        let (status, bytes) = self.http_post_json(&url, &body, "Ollama").await?;
 
-        if response.status().as_u16() == 404 {
+        if status == 404 {
             return Ok(None);
         }
 
-        let status = response.status();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| Error::embedding(format!("Failed to read response: {}", e)))?;
-
-        if !status.is_success() {
+        if !(200..300).contains(&status) {
             return Err(Error::embedding(format!(
                 "Ollama API error {}: {}\nHint: ensure the model '{}' is pulled — run `ollama pull {}`",
                 status,
@@ -107,7 +119,7 @@ impl OllamaEmbedder {
         }
 
         let parsed: OllamaResponse = serde_json::from_slice(&bytes)
-            .map_err(|e| Error::embedding(format!("Failed to parse Ollama response: {}", e)))?;
+            .map_err(|e| Error::embedding(format!("Failed to parse Ollama response: {e}")))?;
         Ok(Some(parsed.embeddings))
     }
 
@@ -118,21 +130,11 @@ impl OllamaEmbedder {
             input: texts,
         };
 
-        let response = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::embedding(format!("HTTP request failed: {}", e)))?;
+        let (status, bytes) = self
+            .http_post_json(&url, &body, "OpenAI-compatible")
+            .await?;
 
-        let status = response.status();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| Error::embedding(format!("Failed to read response: {}", e)))?;
-
-        if !status.is_success() {
+        if !(200..300).contains(&status) {
             return Err(Error::embedding(format!(
                 "OpenAI-compatible API error {}: {}",
                 status,
@@ -141,7 +143,7 @@ impl OllamaEmbedder {
         }
 
         let mut parsed: OpenAiResponse = serde_json::from_slice(&bytes)
-            .map_err(|e| Error::embedding(format!("Failed to parse OpenAI response: {}", e)))?;
+            .map_err(|e| Error::embedding(format!("Failed to parse OpenAI response: {e}")))?;
 
         parsed.data.sort_by_key(|e| e.index);
         Ok(parsed.data.into_iter().map(|e| e.embedding).collect())
