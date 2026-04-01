@@ -1,6 +1,6 @@
 {
   "statistics": {
-    "detectionDate": "2026-04-01T23:07:13.329Z",
+    "detectionDate": "2026-04-01T23:16:28.237Z",
     "formats": {
       "rust": {
         "sources": {
@@ -113,14 +113,14 @@
             "newClones": 0
           },
           "src/mcp/resources.rs": {
-            "lines": 837,
-            "tokens": 6641,
+            "lines": 832,
+            "tokens": 6580,
             "sources": 1,
-            "clones": 2,
-            "duplicatedLines": 14,
-            "duplicatedTokens": 156,
-            "percentage": 1.67,
-            "percentageTokens": 2.35,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -522,7 +522,7 @@
           },
           "src/commands/identity.rs": {
             "lines": 304,
-            "tokens": 2338,
+            "tokens": 2335,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -846,28 +846,28 @@
           }
         },
         "total": {
-          "lines": 24550,
-          "tokens": 206895,
+          "lines": 24545,
+          "tokens": 206831,
           "sources": 70,
-          "clones": 22,
-          "duplicatedLines": 149,
-          "duplicatedTokens": 1867,
-          "percentage": 0.61,
-          "percentageTokens": 0.9,
+          "clones": 21,
+          "duplicatedLines": 142,
+          "duplicatedTokens": 1789,
+          "percentage": 0.58,
+          "percentageTokens": 0.86,
           "newDuplicatedLines": 0,
           "newClones": 0
         }
       }
     },
     "total": {
-      "lines": 24550,
-      "tokens": 206895,
+      "lines": 24545,
+      "tokens": 206831,
       "sources": 70,
-      "clones": 22,
-      "duplicatedLines": 149,
-      "duplicatedTokens": 1867,
-      "percentage": 0.61,
-      "percentageTokens": 0.9,
+      "clones": 21,
+      "duplicatedLines": 142,
+      "duplicatedTokens": 1789,
+      "percentage": 0.58,
+      "percentageTokens": 0.86,
       "newDuplicatedLines": 0,
       "newClones": 0
     }
@@ -906,42 +906,6 @@
           "line": 129,
           "column": 2,
           "position": 991
-        }
-      }
-    },
-    {
-      "format": "rust",
-      "lines": 8,
-      "fragment": "{\n        let dir = TempDir::new().unwrap();\n        let store = std::sync::Arc::new(\n            crate::store::StoreBackend::open_metadata(dir.path(), false)\n                .await\n                .unwrap(),\n        );\n        let",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/mcp/resources.rs",
-        "start": 535,
-        "end": 542,
-        "startLoc": {
-          "line": 535,
-          "column": 2,
-          "position": 4447
-        },
-        "endLoc": {
-          "line": 542,
-          "column": 4,
-          "position": 4525
-        }
-      },
-      "secondFile": {
-        "name": "src/mcp/resources.rs",
-        "start": 394,
-        "end": 401,
-        "startLoc": {
-          "line": 394,
-          "column": 2,
-          "position": 3329
-        },
-        "endLoc": {
-          "line": 401,
-          "column": 5,
-          "position": 3407
         }
       }
     },

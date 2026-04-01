@@ -390,15 +390,18 @@ mod tests {
         crate::config::EmbedderConfig::default()
     }
 
-    /// Helper: create a metadata store and call read() with default config.
-    async fn read_test(uri: &str) -> Result<ReadResourceResult, rmcp::ErrorData> {
+    /// Helper: create a metadata store and call read() with the given embedder config.
+    async fn read_test(
+        uri: &str,
+        config: crate::config::EmbedderConfig,
+    ) -> Result<ReadResourceResult, rmcp::ErrorData> {
         let dir = TempDir::new().unwrap();
         let store = std::sync::Arc::new(
             crate::store::StoreBackend::open_metadata(dir.path(), false)
                 .await
                 .unwrap(),
         );
-        read(uri, &store, dir.path(), None, None, &default_embedder_config()).await
+        read(uri, &store, dir.path(), None, None, &config).await
     }
 
     // ── static_resources ────────────────────────────────────────────────
@@ -512,7 +515,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_rejects_non_veclayer_uri() {
-        let result = read_test("https://example.com/foo").await;
+        let result = read_test("https://example.com/foo", default_embedder_config()).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(format!("{:?}", err).contains("veclayer://"));
@@ -520,33 +523,25 @@ mod tests {
 
     #[tokio::test]
     async fn read_rejects_unknown_path() {
-        let result = read_test("veclayer://unknown_path_xyz").await;
+        let result = read_test("veclayer://unknown_path_xyz", default_embedder_config()).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn read_status_returns_markdown() {
-        let result = read_test("veclayer://status").await.unwrap();
+        let result = read_test("veclayer://status", default_embedder_config()).await.unwrap();
         let text = extract_text(&result);
         assert!(text.contains("## Store Status"));
     }
 
     #[tokio::test]
     async fn read_status_includes_embedding_section() {
-        let dir = TempDir::new().unwrap();
-        let store = std::sync::Arc::new(
-            crate::store::StoreBackend::open_metadata(dir.path(), false)
-                .await
-                .unwrap(),
-        );
         let config = crate::config::EmbedderConfig::Ollama {
             model: "nomic-embed-text".to_string(),
             base_url: "http://localhost:11434".to_string(),
             dimension: 768,
         };
-        let result = read("veclayer://status", &store, dir.path(), None, None, &config)
-            .await
-            .unwrap();
+        let result = read_test("veclayer://status", config).await.unwrap();
         let text = extract_text(&result);
         assert!(text.contains("## Embedding"));
         assert!(text.contains("Ollama"));
@@ -557,7 +552,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_perspectives_returns_default_perspectives() {
-        let result = read_test("veclayer://perspectives").await.unwrap();
+        let result = read_test("veclayer://perspectives", default_embedder_config()).await.unwrap();
         let text = extract_text(&result);
         assert!(text.contains("## Perspectives"));
         assert!(text.contains("decisions"));
