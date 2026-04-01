@@ -50,6 +50,7 @@ pub struct AuthSetup {
 pub struct AppState {
     pub store: Arc<StoreBackend>,
     pub embedder: Arc<dyn Embedder + Send + Sync>,
+    pub embedder_config: crate::config::EmbedderConfig,
     pub blob_store: Arc<BlobStore>,
     pub data_dir: std::path::PathBuf,
     pub project: Option<String>,
@@ -324,6 +325,7 @@ pub async fn run_http(config: Config) -> Result<()> {
     let state = AppState {
         store,
         embedder,
+        embedder_config: config.embedder.clone(),
         blob_store,
         data_dir: config.data_dir.clone(),
         project: config.project.clone(),
@@ -694,6 +696,7 @@ mod tests {
         let state = AppState {
             store: Arc::new(store),
             embedder: Arc::new(FixedEmbedder),
+            embedder_config: crate::config::EmbedderConfig::default(),
             blob_store: Arc::new(blob_store),
             data_dir: dir.path().to_path_buf(),
             project: None,

@@ -101,13 +101,14 @@ pub async fn read(
     data_dir: &Path,
     project: Option<&str>,
     branch: Option<&str>,
+    embedder_config: &crate::config::EmbedderConfig,
 ) -> Result<ReadResourceResult, rmcp::ErrorData> {
     let path = uri
         .strip_prefix("veclayer://")
         .ok_or_else(|| rmcp::ErrorData::invalid_params("URI must start with veclayer://", None))?;
 
     match path {
-        "status" => read_status(uri, store, data_dir).await,
+        "status" => read_status(uri, store, data_dir, embedder_config).await,
         "perspectives" => read_perspectives(uri, data_dir),
         "hot" => read_hot(uri, store, project, branch).await,
         "recent" => read_recent(uri, store, project, branch).await,
@@ -136,13 +137,14 @@ async fn read_status(
     uri: &str,
     store: &StoreBackend,
     data_dir: &Path,
+    embedder_config: &crate::config::EmbedderConfig,
 ) -> Result<ReadResourceResult, rmcp::ErrorData> {
     let stats = store.stats().await.map_err(|e| {
         tracing::error!("Failed to read store stats: {e}");
         rmcp::ErrorData::internal_error("Internal server error", None)
     })?;
     let aging_config = crate::aging::AgingConfig::load(data_dir);
-    let md = format::format_store_status(&stats, &aging_config);
+    let md = format::format_store_status(&stats, &aging_config, Some(embedder_config));
     Ok(text_resource(uri, &md))
 }
 
@@ -379,6 +381,10 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn default_embedder_config() -> crate::config::EmbedderConfig {
+        crate::config::EmbedderConfig::default()
+    }
+
     // ── static_resources ────────────────────────────────────────────────
 
     #[test]
@@ -496,7 +502,15 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let result = read("https://example.com/foo", &store, dir.path(), None, None).await;
+        let result = read(
+            "https://example.com/foo",
+            &store,
+            dir.path(),
+            None,
+            None,
+            &default_embedder_config(),
+        )
+        .await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(format!("{:?}", err).contains("veclayer://"));
@@ -516,6 +530,7 @@ mod tests {
             dir.path(),
             None,
             None,
+            &default_embedder_config(),
         )
         .await;
         assert!(result.is_err());
@@ -529,11 +544,42 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let result = read("veclayer://status", &store, dir.path(), None, None)
+        let result = read(
+            "veclayer://status",
+            &store,
+            dir.path(),
+            None,
+            None,
+            &default_embedder_config(),
+        )
+        .await
+        .unwrap();
+        let text = extract_text(&result);
+        assert!(text.contains("## Store Status"));
+    }
+
+    #[tokio::test]
+    async fn read_status_includes_embedding_section() {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(
+            crate::store::StoreBackend::open_metadata(dir.path(), false)
+                .await
+                .unwrap(),
+        );
+        let config = crate::config::EmbedderConfig::Ollama {
+            model: "nomic-embed-text".to_string(),
+            base_url: "http://localhost:11434".to_string(),
+            dimension: 768,
+        };
+        let result = read("veclayer://status", &store, dir.path(), None, None, &config)
             .await
             .unwrap();
         let text = extract_text(&result);
-        assert!(text.contains("## Store Status"));
+        assert!(text.contains("## Embedding"));
+        assert!(text.contains("Ollama"));
+        assert!(text.contains("nomic-embed-text"));
+        assert!(text.contains("http://localhost:11434"));
+        assert!(text.contains("768"));
     }
 
     #[tokio::test]
@@ -544,9 +590,16 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let result = read("veclayer://perspectives", &store, dir.path(), None, None)
-            .await
-            .unwrap();
+        let result = read(
+            "veclayer://perspectives",
+            &store,
+            dir.path(),
+            None,
+            None,
+            &default_embedder_config(),
+        )
+        .await
+        .unwrap();
         let text = extract_text(&result);
         assert!(text.contains("## Perspectives"));
         assert!(text.contains("decisions"));
@@ -560,9 +613,16 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let result = read("veclayer://hot", &store, dir.path(), None, None)
-            .await
-            .unwrap();
+        let result = read(
+            "veclayer://hot",
+            &store,
+            dir.path(),
+            None,
+            None,
+            &default_embedder_config(),
+        )
+        .await
+        .unwrap();
         let text = extract_text(&result);
         assert!(text.contains("No entries"));
     }
@@ -580,9 +640,16 @@ mod tests {
         chunk.access_profile.record_access();
         store.insert_chunks(vec![chunk]).await.unwrap();
 
-        let result = read("veclayer://hot", &store, dir.path(), None, None)
-            .await
-            .unwrap();
+        let result = read(
+            "veclayer://hot",
+            &store,
+            dir.path(),
+            None,
+            None,
+            &default_embedder_config(),
+        )
+        .await
+        .unwrap();
         let text = extract_text(&result);
         assert!(!text.contains("No entries"));
     }
@@ -606,6 +673,7 @@ mod tests {
             dir.path(),
             Some("my-project"),
             None,
+            &default_embedder_config(),
         )
         .await
         .unwrap();
@@ -621,9 +689,16 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let result = read("veclayer://recent", &store, dir.path(), None, None)
-            .await
-            .unwrap();
+        let result = read(
+            "veclayer://recent",
+            &store,
+            dir.path(),
+            None,
+            None,
+            &default_embedder_config(),
+        )
+        .await
+        .unwrap();
         let text = extract_text(&result);
         assert!(text.contains("No entries"));
     }
@@ -639,9 +714,16 @@ mod tests {
         let chunk = crate::test_helpers::make_test_chunk("recententry01", "Recent knowledge entry");
         store.insert_chunks(vec![chunk]).await.unwrap();
 
-        let result = read("veclayer://recent", &store, dir.path(), None, None)
-            .await
-            .unwrap();
+        let result = read(
+            "veclayer://recent",
+            &store,
+            dir.path(),
+            None,
+            None,
+            &default_embedder_config(),
+        )
+        .await
+        .unwrap();
         let text = extract_text(&result);
         assert!(text.contains("## Recent Entries"));
         assert!(text.contains("entry(ies)"));
@@ -666,6 +748,7 @@ mod tests {
             dir.path(),
             Some("my-project"),
             None,
+            &default_embedder_config(),
         )
         .await
         .unwrap();
@@ -681,9 +764,16 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let result = read("veclayer://identity", &store, dir.path(), None, None)
-            .await
-            .unwrap();
+        let result = read(
+            "veclayer://identity",
+            &store,
+            dir.path(),
+            None,
+            None,
+            &default_embedder_config(),
+        )
+        .await
+        .unwrap();
         let text = extract_text(&result);
         // Empty store → no identity data
         assert!(!text.is_empty());
@@ -703,6 +793,7 @@ mod tests {
             dir.path(),
             None,
             None,
+            &default_embedder_config(),
         )
         .await;
         assert!(result.is_err());
@@ -722,6 +813,7 @@ mod tests {
             dir.path(),
             None,
             None,
+            &default_embedder_config(),
         )
         .await
         .unwrap();
@@ -748,6 +840,7 @@ mod tests {
             dir.path(),
             None,
             None,
+            &default_embedder_config(),
         )
         .await
         .unwrap();
@@ -770,6 +863,7 @@ mod tests {
             dir.path(),
             None,
             None,
+            &default_embedder_config(),
         )
         .await;
         assert!(result.is_err());
@@ -792,6 +886,7 @@ mod tests {
             dir.path(),
             None,
             None,
+            &default_embedder_config(),
         )
         .await
         .unwrap();

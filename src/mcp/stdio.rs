@@ -56,6 +56,7 @@ pub async fn run_stdio(config: Config) -> Result<()> {
     let handler = McpHandler::new(
         store,
         embedder,
+        config.embedder.clone(),
         blob_store,
         config.data_dir.clone(),
         config.project.clone(),

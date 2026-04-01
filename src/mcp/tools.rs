@@ -955,7 +955,7 @@ async fn think_status(
 ) -> Result<String> {
     let stats = store.stats().await?;
     let aging_config = AgingConfig::load(data_dir);
-    let mut status = super::format::format_store_status(&stats, &aging_config);
+    let mut status = super::format::format_store_status(&stats, &aging_config, None);
 
     if let Some(git) = git_store {
         status.push_str("\n### Git Memory\n\n");

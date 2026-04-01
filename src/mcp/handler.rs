@@ -40,6 +40,7 @@ fn tool_error(e: crate::Error) -> Result<CallToolResult, McpError> {
 pub struct McpHandler {
     store: Arc<StoreBackend>,
     embedder: Arc<dyn Embedder + Send + Sync>,
+    embedder_config: crate::config::EmbedderConfig,
     blob_store: Arc<BlobStore>,
     data_dir: PathBuf,
     project: Option<String>,
@@ -85,6 +86,7 @@ impl McpHandler {
         Self::new(
             Arc::clone(&state.store),
             Arc::clone(&state.embedder),
+            state.embedder_config.clone(),
             Arc::clone(&state.blob_store),
             state.data_dir.clone(),
             state.project.clone(),
@@ -100,6 +102,7 @@ impl McpHandler {
     pub fn new(
         store: Arc<StoreBackend>,
         embedder: Arc<dyn Embedder + Send + Sync>,
+        embedder_config: crate::config::EmbedderConfig,
         blob_store: Arc<BlobStore>,
         data_dir: PathBuf,
         project: Option<String>,
@@ -161,6 +164,7 @@ impl McpHandler {
         Self {
             store,
             embedder,
+            embedder_config,
             blob_store,
             data_dir,
             project,
@@ -336,6 +340,7 @@ impl ServerHandler for McpHandler {
             &self.data_dir,
             self.project.as_deref(),
             self.branch.as_deref(),
+            &self.embedder_config,
         )
         .await
     }
@@ -387,6 +392,7 @@ mod tests {
         McpHandler::new(
             store,
             embedder,
+            crate::config::EmbedderConfig::default(),
             blob_store,
             data_dir.to_path_buf(),
             project,

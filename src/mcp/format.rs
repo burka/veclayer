@@ -212,9 +212,12 @@ fn floor_char_boundary(s: &str, index: usize) -> usize {
 }
 
 /// Format store status as readable markdown for `veclayer://status` and `think(status)`.
+///
+/// Pass `embedder_config` to append an `## Embedding` section with provider details.
 pub fn format_store_status(
     stats: &crate::store::StoreStats,
     aging_config: &crate::aging::AgingConfig,
+    embedder_config: Option<&crate::config::EmbedderConfig>,
 ) -> String {
     let mut md = String::from("## Store Status\n\n");
     md.push_str(&format!("- **Total entries:** {}\n", stats.total_chunks));
@@ -258,7 +261,37 @@ pub fn format_store_status(
         md.push_str(&format!("- **Estimated completion:** ~{eta}s\n"));
     }
 
+    if let Some(config) = embedder_config {
+        md.push_str(&format_embedding_section(config, stats.pending_embeddings));
+    }
+
     md
+}
+
+/// Format the `## Embedding` section for the status resource.
+fn format_embedding_section(config: &crate::config::EmbedderConfig, pending: usize) -> String {
+    let provider = match config {
+        crate::config::EmbedderConfig::Ollama {
+            model, base_url, ..
+        } => format!("Ollama ({model} @ {base_url})"),
+        crate::config::EmbedderConfig::FastEmbed { model } => {
+            format!("FastEmbed ({model})")
+        }
+    };
+
+    let dimension = config
+        .dimension()
+        .map_or_else(|| "unknown".to_string(), |d| d.to_string());
+
+    let pending_line = if pending == 1 {
+        "1 entry awaiting embeddings".to_string()
+    } else {
+        format!("{pending} entries awaiting embeddings")
+    };
+
+    format!(
+        "\n## Embedding\n\n- Provider: {provider}\n- Dimension: {dimension}\n- Pending: {pending_line}\n"
+    )
 }
 
 /// Format hot entries with salience scores for the `veclayer://hot` resource.
@@ -756,7 +789,7 @@ mod tests {
             pending_embeddings: 0,
         };
         let aging = AgingConfig::default();
-        let out = format_store_status(&stats, &aging);
+        let out = format_store_status(&stats, &aging, None);
         assert!(out.contains("## Store Status"));
         assert!(out.contains("Total entries:** 0"));
         assert!(out.contains("Aging policy"));
@@ -785,7 +818,7 @@ mod tests {
             degrade_from: vec!["normal".to_string()],
             ..AgingConfig::default()
         };
-        let out = format_store_status(&stats, &aging);
+        let out = format_store_status(&stats, &aging, None);
         assert!(out.contains("Total entries:** 8"));
         assert!(out.contains("H1: 3"));
         assert!(out.contains("Content: 5"));
@@ -812,7 +845,7 @@ mod tests {
             source_files: vec![],
             pending_embeddings: 0,
         };
-        let out = format_store_status(&stats, &AgingConfig::default());
+        let out = format_store_status(&stats, &AgingConfig::default(), None);
         assert!(out.contains("Content: 42"));
         assert!(!out.contains("H7"));
     }
