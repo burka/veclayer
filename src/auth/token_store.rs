@@ -411,13 +411,18 @@ mod tests {
         assert!(consumed.used);
     }
 
-    #[test]
-    fn test_code_reuse_rejected() {
+    /// Shared setup for code-consumption tests: store + client + PKCE pair + issued code.
+    fn code_test_harness() -> (TempDir, TokenStore, String, String) {
         let (_dir, mut store) = tmp_store();
         let client = store.register_client("App", vec![]);
         let (verifier, challenge) = pkce_pair();
-
         let code = create_test_code(&mut store, &client, &challenge);
+        (_dir, store, verifier, code)
+    }
+
+    #[test]
+    fn test_code_reuse_rejected() {
+        let (_dir, mut store, verifier, code) = code_test_harness();
 
         store.consume_code(&code, &verifier).expect("first consume");
         let err = store.consume_code(&code, &verifier).unwrap_err();
@@ -429,11 +434,7 @@ mod tests {
 
     #[test]
     fn test_code_expired_rejected() {
-        let (_dir, mut store) = tmp_store();
-        let client = store.register_client("App", vec![]);
-        let (verifier, challenge) = pkce_pair();
-
-        let code = create_test_code(&mut store, &client, &challenge);
+        let (_dir, mut store, verifier, code) = code_test_harness();
 
         // Force-expire the code.
         let record = store.codes.get_mut(&code).unwrap();
