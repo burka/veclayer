@@ -74,6 +74,24 @@ impl ToolContext {
     }
 }
 
+/// Macro to generate a `tool_context()` method that calls `ToolContext::from_parts`
+/// with Arc-cloned fields. Eliminates copy-paste between McpHandler and AppState.
+macro_rules! impl_tool_context {
+    ($self:expr) => {
+        ToolContext::from_parts(
+            Arc::clone(&$self.store),
+            Arc::clone(&$self.embedder),
+            Arc::clone(&$self.blob_store),
+            $self.data_dir.clone(),
+            $self.project.clone(),
+            $self.branch.clone(),
+            $self.git_store.clone(),
+            $self.push_mode,
+        )
+    };
+}
+pub(crate) use impl_tool_context;
+
 /// Helper: check if a chunk passes project filter.
 /// Returns true if:
 /// - No project is set (no filtering)

@@ -30,7 +30,7 @@ use crate::store::StoreBackend;
 use crate::{Config, Embedder, Result, VectorStore};
 
 use super::handler::McpHandler;
-use super::tools::{self, ToolContext};
+use super::tools::{self, impl_tool_context, ToolContext};
 use super::types::*;
 
 // ─── Auth setup ───────────────────────────────────────────────────────────────
@@ -65,16 +65,7 @@ pub struct AppState {
 
 impl AppState {
     fn tool_context(&self) -> ToolContext {
-        ToolContext::from_parts(
-            Arc::clone(&self.store),
-            Arc::clone(&self.embedder),
-            Arc::clone(&self.blob_store),
-            self.data_dir.clone(),
-            self.project.clone(),
-            self.branch.clone(),
-            self.git_store.clone(),
-            self.push_mode,
-        )
+        impl_tool_context!(self)
     }
 }
 

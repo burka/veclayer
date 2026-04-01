@@ -20,7 +20,7 @@ use crate::git::branch_config::PushMode;
 use crate::store::StoreBackend;
 use crate::Embedder;
 
-use super::tools::ToolContext;
+use super::tools::{impl_tool_context, ToolContext};
 use super::types::*;
 use super::{format, tools};
 
@@ -60,16 +60,7 @@ pub struct McpHandler {
 impl McpHandler {
     /// Build a `ToolContext` from the handler's fields.
     fn tool_context(&self) -> ToolContext {
-        ToolContext::from_parts(
-            Arc::clone(&self.store),
-            Arc::clone(&self.embedder),
-            Arc::clone(&self.blob_store),
-            self.data_dir.clone(),
-            self.project.clone(),
-            self.branch.clone(),
-            self.git_store.clone(),
-            self.push_mode,
-        )
+        impl_tool_context!(self)
     }
 
     /// Build a `McpHandler` from an [`AppState`](super::http::AppState) plus
