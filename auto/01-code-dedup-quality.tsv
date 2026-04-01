@@ -14,3 +14,4 @@ round	timestamp	metric_before	metric_after	delta	status	description	commit
 12	2026-04-01T23:35:00Z	53 clones, 417l/4640t (1.69%)	51 clones, 395l/4494t (1.60%)	-22l, -2 clones, -0.09%	keep	Identity/auth: move prompt_passphrase+resolve_passphrase_for_read to auth.rs	7657d06
 13	2026-04-01T23:42:00Z	51 clones, 395l/4494t (1.60%)	48 clones, 358l/4172t (1.45%)	-37l, -3 clones, -0.15%	keep	Device_flow: extract test_config helper for DeviceFlowConfig construction	97a87f1
 14	2026-04-01T23:50:00Z	48 clones, 358l/4172t (1.45%)	46 clones, 340l/4016t (1.38%)	-18l, -2 clones, -0.07%	keep	HTTP: extract post_json() helper to dedupe POST JSON request pattern	bff6ee9
+15	2026-04-01T23:57:00Z	46 clones, 340l/4016t (1.38%)	45 clones, 329l/207386t (1.34%)	-11l, -1 clone, -0.04%	keep	Auth/middleware: extract cap_handler_fn async helper	cefc568

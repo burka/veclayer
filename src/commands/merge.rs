@@ -255,6 +255,13 @@ mod tests {
         store
     }
 
+    /// Create a pair of temp directories for merge tests (source, target).
+    fn temp_merge_source_target() -> (TempDir, TempDir) {
+        let source = TempDir::new().unwrap();
+        let target = TempDir::new().unwrap();
+        (source, target)
+    }
+
     #[test]
     fn test_same_directory_detects_identical_paths() {
         let dir = TempDir::new().unwrap();
@@ -288,8 +295,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_merge_rejects_missing_objects() {
-        let source = TempDir::new().unwrap();
-        let target = TempDir::new().unwrap();
+        let (source, target) = temp_merge_source_target();
 
         let opts = MergeOptions {
             force: true,
@@ -302,8 +308,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_merge_empty_source() -> Result<()> {
-        let source = TempDir::new().unwrap();
-        let target = TempDir::new().unwrap();
+        let (source, target) = temp_merge_source_target();
         fs::create_dir_all(source.path().join("objects")).unwrap();
 
         let opts = MergeOptions {
@@ -316,8 +321,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_merge_copies_blobs_with_force() -> Result<()> {
-        let source = TempDir::new().unwrap();
-        let target = TempDir::new().unwrap();
+        let (source, target) = temp_merge_source_target();
 
         seed_blob_store(source.path(), &["alpha", "beta"]);
 
@@ -334,8 +338,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_merge_skips_duplicates() -> Result<()> {
-        let source = TempDir::new().unwrap();
-        let target = TempDir::new().unwrap();
+        let (source, target) = temp_merge_source_target();
 
         seed_blob_store(source.path(), &["shared", "unique"]);
         seed_blob_store(target.path(), &["shared"]);
@@ -353,8 +356,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_merge_dry_run_does_not_write() -> Result<()> {
-        let source = TempDir::new().unwrap();
-        let target = TempDir::new().unwrap();
+        let (source, target) = temp_merge_source_target();
 
         seed_blob_store(source.path(), &["alpha", "beta"]);
 
@@ -372,8 +374,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_merge_tags_with_project() -> Result<()> {
-        let source = TempDir::new().unwrap();
-        let target = TempDir::new().unwrap();
+        let (source, target) = temp_merge_source_target();
 
         seed_blob_store(source.path(), &["entry with project tag"]);
 
@@ -399,8 +400,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_merge_warns_without_project_scope() {
-        let source = TempDir::new().unwrap();
-        let target = TempDir::new().unwrap();
+        let (source, target) = temp_merge_source_target();
 
         seed_blob_store(source.path(), &["entry"]);
 
@@ -459,8 +459,7 @@ mod tests {
 
     #[test]
     fn test_copy_blobs_basic() -> Result<()> {
-        let source = TempDir::new().unwrap();
-        let target = TempDir::new().unwrap();
+        let (source, target) = temp_merge_source_target();
 
         let source_store = BlobStore::open(source.path())?;
         source_store.put(&test_blob("one"))?;
@@ -477,8 +476,7 @@ mod tests {
 
     #[test]
     fn test_copy_blobs_with_tag() -> Result<()> {
-        let source = TempDir::new().unwrap();
-        let target = TempDir::new().unwrap();
+        let (source, target) = temp_merge_source_target();
 
         let source_store = BlobStore::open(source.path())?;
         source_store.put(&test_blob("tagged entry"))?;
@@ -499,8 +497,7 @@ mod tests {
 
     #[test]
     fn test_copy_blobs_dry_run() -> Result<()> {
-        let source = TempDir::new().unwrap();
-        let target = TempDir::new().unwrap();
+        let (source, target) = temp_merge_source_target();
 
         let source_store = BlobStore::open(source.path())?;
         source_store.put(&test_blob("dry"))?;
@@ -516,8 +513,7 @@ mod tests {
 
     #[test]
     fn test_copy_blobs_deduplicates() -> Result<()> {
-        let source = TempDir::new().unwrap();
-        let target = TempDir::new().unwrap();
+        let (source, target) = temp_merge_source_target();
 
         let source_store = BlobStore::open(source.path())?;
         source_store.put(&test_blob("shared"))?;

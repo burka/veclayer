@@ -1,6 +1,6 @@
 {
   "statistics": {
-    "detectionDate": "2026-04-01T21:46:38.938Z",
+    "detectionDate": "2026-04-01T21:53:34.749Z",
     "formats": {
       "rust": {
         "sources": {
@@ -509,14 +509,14 @@
             "newClones": 0
           },
           "src/commands/merge.rs": {
-            "lines": 534,
-            "tokens": 5140,
+            "lines": 530,
+            "tokens": 4980,
             "sources": 1,
-            "clones": 15,
-            "duplicatedLines": 114,
-            "duplicatedTokens": 1339,
-            "percentage": 21.35,
-            "percentageTokens": 26.05,
+            "clones": 7,
+            "duplicatedLines": 68,
+            "duplicatedTokens": 669,
+            "percentage": 12.83,
+            "percentageTokens": 13.43,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -846,28 +846,28 @@
           }
         },
         "total": {
-          "lines": 24598,
-          "tokens": 207386,
+          "lines": 24594,
+          "tokens": 207226,
           "sources": 70,
-          "clones": 45,
-          "duplicatedLines": 329,
-          "duplicatedTokens": 3903,
-          "percentage": 1.34,
-          "percentageTokens": 1.88,
+          "clones": 41,
+          "duplicatedLines": 306,
+          "duplicatedTokens": 3568,
+          "percentage": 1.24,
+          "percentageTokens": 1.72,
           "newDuplicatedLines": 0,
           "newClones": 0
         }
       }
     },
     "total": {
-      "lines": 24598,
-      "tokens": 207386,
+      "lines": 24594,
+      "tokens": 207226,
       "sources": 70,
-      "clones": 45,
-      "duplicatedLines": 329,
-      "duplicatedTokens": 3903,
-      "percentage": 1.34,
-      "percentageTokens": 1.88,
+      "clones": 41,
+      "duplicatedLines": 306,
+      "duplicatedTokens": 3568,
+      "percentage": 1.24,
+      "percentageTokens": 1.72,
       "newDuplicatedLines": 0,
       "newClones": 0
     }
@@ -1672,68 +1672,32 @@
       "tokens": 0,
       "firstFile": {
         "name": "src/commands/merge.rs",
-        "start": 341,
-        "end": 354,
+        "start": 344,
+        "end": 357,
         "startLoc": {
-          "line": 341,
+          "line": 344,
           "column": 9,
-          "position": 3140
+          "position": 3127
         },
         "endLoc": {
-          "line": 354,
+          "line": 357,
           "column": 15,
-          "position": 3249
+          "position": 3236
         }
       },
       "secondFile": {
         "name": "src/commands/merge.rs",
-        "start": 322,
-        "end": 335,
+        "start": 326,
+        "end": 339,
         "startLoc": {
-          "line": 322,
-          "column": 7,
-          "position": 2938
-        },
-        "endLoc": {
-          "line": 335,
-          "column": 60,
-          "position": 3047
-        }
-      }
-    },
-    {
-      "format": "rust",
-      "lines": 9,
-      "fragment": "() -> Result<()> {\n        let source = TempDir::new().unwrap();\n        let target = TempDir::new().unwrap();\n\n        seed_blob_store(source.path(), &[\"alpha\", \"beta\"]);\n\n        let opts = MergeOptions {\n            force: true,\n            dry_run",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/commands/merge.rs",
-        "start": 355,
-        "end": 363,
-        "startLoc": {
-          "line": 355,
-          "column": 34,
-          "position": 3257
-        },
-        "endLoc": {
-          "line": 363,
-          "column": 8,
-          "position": 3349
-        }
-      },
-      "secondFile": {
-        "name": "src/commands/merge.rs",
-        "start": 318,
-        "end": 326,
-        "startLoc": {
-          "line": 318,
-          "column": 35,
-          "position": 2870
-        },
-        "endLoc": {
           "line": 326,
-          "column": 3,
-          "position": 2962
+          "column": 7,
+          "position": 2946
+        },
+        "endLoc": {
+          "line": 339,
+          "column": 60,
+          "position": 3055
         }
       }
     },
@@ -1744,68 +1708,32 @@
       "tokens": 0,
       "firstFile": {
         "name": "src/commands/merge.rs",
-        "start": 363,
-        "end": 369,
+        "start": 365,
+        "end": 371,
         "startLoc": {
-          "line": 363,
+          "line": 365,
           "column": 8,
-          "position": 3350
+          "position": 3316
         },
         "endLoc": {
-          "line": 369,
+          "line": 371,
           "column": 2,
-          "position": 3425
+          "position": 3391
         }
       },
       "secondFile": {
         "name": "src/commands/merge.rs",
-        "start": 325,
-        "end": 331,
+        "start": 329,
+        "end": 335,
         "startLoc": {
-          "line": 325,
+          "line": 329,
           "column": 6,
-          "position": 2956
+          "position": 2964
         },
         "endLoc": {
-          "line": 331,
+          "line": 335,
           "column": 2,
-          "position": 3031
-        }
-      }
-    },
-    {
-      "format": "rust",
-      "lines": 6,
-      "fragment": "() -> Result<()> {\n        let source = TempDir::new().unwrap();\n        let target = TempDir::new().unwrap();\n\n        let source_store = BlobStore::open(source.path())?;\n        source_store.put(&test_blob(\"tagged entry\"",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/commands/merge.rs",
-        "start": 479,
-        "end": 484,
-        "startLoc": {
-          "line": 479,
-          "column": 25,
-          "position": 4474
-        },
-        "endLoc": {
-          "line": 484,
-          "column": 15,
-          "position": 4555
-        }
-      },
-      "secondFile": {
-        "name": "src/commands/merge.rs",
-        "start": 461,
-        "end": 466,
-        "startLoc": {
-          "line": 461,
-          "column": 22,
-          "position": 4263
-        },
-        "endLoc": {
-          "line": 466,
-          "column": 6,
-          "position": 4344
+          "position": 3039
         }
       }
     },
@@ -1816,104 +1744,32 @@
       "tokens": 0,
       "firstFile": {
         "name": "src/commands/merge.rs",
-        "start": 488,
-        "end": 496,
+        "start": 486,
+        "end": 494,
         "startLoc": {
-          "line": 488,
+          "line": 486,
           "column": 2,
-          "position": 4621
+          "position": 4503
         },
         "endLoc": {
-          "line": 496,
+          "line": 494,
           "column": 15,
-          "position": 4707
+          "position": 4589
         }
       },
       "secondFile": {
         "name": "src/commands/merge.rs",
-        "start": 385,
-        "end": 393,
+        "start": 386,
+        "end": 394,
         "startLoc": {
-          "line": 385,
+          "line": 386,
           "column": 7,
-          "position": 3586
+          "position": 3531
         },
         "endLoc": {
-          "line": 393,
+          "line": 394,
           "column": 20,
-          "position": 3672
-        }
-      }
-    },
-    {
-      "format": "rust",
-      "lines": 6,
-      "fragment": "() -> Result<()> {\n        let source = TempDir::new().unwrap();\n        let target = TempDir::new().unwrap();\n\n        let source_store = BlobStore::open(source.path())?;\n        source_store.put(&test_blob(\"dry\"",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/commands/merge.rs",
-        "start": 501,
-        "end": 506,
-        "startLoc": {
-          "line": 501,
-          "column": 24,
-          "position": 4734
-        },
-        "endLoc": {
-          "line": 506,
-          "column": 6,
-          "position": 4815
-        }
-      },
-      "secondFile": {
-        "name": "src/commands/merge.rs",
-        "start": 461,
-        "end": 466,
-        "startLoc": {
-          "line": 461,
-          "column": 22,
-          "position": 4263
-        },
-        "endLoc": {
-          "line": 466,
-          "column": 6,
-          "position": 4344
-        }
-      }
-    },
-    {
-      "format": "rust",
-      "lines": 6,
-      "fragment": "() -> Result<()> {\n        let source = TempDir::new().unwrap();\n        let target = TempDir::new().unwrap();\n\n        let source_store = BlobStore::open(source.path())?;\n        source_store.put(&test_blob(\"shared\"",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/commands/merge.rs",
-        "start": 518,
-        "end": 523,
-        "startLoc": {
-          "line": 518,
-          "column": 29,
-          "position": 4931
-        },
-        "endLoc": {
-          "line": 523,
-          "column": 9,
-          "position": 5012
-        }
-      },
-      "secondFile": {
-        "name": "src/commands/merge.rs",
-        "start": 461,
-        "end": 466,
-        "startLoc": {
-          "line": 461,
-          "column": 22,
-          "position": 4263
-        },
-        "endLoc": {
-          "line": 466,
-          "column": 6,
-          "position": 4344
+          "position": 3617
         }
       }
     },
