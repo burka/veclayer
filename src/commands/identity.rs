@@ -5,6 +5,7 @@ use std::path::Path;
 
 use owo_colors::{OwoColorize, Stream};
 
+use crate::commands::auth::{prompt_passphrase, resolve_passphrase_for_read};
 use crate::crypto::{keypair, keystore};
 use crate::Result;
 
@@ -127,26 +128,6 @@ fn resolve_passphrase_for_write() -> Result<String> {
 
     eprintln!("Warning: stdin is not a terminal — using empty passphrase for identity keystore.");
     Ok(String::new())
-}
-
-/// Resolve passphrase for reading (show/load): prompts once when interactive.
-fn resolve_passphrase_for_read() -> Result<String> {
-    if let Ok(pass) = std::env::var("VECLAYER_PASSPHRASE") {
-        return Ok(pass);
-    }
-
-    if io::stdin().is_terminal() {
-        return prompt_passphrase("Enter passphrase: ");
-    }
-
-    Ok(String::new())
-}
-
-/// Print `prompt` to stderr and read a passphrase without echoing input.
-fn prompt_passphrase(prompt: &str) -> Result<String> {
-    eprint!("{prompt}");
-    io::stderr().flush()?;
-    rpassword::read_password().map_err(crate::Error::Io)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

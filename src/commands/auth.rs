@@ -145,7 +145,7 @@ pub(crate) async fn auth_token_with_passphrase(
 
     let passphrase = match passphrase {
         Some(p) => p.to_string(),
-        None => resolve_passphrase()?,
+        None => resolve_passphrase_for_read()?,
     };
 
     let signing_key =
@@ -382,7 +382,8 @@ fn format_expiry(remaining_secs: u64) -> String {
     }
 }
 
-fn resolve_passphrase() -> Result<String> {
+/// Resolve passphrase for reading: checks env var, then prompts once if interactive.
+pub(crate) fn resolve_passphrase_for_read() -> Result<String> {
     if let Ok(pass) = std::env::var("VECLAYER_PASSPHRASE") {
         return Ok(pass);
     }
@@ -392,7 +393,8 @@ fn resolve_passphrase() -> Result<String> {
     Ok(String::new())
 }
 
-fn prompt_passphrase(prompt: &str) -> Result<String> {
+/// Print `prompt` to stderr and read a passphrase without echoing input.
+pub(crate) fn prompt_passphrase(prompt: &str) -> Result<String> {
     eprint!("{prompt}");
     use std::io::Write;
     io::stderr().flush()?;
