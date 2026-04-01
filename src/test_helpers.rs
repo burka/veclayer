@@ -63,13 +63,9 @@ pub(crate) async fn test_store_with_chunks(
     std::path::PathBuf,
     tempfile::TempDir,
 ) {
-    let dir = tempfile::tempdir().unwrap();
-    let data_dir = dir.path().to_path_buf();
-    let store = crate::store::StoreBackend::open(&data_dir, 384, false)
-        .await
-        .unwrap();
+    let (store, data_dir, dir) = test_store_setup("full", 384).await;
     store.insert_chunks(chunks).await.unwrap();
-    (std::sync::Arc::new(store), data_dir, dir)
+    (store, data_dir, dir)
 }
 
 /// Open a test metadata store, returning (store, data_dir, temp_dir_guard).
@@ -82,11 +78,30 @@ pub(crate) async fn test_store_meta(
     std::path::PathBuf,
     tempfile::TempDir,
 ) {
+    let (store, data_dir, dir) = test_store_setup("metadata", 384).await;
+    (store, data_dir, dir)
+}
+
+/// Shared tempdir + store open helper. kind is "full" or "metadata".
+async fn test_store_setup(
+    kind: &str,
+    dimension: usize,
+) -> (
+    std::sync::Arc<crate::store::StoreBackend>,
+    std::path::PathBuf,
+    tempfile::TempDir,
+) {
     let dir = tempfile::tempdir().unwrap();
     let data_dir = dir.path().to_path_buf();
-    let store = crate::store::StoreBackend::open_metadata(&data_dir, false)
-        .await
-        .unwrap();
+    let store = match kind {
+        "full" => crate::store::StoreBackend::open(&data_dir, dimension, false)
+            .await
+            .unwrap(),
+        "metadata" => crate::store::StoreBackend::open_metadata(&data_dir, false)
+            .await
+            .unwrap(),
+        _ => unreachable!(),
+    };
     (std::sync::Arc::new(store), data_dir, dir)
 }
 
