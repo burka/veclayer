@@ -272,6 +272,14 @@ mod tests {
         Ok(BlobStore::open(target)?)
     }
 
+    /// Open target store and return (store, first blob).
+    fn open_first_blob(target: &Path) -> Result<(BlobStore, crate::entry::StoredBlob)> {
+        let store = BlobStore::open(target)?;
+        let hash = store.iter_hashes().next().unwrap()?;
+        let blob = store.get(&hash)?.unwrap();
+        Ok((store, blob))
+    }
+
     #[test]
     fn test_same_directory_detects_identical_paths() {
         let dir = TempDir::new().unwrap();
@@ -381,9 +389,7 @@ mod tests {
         };
         merge(target.path(), source.path(), &opts).await?;
 
-        let target_store = BlobStore::open(target.path())?;
-        let hash = target_store.iter_hashes().next().unwrap()?;
-        let blob = target_store.get(&hash)?.unwrap();
+        let (_target_store, blob) = open_first_blob(target.path())?;
         assert!(
             blob.entry
                 .perspectives
@@ -481,9 +487,7 @@ mod tests {
         let (new, _dup) = copy_blobs(&source_store, target.path(), false, &tag)?;
         assert_eq!(new, 1);
 
-        let target_store = BlobStore::open(target.path())?;
-        let hash = target_store.iter_hashes().next().unwrap()?;
-        let blob = target_store.get(&hash)?.unwrap();
+        let (_, blob) = open_first_blob(target.path())?;
         assert!(blob
             .entry
             .perspectives
