@@ -262,6 +262,16 @@ mod tests {
         (source, target)
     }
 
+    /// Run merge with force=true and reopen the target store.
+    async fn run_merge_with_force(source: &Path, target: &Path) -> Result<BlobStore> {
+        let opts = MergeOptions {
+            force: true,
+            ..Default::default()
+        };
+        merge(target, source, &opts).await?;
+        Ok(BlobStore::open(target)?)
+    }
+
     #[test]
     fn test_same_directory_detects_identical_paths() {
         let dir = TempDir::new().unwrap();
@@ -322,16 +332,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_merge_copies_blobs_with_force() -> Result<()> {
         let (source, target) = temp_merge_source_target();
-
         seed_blob_store(source.path(), &["alpha", "beta"]);
 
-        let opts = MergeOptions {
-            force: true,
-            ..Default::default()
-        };
-        merge(target.path(), source.path(), &opts).await?;
-
-        let target_store = BlobStore::open(target.path())?;
+        let target_store = run_merge_with_force(source.path(), target.path()).await?;
         assert_eq!(target_store.count()?, 2);
         Ok(())
     }
@@ -339,17 +342,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_merge_skips_duplicates() -> Result<()> {
         let (source, target) = temp_merge_source_target();
-
         seed_blob_store(source.path(), &["shared", "unique"]);
         seed_blob_store(target.path(), &["shared"]);
 
-        let opts = MergeOptions {
-            force: true,
-            ..Default::default()
-        };
-        merge(target.path(), source.path(), &opts).await?;
-
-        let target_store = BlobStore::open(target.path())?;
+        let target_store = run_merge_with_force(source.path(), target.path()).await?;
         assert_eq!(target_store.count()?, 2);
         Ok(())
     }
