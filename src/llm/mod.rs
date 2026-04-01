@@ -44,6 +44,23 @@ impl Message {
             content: content.into(),
         }
     }
+
+    /// Convert a slice of messages to the JSON array format used by most LLM APIs.
+    pub fn to_json_values(messages: &[Message]) -> Vec<serde_json::Value> {
+        messages
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "role": match m.role {
+                        Role::System => "system",
+                        Role::User => "user",
+                        Role::Assistant => "assistant",
+                    },
+                    "content": m.content,
+                })
+            })
+            .collect()
+    }
 }
 
 /// Trait for LLM text generation.

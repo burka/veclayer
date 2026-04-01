@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use reqwest::Client;
 
-use super::{LlmConfig, LlmProvider, Message, Role};
+use super::{LlmConfig, LlmProvider, Message};
 
 pub struct OpenAiLlm {
     client: Client,
@@ -37,19 +37,7 @@ impl OpenAiLlm {
 
 impl LlmProvider for OpenAiLlm {
     async fn complete(&self, messages: &[Message]) -> crate::Result<String> {
-        let msgs: Vec<serde_json::Value> = messages
-            .iter()
-            .map(|m| {
-                serde_json::json!({
-                    "role": match m.role {
-                        Role::System => "system",
-                        Role::User => "user",
-                        Role::Assistant => "assistant",
-                    },
-                    "content": m.content,
-                })
-            })
-            .collect();
+        let msgs = Message::to_json_values(messages);
 
         let resp = self
             .client
