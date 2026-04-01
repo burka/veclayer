@@ -1,6 +1,6 @@
 {
   "statistics": {
-    "detectionDate": "2026-04-01T22:01:57.485Z",
+    "detectionDate": "2026-04-01T22:05:21.479Z",
     "formats": {
       "rust": {
         "sources": {
@@ -725,14 +725,14 @@
             "newClones": 0
           },
           "src/perspective.rs": {
-            "lines": 455,
-            "tokens": 4280,
+            "lines": 441,
+            "tokens": 4261,
             "sources": 1,
-            "clones": 4,
-            "duplicatedLines": 28,
-            "duplicatedTokens": 306,
-            "percentage": 6.15,
-            "percentageTokens": 7.15,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -846,28 +846,28 @@
           }
         },
         "total": {
-          "lines": 24595,
-          "tokens": 207167,
+          "lines": 24581,
+          "tokens": 207148,
           "sources": 70,
-          "clones": 38,
-          "duplicatedLines": 271,
-          "duplicatedTokens": 3206,
-          "percentage": 1.1,
-          "percentageTokens": 1.55,
+          "clones": 36,
+          "duplicatedLines": 257,
+          "duplicatedTokens": 3053,
+          "percentage": 1.05,
+          "percentageTokens": 1.47,
           "newDuplicatedLines": 0,
           "newClones": 0
         }
       }
     },
     "total": {
-      "lines": 24595,
-      "tokens": 207167,
+      "lines": 24581,
+      "tokens": 207148,
       "sources": 70,
-      "clones": 38,
-      "duplicatedLines": 271,
-      "duplicatedTokens": 3206,
-      "percentage": 1.1,
-      "percentageTokens": 1.55,
+      "clones": 36,
+      "duplicatedLines": 257,
+      "duplicatedTokens": 3053,
+      "percentage": 1.05,
+      "percentageTokens": 1.47,
       "newDuplicatedLines": 0,
       "newClones": 0
     }
@@ -2094,78 +2094,6 @@
           "line": 68,
           "column": 5,
           "position": 559
-        }
-      }
-    },
-    {
-      "format": "rust",
-      "lines": 8,
-      "fragment": "() {\n        let target_dir = TempDir::new().unwrap();\n        let source_dir = TempDir::new().unwrap();\n\n        init(target_dir.path()).unwrap();\n        init(source_dir.path()).unwrap();\n\n        // Add same custom to both",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/perspective.rs",
-        "start": 417,
-        "end": 424,
-        "startLoc": {
-          "line": 417,
-          "column": 33,
-          "position": 3900
-        },
-        "endLoc": {
-          "line": 424,
-          "column": 27,
-          "position": 3976
-        }
-      },
-      "secondFile": {
-        "name": "src/perspective.rs",
-        "start": 392,
-        "end": 399,
-        "startLoc": {
-          "line": 392,
-          "column": 28,
-          "position": 3650
-        },
-        "endLoc": {
-          "line": 399,
-          "column": 38,
-          "position": 3726
-        }
-      }
-    },
-    {
-      "format": "rust",
-      "lines": 8,
-      "fragment": "add(\n            source_dir.path(),\n            Perspective::new(\"emotions\", \"Emotions\", \"Feelings\"),\n        )\n        .unwrap();\n\n        let (added, skipped) = merge_from(target_dir.path(), source_dir.path()).unwrap();\n        assert_eq!(added, 0",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/perspective.rs",
-        "start": 430,
-        "end": 437,
-        "startLoc": {
-          "line": 430,
-          "column": 9,
-          "position": 4017
-        },
-        "endLoc": {
-          "line": 437,
-          "column": 2,
-          "position": 4094
-        }
-      },
-      "secondFile": {
-        "name": "src/perspective.rs",
-        "start": 400,
-        "end": 407,
-        "startLoc": {
-          "line": 400,
-          "column": 9,
-          "position": 3729
-        },
-        "endLoc": {
-          "line": 407,
-          "column": 2,
-          "position": 3806
         }
       }
     },

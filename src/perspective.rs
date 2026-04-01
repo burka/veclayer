@@ -233,6 +233,15 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// Create two initialized temp directories for merge tests: (target, source).
+    fn temp_perspective_pair() -> ((TempDir, std::path::PathBuf), (TempDir, std::path::PathBuf)) {
+        let target = TempDir::new().unwrap();
+        let source = TempDir::new().unwrap();
+        init(target.path()).unwrap();
+        init(source.path()).unwrap();
+        ((target, target.path().to_path_buf()), (source, source.path().to_path_buf()))
+    }
+
     #[test]
     fn test_defaults_count() {
         assert_eq!(defaults().len(), 7);
@@ -390,66 +399,43 @@ mod tests {
 
     #[test]
     fn test_merge_from_adds_custom() {
-        let target_dir = TempDir::new().unwrap();
-        let source_dir = TempDir::new().unwrap();
-
-        init(target_dir.path()).unwrap();
-        init(source_dir.path()).unwrap();
+        let ((_target_dir, target_path), (_source_dir, source_path)) = temp_perspective_pair();
 
         // Add a custom perspective to source
-        add(
-            source_dir.path(),
-            Perspective::new("emotions", "Emotions", "Feelings"),
-        )
-        .unwrap();
+        add(&source_path, Perspective::new("emotions", "Emotions", "Feelings")).unwrap();
 
-        let (added, skipped) = merge_from(target_dir.path(), source_dir.path()).unwrap();
+        let (added, skipped) = merge_from(&target_path, &source_path).unwrap();
         assert_eq!(added, 1);
         assert_eq!(skipped, 7); // 7 builtins skipped
 
         // Verify it's in the target
-        let target = load(target_dir.path()).unwrap();
+        let target = load(&target_path).unwrap();
         assert_eq!(target.len(), 8); // 7 defaults + 1 custom
         assert!(target.iter().any(|p| p.id == "emotions"));
     }
 
     #[test]
     fn test_merge_from_skips_duplicates() {
-        let target_dir = TempDir::new().unwrap();
-        let source_dir = TempDir::new().unwrap();
-
-        init(target_dir.path()).unwrap();
-        init(source_dir.path()).unwrap();
+        let ((_target_dir, target_path), (_source_dir, source_path)) = temp_perspective_pair();
 
         // Add same custom to both
-        add(
-            target_dir.path(),
-            Perspective::new("emotions", "Emotions", "Feelings"),
-        )
-        .unwrap();
-        add(
-            source_dir.path(),
-            Perspective::new("emotions", "Emotions", "Feelings"),
-        )
-        .unwrap();
+        add(&target_path, Perspective::new("emotions", "Emotions", "Feelings")).unwrap();
+        add(&source_path, Perspective::new("emotions", "Emotions", "Feelings")).unwrap();
 
-        let (added, skipped) = merge_from(target_dir.path(), source_dir.path()).unwrap();
+        let (added, skipped) = merge_from(&target_path, &source_path).unwrap();
         assert_eq!(added, 0);
         assert_eq!(skipped, 8); // 7 builtins + 1 duplicate
 
-        let target = load(target_dir.path()).unwrap();
+        let target = load(&target_path).unwrap();
         assert_eq!(target.len(), 8); // unchanged
     }
 
     #[test]
     fn test_merge_from_source_no_file() {
-        let target_dir = TempDir::new().unwrap();
-        let source_dir = TempDir::new().unwrap();
-
-        init(target_dir.path()).unwrap();
+        let ((_target_dir, target_path), (_source_dir, source_path)) = temp_perspective_pair();
         // source has no perspectives.json — load returns defaults
 
-        let (added, skipped) = merge_from(target_dir.path(), source_dir.path()).unwrap();
+        let (added, skipped) = merge_from(&target_path, &source_path).unwrap();
         assert_eq!(added, 0);
         assert_eq!(skipped, 7); // all builtins
     }
