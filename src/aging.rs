@@ -437,9 +437,7 @@ mod tests {
         // A stale chunk with visibility "deep_only" should NOT be degraded
         // because degrade_from = ["normal"] by default.
         let chunk = stale_chunk("b", "deep_only");
-        let store = MockStore::new(vec![chunk]);
-        let config = AgingConfig::default();
-        let result = apply_aging(&store, &config).await.unwrap();
+        let result = apply_aging_chunk(&chunk, AgingConfig::default()).await;
         assert_eq!(result.degraded_count, 0);
     }
 
@@ -450,12 +448,11 @@ mod tests {
         // Set protection threshold just below that to verify it's protected.
         let mut chunk = stale_chunk("c", "normal");
         chunk.perspectives = (0..8).map(|i| format!("p{}", i)).collect();
-        let store = MockStore::new(vec![chunk]);
         let config = AgingConfig {
             salience_protection: 0.20, // 0.25 composite > 0.20 threshold → protected
             ..AgingConfig::default()
         };
-        let result = apply_aging(&store, &config).await.unwrap();
+        let result = apply_aging_chunk(&chunk, config).await;
         assert_eq!(result.degraded_count, 0);
     }
 
@@ -473,9 +470,16 @@ mod tests {
         // hour > 0 means recent activity — should not be degraded.
         let mut chunk = stale_chunk("d", "normal");
         chunk.access_profile.hour = 1;
-        let store = MockStore::new(vec![chunk]);
-        let config = AgingConfig::default();
-        let result = apply_aging(&store, &config).await.unwrap();
+        let result = apply_aging_chunk(&chunk, AgingConfig::default()).await;
         assert_eq!(result.degraded_count, 0);
+    }
+
+    /// Apply aging to a single chunk and return the result.
+    async fn apply_aging_chunk(
+        chunk: &crate::HierarchicalChunk,
+        config: AgingConfig,
+    ) -> crate::aging::AgingResult {
+        let store = MockStore::new(vec![chunk.clone()]);
+        apply_aging(&store, &config).await.unwrap()
     }
 }
