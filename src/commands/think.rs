@@ -241,7 +241,7 @@ mod tests {
     #[tokio::test]
     async fn test_think_promote_changes_visibility() -> Result<()> {
         let dir = TempDir::new()?;
-        seed_store(dir.path()).await;
+        let _store = seed_store(dir.path()).await;
 
         think_promote(dir.path(), "aaa111", "always").await?;
 
@@ -254,7 +254,7 @@ mod tests {
     #[tokio::test]
     async fn test_think_promote_resolves_prefix() -> Result<()> {
         let dir = TempDir::new()?;
-        seed_store(dir.path()).await;
+        let _store = seed_store(dir.path()).await;
 
         think_promote(dir.path(), "aaa", "always").await?;
 
@@ -276,7 +276,7 @@ mod tests {
     #[tokio::test]
     async fn test_think_demote_changes_visibility() -> Result<()> {
         let dir = TempDir::new()?;
-        seed_store(dir.path()).await;
+        let _store = seed_store(dir.path()).await;
 
         think_demote(dir.path(), "aaa111", "deep_only").await?;
 
@@ -289,7 +289,7 @@ mod tests {
     #[tokio::test]
     async fn test_think_relate_adds_forward_relation() -> Result<()> {
         let dir = TempDir::new()?;
-        seed_store(dir.path()).await;
+        let _store = seed_store(dir.path()).await;
 
         think_relate(dir.path(), "aaa111", "bbb222", "derived_from").await?;
 
@@ -304,7 +304,7 @@ mod tests {
     #[tokio::test]
     async fn test_think_relate_bidirectional_for_related_to() -> Result<()> {
         let dir = TempDir::new()?;
-        seed_store(dir.path()).await;
+        let _store = seed_store(dir.path()).await;
 
         think_relate(dir.path(), "aaa111", "bbb222", "related_to").await?;
 
@@ -324,7 +324,7 @@ mod tests {
     #[tokio::test]
     async fn test_think_relate_no_backward_for_derived_from() -> Result<()> {
         let dir = TempDir::new()?;
-        seed_store(dir.path()).await;
+        let _store = seed_store(dir.path()).await;
 
         think_relate(dir.path(), "aaa111", "bbb222", "derived_from").await?;
 

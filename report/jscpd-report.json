@@ -1,6 +1,6 @@
 {
   "statistics": {
-    "detectionDate": "2026-04-01T22:05:21.479Z",
+    "detectionDate": "2026-04-01T22:09:18.133Z",
     "formats": {
       "rust": {
         "sources": {
@@ -414,13 +414,13 @@
           },
           "src/commands/think.rs": {
             "lines": 373,
-            "tokens": 3590,
+            "tokens": 3626,
             "sources": 1,
             "clones": 6,
             "duplicatedLines": 42,
-            "duplicatedTokens": 522,
+            "duplicatedTokens": 534,
             "percentage": 11.26,
-            "percentageTokens": 14.54,
+            "percentageTokens": 14.73,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -847,13 +847,13 @@
         },
         "total": {
           "lines": 24581,
-          "tokens": 207148,
+          "tokens": 207184,
           "sources": 70,
           "clones": 36,
           "duplicatedLines": 257,
-          "duplicatedTokens": 3053,
+          "duplicatedTokens": 3059,
           "percentage": 1.05,
-          "percentageTokens": 1.47,
+          "percentageTokens": 1.48,
           "newDuplicatedLines": 0,
           "newClones": 0
         }
@@ -861,13 +861,13 @@
     },
     "total": {
       "lines": 24581,
-      "tokens": 207148,
+      "tokens": 207184,
       "sources": 70,
       "clones": 36,
       "duplicatedLines": 257,
-      "duplicatedTokens": 3053,
+      "duplicatedTokens": 3059,
       "percentage": 1.05,
-      "percentageTokens": 1.47,
+      "percentageTokens": 1.48,
       "newDuplicatedLines": 0,
       "newClones": 0
     }
@@ -1461,12 +1461,12 @@
         "startLoc": {
           "line": 259,
           "column": 6,
-          "position": 2305
+          "position": 2317
         },
         "endLoc": {
           "line": 268,
           "column": 29,
-          "position": 2391
+          "position": 2403
         }
       },
       "secondFile": {
@@ -1476,12 +1476,12 @@
         "startLoc": {
           "line": 246,
           "column": 9,
-          "position": 2164
+          "position": 2170
         },
         "endLoc": {
           "line": 255,
           "column": 35,
-          "position": 2250
+          "position": 2256
         }
       }
     },
@@ -1497,12 +1497,12 @@
         "startLoc": {
           "line": 309,
           "column": 13,
-          "position": 2862
+          "position": 2892
         },
         "endLoc": {
           "line": 314,
           "column": 13,
-          "position": 2943
+          "position": 2973
         }
       },
       "secondFile": {
@@ -1512,19 +1512,19 @@
         "startLoc": {
           "line": 294,
           "column": 15,
-          "position": 2680
+          "position": 2704
         },
         "endLoc": {
           "line": 299,
           "column": 15,
-          "position": 2761
+          "position": 2785
         }
       }
     },
     {
       "format": "rust",
       "lines": 8,
-      "fragment": "() -> Result<()> {\n        let dir = TempDir::new()?;\n        seed_store(dir.path()).await;\n\n        think_relate(dir.path(), \"aaa111\", \"bbb222\", \"derived_from\").await?;\n\n        let store = StoreBackend::open_metadata(dir.path(), false).await?;\n        let target",
+      "fragment": "() -> Result<()> {\n        let dir = TempDir::new()?;\n        let _store = seed_store(dir.path()).await;\n\n        think_relate(dir.path(), \"aaa111\", \"bbb222\", \"derived_from\").await?;\n\n        let store = StoreBackend::open_metadata(dir.path(), false).await?;\n        let target",
       "tokens": 0,
       "firstFile": {
         "name": "src/commands/think.rs",
@@ -1533,12 +1533,12 @@
         "startLoc": {
           "line": 325,
           "column": 47,
-          "position": 3056
+          "position": 3086
         },
         "endLoc": {
           "line": 332,
           "column": 7,
-          "position": 3150
+          "position": 3186
         }
       },
       "secondFile": {
@@ -1548,12 +1548,12 @@
         "startLoc": {
           "line": 290,
           "column": 40,
-          "position": 2620
+          "position": 2638
         },
         "endLoc": {
           "line": 297,
           "column": 7,
-          "position": 2714
+          "position": 2738
         }
       }
     },
