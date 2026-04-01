@@ -2,6 +2,9 @@
 ///
 /// This module is compiled only when running tests.
 
+#[cfg(test)]
+use crate::store::VectorStore;
+
 /// Returns the embedding dimension that Config::new() would resolve.
 /// Uses the real config resolution so tests match production behavior.
 #[cfg(test)]
@@ -45,4 +48,21 @@ pub(crate) fn make_test_chunk_dim(
         impression_hint: None,
         impression_strength: 1.0,
     }
+}
+
+/// Open a test store and insert the given chunks, returning (store, temp_dir_guard).
+///
+/// The caller must keep the returned guard alive for the lifetime of the store.
+/// Using `let (store, _guard) = test_store_with_chunks(...).await;` is the
+/// idiomatic way to ensure the directory isn't deleted while the store is in use.
+#[cfg(test)]
+pub(crate) async fn test_store_with_chunks(
+    chunks: Vec<crate::HierarchicalChunk>,
+) -> (std::sync::Arc<crate::store::StoreBackend>, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = crate::store::StoreBackend::open(dir.path(), 384, false)
+        .await
+        .unwrap();
+    store.insert_chunks(chunks).await.unwrap();
+    (std::sync::Arc::new(store), dir)
 }

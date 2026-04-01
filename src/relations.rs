@@ -146,7 +146,7 @@ pub async fn process_relations(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::make_test_chunk;
+    use crate::test_helpers::{make_test_chunk, test_store_with_chunks};
 
     // --- validate_relation_kind ---
 
@@ -185,13 +185,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_supersedes_demotes_and_inverses() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = StoreBackend::open(dir.path(), 384, false).await.unwrap();
-        let store = Arc::new(store);
-
-        let target = make_test_chunk("aaaa000000000000", "old content");
-        let source = make_test_chunk("bbbb000000000000", "new content");
-        store.insert_chunks(vec![target, source]).await.unwrap();
+        let (store, _dir) = test_store_with_chunks(vec![
+            make_test_chunk("aaaa000000000000", "old content"),
+            make_test_chunk("bbbb000000000000", "new content"),
+        ])
+        .await;
 
         let relations = vec![RawRelation {
             kind: "supersedes".to_string(),
@@ -215,13 +213,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_related_to_bidirectional() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = StoreBackend::open(dir.path(), 384, false).await.unwrap();
-        let store = Arc::new(store);
-
-        let a = make_test_chunk("cccc000000000000", "alpha");
-        let b = make_test_chunk("dddd000000000000", "beta");
-        store.insert_chunks(vec![a, b]).await.unwrap();
+        let (store, _dir) = test_store_with_chunks(vec![
+            make_test_chunk("cccc000000000000", "alpha"),
+            make_test_chunk("dddd000000000000", "beta"),
+        ])
+        .await;
 
         let relations = vec![RawRelation {
             kind: "related_to".to_string(),
@@ -252,13 +248,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_derived_from_forward_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = StoreBackend::open(dir.path(), 384, false).await.unwrap();
-        let store = Arc::new(store);
-
-        let target = make_test_chunk("eeee000000000000", "original");
-        let source = make_test_chunk("ffff000000000000", "derived");
-        store.insert_chunks(vec![target, source]).await.unwrap();
+        let (store, _dir) = test_store_with_chunks(vec![
+            make_test_chunk("eeee000000000000", "original"),
+            make_test_chunk("ffff000000000000", "derived"),
+        ])
+        .await;
 
         let relations = vec![RawRelation {
             kind: "derived_from".to_string(),
@@ -287,13 +281,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_custom_kind_forward_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = StoreBackend::open(dir.path(), 384, false).await.unwrap();
-        let store = Arc::new(store);
-
-        let a = make_test_chunk("1111000000000000", "source");
-        let b = make_test_chunk("2222000000000000", "target");
-        store.insert_chunks(vec![a, b]).await.unwrap();
+        let (store, _dir) = test_store_with_chunks(vec![
+            make_test_chunk("1111000000000000", "source"),
+            make_test_chunk("2222000000000000", "target"),
+        ])
+        .await;
 
         let relations = vec![RawRelation {
             kind: "contradicts".to_string(),
