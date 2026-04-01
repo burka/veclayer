@@ -1,6 +1,6 @@
 {
   "statistics": {
-    "detectionDate": "2026-04-01T21:53:34.749Z",
+    "detectionDate": "2026-04-01T21:59:11.664Z",
     "formats": {
       "rust": {
         "sources": {
@@ -389,8 +389,8 @@
             "newClones": 0
           },
           "src/crypto/keypair.rs": {
-            "lines": 131,
-            "tokens": 1075,
+            "lines": 132,
+            "tokens": 1082,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -521,14 +521,14 @@
             "newClones": 0
           },
           "src/commands/identity.rs": {
-            "lines": 315,
-            "tokens": 2429,
+            "lines": 304,
+            "tokens": 2338,
             "sources": 1,
-            "clones": 1,
-            "duplicatedLines": 16,
-            "duplicatedTokens": 151,
-            "percentage": 5.08,
-            "percentageTokens": 6.22,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -545,14 +545,14 @@
             "newClones": 0
           },
           "src/commands/auth.rs": {
-            "lines": 740,
-            "tokens": 6199,
+            "lines": 753,
+            "tokens": 6274,
             "sources": 1,
-            "clones": 2,
-            "duplicatedLines": 23,
-            "duplicatedTokens": 230,
-            "percentage": 3.11,
-            "percentageTokens": 3.71,
+            "clones": 1,
+            "duplicatedLines": 7,
+            "duplicatedTokens": 79,
+            "percentage": 0.93,
+            "percentageTokens": 1.26,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -846,28 +846,28 @@
           }
         },
         "total": {
-          "lines": 24594,
-          "tokens": 207226,
+          "lines": 24597,
+          "tokens": 207217,
           "sources": 70,
-          "clones": 41,
-          "duplicatedLines": 306,
-          "duplicatedTokens": 3568,
-          "percentage": 1.24,
-          "percentageTokens": 1.72,
+          "clones": 40,
+          "duplicatedLines": 290,
+          "duplicatedTokens": 3417,
+          "percentage": 1.18,
+          "percentageTokens": 1.65,
           "newDuplicatedLines": 0,
           "newClones": 0
         }
       }
     },
     "total": {
-      "lines": 24594,
-      "tokens": 207226,
+      "lines": 24597,
+      "tokens": 207217,
       "sources": 70,
-      "clones": 41,
-      "duplicatedLines": 306,
-      "duplicatedTokens": 3568,
-      "percentage": 1.24,
-      "percentageTokens": 1.72,
+      "clones": 40,
+      "duplicatedLines": 290,
+      "duplicatedTokens": 3417,
+      "percentage": 1.18,
+      "percentageTokens": 1.65,
       "newDuplicatedLines": 0,
       "newClones": 0
     }
@@ -1775,42 +1775,6 @@
     },
     {
       "format": "rust",
-      "lines": 17,
-      "fragment": ",\n    passphrase: Option<&str>,\n) -> Result<()> {\n    let path = keystore::keystore_path(data_dir);\n    if !keystore::exists(&path) {\n        return Err(crate::Error::NotFound(\n            \"No identity found. Run `veclayer identity init` first.\".to_string(),\n        ));\n    }\n\n    let passphrase = match passphrase {\n        Some(p) => p.to_string(),\n        None => resolve_passphrase_for_read()?,\n    };\n\n    let signing_key =\n        keystore::load(&passphrase, &path).",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/commands/auth.rs",
-        "start": 136,
-        "end": 152,
-        "startLoc": {
-          "line": 136,
-          "column": 2,
-          "position": 1147
-        },
-        "endLoc": {
-          "line": 152,
-          "column": 2,
-          "position": 1298
-        }
-      },
-      "secondFile": {
-        "name": "src/commands/identity.rs",
-        "start": 73,
-        "end": 88,
-        "startLoc": {
-          "line": 73,
-          "column": 5,
-          "position": 533
-        },
-        "endLoc": {
-          "line": 88,
-          "column": 2,
-          "position": 683
-        }
-      }
-    },
-    {
-      "format": "rust",
       "lines": 7,
       "fragment": ".to_string()];\n        let split: Vec<String> = raw\n            .iter()\n            .flat_map(|p| p.split(',').map(|s| s.trim().to_string()))\n            .filter(|s| !s.is_empty())\n            .collect();\n        assert_eq!(split, vec![\"decisions\", \"knowledge\"]",
       "tokens": 0,
@@ -2047,17 +2011,17 @@
       },
       "secondFile": {
         "name": "src/commands/auth.rs",
-        "start": 544,
-        "end": 553,
+        "start": 557,
+        "end": 566,
         "startLoc": {
-          "line": 544,
+          "line": 557,
           "column": 30,
-          "position": 4718
+          "position": 4793
         },
         "endLoc": {
-          "line": 553,
+          "line": 566,
           "column": 57,
-          "position": 4800
+          "position": 4875
         }
       }
     },

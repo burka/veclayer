@@ -5,7 +5,7 @@ use std::path::Path;
 
 use owo_colors::{OwoColorize, Stream};
 
-use crate::commands::auth::{prompt_passphrase, resolve_passphrase_for_read};
+use crate::commands::auth::prompt_passphrase;
 use crate::crypto::{keypair, keystore};
 use crate::Result;
 
@@ -73,21 +73,10 @@ pub(crate) async fn identity_show_with_passphrase(
     data_dir: &Path,
     passphrase: Option<&str>,
 ) -> Result<()> {
-    let path = keystore::keystore_path(data_dir);
-
-    if !keystore::exists(&path) {
-        return Err(crate::Error::NotFound(
-            "No identity found. Run `veclayer identity init` first.".to_string(),
-        ));
-    }
-
-    let passphrase = match passphrase {
-        Some(p) => p.to_string(),
-        None => resolve_passphrase_for_read()?,
-    };
-    let signing_key = keystore::load(&passphrase, &path)?;
+    let signing_key = crate::commands::auth::load_signing_key_with_passphrase(data_dir, passphrase)?;
     let verifying_key = signing_key.verifying_key();
     let did = keypair::to_did(&verifying_key);
+    let path = keystore::keystore_path(data_dir);
     let pubkey_hex: String = verifying_key
         .as_bytes()
         .iter()

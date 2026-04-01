@@ -5,7 +5,8 @@
 //! The identifier is constructed by prepending the multicodec prefix `[0xed, 0x01]`
 //! to the 32-byte raw public key and encoding the result as base58-btc with a `z` prefix.
 
-use ed25519_dalek::{SigningKey, VerifyingKey};
+pub use ed25519_dalek::SigningKey;
+pub use ed25519_dalek::VerifyingKey;
 use rand_core::OsRng;
 
 use super::CryptoError;

@@ -114,6 +114,32 @@ pub fn parse_duration_secs(s: &str) -> Result<u64> {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Shared identity loading
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Load the signing key from the keystore at `data_dir`, prompting for passphrase
+/// if `passphrase` is None.
+///
+/// Returns the loaded key or an error if the keystore does not exist, the
+/// passphrase is wrong, or the keystore is corrupted.
+pub(crate) fn load_signing_key_with_passphrase(
+    data_dir: &Path,
+    passphrase: Option<&str>,
+) -> Result<crate::crypto::keypair::SigningKey> {
+    let path = keystore::keystore_path(data_dir);
+    if !keystore::exists(&path) {
+        return Err(crate::Error::NotFound(
+            "No identity found. Run `veclayer identity init` first.".to_string(),
+        ));
+    }
+    let passphrase = match passphrase {
+        Some(p) => p.to_string(),
+        None => resolve_passphrase_for_read()?,
+    };
+    keystore::load(&passphrase, &path).map_err(|e| crate::Error::Crypto(e.to_string()))
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // auth token
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -136,20 +162,7 @@ pub(crate) async fn auth_token_with_passphrase(
     audience: Option<&str>,
     passphrase: Option<&str>,
 ) -> Result<()> {
-    let path = keystore::keystore_path(data_dir);
-    if !keystore::exists(&path) {
-        return Err(crate::Error::NotFound(
-            "No identity found. Run `veclayer identity init` first.".to_string(),
-        ));
-    }
-
-    let passphrase = match passphrase {
-        Some(p) => p.to_string(),
-        None => resolve_passphrase_for_read()?,
-    };
-
-    let signing_key =
-        keystore::load(&passphrase, &path).map_err(|e| crate::Error::Crypto(e.to_string()))?;
+    let signing_key = load_signing_key_with_passphrase(data_dir, passphrase)?;
 
     let cap: Capability = capability
         .parse()
