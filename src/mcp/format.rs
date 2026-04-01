@@ -411,6 +411,19 @@ mod tests {
         }
     }
 
+    /// Wrap a chunk in a SearchResultResponse with default score/relevance and
+    /// format it via format_recall.
+    fn fmt_recall(chunk: ChunkResponse) -> String {
+        let results = vec![SearchResultResponse {
+            chunk,
+            score: 0.5,
+            relevance: "strong".to_string(),
+            hierarchy_path: vec![],
+            children: vec![],
+        }];
+        format_recall(Some("q"), &results)
+    }
+
     #[test]
     fn recall_empty() {
         let out = format_recall(Some("test"), &[]);
@@ -482,14 +495,7 @@ mod tests {
     fn perspectives_shown_in_recall() {
         let mut chunk = make_chunk("abc1234deadbeef", "Content", Some("Title"));
         chunk.perspectives = vec!["decisions".to_string(), "learnings".to_string()];
-        let results = vec![SearchResultResponse {
-            chunk,
-            score: 0.5,
-            relevance: "strong".to_string(),
-            hierarchy_path: vec![],
-            children: vec![],
-        }];
-        let out = format_recall(Some("q"), &results);
+        let out = fmt_recall(chunk);
         assert!(out.contains("> `abc1234` · decisions, learnings · 0.50"));
     }
 
@@ -536,14 +542,8 @@ mod tests {
 
     #[test]
     fn recall_no_breadcrumbs_when_path_empty() {
-        let results = vec![SearchResultResponse {
-            chunk: make_chunk("abc1234deadbeef", "Content", Some("Title")),
-            score: 0.5,
-            relevance: "strong".to_string(),
-            hierarchy_path: vec![],
-            children: vec![],
-        }];
-        let out = format_recall(Some("q"), &results);
+        let chunk = make_chunk("abc1234deadbeef", "Content", Some("Title"));
+        let out = fmt_recall(chunk);
         assert!(!out.contains("›")); // No breadcrumb separator
     }
 
@@ -600,14 +600,7 @@ mod tests {
     fn recall_embedding_pending_shown() {
         let mut chunk = make_chunk("abc1234deadbeef", "Content", Some("Title"));
         chunk.embedding_pending = true;
-        let results = vec![SearchResultResponse {
-            chunk,
-            score: 0.5,
-            relevance: "strong".to_string(),
-            hierarchy_path: vec![],
-            children: vec![],
-        }];
-        let out = format_recall(Some("q"), &results);
+        let out = fmt_recall(chunk);
         assert!(out.contains("embedding pending"));
     }
 
@@ -615,14 +608,7 @@ mod tests {
     fn recall_embedding_not_pending_hidden() {
         let chunk = make_chunk("abc1234deadbeef", "Content", Some("Title"));
         // embedding_pending defaults to false in make_chunk
-        let results = vec![SearchResultResponse {
-            chunk,
-            score: 0.5,
-            relevance: "strong".to_string(),
-            hierarchy_path: vec![],
-            children: vec![],
-        }];
-        let out = format_recall(Some("q"), &results);
+        let out = fmt_recall(chunk);
         assert!(!out.contains("embedding pending"));
     }
 
@@ -638,14 +624,7 @@ mod tests {
     fn recall_result_uses_first_line_as_title_when_no_heading() {
         let mut chunk = make_chunk("abc1234deadbeef", "First line\nSecond line", None);
         chunk.heading = None;
-        let results = vec![SearchResultResponse {
-            chunk,
-            score: 0.5,
-            relevance: "strong".to_string(),
-            hierarchy_path: vec![],
-            children: vec![],
-        }];
-        let out = format_recall(Some("q"), &results);
+        let out = fmt_recall(chunk);
         assert!(out.contains("### 1. First line (strong)"));
     }
 
@@ -653,14 +632,7 @@ mod tests {
     fn recall_source_file_shown_for_non_agent_files() {
         let mut chunk = make_chunk("abc1234deadbeef", "Content", Some("Title"));
         chunk.source_file = "docs/design.md".to_string();
-        let results = vec![SearchResultResponse {
-            chunk,
-            score: 0.5,
-            relevance: "strong".to_string(),
-            hierarchy_path: vec![],
-            children: vec![],
-        }];
-        let out = format_recall(Some("q"), &results);
+        let out = fmt_recall(chunk);
         assert!(out.contains("docs/design.md"));
     }
 
@@ -668,14 +640,7 @@ mod tests {
     fn recall_inline_source_file_omitted() {
         let mut chunk = make_chunk("abc1234deadbeef", "Content", Some("Title"));
         chunk.source_file = "[inline]".to_string();
-        let results = vec![SearchResultResponse {
-            chunk,
-            score: 0.5,
-            relevance: "strong".to_string(),
-            hierarchy_path: vec![],
-            children: vec![],
-        }];
-        let out = format_recall(Some("q"), &results);
+        let out = fmt_recall(chunk);
         assert!(!out.contains("[inline]"));
     }
 
@@ -708,28 +673,14 @@ mod tests {
     fn recall_entry_type_shown_for_non_raw() {
         let mut chunk = make_chunk("abc1234deadbeef", "Content", Some("Title"));
         chunk.entry_type = "summary".to_string();
-        let results = vec![SearchResultResponse {
-            chunk,
-            score: 0.5,
-            relevance: "strong".to_string(),
-            hierarchy_path: vec![],
-            children: vec![],
-        }];
-        let out = format_recall(Some("q"), &results);
+        let out = fmt_recall(chunk);
         assert!(out.contains("summary"));
     }
 
     #[test]
     fn recall_raw_entry_type_omitted_from_metadata() {
         let chunk = make_chunk("abc1234deadbeef", "Content", Some("Title"));
-        let results = vec![SearchResultResponse {
-            chunk,
-            score: 0.5,
-            relevance: "strong".to_string(),
-            hierarchy_path: vec![],
-            children: vec![],
-        }];
-        let out = format_recall(Some("q"), &results);
+        let out = fmt_recall(chunk);
         // "· raw" should NOT appear as a separate token in the metadata
         assert!(!out.contains("· raw\n") && !out.contains("· raw ·"));
     }
@@ -982,14 +933,7 @@ mod tests {
     fn recall_uses_untitled_for_blank_content() {
         let mut chunk = make_chunk("abc1234deadbeef", "\n\n  \n", None);
         chunk.heading = None;
-        let results = vec![SearchResultResponse {
-            chunk,
-            score: 0.5,
-            relevance: "strong".to_string(),
-            hierarchy_path: vec![],
-            children: vec![],
-        }];
-        let out = format_recall(Some("q"), &results);
+        let out = fmt_recall(chunk);
         assert!(out.contains("(untitled)"));
     }
 }
