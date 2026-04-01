@@ -535,6 +535,30 @@ fn is_remote_git_url(storage: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chunk::{ChunkLevel, HierarchicalChunk};
+
+    /// Create a test chunk with the given perspectives.
+    fn test_chunk_with_perspectives(perspectives: Vec<String>) -> HierarchicalChunk {
+        HierarchicalChunk::new(
+            "content".to_string(),
+            ChunkLevel::H1,
+            None,
+            String::new(),
+            "src.md".to_string(),
+        )
+        .with_perspectives(perspectives)
+    }
+
+    /// Create a plain test chunk with no perspectives.
+    fn test_chunk() -> HierarchicalChunk {
+        HierarchicalChunk::new(
+            "content".to_string(),
+            ChunkLevel::H1,
+            None,
+            String::new(),
+            "src.md".to_string(),
+        )
+    }
 
     #[test]
     fn test_is_remote_git_url_ssh() {
@@ -560,15 +584,7 @@ mod tests {
 
     #[test]
     fn test_migrate_filters_accepts_no_filter() {
-        use crate::chunk::{ChunkLevel, HierarchicalChunk};
-        let chunk = HierarchicalChunk::new(
-            "content".to_string(),
-            ChunkLevel::H1,
-            None,
-            String::new(),
-            "src.md".to_string(),
-        )
-        .with_perspectives(vec!["decisions".to_string()]);
+        let chunk = test_chunk_with_perspectives(vec!["decisions".to_string()]);
 
         let filters = MigrateFilters::default();
         assert!(filters.accepts(&chunk));
@@ -576,15 +592,7 @@ mod tests {
 
     #[test]
     fn test_migrate_filters_perspective_include() {
-        use crate::chunk::{ChunkLevel, HierarchicalChunk};
-        let chunk = HierarchicalChunk::new(
-            "content".to_string(),
-            ChunkLevel::H1,
-            None,
-            String::new(),
-            "src.md".to_string(),
-        )
-        .with_perspectives(vec!["decisions".to_string()]);
+        let chunk = test_chunk_with_perspectives(vec!["decisions".to_string()]);
 
         let filters = MigrateFilters {
             perspectives: vec!["decisions".to_string()],
@@ -601,15 +609,7 @@ mod tests {
 
     #[test]
     fn test_migrate_filters_perspective_exclude() {
-        use crate::chunk::{ChunkLevel, HierarchicalChunk};
-        let chunk = HierarchicalChunk::new(
-            "content".to_string(),
-            ChunkLevel::H1,
-            None,
-            String::new(),
-            "src.md".to_string(),
-        )
-        .with_perspectives(vec!["decisions".to_string()]);
+        let chunk = test_chunk_with_perspectives(vec!["decisions".to_string()]);
 
         let filters = MigrateFilters {
             exclude_perspective: Some("decisions".to_string()),
@@ -626,14 +626,7 @@ mod tests {
 
     #[test]
     fn test_migrate_filters_since() {
-        use crate::chunk::{ChunkLevel, HierarchicalChunk};
-        let mut chunk = HierarchicalChunk::new(
-            "content".to_string(),
-            ChunkLevel::H1,
-            None,
-            String::new(),
-            "src.md".to_string(),
-        );
+        let mut chunk = test_chunk();
         chunk.access_profile.created_at = 1_000_000;
 
         let filters = MigrateFilters {
