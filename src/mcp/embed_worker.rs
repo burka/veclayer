@@ -121,13 +121,13 @@ mod tests {
 
     #[test]
     fn eta_seconds_one_batch_equals_single_batch_cost() {
-        let expected = 1 * (POLL_INTERVAL_BUSY.as_secs() + EMBED_TIME_SECS);
+        let expected = POLL_INTERVAL_BUSY.as_secs() + EMBED_TIME_SECS;
         assert_eq!(eta_seconds(1), expected);
     }
 
     #[test]
     fn eta_seconds_exactly_one_full_batch() {
-        let expected = 1 * (POLL_INTERVAL_BUSY.as_secs() + EMBED_TIME_SECS);
+        let expected = POLL_INTERVAL_BUSY.as_secs() + EMBED_TIME_SECS;
         assert_eq!(eta_seconds(BATCH_SIZE), expected);
     }
 
@@ -158,7 +158,9 @@ mod tests {
 
     #[test]
     fn batch_size_constant_is_positive() {
-        assert!(BATCH_SIZE > 0);
+        const {
+            assert!(BATCH_SIZE > 0);
+        }
     }
 
     #[test]

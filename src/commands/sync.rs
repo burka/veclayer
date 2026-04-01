@@ -273,14 +273,13 @@ pub struct MigrateFilters {
 impl MigrateFilters {
     /// Return `true` if `entry` passes all active filters.
     pub fn accepts(&self, entry: &crate::HierarchicalChunk) -> bool {
-        if !self.perspectives.is_empty() {
-            if !self
+        if !self.perspectives.is_empty()
+            && !self
                 .perspectives
                 .iter()
                 .any(|p| entry.perspectives.contains(p))
-            {
-                return false;
-            }
+        {
+            return false;
         }
         if let Some(ref ep) = self.exclude_perspective {
             if entry.perspectives.contains(ep) {

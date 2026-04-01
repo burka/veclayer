@@ -150,6 +150,7 @@ mod tests {
 
     struct MockSync;
 
+    #[allow(clippy::manual_async_fn)]
     impl SyncBackend for MockSync {
         fn push(
             &self,
@@ -193,6 +194,7 @@ mod tests {
 
     struct MockResolver;
 
+    #[allow(clippy::manual_async_fn)]
     impl NameResolver for MockResolver {
         fn resolve(
             &self,

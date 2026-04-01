@@ -137,8 +137,8 @@ fn pick_smallest_variant<'a>(candidates: &[&'a String]) -> Option<&'a String> {
 /// from the tag (e.g., `9` from `:9b`, `35` from `:35b-a3b`).
 fn extract_size_from_tag(name: &str) -> u64 {
     match name.split_once(':') {
-        None => 0,                  // untagged → prefer
-        Some((_, "latest")) => 0,   // :latest → prefer
+        None => 0,                // untagged → prefer
+        Some((_, "latest")) => 0, // :latest → prefer
         Some((_, tag)) => {
             // Extract leading digits from the tag
             let digits: String = tag.chars().take_while(|c| c.is_ascii_digit()).collect();

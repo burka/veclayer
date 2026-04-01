@@ -646,8 +646,7 @@ mod tests {
 
     #[test]
     fn app_error_from_generic_domain_error_is_internal() {
-        let domain_err =
-            crate::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "disk full"));
+        let domain_err = crate::Error::Io(std::io::Error::other("disk full"));
         let app_err = AppError::from(domain_err);
         assert_eq!(app_err.status, StatusCode::INTERNAL_SERVER_ERROR);
     }

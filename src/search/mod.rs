@@ -580,13 +580,12 @@ mod tests {
                             return false;
                         }
                     }
-                    if !perspectives.is_empty() {
-                        if !perspectives
+                    if !perspectives.is_empty()
+                        && !perspectives
                             .iter()
                             .any(|p| r.chunk.perspectives.iter().any(|pp| pp == p))
-                        {
-                            return false;
-                        }
+                    {
+                        return false;
                     }
                     true
                 })

@@ -488,8 +488,8 @@ mod tests {
     fn test_collect_files_filters_out_non_markdown_in_dir() -> Result<()> {
         let temp_dir = TempDir::new()?;
         fs::write(temp_dir.path().join("doc.md"), "# doc")?;
-        fs::write(temp_dir.path().join("image.png"), &[0u8; 4])?;
-        fs::write(temp_dir.path().join("archive.zip"), &[0u8; 4])?;
+        fs::write(temp_dir.path().join("image.png"), [0u8; 4])?;
+        fs::write(temp_dir.path().join("archive.zip"), [0u8; 4])?;
         fs::write(temp_dir.path().join("notes.txt"), "plain text")?;
 
         let parser = MarkdownParser::new();
@@ -579,7 +579,7 @@ mod tests {
         // The add() function splits comma-separated perspectives.
         // We test the splitting logic itself by verifying the expected result
         // of what add() does to perspectives before validation.
-        let raw = vec!["decisions,knowledge".to_string(), "learnings".to_string()];
+        let raw = ["decisions,knowledge".to_string(), "learnings".to_string()];
         let split: Vec<String> = raw
             .iter()
             .flat_map(|p| p.split(',').map(|s| s.trim().to_string()))
@@ -590,7 +590,7 @@ mod tests {
 
     #[test]
     fn test_add_options_perspectives_comma_splits_with_spaces() {
-        let raw = vec!["  decisions , knowledge  ".to_string()];
+        let raw = ["  decisions , knowledge  ".to_string()];
         let split: Vec<String> = raw
             .iter()
             .flat_map(|p| p.split(',').map(|s| s.trim().to_string()))
@@ -601,7 +601,7 @@ mod tests {
 
     #[test]
     fn test_add_options_perspectives_empty_after_split_removed() {
-        let raw = vec![",,,".to_string()];
+        let raw = [",,,".to_string()];
         let split: Vec<String> = raw
             .iter()
             .flat_map(|p| p.split(',').map(|s| s.trim().to_string()))
