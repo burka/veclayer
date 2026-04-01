@@ -24,7 +24,6 @@ impl FileLock {
     /// Acquire an exclusive lock on `data_dir`.
     ///
     /// Returns an error immediately if another process already holds the lock.
-    #[cfg(test)]
     pub fn acquire(data_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(data_dir)?;
 
@@ -54,41 +53,31 @@ impl FileLock {
     /// Retries with exponential backoff for up to 2 seconds. Returns a clear
     /// error identifying the lock file if another process holds it too long.
     pub fn acquire_blocking(data_dir: &Path) -> Result<Self> {
-        std::fs::create_dir_all(data_dir)?;
-
-        let lock_path = data_dir.join(LOCK_FILE_NAME);
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)?;
-
         // Retry with backoff: 10ms, 20ms, 40ms, 80ms, 160ms, 320ms, 640ms, 1280ms ≈ 2.5s total
         let mut wait = std::time::Duration::from_millis(10);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
 
         loop {
-            match file.try_lock_exclusive() {
-                Ok(()) => return Ok(Self { _file: file }),
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    if std::time::Instant::now() + wait > deadline {
-                        return Err(Error::store(format!(
-                            "Timed out waiting for write lock on {} — \
-                             another veclayer process may be holding it. \
-                             Check for stale processes: lsof {}",
-                            lock_path.display(),
-                            lock_path.display(),
-                        )));
-                    }
-                    std::thread::sleep(wait);
-                    wait = std::time::Duration::from_millis((wait.as_millis() as u64 * 2).min(320));
-                }
+            match Self::acquire(data_dir) {
+                Ok(lock) => return Ok(lock),
                 Err(e) => {
-                    return Err(Error::store(format!(
-                        "Failed to acquire store lock {}: {}",
-                        lock_path.display(),
-                        e
-                    )));
+                    let is_would_block = e.to_string().contains("Another VecLayer process");
+                    if is_would_block {
+                        if std::time::Instant::now() + wait > deadline {
+                            let lock_path = data_dir.join(LOCK_FILE_NAME);
+                            return Err(Error::store(format!(
+                                "Timed out waiting for write lock on {} — \
+                                 another veclayer process may be holding it. \
+                                 Check for stale processes: lsof {}",
+                                lock_path.display(),
+                                lock_path.display(),
+                            )));
+                        }
+                        std::thread::sleep(wait);
+                        wait = std::time::Duration::from_millis((wait.as_millis() as u64 * 2).min(320));
+                    } else {
+                        return Err(e);
+                    }
                 }
             }
         }

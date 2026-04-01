@@ -1,6 +1,6 @@
 {
   "statistics": {
-    "detectionDate": "2026-04-01T22:09:18.133Z",
+    "detectionDate": "2026-04-01T22:49:11.694Z",
     "formats": {
       "rust": {
         "sources": {
@@ -53,14 +53,14 @@
             "newClones": 0
           },
           "src/store/lock.rs": {
-            "lines": 216,
-            "tokens": 1827,
+            "lines": 205,
+            "tokens": 1732,
             "sources": 1,
-            "clones": 2,
-            "duplicatedLines": 20,
-            "duplicatedTokens": 188,
-            "percentage": 9.26,
-            "percentageTokens": 10.29,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -173,14 +173,14 @@
             "newClones": 0
           },
           "src/mcp/embed_worker.rs": {
-            "lines": 307,
-            "tokens": 2986,
+            "lines": 312,
+            "tokens": 2992,
             "sources": 1,
-            "clones": 6,
-            "duplicatedLines": 30,
-            "duplicatedTokens": 518,
-            "percentage": 9.77,
-            "percentageTokens": 17.35,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -377,14 +377,14 @@
             "newClones": 0
           },
           "src/crypto/keystore.rs": {
-            "lines": 338,
-            "tokens": 3006,
+            "lines": 340,
+            "tokens": 2979,
             "sources": 1,
-            "clones": 4,
-            "duplicatedLines": 22,
-            "duplicatedTokens": 292,
-            "percentage": 6.51,
-            "percentageTokens": 9.71,
+            "clones": 2,
+            "duplicatedLines": 12,
+            "duplicatedTokens": 154,
+            "percentage": 3.53,
+            "percentageTokens": 5.17,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -401,14 +401,14 @@
             "newClones": 0
           },
           "src/crypto/device_flow.rs": {
-            "lines": 552,
-            "tokens": 4255,
+            "lines": 548,
+            "tokens": 4212,
             "sources": 1,
-            "clones": 2,
-            "duplicatedLines": 16,
-            "duplicatedTokens": 184,
-            "percentage": 2.9,
-            "percentageTokens": 4.32,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -425,14 +425,14 @@
             "newClones": 0
           },
           "src/commands/sync.rs": {
-            "lines": 854,
-            "tokens": 6756,
+            "lines": 839,
+            "tokens": 6634,
             "sources": 1,
-            "clones": 2,
-            "duplicatedLines": 16,
-            "duplicatedTokens": 146,
-            "percentage": 1.87,
-            "percentageTokens": 2.16,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -461,14 +461,14 @@
             "newClones": 0
           },
           "src/commands/reflect.rs": {
-            "lines": 431,
-            "tokens": 3601,
+            "lines": 425,
+            "tokens": 3559,
             "sources": 1,
-            "clones": 4,
-            "duplicatedLines": 28,
-            "duplicatedTokens": 296,
-            "percentage": 6.5,
-            "percentageTokens": 8.22,
+            "clones": 2,
+            "duplicatedLines": 12,
+            "duplicatedTokens": 154,
+            "percentage": 2.82,
+            "percentageTokens": 4.33,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -510,13 +510,13 @@
           },
           "src/commands/merge.rs": {
             "lines": 530,
-            "tokens": 4980,
+            "tokens": 5000,
             "sources": 1,
-            "clones": 7,
-            "duplicatedLines": 68,
-            "duplicatedTokens": 669,
-            "percentage": 12.83,
-            "percentageTokens": 13.43,
+            "clones": 1,
+            "duplicatedLines": 14,
+            "duplicatedTokens": 129,
+            "percentage": 2.64,
+            "percentageTokens": 2.58,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -605,14 +605,14 @@
             "newClones": 0
           },
           "src/auth/token_store.rs": {
-            "lines": 649,
-            "tokens": 5033,
+            "lines": 645,
+            "tokens": 5030,
             "sources": 1,
-            "clones": 7,
-            "duplicatedLines": 57,
-            "duplicatedTokens": 619,
-            "percentage": 8.78,
-            "percentageTokens": 12.3,
+            "clones": 3,
+            "duplicatedLines": 17,
+            "duplicatedTokens": 249,
+            "percentage": 2.64,
+            "percentageTokens": 4.95,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -725,8 +725,8 @@
             "newClones": 0
           },
           "src/perspective.rs": {
-            "lines": 441,
-            "tokens": 4261,
+            "lines": 443,
+            "tokens": 4281,
             "sources": 1,
             "clones": 0,
             "duplicatedLines": 0,
@@ -846,28 +846,28 @@
           }
         },
         "total": {
-          "lines": 24581,
-          "tokens": 207184,
+          "lines": 24550,
+          "tokens": 206898,
           "sources": 70,
-          "clones": 36,
-          "duplicatedLines": 257,
-          "duplicatedTokens": 3059,
-          "percentage": 1.05,
-          "percentageTokens": 1.48,
+          "clones": 23,
+          "duplicatedLines": 156,
+          "duplicatedTokens": 1946,
+          "percentage": 0.64,
+          "percentageTokens": 0.94,
           "newDuplicatedLines": 0,
           "newClones": 0
         }
       }
     },
     "total": {
-      "lines": 24581,
-      "tokens": 207184,
+      "lines": 24550,
+      "tokens": 206898,
       "sources": 70,
-      "clones": 36,
-      "duplicatedLines": 257,
-      "duplicatedTokens": 3059,
-      "percentage": 1.05,
-      "percentageTokens": 1.48,
+      "clones": 23,
+      "duplicatedLines": 156,
+      "duplicatedTokens": 1946,
+      "percentage": 0.64,
+      "percentageTokens": 0.94,
       "newDuplicatedLines": 0,
       "newClones": 0
     }
@@ -906,42 +906,6 @@
           "line": 129,
           "column": 2,
           "position": 991
-        }
-      }
-    },
-    {
-      "format": "rust",
-      "lines": 11,
-      "fragment": "(data_dir: &Path) -> Result<Self> {\n        std::fs::create_dir_all(data_dir)?;\n\n        let lock_path = data_dir.join(LOCK_FILE_NAME);\n        let file = OpenOptions::new()\n            .write(true)\n            .create(true)\n            .truncate(false)\n            .open(&lock_path)?;\n\n        // Retry with backoff: 10ms, 20ms, 40ms, 80ms, 160ms, 320ms, 640ms, 1280ms ≈ 2.5s total",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/store/lock.rs",
-        "start": 56,
-        "end": 66,
-        "startLoc": {
-          "line": 56,
-          "column": 17,
-          "position": 375
-        },
-        "endLoc": {
-          "line": 66,
-          "column": 88,
-          "position": 469
-        }
-      },
-      "secondFile": {
-        "name": "src/store/lock.rs",
-        "start": 28,
-        "end": 38,
-        "startLoc": {
-          "line": 28,
-          "column": 8,
-          "position": 124
-        },
-        "endLoc": {
-          "line": 38,
-          "column": 5,
-          "position": 218
         }
       }
     },
@@ -1127,114 +1091,6 @@
     },
     {
       "format": "rust",
-      "lines": 6,
-      "fragment": "() {\n        let dir = tempfile::tempdir().unwrap();\n        let (store, blob_store) = make_store_and_blobs(dir.path()).await;\n        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);\n\n        let mut",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/mcp/embed_worker.rs",
-        "start": 222,
-        "end": 227,
-        "startLoc": {
-          "line": 222,
-          "column": 37,
-          "position": 2035
-        },
-        "endLoc": {
-          "line": 227,
-          "column": 4,
-          "position": 2122
-        }
-      },
-      "secondFile": {
-        "name": "src/mcp/embed_worker.rs",
-        "start": 212,
-        "end": 217,
-        "startLoc": {
-          "line": 212,
-          "column": 39,
-          "position": 1900
-        },
-        "endLoc": {
-          "line": 217,
-          "column": 6,
-          "position": 1987
-        }
-      }
-    },
-    {
-      "format": "rust",
-      "lines": 6,
-      "fragment": "() {\n        let dir = tempfile::tempdir().unwrap();\n        let (store, blob_store) = make_store_and_blobs(dir.path()).await;\n        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);\n\n        // make_test_chunk sets embedding = Some(vec![0.0; 384])",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/mcp/embed_worker.rs",
-        "start": 239,
-        "end": 244,
-        "startLoc": {
-          "line": 239,
-          "column": 44,
-          "position": 2232
-        },
-        "endLoc": {
-          "line": 244,
-          "column": 57,
-          "position": 2317
-        }
-      },
-      "secondFile": {
-        "name": "src/mcp/embed_worker.rs",
-        "start": 212,
-        "end": 217,
-        "startLoc": {
-          "line": 212,
-          "column": 39,
-          "position": 1900
-        },
-        "endLoc": {
-          "line": 217,
-          "column": 4,
-          "position": 1985
-        }
-      }
-    },
-    {
-      "format": "rust",
-      "lines": 6,
-      "fragment": "() {\n        let dir = tempfile::tempdir().unwrap();\n        let (store, blob_store) = make_store_and_blobs(dir.path()).await;\n        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);\n\n        let chunks",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/mcp/embed_worker.rs",
-        "start": 257,
-        "end": 262,
-        "startLoc": {
-          "line": 257,
-          "column": 43,
-          "position": 2433
-        },
-        "endLoc": {
-          "line": 262,
-          "column": 7,
-          "position": 2520
-        }
-      },
-      "secondFile": {
-        "name": "src/mcp/embed_worker.rs",
-        "start": 212,
-        "end": 217,
-        "startLoc": {
-          "line": 212,
-          "column": 39,
-          "position": 1900
-        },
-        "endLoc": {
-          "line": 217,
-          "column": 6,
-          "position": 1987
-        }
-      }
-    },
-    {
-      "format": "rust",
       "lines": 7,
       "fragment": ", e)))?;\n\n        if !resp.status().is_success() {\n            let status = resp.status();\n            let body = resp.text().await.unwrap_or_default();\n            return Err(crate::Error::llm(format!(\n                \"Ollama returned {}: {}\"",
       "tokens": 0,
@@ -1379,78 +1235,6 @@
     },
     {
       "format": "rust",
-      "lines": 6,
-      "fragment": "());\n        fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();\n\n        let err = load(\"pass\", &path).unwrap_err();\n        assert!(\n            matches!(err, CryptoError::Keystore",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/crypto/keystore.rs",
-        "start": 330,
-        "end": 335,
-        "startLoc": {
-          "line": 330,
-          "column": 5,
-          "position": 2920
-        },
-        "endLoc": {
-          "line": 335,
-          "column": 9,
-          "position": 2989
-        }
-      },
-      "secondFile": {
-        "name": "src/crypto/keystore.rs",
-        "start": 302,
-        "end": 307,
-        "startLoc": {
-          "line": 302,
-          "column": 10,
-          "position": 2610
-        },
-        "endLoc": {
-          "line": 307,
-          "column": 12,
-          "position": 2679
-        }
-      }
-    },
-    {
-      "format": "rust",
-      "lines": 9,
-      "fragment": "}))]);\n\n        let config = test_config(\"test\");\n\n        let rt = tokio::runtime::Runtime::new().unwrap();\n        let err = rt\n            .block_on(poll_for_token(&config, \"dev_code\", &http))\n            .unwrap_err();\n        assert!(matches!(err, DeviceFlowError::AccessDenied",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/crypto/device_flow.rs",
-        "start": 543,
-        "end": 551,
-        "startLoc": {
-          "line": 543,
-          "column": 16,
-          "position": 4155
-        },
-        "endLoc": {
-          "line": 551,
-          "column": 13,
-          "position": 4247
-        }
-      },
-      "secondFile": {
-        "name": "src/crypto/device_flow.rs",
-        "start": 530,
-        "end": 538,
-        "startLoc": {
-          "line": 530,
-          "column": 16,
-          "position": 4014
-        },
-        "endLoc": {
-          "line": 538,
-          "column": 12,
-          "position": 4106
-        }
-      }
-    },
-    {
-      "format": "rust",
       "lines": 10,
       "fragment": ", \"always\").await?;\n\n        let store = StoreBackend::open_metadata(dir.path(), false).await?;\n        let entry = store.get_by_id(\"aaa111\").await?.unwrap();\n        assert_eq!(entry.visibility, \"always\");\n        Ok(())\n    }\n\n    #[tokio::test]\n    async fn test_think_promote_not_found",
       "tokens": 0,
@@ -1559,217 +1343,37 @@
     },
     {
       "format": "rust",
-      "lines": 9,
-      "fragment": "() {\n        use crate::chunk::{ChunkLevel, HierarchicalChunk};\n        let chunk = HierarchicalChunk::new(\n            \"content\".to_string(),\n            ChunkLevel::H1,\n            None,\n            String::new(),\n            \"src.md\".to_string(),\n        );",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/commands/sync.rs",
-        "start": 707,
-        "end": 715,
-        "startLoc": {
-          "line": 707,
-          "column": 48,
-          "position": 5574
-        },
-        "endLoc": {
-          "line": 715,
-          "column": 2,
-          "position": 5647
-        }
-      },
-      "secondFile": {
-        "name": "src/commands/sync.rs",
-        "start": 686,
-        "end": 695,
-        "startLoc": {
-          "line": 686,
-          "column": 76,
-          "position": 5404
-        },
-        "endLoc": {
-          "line": 695,
-          "column": 2,
-          "position": 5479
-        }
-      }
-    },
-    {
-      "format": "rust",
-      "lines": 9,
-      "fragment": ")\n        .if_supports_color(Stream::Stdout, |s| s.bold())\n    );\n    println!(\n        \"{}\",\n        \"=\".repeat(60)\n            .if_supports_color(Stream::Stdout, |s| s.dimmed())\n    );\n    for chunk",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/commands/reflect.rs",
-        "start": 131,
-        "end": 139,
-        "startLoc": {
-          "line": 131,
-          "column": 9,
-          "position": 1078
-        },
-        "endLoc": {
-          "line": 139,
-          "column": 6,
-          "position": 1149
-        }
-      },
-      "secondFile": {
-        "name": "src/commands/reflect.rs",
-        "start": 65,
-        "end": 73,
-        "startLoc": {
-          "line": 65,
-          "column": 2,
-          "position": 520
-        },
-        "endLoc": {
-          "line": 73,
-          "column": 2,
-          "position": 591
-        }
-      }
-    },
-    {
-      "format": "rust",
       "lines": 7,
       "fragment": "let store2 = StoreBackend::open_metadata(dir.path(), true).await?;\n        let aging_config = crate::aging::AgingConfig::default();\n        let stale = store2\n            .get_stale_chunks(aging_config.stale_seconds(), 100)\n            .await?;\n\n        let weights",
       "tokens": 0,
       "firstFile": {
         "name": "src/commands/reflect.rs",
-        "start": 322,
-        "end": 328,
+        "start": 316,
+        "end": 322,
         "startLoc": {
-          "line": 322,
+          "line": 316,
           "column": 9,
-          "position": 2783
+          "position": 2741
         },
         "endLoc": {
-          "line": 328,
+          "line": 322,
           "column": 8,
-          "position": 2860
+          "position": 2818
         }
       },
       "secondFile": {
         "name": "src/commands/reflect.rs",
-        "start": 291,
-        "end": 297,
+        "start": 285,
+        "end": 291,
         "startLoc": {
+          "line": 285,
+          "column": 9,
+          "position": 2434
+        },
+        "endLoc": {
           "line": 291,
-          "column": 9,
-          "position": 2476
-        },
-        "endLoc": {
-          "line": 297,
           "column": 16,
-          "position": 2553
-        }
-      }
-    },
-    {
-      "format": "rust",
-      "lines": 14,
-      "fragment": "]);\n\n        let opts = MergeOptions {\n            force: true,\n            ..Default::default()\n        };\n        merge(target.path(), source.path(), &opts).await?;\n\n        let target_store = BlobStore::open(target.path())?;\n        assert_eq!(target_store.count()?, 2);\n        Ok(())\n    }\n\n    #[tokio::test]",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/commands/merge.rs",
-        "start": 344,
-        "end": 357,
-        "startLoc": {
-          "line": 344,
-          "column": 9,
-          "position": 3127
-        },
-        "endLoc": {
-          "line": 357,
-          "column": 15,
-          "position": 3236
-        }
-      },
-      "secondFile": {
-        "name": "src/commands/merge.rs",
-        "start": 326,
-        "end": 339,
-        "startLoc": {
-          "line": 326,
-          "column": 7,
-          "position": 2946
-        },
-        "endLoc": {
-          "line": 339,
-          "column": 60,
-          "position": 3055
-        }
-      }
-    },
-    {
-      "format": "rust",
-      "lines": 7,
-      "fragment": ": true,\n            ..Default::default()\n        };\n        merge(target.path(), source.path(), &opts).await?;\n\n        let target_store = BlobStore::open(target.path())?;\n        assert_eq!(target_store.count()?, 0",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/commands/merge.rs",
-        "start": 365,
-        "end": 371,
-        "startLoc": {
-          "line": 365,
-          "column": 8,
-          "position": 3316
-        },
-        "endLoc": {
-          "line": 371,
-          "column": 2,
-          "position": 3391
-        }
-      },
-      "secondFile": {
-        "name": "src/commands/merge.rs",
-        "start": 329,
-        "end": 335,
-        "startLoc": {
-          "line": 329,
-          "column": 6,
-          "position": 2964
-        },
-        "endLoc": {
-          "line": 335,
-          "column": 2,
-          "position": 3039
-        }
-      }
-    },
-    {
-      "format": "rust",
-      "lines": 9,
-      "fragment": ";\n\n        let target_store = BlobStore::open(target.path())?;\n        let hash = target_store.iter_hashes().next().unwrap()?;\n        let blob = target_store.get(&hash)?.unwrap();\n        assert!(blob\n            .entry\n            .perspectives\n            .contains(&\"project:test\"",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/commands/merge.rs",
-        "start": 486,
-        "end": 494,
-        "startLoc": {
-          "line": 486,
-          "column": 2,
-          "position": 4503
-        },
-        "endLoc": {
-          "line": 494,
-          "column": 15,
-          "position": 4589
-        }
-      },
-      "secondFile": {
-        "name": "src/commands/merge.rs",
-        "start": 386,
-        "end": 394,
-        "startLoc": {
-          "line": 386,
-          "column": 7,
-          "position": 3531
-        },
-        "endLoc": {
-          "line": 394,
-          "column": 20,
-          "position": 3617
+          "position": 2511
         }
       }
     },
@@ -1883,109 +1487,37 @@
     },
     {
       "format": "rust",
-      "lines": 12,
-      "fragment": "(&hash)\n            .ok_or_else(|| Error::not_found(\"refresh token not found\"))?;\n\n        if record.revoked {\n            return Err(Error::InvalidOperation(\"refresh token revoked\".to_owned()));\n        }\n\n        if unix_now() > record.expires_at {\n            return Err(Error::InvalidOperation(\"refresh token expired\".to_owned()));\n        }\n\n        let",
+      "lines": 6,
+      "fragment": ") {\n        let (_dir, mut store) = tmp_store();\n        let client = store.register_client(\"App\", vec![]);\n        let (verifier, challenge) = pkce_pair();\n        let code = create_test_code(&mut store, &client, &challenge);\n        (",
       "tokens": 0,
       "firstFile": {
         "name": "src/auth/token_store.rs",
-        "start": 297,
-        "end": 308,
+        "start": 410,
+        "end": 415,
         "startLoc": {
-          "line": 297,
-          "column": 8,
-          "position": 2182
-        },
-        "endLoc": {
-          "line": 308,
-          "column": 4,
-          "position": 2276
-        }
-      },
-      "secondFile": {
-        "name": "src/auth/token_store.rs",
-        "start": 256,
-        "end": 267,
-        "startLoc": {
-          "line": 256,
-          "column": 4,
-          "position": 1883
-        },
-        "endLoc": {
-          "line": 267,
-          "column": 3,
-          "position": 1977
-        }
-      }
-    },
-    {
-      "format": "rust",
-      "lines": 8,
-      "fragment": "() {\n        let (_dir, mut store) = tmp_store();\n        let client = store.register_client(\"App\", vec![]);\n        let (verifier, challenge) = pkce_pair();\n\n        let code = create_test_code(&mut store, &client, &challenge);\n\n        store",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/auth/token_store.rs",
-        "start": 415,
-        "end": 422,
-        "startLoc": {
-          "line": 415,
-          "column": 25,
+          "line": 410,
+          "column": 7,
           "position": 3179
         },
         "endLoc": {
-          "line": 422,
-          "column": 6,
-          "position": 3267
+          "line": 415,
+          "column": 2,
+          "position": 3264
         }
       },
       "secondFile": {
         "name": "src/auth/token_store.rs",
-        "start": 400,
-        "end": 407,
+        "start": 395,
+        "end": 402,
         "startLoc": {
-          "line": 400,
-          "column": 29,
-          "position": 3008
+          "line": 395,
+          "column": 2,
+          "position": 2993
         },
         "endLoc": {
-          "line": 407,
+          "line": 402,
           "column": 4,
-          "position": 3096
-        }
-      }
-    },
-    {
-      "format": "rust",
-      "lines": 8,
-      "fragment": "() {\n        let (_dir, mut store) = tmp_store();\n        let client = store.register_client(\"App\", vec![]);\n        let (verifier, challenge) = pkce_pair();\n\n        let code = create_test_code(&mut store, &client, &challenge);\n\n        // Force-expire the code.",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/auth/token_store.rs",
-        "start": 431,
-        "end": 438,
-        "startLoc": {
-          "line": 431,
-          "column": 27,
-          "position": 3344
-        },
-        "endLoc": {
-          "line": 438,
-          "column": 26,
-          "position": 3432
-        }
-      },
-      "secondFile": {
-        "name": "src/auth/token_store.rs",
-        "start": 400,
-        "end": 407,
-        "startLoc": {
-          "line": 400,
-          "column": 29,
-          "position": 3008
-        },
-        "endLoc": {
-          "line": 407,
-          "column": 4,
-          "position": 3096
+          "position": 3080
         }
       }
     },
@@ -1996,17 +1528,17 @@
       "tokens": 0,
       "firstFile": {
         "name": "src/auth/token_store.rs",
-        "start": 640,
-        "end": 647,
+        "start": 636,
+        "end": 643,
         "startLoc": {
-          "line": 640,
+          "line": 636,
           "column": 21,
-          "position": 4944
+          "position": 4941
         },
         "endLoc": {
-          "line": 647,
+          "line": 643,
           "column": 33,
-          "position": 5023
+          "position": 5020
         }
       },
       "secondFile": {
