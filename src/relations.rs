@@ -185,7 +185,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_supersedes_demotes_and_inverses() {
-        let (store, _dir) = test_store_with_chunks(vec![
+        let (store, _data_dir, _dir) = test_store_with_chunks(vec![
             make_test_chunk("aaaa000000000000", "old content"),
             make_test_chunk("bbbb000000000000", "new content"),
         ])
@@ -213,7 +213,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_related_to_bidirectional() {
-        let (store, _dir) = test_store_with_chunks(vec![
+        let (store, _data_dir, _dir) = test_store_with_chunks(vec![
             make_test_chunk("cccc000000000000", "alpha"),
             make_test_chunk("dddd000000000000", "beta"),
         ])
@@ -248,7 +248,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_derived_from_forward_only() {
-        let (store, _dir) = test_store_with_chunks(vec![
+        let (store, _data_dir, _dir) = test_store_with_chunks(vec![
             make_test_chunk("eeee000000000000", "original"),
             make_test_chunk("ffff000000000000", "derived"),
         ])
@@ -281,7 +281,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_custom_kind_forward_only() {
-        let (store, _dir) = test_store_with_chunks(vec![
+        let (store, _data_dir, _dir) = test_store_with_chunks(vec![
             make_test_chunk("1111000000000000", "source"),
             make_test_chunk("2222000000000000", "target"),
         ])

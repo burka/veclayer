@@ -379,6 +379,7 @@ fn format_epoch(epoch: i64) -> String {
 #[cfg(all(test, feature = "store-lance"))]
 mod tests {
     use super::*;
+    use crate::test_helpers::{test_store_meta, test_store_with_chunks};
     use tempfile::TempDir;
 
     fn default_embedder_config() -> crate::config::EmbedderConfig {
@@ -607,190 +608,152 @@ mod tests {
 
     #[tokio::test]
     async fn read_hot_returns_no_entries_when_store_empty() {
-        let dir = TempDir::new().unwrap();
-        let store = std::sync::Arc::new(
-            crate::store::StoreBackend::open_metadata(dir.path(), false)
-                .await
-                .unwrap(),
+        let (store, data_dir, _dir) = test_store_meta().await;
+        let text = extract_text(
+            &read(
+                "veclayer://hot",
+                &store,
+                &data_dir,
+                None,
+                None,
+                &default_embedder_config(),
+            )
+            .await
+            .unwrap(),
         );
-        let result = read(
-            "veclayer://hot",
-            &store,
-            dir.path(),
-            None,
-            None,
-            &default_embedder_config(),
-        )
-        .await
-        .unwrap();
-        let text = extract_text(&result);
         assert!(text.contains("No entries"));
     }
 
     #[tokio::test]
     async fn read_hot_returns_entries_when_store_has_data() {
-        let dir = TempDir::new().unwrap();
-        let store = std::sync::Arc::new(
-            crate::store::StoreBackend::open(dir.path(), 384, false)
-                .await
-                .unwrap(),
-        );
-        let mut chunk =
-            crate::test_helpers::make_test_chunk("hotentry001", "Very important decision");
+        let mut chunk = crate::test_helpers::make_test_chunk("hotentry001", "Very important decision");
         chunk.access_profile.record_access();
-        store.insert_chunks(vec![chunk]).await.unwrap();
+        let (store, data_dir, _dir) = test_store_with_chunks(vec![chunk]).await;
 
-        let result = read(
-            "veclayer://hot",
-            &store,
-            dir.path(),
-            None,
-            None,
-            &default_embedder_config(),
-        )
-        .await
-        .unwrap();
-        let text = extract_text(&result);
+        let text = extract_text(
+            &read(
+                "veclayer://hot",
+                &store,
+                &data_dir,
+                None,
+                None,
+                &default_embedder_config(),
+            )
+            .await
+            .unwrap(),
+        );
         assert!(!text.contains("No entries"));
     }
 
     #[tokio::test]
     async fn read_hot_with_project_filter_excludes_unscoped() {
-        let dir = TempDir::new().unwrap();
-        let store = std::sync::Arc::new(
-            crate::store::StoreBackend::open(dir.path(), 384, false)
-                .await
-                .unwrap(),
-        );
-        let mut chunk =
-            crate::test_helpers::make_test_chunk("hotentry002", "Unscoped knowledge entry");
+        let mut chunk = crate::test_helpers::make_test_chunk("hotentry002", "Unscoped knowledge entry");
         chunk.perspectives = vec!["project:other-project".to_string()];
-        store.insert_chunks(vec![chunk]).await.unwrap();
+        let (store, data_dir, _dir) = test_store_with_chunks(vec![chunk]).await;
 
-        let result = read(
-            "veclayer://hot",
-            &store,
-            dir.path(),
-            Some("my-project"),
-            None,
-            &default_embedder_config(),
-        )
-        .await
-        .unwrap();
-        let text = extract_text(&result);
+        let text = extract_text(
+            &read(
+                "veclayer://hot",
+                &store,
+                &data_dir,
+                Some("my-project"),
+                None,
+                &default_embedder_config(),
+            )
+            .await
+            .unwrap(),
+        );
         assert!(text.contains("No entries"));
     }
 
     #[tokio::test]
     async fn read_recent_returns_no_entries_when_store_empty() {
-        let dir = TempDir::new().unwrap();
-        let store = std::sync::Arc::new(
-            crate::store::StoreBackend::open_metadata(dir.path(), false)
-                .await
-                .unwrap(),
+        let (store, data_dir, _dir) = test_store_meta().await;
+        let text = extract_text(
+            &read(
+                "veclayer://recent",
+                &store,
+                &data_dir,
+                None,
+                None,
+                &default_embedder_config(),
+            )
+            .await
+            .unwrap(),
         );
-        let result = read(
-            "veclayer://recent",
-            &store,
-            dir.path(),
-            None,
-            None,
-            &default_embedder_config(),
-        )
-        .await
-        .unwrap();
-        let text = extract_text(&result);
         assert!(text.contains("No entries"));
     }
 
     #[tokio::test]
     async fn read_recent_returns_entries_when_store_has_data() {
-        let dir = TempDir::new().unwrap();
-        let store = std::sync::Arc::new(
-            crate::store::StoreBackend::open(dir.path(), 384, false)
-                .await
-                .unwrap(),
-        );
-        let chunk = crate::test_helpers::make_test_chunk("recententry01", "Recent knowledge entry");
-        store.insert_chunks(vec![chunk]).await.unwrap();
+        let (store, data_dir, _dir) = test_store_with_chunks(vec![
+            crate::test_helpers::make_test_chunk("recententry01", "Recent knowledge entry"),
+        ])
+        .await;
 
-        let result = read(
-            "veclayer://recent",
-            &store,
-            dir.path(),
-            None,
-            None,
-            &default_embedder_config(),
-        )
-        .await
-        .unwrap();
-        let text = extract_text(&result);
+        let text = extract_text(
+            &read(
+                "veclayer://recent",
+                &store,
+                &data_dir,
+                None,
+                None,
+                &default_embedder_config(),
+            )
+            .await
+            .unwrap(),
+        );
         assert!(text.contains("## Recent Entries"));
         assert!(text.contains("entry(ies)"));
     }
 
     #[tokio::test]
     async fn read_recent_with_project_filter_excludes_unscoped() {
-        let dir = TempDir::new().unwrap();
-        let store = std::sync::Arc::new(
-            crate::store::StoreBackend::open(dir.path(), 384, false)
-                .await
-                .unwrap(),
-        );
-        let mut chunk =
-            crate::test_helpers::make_test_chunk("recententry02", "Other project entry");
+        let mut chunk = crate::test_helpers::make_test_chunk("recententry02", "Other project entry");
         chunk.perspectives = vec!["project:other-project".to_string()];
-        store.insert_chunks(vec![chunk]).await.unwrap();
+        let (store, data_dir, _dir) = test_store_with_chunks(vec![chunk]).await;
 
-        let result = read(
-            "veclayer://recent",
-            &store,
-            dir.path(),
-            Some("my-project"),
-            None,
-            &default_embedder_config(),
-        )
-        .await
-        .unwrap();
-        let text = extract_text(&result);
+        let text = extract_text(
+            &read(
+                "veclayer://recent",
+                &store,
+                &data_dir,
+                Some("my-project"),
+                None,
+                &default_embedder_config(),
+            )
+            .await
+            .unwrap(),
+        );
         assert!(text.contains("No entries found"));
     }
 
     #[tokio::test]
     async fn read_identity_returns_no_identity_when_store_empty() {
-        let dir = TempDir::new().unwrap();
-        let store = std::sync::Arc::new(
-            crate::store::StoreBackend::open_metadata(dir.path(), false)
-                .await
-                .unwrap(),
+        let (store, data_dir, _dir) = test_store_meta().await;
+        let text = extract_text(
+            &read(
+                "veclayer://identity",
+                &store,
+                &data_dir,
+                None,
+                None,
+                &default_embedder_config(),
+            )
+            .await
+            .unwrap(),
         );
-        let result = read(
-            "veclayer://identity",
-            &store,
-            dir.path(),
-            None,
-            None,
-            &default_embedder_config(),
-        )
-        .await
-        .unwrap();
-        let text = extract_text(&result);
         // Empty store → no identity data
         assert!(!text.is_empty());
     }
 
     #[tokio::test]
     async fn read_perspective_entries_rejects_unknown_perspective() {
-        let dir = TempDir::new().unwrap();
-        let store = std::sync::Arc::new(
-            crate::store::StoreBackend::open_metadata(dir.path(), false)
-                .await
-                .unwrap(),
-        );
+        let (store, data_dir, _dir) = test_store_meta().await;
         let result = read(
             "veclayer://perspectives/nonexistent_xyz",
             &store,
-            dir.path(),
+            &data_dir,
             None,
             None,
             &default_embedder_config(),
@@ -801,66 +764,51 @@ mod tests {
 
     #[tokio::test]
     async fn read_perspective_entries_accepts_builtin_perspective() {
-        let dir = TempDir::new().unwrap();
-        let store = std::sync::Arc::new(
-            crate::store::StoreBackend::open_metadata(dir.path(), false)
-                .await
-                .unwrap(),
+        let (store, data_dir, _dir) = test_store_meta().await;
+        let text = extract_text(
+            &read(
+                "veclayer://perspectives/decisions",
+                &store,
+                &data_dir,
+                None,
+                None,
+                &default_embedder_config(),
+            )
+            .await
+            .unwrap(),
         );
-        let result = read(
-            "veclayer://perspectives/decisions",
-            &store,
-            dir.path(),
-            None,
-            None,
-            &default_embedder_config(),
-        )
-        .await
-        .unwrap();
-        let text = extract_text(&result);
         assert!(text.contains("## Perspective: decisions"));
     }
 
     #[tokio::test]
     async fn read_perspective_entries_shows_entries() {
-        let dir = TempDir::new().unwrap();
-        let store = std::sync::Arc::new(
-            crate::store::StoreBackend::open(dir.path(), 384, false)
-                .await
-                .unwrap(),
-        );
-        let mut chunk =
-            crate::test_helpers::make_test_chunk("perspentry01", "A decision about databases");
+        let mut chunk = crate::test_helpers::make_test_chunk("perspentry01", "A decision about databases");
         chunk.perspectives = vec!["decisions".to_string()];
-        store.insert_chunks(vec![chunk]).await.unwrap();
+        let (store, data_dir, _dir) = test_store_with_chunks(vec![chunk]).await;
 
-        let result = read(
-            "veclayer://perspectives/decisions",
-            &store,
-            dir.path(),
-            None,
-            None,
-            &default_embedder_config(),
-        )
-        .await
-        .unwrap();
-        let text = extract_text(&result);
+        let text = extract_text(
+            &read(
+                "veclayer://perspectives/decisions",
+                &store,
+                &data_dir,
+                None,
+                None,
+                &default_embedder_config(),
+            )
+            .await
+            .unwrap(),
+        );
         assert!(text.contains("## Perspective: decisions"));
         assert!(text.contains("entry(ies)"));
     }
 
     #[tokio::test]
     async fn read_entry_returns_error_for_unknown_id() {
-        let dir = TempDir::new().unwrap();
-        let store = std::sync::Arc::new(
-            crate::store::StoreBackend::open_metadata(dir.path(), false)
-                .await
-                .unwrap(),
-        );
+        let (store, data_dir, _dir) = test_store_meta().await;
         let result = read(
             "veclayer://entries/nonexistent000",
             &store,
-            dir.path(),
+            &data_dir,
             None,
             None,
             &default_embedder_config(),
@@ -871,26 +819,23 @@ mod tests {
 
     #[tokio::test]
     async fn read_entry_returns_detail_for_known_entry() {
-        let dir = TempDir::new().unwrap();
-        let store = std::sync::Arc::new(
-            crate::store::StoreBackend::open(dir.path(), 384, false)
-                .await
-                .unwrap(),
-        );
-        let chunk = crate::test_helpers::make_test_chunk("abc1230000", "Design decision: use Rust");
-        store.insert_chunks(vec![chunk]).await.unwrap();
+        let (store, data_dir, _dir) = test_store_with_chunks(vec![
+            crate::test_helpers::make_test_chunk("abc1230000", "Design decision: use Rust"),
+        ])
+        .await;
 
-        let result = read(
-            "veclayer://entries/abc1230000",
-            &store,
-            dir.path(),
-            None,
-            None,
-            &default_embedder_config(),
-        )
-        .await
-        .unwrap();
-        let text = extract_text(&result);
+        let text = extract_text(
+            &read(
+                "veclayer://entries/abc1230000",
+                &store,
+                &data_dir,
+                None,
+                None,
+                &default_embedder_config(),
+            )
+            .await
+            .unwrap(),
+        );
         assert!(text.contains("Design decision: use Rust"));
     }
 

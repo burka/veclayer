@@ -50,19 +50,42 @@ pub(crate) fn make_test_chunk_dim(
     }
 }
 
-/// Open a test store and insert the given chunks, returning (store, temp_dir_guard).
+/// Open a test store and insert the given chunks, returning (store, data_dir, temp_dir_guard).
 ///
 /// The caller must keep the returned guard alive for the lifetime of the store.
-/// Using `let (store, _guard) = test_store_with_chunks(...).await;` is the
+/// Using `let (store, _data_dir, _guard) = test_store_with_chunks(...).await;` is the
 /// idiomatic way to ensure the directory isn't deleted while the store is in use.
 #[cfg(test)]
 pub(crate) async fn test_store_with_chunks(
     chunks: Vec<crate::HierarchicalChunk>,
-) -> (std::sync::Arc<crate::store::StoreBackend>, tempfile::TempDir) {
+) -> (
+    std::sync::Arc<crate::store::StoreBackend>,
+    std::path::PathBuf,
+    tempfile::TempDir,
+) {
     let dir = tempfile::tempdir().unwrap();
-    let store = crate::store::StoreBackend::open(dir.path(), 384, false)
+    let data_dir = dir.path().to_path_buf();
+    let store = crate::store::StoreBackend::open(&data_dir, 384, false)
         .await
         .unwrap();
     store.insert_chunks(chunks).await.unwrap();
-    (std::sync::Arc::new(store), dir)
+    (std::sync::Arc::new(store), data_dir, dir)
+}
+
+/// Open a test metadata store, returning (store, data_dir, temp_dir_guard).
+///
+/// For use with read-only store operations that don't require full embeddings.
+#[cfg(test)]
+pub(crate) async fn test_store_meta(
+) -> (
+    std::sync::Arc<crate::store::StoreBackend>,
+    std::path::PathBuf,
+    tempfile::TempDir,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().to_path_buf();
+    let store = crate::store::StoreBackend::open_metadata(&data_dir, false)
+        .await
+        .unwrap();
+    (std::sync::Arc::new(store), data_dir, dir)
 }
