@@ -1,4 +1,4 @@
-//! Three-tier capability model for VecLayer authorization.
+//! Three-tier capability model for `VecLayer` authorization.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +15,7 @@ pub enum Capability {
 
 impl Capability {
     /// Check if this capability is sufficient for the required level.
+    #[must_use]
     pub fn permits(&self, required: Capability) -> bool {
         *self >= required
     }

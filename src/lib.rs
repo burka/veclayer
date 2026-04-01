@@ -19,22 +19,22 @@
 //! ## Feature Flags
 //!
 //! ### Storage backends (at least one required)
-//! - `store-lance`: LanceDB backend with ANN vector search (requires `lancedb`, `arrow-*`, `futures`)
-//! - `store-sqlite`: Lightweight SQLite backend with brute-force cosine similarity (requires `rusqlite`)
+//! - `store-lance`: LanceDB backend with ANN vector search (`requires` `lancedb`, `arrow-*`, `futures`)
+//! - `store-sqlite`: Lightweight SQLite backend with brute-force cosine similarity (`requires` `rusqlite`)
 //!
 //! ### Other features
 //! - `parser`: Enables `DocumentParser` and Markdown parsing (requires `pulldown-cmark`)
 //! - `config`: Enables config file discovery, user config, and `git` module (requires `toml`, `glob`, `directories`, `shellexpand`, `regex`, `serde_yml`, `walkdir`)
 //! - `cli`: Enables the CLI binary, implies `store-lance`, `mcp`, `embedding-local`, `config`, and `parser`
 //! - `mcp`: Enables the MCP server module, implies `config`
-//! - `embedding-local`: Enables local embedding via FastEmbed (ONNX)
+//! - `embedding-local`: Enables local embedding via `FastEmbed` (`ONNX`)
 //! - `llm`: Enables LLM-powered summarization and clustering
 //! - `http`: Enables HTTP REST API, Streamable HTTP MCP transport, and OAuth; implies `auth` and `mcp`
 //! - `auth`: Enables cryptographic identity (Ed25519), JWT tokens, and keystore
 //! - `sync`: Enables cross-store synchronization
 //! - `full`: Enables `cli`, `llm`, `http`, and `auth`
 //!
-//! For lightweight consumers, use `store-sqlite` to avoid ~185 transitive crates from LanceDB:
+//! For lightweight consumers, use `store-sqlite` to avoid ~185 transitive crates from `LanceDB`:
 //! ```toml
 //! veclayer = { version = "0.1", default-features = false, features = ["store-sqlite"] }
 //! ```

@@ -52,6 +52,7 @@ impl Default for AgingConfig {
 
 impl AgingConfig {
     /// Load from the data directory. Returns default if no config exists.
+    #[must_use]
     pub fn load(data_dir: &Path) -> Self {
         let path = data_dir.join(AGING_CONFIG_FILE);
         if path.exists() {
@@ -65,18 +66,22 @@ impl AgingConfig {
     }
 
     /// Save to the data directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or file writing fails.
     pub fn save(&self, data_dir: &Path) -> Result<()> {
         let path = data_dir.join(AGING_CONFIG_FILE);
-        let json = serde_json::to_string_pretty(self).map_err(|e| {
-            crate::Error::config(format!("Failed to serialize aging config: {}", e))
-        })?;
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| crate::Error::config(format!("Failed to serialize aging config: {e}")))?;
         std::fs::write(&path, json)?;
         Ok(())
     }
 
     /// Threshold in seconds.
+    #[must_use]
     pub fn stale_seconds(&self) -> i64 {
-        self.degrade_after_days as i64 * 86_400
+        i64::from(self.degrade_after_days) * 86_400
     }
 }
 
@@ -93,6 +98,10 @@ pub struct AgingResult {
 ///
 /// Salience protection: entries with composite salience >= `salience_protection`
 /// are skipped even when stale, preserving high-value knowledge.
+///
+/// # Errors
+///
+/// Returns an error if store operations fail.
 pub async fn apply_aging<S: VectorStore>(store: &S, config: &AgingConfig) -> Result<AgingResult> {
     let now = now_epoch_secs();
     let cutoff_secs = config.stale_seconds();
@@ -109,10 +118,10 @@ pub async fn apply_aging<S: VectorStore>(store: &S, config: &AgingConfig) -> Res
         }
 
         // Check that the chunk is truly stale (no recent activity)
-        let total_recent = chunk.access_profile.hour as u32
-            + chunk.access_profile.day as u32
-            + chunk.access_profile.week as u32
-            + chunk.access_profile.month as u32;
+        let total_recent = u32::from(chunk.access_profile.hour)
+            + u32::from(chunk.access_profile.day)
+            + u32::from(chunk.access_profile.week)
+            + u32::from(chunk.access_profile.month);
 
         let age_since_roll = now - chunk.access_profile.last_rolled;
 
@@ -121,8 +130,8 @@ pub async fn apply_aging<S: VectorStore>(store: &S, config: &AgingConfig) -> Res
         }
 
         // Salience protection: high-salience entries survive aging
-        let score = salience::compute(chunk, &weights);
-        if score.composite >= config.salience_protection {
+        let salience_score = salience::compute(chunk, &weights);
+        if salience_score.composite >= config.salience_protection {
             continue;
         }
 

@@ -423,10 +423,10 @@ fn build_auth_setup(config: &Config) -> Result<Option<AuthSetup>> {
 
 async fn api_recall(
     State(state): State<AppState>,
-    Extension(cap): Extension<Capability>,
+    Extension(required_capability): Extension<Capability>,
     body: StdResult<Json<RecallInput>, JsonRejection>,
 ) -> StdResult<Json<Vec<SearchResultResponse>>, AppError> {
-    if !cap.permits(Capability::Read) {
+    if !required_capability.permits(Capability::Read) {
         return Err(insufficient(Capability::Read));
     }
     let Json(input) = body?;
@@ -439,10 +439,10 @@ async fn api_recall(
 
 async fn api_focus(
     State(state): State<AppState>,
-    Extension(cap): Extension<Capability>,
+    Extension(required_capability): Extension<Capability>,
     body: StdResult<Json<FocusInput>, JsonRejection>,
 ) -> StdResult<Json<FocusResponse>, AppError> {
-    if !cap.permits(Capability::Read) {
+    if !required_capability.permits(Capability::Read) {
         return Err(insufficient(Capability::Read));
     }
     let Json(input) = body?;
@@ -455,10 +455,10 @@ async fn api_focus(
 
 async fn api_store(
     State(state): State<AppState>,
-    Extension(cap): Extension<Capability>,
+    Extension(required_capability): Extension<Capability>,
     body: StdResult<Json<StoreInput>, JsonRejection>,
 ) -> StdResult<Json<String>, AppError> {
-    if !cap.permits(Capability::Write) {
+    if !required_capability.permits(Capability::Write) {
         return Err(insufficient(Capability::Write));
     }
     let Json(input) = body?;
@@ -477,10 +477,10 @@ async fn api_store(
 
 async fn api_think(
     State(state): State<AppState>,
-    Extension(cap): Extension<Capability>,
+    Extension(required_capability): Extension<Capability>,
     body: StdResult<Json<ThinkInput>, JsonRejection>,
 ) -> StdResult<Json<String>, AppError> {
-    if !cap.permits(Capability::Write) {
+    if !required_capability.permits(Capability::Write) {
         return Err(insufficient(Capability::Write));
     }
     let Json(input) = body?;
@@ -492,10 +492,10 @@ async fn api_think(
 }
 
 async fn api_share(
-    Extension(cap): Extension<Capability>,
+    Extension(required_capability): Extension<Capability>,
     Json(input): Json<ShareInput>,
 ) -> StdResult<Json<serde_json::Value>, AppError> {
-    if !cap.permits(Capability::Write) {
+    if !required_capability.permits(Capability::Write) {
         return Err(insufficient(Capability::Write));
     }
     Ok(Json(tools::build_share_token(input)))
@@ -503,9 +503,9 @@ async fn api_share(
 
 async fn api_stats(
     State(state): State<AppState>,
-    Extension(cap): Extension<Capability>,
+    Extension(required_capability): Extension<Capability>,
 ) -> StdResult<Json<serde_json::Value>, AppError> {
-    if !cap.permits(Capability::Read) {
+    if !required_capability.permits(Capability::Read) {
         return Err(insufficient(Capability::Read));
     }
     let stats = state
@@ -524,9 +524,9 @@ async fn api_stats(
 /// Identity endpoint — mirrors stdio auto-priming on MCP initialize.
 async fn api_identity(
     State(state): State<AppState>,
-    Extension(cap): Extension<Capability>,
+    Extension(required_capability): Extension<Capability>,
 ) -> StdResult<Json<serde_json::Value>, AppError> {
-    if !cap.permits(Capability::Read) {
+    if !required_capability.permits(Capability::Read) {
         return Err(insufficient(Capability::Read));
     }
     let snapshot = crate::identity::compute_identity(
@@ -558,9 +558,9 @@ async fn api_identity(
 /// identity briefing that stdio agents receive on `initialize`.
 async fn api_priming(
     State(state): State<AppState>,
-    Extension(cap): Extension<Capability>,
+    Extension(required_capability): Extension<Capability>,
 ) -> Response {
-    if !cap.permits(Capability::Read) {
+    if !required_capability.permits(Capability::Read) {
         return (StatusCode::FORBIDDEN, "Insufficient permission: need read").into_response();
     }
     match crate::identity::compute_identity(

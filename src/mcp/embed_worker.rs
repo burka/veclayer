@@ -97,9 +97,12 @@ async fn process_batch(
     // Update blob store for each embedded entry
     let embedder_name = embedder.name();
     for (chunk, embedding) in pending.iter().zip(embeddings.into_iter()) {
-        let mut updated = chunk.clone();
-        updated.embedding = Some(embedding);
-        let blob = crate::entry::StoredBlob::from_chunk_and_embedding(&updated, embedder_name);
+        let mut chunk_with_embedding = chunk.clone();
+        chunk_with_embedding.embedding = Some(embedding);
+        let blob = crate::entry::StoredBlob::from_chunk_and_embedding(
+            &chunk_with_embedding,
+            embedder_name,
+        );
         if let Err(e) = blob_store.put(&blob) {
             warn!("Failed to update blob for {}: {e}", chunk.id);
         }

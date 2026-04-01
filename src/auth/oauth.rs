@@ -41,6 +41,7 @@ const DEVICE_CODE_TTL_SECS: u64 = 600;
 ///
 /// Accepts the full server URL (e.g. `http://localhost:8080`) or a bare host.
 /// Matches `localhost`, `127.x.x.x`, and `::1`.
+#[must_use]
 pub fn is_localhost(server_url: &str) -> bool {
     // Strip scheme prefix if present.
     let after_scheme = server_url
@@ -83,6 +84,7 @@ pub fn is_localhost(server_url: &str) -> bool {
 /// Rejected:
 /// - `javascript:`, `data:`, `file:`
 /// - `http://` with a non-localhost host
+#[must_use]
 pub fn validate_redirect_uri(uri: &str) -> bool {
     let lower = uri.to_lowercase();
 
@@ -168,6 +170,10 @@ pub struct PendingDeviceAuth {
 /// ```ignore
 /// let app = build_app(state).merge(oauth_router(oauth_state));
 /// ```
+///
+/// # Panics
+///
+/// Panics if `auto_approve=true` and `server_url` is not a localhost address.
 pub fn oauth_router(state: OAuthState) -> Router {
     if state.auto_approve {
         if !is_localhost(&state.server_url) {
@@ -467,16 +473,13 @@ async fn authorize_get_handler(
     }
 
     let scope_str = params.scope.as_deref().unwrap_or("read");
-    let capability = match scope_str.parse::<Capability>() {
-        Ok(cap) => cap,
-        Err(_) => {
-            return redirect_with_error(
-                &redirect_uri,
-                "invalid_scope",
-                "unknown scope",
-                params.state.as_deref(),
-            );
-        }
+    let Ok(capability) = scope_str.parse::<Capability>() else {
+        return redirect_with_error(
+            &redirect_uri,
+            "invalid_scope",
+            "unknown scope",
+            params.state.as_deref(),
+        );
     };
 
     if state.auto_approve {

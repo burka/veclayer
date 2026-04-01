@@ -22,17 +22,17 @@ use time::{SECS_PER_DAY, SECS_PER_HOUR, SECS_PER_MONTH, SECS_PER_WEEK, SECS_PER_
 /// Inspired by RRDtool: finer buckets roll into coarser ones on a schedule.
 /// Each bucket tracks the number of accesses within its time window.
 ///
-/// Buckets: hour | day | week | month | year | total
+/// Buckets: `hour` | `day` | `week` | `month` | `year` | `total`
 ///
 /// Layout (30 bytes, padded to 32):
-///   created_at:  i64  (8 bytes)
-///   last_rolled: i64  (8 bytes)
-///   hour:        u16  (2 bytes)
-///   day:         u16  (2 bytes)
-///   week:        u16  (2 bytes)
-///   month:       u16  (2 bytes)
-///   year:        u16  (2 bytes)
-///   total:       u32  (4 bytes)
+///   `created_at`:  `i64`  (8 bytes)
+///   `last_rolled`: `i64`  (8 bytes)
+///   `hour`:        `u16`  (2 bytes)
+///   `day`:         `u16`  (2 bytes)
+///   `week`:        `u16`  (2 bytes)
+///   `month`:       `u16`  (2 bytes)
+///   `year`:        `u16`  (2 bytes)
+///   `total`:       `u32`  (4 bytes)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccessProfile {
     pub created_at: i64,
@@ -56,6 +56,7 @@ pub enum RecencyWindow {
 
 impl RecencyWindow {
     /// Parse from string (e.g. "24h", "7d", "30d").
+    #[must_use]
     pub fn from_str_opt(s: &str) -> Option<Self> {
         match s {
             "24h" | "day" => Some(Self::Day),
@@ -230,6 +231,7 @@ impl AccessProfile {
     }
 
     /// Temporal relevancy score in [0.0, 1.0].
+    #[must_use]
     pub fn relevancy_score(&self, recency_window: Option<RecencyWindow>) -> f32 {
         let weights = match recency_window {
             None => RecencyWeights::balanced(),
@@ -238,17 +240,18 @@ impl AccessProfile {
             Some(RecencyWindow::Month) => RecencyWeights::month(),
         };
 
-        let raw = (self.hour as f32) * weights.w_hour
-            + (self.day as f32) * weights.w_day
-            + (self.week as f32) * weights.w_week
-            + (self.month as f32) * weights.w_month
-            + (self.year as f32) * weights.w_year
+        let raw = f32::from(self.hour) * weights.w_hour
+            + f32::from(self.day) * weights.w_day
+            + f32::from(self.week) * weights.w_week
+            + f32::from(self.month) * weights.w_month
+            + f32::from(self.year) * weights.w_year
             + (self.total as f32) * weights.w_total;
 
         (raw / weights.scale).tanh()
     }
 
     /// Seconds since creation.
+    #[must_use]
     pub fn age_seconds(&self) -> i64 {
         now_epoch_secs() - self.created_at
     }
@@ -264,7 +267,9 @@ pub fn now_epoch_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs() as i64
+        .as_secs()
+        .try_into()
+        .unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]

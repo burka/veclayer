@@ -129,7 +129,7 @@ fn days_since_epoch(year: i32, month: u32, day: u32) -> Option<i64> {
     let yoe = y - era * 400;
     let doy = (153 * m + 2) / 5 + day as i64 - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some(era * 146097 + doe - 719468)
+    Some(era * 146_097 + doe - 719_468)
 }
 
 #[cfg(test)]
