@@ -445,6 +445,16 @@ mod tests {
         }
     }
 
+    /// Shared harness for poll error tests: runs poll_for_token and asserts expected error.
+    fn poll_err(http: MockHttpClient, expected: DeviceFlowError) {
+        let config = test_config("test");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let err = rt
+            .block_on(poll_for_token(&config, "dev_code", &http))
+            .unwrap_err();
+        assert!(matches!(err, expected));
+    }
+
     #[test]
     fn test_request_device_authorization_success() {
         let http = MockHttpClient::new(vec![(
@@ -528,26 +538,12 @@ mod tests {
     #[test]
     fn test_poll_for_token_expired() {
         let http = MockHttpClient::new(vec![(200, serde_json::json!({"error": "expired_token"}))]);
-
-        let config = test_config("test");
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let err = rt
-            .block_on(poll_for_token(&config, "dev_code", &http))
-            .unwrap_err();
-        assert!(matches!(err, DeviceFlowError::ExpiredCode));
+        poll_err(http, DeviceFlowError::ExpiredCode);
     }
 
     #[test]
     fn test_poll_for_token_access_denied() {
         let http = MockHttpClient::new(vec![(200, serde_json::json!({"error": "access_denied"}))]);
-
-        let config = test_config("test");
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let err = rt
-            .block_on(poll_for_token(&config, "dev_code", &http))
-            .unwrap_err();
-        assert!(matches!(err, DeviceFlowError::AccessDenied));
+        poll_err(http, DeviceFlowError::AccessDenied);
     }
 }
