@@ -1,6 +1,6 @@
 {
   "statistics": {
-    "detectionDate": "2026-04-01T22:49:11.694Z",
+    "detectionDate": "2026-04-01T22:54:19.735Z",
     "formats": {
       "rust": {
         "sources": {
@@ -545,14 +545,14 @@
             "newClones": 0
           },
           "src/commands/auth.rs": {
-            "lines": 753,
-            "tokens": 6274,
+            "lines": 744,
+            "tokens": 6209,
             "sources": 1,
-            "clones": 1,
-            "duplicatedLines": 7,
-            "duplicatedTokens": 79,
-            "percentage": 0.93,
-            "percentageTokens": 1.26,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -605,14 +605,14 @@
             "newClones": 0
           },
           "src/auth/token_store.rs": {
-            "lines": 645,
-            "tokens": 5030,
+            "lines": 639,
+            "tokens": 4970,
             "sources": 1,
-            "clones": 3,
-            "duplicatedLines": 17,
-            "duplicatedTokens": 249,
-            "percentage": 2.64,
-            "percentageTokens": 4.95,
+            "clones": 2,
+            "duplicatedLines": 10,
+            "duplicatedTokens": 170,
+            "percentage": 1.56,
+            "percentageTokens": 3.42,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -677,14 +677,14 @@
             "newClones": 0
           },
           "src/test_helpers.rs": {
-            "lines": 90,
-            "tokens": 785,
+            "lines": 105,
+            "tokens": 907,
             "sources": 1,
             "clones": 2,
             "duplicatedLines": 14,
             "duplicatedTokens": 198,
-            "percentage": 15.56,
-            "percentageTokens": 25.22,
+            "percentage": 13.33,
+            "percentageTokens": 21.83,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -847,13 +847,13 @@
         },
         "total": {
           "lines": 24550,
-          "tokens": 206898,
+          "tokens": 206895,
           "sources": 70,
-          "clones": 23,
-          "duplicatedLines": 156,
-          "duplicatedTokens": 1946,
-          "percentage": 0.64,
-          "percentageTokens": 0.94,
+          "clones": 22,
+          "duplicatedLines": 149,
+          "duplicatedTokens": 1867,
+          "percentage": 0.61,
+          "percentageTokens": 0.9,
           "newDuplicatedLines": 0,
           "newClones": 0
         }
@@ -861,13 +861,13 @@
     },
     "total": {
       "lines": 24550,
-      "tokens": 206898,
+      "tokens": 206895,
       "sources": 70,
-      "clones": 23,
-      "duplicatedLines": 156,
-      "duplicatedTokens": 1946,
-      "percentage": 0.64,
-      "percentageTokens": 0.94,
+      "clones": 22,
+      "duplicatedLines": 149,
+      "duplicatedTokens": 1867,
+      "percentage": 0.61,
+      "percentageTokens": 0.9,
       "newDuplicatedLines": 0,
       "newClones": 0
     }
@@ -1492,68 +1492,32 @@
       "tokens": 0,
       "firstFile": {
         "name": "src/auth/token_store.rs",
-        "start": 410,
-        "end": 415,
+        "start": 411,
+        "end": 416,
         "startLoc": {
-          "line": 410,
+          "line": 411,
           "column": 7,
-          "position": 3179
+          "position": 3191
         },
         "endLoc": {
-          "line": 415,
+          "line": 416,
           "column": 2,
-          "position": 3264
+          "position": 3276
         }
       },
       "secondFile": {
         "name": "src/auth/token_store.rs",
-        "start": 395,
-        "end": 402,
+        "start": 396,
+        "end": 403,
         "startLoc": {
-          "line": 395,
+          "line": 396,
           "column": 2,
-          "position": 2993
+          "position": 3005
         },
         "endLoc": {
-          "line": 402,
+          "line": 403,
           "column": 4,
-          "position": 3080
-        }
-      }
-    },
-    {
-      "format": "rust",
-      "lines": 8,
-      "fragment": ");\n\n        #[cfg(unix)]\n        {\n            use std::os::unix::fs::MetadataExt;\n            let meta = std::fs::metadata(&path).unwrap();\n            let mode = meta.mode() & 0o777;\n            assert_eq!(mode, 0o600, \"expected 0o600, got 0o{mode:o}\"",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/auth/token_store.rs",
-        "start": 636,
-        "end": 643,
-        "startLoc": {
-          "line": 636,
-          "column": 21,
-          "position": 4941
-        },
-        "endLoc": {
-          "line": 643,
-          "column": 33,
-          "position": 5020
-        }
-      },
-      "secondFile": {
-        "name": "src/commands/auth.rs",
-        "start": 557,
-        "end": 566,
-        "startLoc": {
-          "line": 557,
-          "column": 30,
-          "position": 4793
-        },
-        "endLoc": {
-          "line": 566,
-          "column": 57,
-          "position": 4875
+          "position": 3092
         }
       }
     },

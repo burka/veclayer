@@ -426,6 +426,7 @@ mod tests {
 
     use super::*;
     use crate::crypto::{keypair, keystore};
+    use crate::test_helpers::assert_file_mode_600;
 
     fn temp_data_dir() -> (TempDir, PathBuf) {
         let dir = TempDir::new().unwrap();
@@ -555,17 +556,7 @@ mod tests {
 
         let path = cache_path(&data_dir);
         assert!(path.exists(), "token cache file must exist");
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let meta = std::fs::metadata(&path).unwrap();
-            let mode = meta.mode() & 0o777;
-            assert_eq!(
-                mode, 0o600,
-                "token cache must be owner-only (0o600), got 0o{mode:o}"
-            );
-        }
+        assert_file_mode_600(&path, "token cache");
     }
 
     #[test]

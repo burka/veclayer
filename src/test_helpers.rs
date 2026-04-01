@@ -89,3 +89,18 @@ pub(crate) async fn test_store_meta(
         .unwrap();
     (std::sync::Arc::new(store), data_dir, dir)
 }
+
+/// Assert that a file has unix permission bits 0o600 (owner read/write only).
+#[cfg(unix)]
+#[cfg(test)]
+pub(crate) fn assert_file_mode_600(path: &std::path::Path, context: &str) {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(path).unwrap();
+    let mode = meta.mode() & 0o777;
+    assert_eq!(
+        mode,
+        0o600,
+        "{}: expected 0o600, got 0o{mode:o}",
+        context
+    );
+}

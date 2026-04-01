@@ -344,6 +344,7 @@ fn sha256_hex(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::assert_file_mode_600;
     use tempfile::TempDir;
 
     fn tmp_store() -> (TempDir, TokenStore) {
@@ -634,13 +635,6 @@ mod tests {
         // Confirm the store file exists with restricted permissions.
         let path = dir.path().join("oauth_store.json");
         assert!(path.exists(), "store file missing");
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let meta = std::fs::metadata(&path).unwrap();
-            let mode = meta.mode() & 0o777;
-            assert_eq!(mode, 0o600, "expected 0o600, got 0o{mode:o}");
-        }
+        assert_file_mode_600(&path, "oauth store");
     }
 }
