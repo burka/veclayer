@@ -239,7 +239,9 @@ mod tests {
         let source = TempDir::new().unwrap();
         init(target.path()).unwrap();
         init(source.path()).unwrap();
-        ((target, target.path().to_path_buf()), (source, source.path().to_path_buf()))
+        let target_path = target.path().to_path_buf();
+        let source_path = source.path().to_path_buf();
+        ((target, target_path), (source, source_path))
     }
 
     #[test]
