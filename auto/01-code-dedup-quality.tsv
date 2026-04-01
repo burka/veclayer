@@ -8,3 +8,4 @@ round	timestamp	metric_before	metric_after	delta	status	description	commit
 6	2026-04-01T03:00:00Z	71 clones, 587l/6329t (2.37%)	70 clones, 573l/6193t (2.31%)	-14l, -1 clone, -0.06%	keep	Resources: extract list_filtered_entries helper	4c4dc2b
 7	2026-04-01T03:30:00Z	70 clones, 561l/6018t (2.26%)	62 clones, 489l/5373t (1.98%)	-72l, -8 clones, -0.28%	keep	LLM: extract make_standard_http_client to dedupe reqwest client setup	fb2355f
 8	2026-04-01T04:00:00Z	62 clones, 489l/5373t (1.98%)	61 clones, 479l/5278t (1.94%)	-10l, -1 clone, -0.04%	keep	Resources: extract read_test helper to dedupe TempDir+open_metadata+read pattern	a4c6e1c
+9	2026-04-01T23:17:00Z	61 clones, 479l/5278t (1.94%)	57 clones, 442l/4962t (1.79%)	-37l, -4 clones, -0.15%	keep	Mcp/handler+http: extract impl_tool_context macro to eliminate 13-line clone	3642064

@@ -115,6 +115,19 @@ async fn process_batch(
 mod tests {
     use super::*;
 
+    /// Helper to create pending chunks (embedding = None) for batch processing tests.
+    fn make_pending_chunks(count: usize, prefix: &str) -> Vec<crate::HierarchicalChunk> {
+        (0..count)
+            .map(|i| {
+                let id = format!("{}{:0>width$}", prefix, i, width = 64 - prefix.len());
+                let content = format!("content {i}");
+                let mut chunk = crate::test_helpers::make_test_chunk(&id, &content);
+                chunk.embedding = None;
+                chunk
+            })
+            .collect()
+    }
+
     // ── eta_seconds ──────────────────────────────────────────────────────
 
     #[test]
@@ -246,14 +259,7 @@ mod tests {
         let (store, blob_store) = make_store_and_blobs(dir.path()).await;
         let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
 
-        let chunks: Vec<_> = (0..BATCH_SIZE + 5)
-            .map(|i| {
-                let id = format!("pend{:060}", i);
-                let mut c = crate::test_helpers::make_test_chunk(&id, &format!("content {i}"));
-                c.embedding = None;
-                c
-            })
-            .collect();
+        let chunks = make_pending_chunks(BATCH_SIZE + 5, "pend");
         store.insert_chunks(chunks).await.unwrap();
 
         let count = process_batch(&store, &embedder, &blob_store).await.unwrap();
@@ -288,14 +294,7 @@ mod tests {
         let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MismatchEmbedder);
 
         // Insert 2 pending chunks so embedder returns fewer than expected
-        let chunks: Vec<_> = (0..2)
-            .map(|i| {
-                let id = format!("mismatch{:056}", i);
-                let mut c = crate::test_helpers::make_test_chunk(&id, &format!("content {i}"));
-                c.embedding = None;
-                c
-            })
-            .collect();
+        let chunks = make_pending_chunks(2, "mismatch");
         store.insert_chunks(chunks).await.unwrap();
 
         let result = process_batch(&store, &embedder, &blob_store).await;
