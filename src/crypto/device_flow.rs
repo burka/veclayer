@@ -435,6 +435,16 @@ mod tests {
         }
     }
 
+    /// Helper to create a DeviceFlowConfig for tests with the standard test URLs.
+    fn test_config(client_id: &str) -> DeviceFlowConfig {
+        DeviceFlowConfig {
+            device_authorization_url: "https://example.com/device".to_string(),
+            token_url: "https://example.com/token".to_string(),
+            client_id: client_id.to_string(),
+            scope: None,
+        }
+    }
+
     #[test]
     fn test_request_device_authorization_success() {
         let http = MockHttpClient::new(vec![(
@@ -448,12 +458,7 @@ mod tests {
             }),
         )]);
 
-        let config = DeviceFlowConfig {
-            device_authorization_url: "https://example.com/device".to_string(),
-            token_url: "https://example.com/token".to_string(),
-            client_id: "test".to_string(),
-            scope: None,
-        };
+        let config = test_config("test");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let auth = rt
@@ -473,12 +478,7 @@ mod tests {
             }),
         )]);
 
-        let config = DeviceFlowConfig {
-            device_authorization_url: "https://example.com/device".to_string(),
-            token_url: "https://example.com/token".to_string(),
-            client_id: "bad-client".to_string(),
-            scope: None,
-        };
+        let config = test_config("bad-client");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let err = rt
@@ -494,12 +494,7 @@ mod tests {
             serde_json::json!({"error": "authorization_pending"}),
         )]);
 
-        let config = DeviceFlowConfig {
-            device_authorization_url: "https://example.com/device".to_string(),
-            token_url: "https://example.com/token".to_string(),
-            client_id: "test".to_string(),
-            scope: None,
-        };
+        let config = test_config("test");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt
@@ -519,12 +514,7 @@ mod tests {
             }),
         )]);
 
-        let config = DeviceFlowConfig {
-            device_authorization_url: "https://example.com/device".to_string(),
-            token_url: "https://example.com/token".to_string(),
-            client_id: "test".to_string(),
-            scope: None,
-        };
+        let config = test_config("test");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let token = rt
@@ -539,12 +529,7 @@ mod tests {
     fn test_poll_for_token_expired() {
         let http = MockHttpClient::new(vec![(200, serde_json::json!({"error": "expired_token"}))]);
 
-        let config = DeviceFlowConfig {
-            device_authorization_url: "https://example.com/device".to_string(),
-            token_url: "https://example.com/token".to_string(),
-            client_id: "test".to_string(),
-            scope: None,
-        };
+        let config = test_config("test");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let err = rt
@@ -557,12 +542,7 @@ mod tests {
     fn test_poll_for_token_access_denied() {
         let http = MockHttpClient::new(vec![(200, serde_json::json!({"error": "access_denied"}))]);
 
-        let config = DeviceFlowConfig {
-            device_authorization_url: "https://example.com/device".to_string(),
-            token_url: "https://example.com/token".to_string(),
-            client_id: "test".to_string(),
-            scope: None,
-        };
+        let config = test_config("test");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let err = rt
