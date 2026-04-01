@@ -179,17 +179,8 @@ mod tests {
     ///
     /// The single GET "/" handler echoes the capability from request extensions.
     fn build_app(state: AuthState) -> Router {
-        let handler = get(|request: Request<Body>| async move {
-            let cap = request
-                .extensions()
-                .get::<Capability>()
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "none".to_owned());
-            cap
-        });
-
         Router::new()
-            .route("/", handler)
+            .route("/", get(cap_handler_fn))
             .layer(middleware::from_fn_with_state(state, auth_middleware))
     }
 
@@ -205,18 +196,19 @@ mod tests {
             + Sync
             + 'static,
     ) -> Router {
-        let handler = get(|request: Request<Body>| async move {
-            let cap = request
-                .extensions()
-                .get::<Capability>()
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "none".to_owned());
-            cap
-        });
-
         Router::new()
-            .route("/", handler.layer(middleware::from_fn(guard)))
+            .route("/", get(cap_handler_fn).layer(middleware::from_fn(guard)))
             .layer(middleware::from_fn_with_state(state, auth_middleware))
+    }
+
+    /// GET "/" handler that echoes the capability string from request extensions.
+    async fn cap_handler_fn(request: Request<Body>) -> String {
+        let cap = request
+            .extensions()
+            .get::<Capability>()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "none".to_owned());
+        cap
     }
 
     async fn send(app: Router, bearer: Option<&str>) -> (StatusCode, String) {

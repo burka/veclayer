@@ -1,0 +1,2497 @@
+{
+  "statistics": {
+    "detectionDate": "2026-04-01T21:46:38.938Z",
+    "formats": {
+      "rust": {
+        "sources": {
+          "src/sync/mod.rs": {
+            "lines": 257,
+            "tokens": 2481,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/summarizer/ollama.rs": {
+            "lines": 129,
+            "tokens": 1096,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/summarizer/mod.rs": {
+            "lines": 39,
+            "tokens": 372,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/store/mod.rs": {
+            "lines": 396,
+            "tokens": 3864,
+            "sources": 1,
+            "clones": 2,
+            "duplicatedLines": 14,
+            "duplicatedTokens": 162,
+            "percentage": 3.54,
+            "percentageTokens": 4.19,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/store/lock.rs": {
+            "lines": 216,
+            "tokens": 1827,
+            "sources": 1,
+            "clones": 2,
+            "duplicatedLines": 20,
+            "duplicatedTokens": 188,
+            "percentage": 9.26,
+            "percentageTokens": 10.29,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/parser/mod.rs": {
+            "lines": 119,
+            "tokens": 1010,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/parser/markdown.rs": {
+            "lines": 312,
+            "tokens": 2462,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/mcp/types.rs": {
+            "lines": 502,
+            "tokens": 3548,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/mcp/stdio.rs": {
+            "lines": 81,
+            "tokens": 672,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/mcp/resources.rs": {
+            "lines": 837,
+            "tokens": 6641,
+            "sources": 1,
+            "clones": 2,
+            "duplicatedLines": 14,
+            "duplicatedTokens": 156,
+            "percentage": 1.67,
+            "percentageTokens": 2.35,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/mcp/mod.rs": {
+            "lines": 397,
+            "tokens": 4601,
+            "sources": 1,
+            "clones": 2,
+            "duplicatedLines": 10,
+            "duplicatedTokens": 138,
+            "percentage": 2.52,
+            "percentageTokens": 3,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/mcp/http.rs": {
+            "lines": 806,
+            "tokens": 7172,
+            "sources": 1,
+            "clones": 4,
+            "duplicatedLines": 26,
+            "duplicatedTokens": 314,
+            "percentage": 3.23,
+            "percentageTokens": 4.38,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/mcp/handler.rs": {
+            "lines": 587,
+            "tokens": 5038,
+            "sources": 1,
+            "clones": 2,
+            "duplicatedLines": 14,
+            "duplicatedTokens": 160,
+            "percentage": 2.39,
+            "percentageTokens": 3.18,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/mcp/format.rs": {
+            "lines": 938,
+            "tokens": 8389,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/mcp/embed_worker.rs": {
+            "lines": 307,
+            "tokens": 2986,
+            "sources": 1,
+            "clones": 6,
+            "duplicatedLines": 30,
+            "duplicatedTokens": 518,
+            "percentage": 9.77,
+            "percentageTokens": 17.35,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/llm/openai.rs": {
+            "lines": 72,
+            "tokens": 623,
+            "sources": 1,
+            "clones": 1,
+            "duplicatedLines": 6,
+            "duplicatedTokens": 77,
+            "percentage": 8.33,
+            "percentageTokens": 12.36,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/llm/ollama.rs": {
+            "lines": 65,
+            "tokens": 550,
+            "sources": 1,
+            "clones": 1,
+            "duplicatedLines": 6,
+            "duplicatedTokens": 77,
+            "percentage": 9.23,
+            "percentageTokens": 14,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/llm/mod.rs": {
+            "lines": 205,
+            "tokens": 1603,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/git/worktree.rs": {
+            "lines": 359,
+            "tokens": 3022,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/git/test_helpers.rs": {
+            "lines": 41,
+            "tokens": 381,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/git/sync.rs": {
+            "lines": 526,
+            "tokens": 3788,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/git/plumbing.rs": {
+            "lines": 302,
+            "tokens": 2507,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/git/mod.rs": {
+            "lines": 308,
+            "tokens": 2158,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/git/memory_store.rs": {
+            "lines": 896,
+            "tokens": 6900,
+            "sources": 1,
+            "clones": 2,
+            "duplicatedLines": 14,
+            "duplicatedTokens": 168,
+            "percentage": 1.56,
+            "percentageTokens": 2.43,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/git/embedding_cache.rs": {
+            "lines": 324,
+            "tokens": 2493,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/git/detect.rs": {
+            "lines": 241,
+            "tokens": 1962,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/git/branch_config.rs": {
+            "lines": 424,
+            "tokens": 3267,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/embedder/ollama_impl.rs": {
+            "lines": 236,
+            "tokens": 2015,
+            "sources": 1,
+            "clones": 1,
+            "duplicatedLines": 5,
+            "duplicatedTokens": 71,
+            "percentage": 2.12,
+            "percentageTokens": 3.52,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/embedder/mod.rs": {
+            "lines": 91,
+            "tokens": 688,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/embedder/fastembed_impl.rs": {
+            "lines": 153,
+            "tokens": 1234,
+            "sources": 1,
+            "clones": 1,
+            "duplicatedLines": 5,
+            "duplicatedTokens": 71,
+            "percentage": 3.27,
+            "percentageTokens": 5.75,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/crypto/mod.rs": {
+            "lines": 32,
+            "tokens": 159,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/crypto/keystore.rs": {
+            "lines": 338,
+            "tokens": 3006,
+            "sources": 1,
+            "clones": 4,
+            "duplicatedLines": 22,
+            "duplicatedTokens": 292,
+            "percentage": 6.51,
+            "percentageTokens": 9.71,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/crypto/keypair.rs": {
+            "lines": 131,
+            "tokens": 1075,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/crypto/device_flow.rs": {
+            "lines": 552,
+            "tokens": 4255,
+            "sources": 1,
+            "clones": 2,
+            "duplicatedLines": 16,
+            "duplicatedTokens": 184,
+            "percentage": 2.9,
+            "percentageTokens": 4.32,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/commands/think.rs": {
+            "lines": 373,
+            "tokens": 3590,
+            "sources": 1,
+            "clones": 6,
+            "duplicatedLines": 42,
+            "duplicatedTokens": 522,
+            "percentage": 11.26,
+            "percentageTokens": 14.54,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/commands/sync.rs": {
+            "lines": 854,
+            "tokens": 6756,
+            "sources": 1,
+            "clones": 2,
+            "duplicatedLines": 16,
+            "duplicatedTokens": 146,
+            "percentage": 1.87,
+            "percentageTokens": 2.16,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/commands/serve.rs": {
+            "lines": 54,
+            "tokens": 429,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/commands/search.rs": {
+            "lines": 487,
+            "tokens": 4647,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/commands/reflect.rs": {
+            "lines": 431,
+            "tokens": 3601,
+            "sources": 1,
+            "clones": 4,
+            "duplicatedLines": 28,
+            "duplicatedTokens": 296,
+            "percentage": 6.5,
+            "percentageTokens": 8.22,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/commands/perspective_ops.rs": {
+            "lines": 161,
+            "tokens": 1405,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/commands/observe.rs": {
+            "lines": 410,
+            "tokens": 3206,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/commands/mod.rs": {
+            "lines": 399,
+            "tokens": 3025,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/commands/merge.rs": {
+            "lines": 534,
+            "tokens": 5140,
+            "sources": 1,
+            "clones": 15,
+            "duplicatedLines": 114,
+            "duplicatedTokens": 1339,
+            "percentage": 21.35,
+            "percentageTokens": 26.05,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/commands/identity.rs": {
+            "lines": 315,
+            "tokens": 2429,
+            "sources": 1,
+            "clones": 1,
+            "duplicatedLines": 16,
+            "duplicatedTokens": 151,
+            "percentage": 5.08,
+            "percentageTokens": 6.22,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/commands/data.rs": {
+            "lines": 360,
+            "tokens": 3514,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/commands/auth.rs": {
+            "lines": 740,
+            "tokens": 6199,
+            "sources": 1,
+            "clones": 2,
+            "duplicatedLines": 23,
+            "duplicatedTokens": 230,
+            "percentage": 3.11,
+            "percentageTokens": 3.71,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/commands/add.rs": {
+            "lines": 611,
+            "tokens": 5963,
+            "sources": 1,
+            "clones": 4,
+            "duplicatedLines": 24,
+            "duplicatedTokens": 362,
+            "percentage": 3.93,
+            "percentageTokens": 6.07,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/cluster/soft_cluster.rs": {
+            "lines": 431,
+            "tokens": 3938,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/cluster/pipeline.rs": {
+            "lines": 586,
+            "tokens": 4945,
+            "sources": 1,
+            "clones": 2,
+            "duplicatedLines": 16,
+            "duplicatedTokens": 164,
+            "percentage": 2.73,
+            "percentageTokens": 3.32,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/cluster/mod.rs": {
+            "lines": 25,
+            "tokens": 160,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/auth/token_store.rs": {
+            "lines": 649,
+            "tokens": 5033,
+            "sources": 1,
+            "clones": 7,
+            "duplicatedLines": 57,
+            "duplicatedTokens": 619,
+            "percentage": 8.78,
+            "percentageTokens": 12.3,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/auth/token.rs": {
+            "lines": 335,
+            "tokens": 2743,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/auth/mod.rs": {
+            "lines": 14,
+            "tokens": 52,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/auth/middleware.rs": {
+            "lines": 364,
+            "tokens": 3188,
+            "sources": 1,
+            "clones": 2,
+            "duplicatedLines": 14,
+            "duplicatedTokens": 196,
+            "percentage": 3.85,
+            "percentageTokens": 6.15,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/auth/capability.rs": {
+            "lines": 115,
+            "tokens": 1077,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/util.rs": {
+            "lines": 102,
+            "tokens": 738,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/test_helpers.rs": {
+            "lines": 90,
+            "tokens": 785,
+            "sources": 1,
+            "clones": 2,
+            "duplicatedLines": 14,
+            "duplicatedTokens": 198,
+            "percentage": 15.56,
+            "percentageTokens": 25.22,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/salience.rs": {
+            "lines": 366,
+            "tokens": 3046,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/resolve.rs": {
+            "lines": 283,
+            "tokens": 2947,
+            "sources": 1,
+            "clones": 4,
+            "duplicatedLines": 38,
+            "duplicatedTokens": 422,
+            "percentage": 13.43,
+            "percentageTokens": 14.32,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/relations.rs": {
+            "lines": 312,
+            "tokens": 2469,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/perspective.rs": {
+            "lines": 455,
+            "tokens": 4280,
+            "sources": 1,
+            "clones": 4,
+            "duplicatedLines": 28,
+            "duplicatedTokens": 306,
+            "percentage": 6.15,
+            "percentageTokens": 7.15,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/ollama_discover.rs": {
+            "lines": 459,
+            "tokens": 3274,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/macros.rs": {
+            "lines": 37,
+            "tokens": 203,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/lib.rs": {
+            "lines": 153,
+            "tokens": 813,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/facade.rs": {
+            "lines": 671,
+            "tokens": 5643,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/error.rs": {
+            "lines": 203,
+            "tokens": 1514,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/entry.rs": {
+            "lines": 572,
+            "tokens": 4686,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/blob_store.rs": {
+            "lines": 286,
+            "tokens": 2700,
+            "sources": 1,
+            "clones": 1,
+            "duplicatedLines": 14,
+            "duplicatedTokens": 129,
+            "percentage": 4.9,
+            "percentageTokens": 4.78,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/aging.rs": {
+            "lines": 480,
+            "tokens": 4075,
+            "sources": 1,
+            "clones": 2,
+            "duplicatedLines": 12,
+            "duplicatedTokens": 150,
+            "percentage": 2.5,
+            "percentageTokens": 3.68,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          },
+          "src/access_profile.rs": {
+            "lines": 662,
+            "tokens": 5328,
+            "sources": 1,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
+            "newDuplicatedLines": 0,
+            "newClones": 0
+          }
+        },
+        "total": {
+          "lines": 24598,
+          "tokens": 207386,
+          "sources": 70,
+          "clones": 45,
+          "duplicatedLines": 329,
+          "duplicatedTokens": 3903,
+          "percentage": 1.34,
+          "percentageTokens": 1.88,
+          "newDuplicatedLines": 0,
+          "newClones": 0
+        }
+      }
+    },
+    "total": {
+      "lines": 24598,
+      "tokens": 207386,
+      "sources": 70,
+      "clones": 45,
+      "duplicatedLines": 329,
+      "duplicatedTokens": 3903,
+      "percentage": 1.34,
+      "percentageTokens": 1.88,
+      "newDuplicatedLines": 0,
+      "newClones": 0
+    }
+  },
+  "duplicates": [
+    {
+      "format": "rust",
+      "lines": 8,
+      "fragment": "fn search_text(\n        &self,\n        query: &str,\n        perspectives: &[&str],\n        since: Option<i64>,\n        until: Option<i64>,\n        limit: usize,\n    ) -> impl Future<Output = Result<Vec<HierarchicalChunk>>> + Send {",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/store/mod.rs",
+        "start": 337,
+        "end": 344,
+        "startLoc": {
+          "line": 337,
+          "column": 5,
+          "position": 2669
+        },
+        "endLoc": {
+          "line": 344,
+          "column": 2,
+          "position": 2750
+        }
+      },
+      "secondFile": {
+        "name": "src/store/mod.rs",
+        "start": 122,
+        "end": 129,
+        "startLoc": {
+          "line": 122,
+          "column": 5,
+          "position": 911
+        },
+        "endLoc": {
+          "line": 129,
+          "column": 2,
+          "position": 991
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 11,
+      "fragment": "(data_dir: &Path) -> Result<Self> {\n        std::fs::create_dir_all(data_dir)?;\n\n        let lock_path = data_dir.join(LOCK_FILE_NAME);\n        let file = OpenOptions::new()\n            .write(true)\n            .create(true)\n            .truncate(false)\n            .open(&lock_path)?;\n\n        // Retry with backoff: 10ms, 20ms, 40ms, 80ms, 160ms, 320ms, 640ms, 1280ms ≈ 2.5s total",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/store/lock.rs",
+        "start": 56,
+        "end": 66,
+        "startLoc": {
+          "line": 56,
+          "column": 17,
+          "position": 375
+        },
+        "endLoc": {
+          "line": 66,
+          "column": 88,
+          "position": 469
+        }
+      },
+      "secondFile": {
+        "name": "src/store/lock.rs",
+        "start": 28,
+        "end": 38,
+        "startLoc": {
+          "line": 28,
+          "column": 8,
+          "position": 124
+        },
+        "endLoc": {
+          "line": 38,
+          "column": 5,
+          "position": 218
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 8,
+      "fragment": "{\n        let dir = TempDir::new().unwrap();\n        let store = std::sync::Arc::new(\n            crate::store::StoreBackend::open_metadata(dir.path(), false)\n                .await\n                .unwrap(),\n        );\n        let",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/mcp/resources.rs",
+        "start": 535,
+        "end": 542,
+        "startLoc": {
+          "line": 535,
+          "column": 2,
+          "position": 4447
+        },
+        "endLoc": {
+          "line": 542,
+          "column": 4,
+          "position": 4525
+        }
+      },
+      "secondFile": {
+        "name": "src/mcp/resources.rs",
+        "start": 394,
+        "end": 401,
+        "startLoc": {
+          "line": 394,
+          "column": 2,
+          "position": 3329
+        },
+        "endLoc": {
+          "line": 401,
+          "column": 5,
+          "position": 3407
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 6,
+      "fragment": "() {\n        let tmp = tempfile::tempdir().expect(\"temp dir\");\n        let store = crate::store::StoreBackend::open(tmp.path(), 384, false)\n            .await\n            .expect(\"open store\");\n        // Create hooks config",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/mcp/mod.rs",
+        "start": 368,
+        "end": 373,
+        "startLoc": {
+          "line": 368,
+          "column": 44,
+          "position": 4282
+        },
+        "endLoc": {
+          "line": 373,
+          "column": 23,
+          "position": 4351
+        }
+      },
+      "secondFile": {
+        "name": "src/mcp/mod.rs",
+        "start": 351,
+        "end": 356,
+        "startLoc": {
+          "line": 351,
+          "column": 50,
+          "position": 4105
+        },
+        "endLoc": {
+          "line": 356,
+          "column": 59,
+          "position": 4174
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 7,
+      "fragment": ">, JsonRejection>,\n) -> StdResult<Json<String>, AppError> {\n    if !required_capability.permits(Capability::Write) {\n        return Err(insufficient(Capability::Write));\n    }\n    let Json(input) = body?;\n    let",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/mcp/http.rs",
+        "start": 474,
+        "end": 480,
+        "startLoc": {
+          "line": 474,
+          "column": 11,
+          "position": 4195
+        },
+        "endLoc": {
+          "line": 480,
+          "column": 4,
+          "position": 4267
+        }
+      },
+      "secondFile": {
+        "name": "src/mcp/http.rs",
+        "start": 452,
+        "end": 458,
+        "startLoc": {
+          "line": 452,
+          "column": 11,
+          "position": 3949
+        },
+        "endLoc": {
+          "line": 458,
+          "column": 3,
+          "position": 4021
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 8,
+      "fragment": "(\n    State(state): State<AppState>,\n    Extension(required_capability): Extension<Capability>,\n) -> StdResult<Json<serde_json::Value>, AppError> {\n    if !required_capability.permits(Capability::Read) {\n        return Err(insufficient(Capability::Read));\n    }\n    let snapshot",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/mcp/http.rs",
+        "start": 518,
+        "end": 525,
+        "startLoc": {
+          "line": 518,
+          "column": 13,
+          "position": 4626
+        },
+        "endLoc": {
+          "line": 525,
+          "column": 9,
+          "position": 4711
+        }
+      },
+      "secondFile": {
+        "name": "src/mcp/http.rs",
+        "start": 497,
+        "end": 504,
+        "startLoc": {
+          "line": 497,
+          "column": 10,
+          "position": 4445
+        },
+        "endLoc": {
+          "line": 504,
+          "column": 6,
+          "position": 4530
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 8,
+      "fragment": "store: Arc<StoreBackend>,\n        embedder: Arc<dyn Embedder + Send + Sync>,\n        embedder_config: crate::config::EmbedderConfig,\n        blob_store: Arc<BlobStore>,\n        data_dir: PathBuf,\n        project: Option<String>,\n        branch: Option<String>,\n        instructions",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/mcp/handler.rs",
+        "start": 94,
+        "end": 101,
+        "startLoc": {
+          "line": 94,
+          "column": 9,
+          "position": 674
+        },
+        "endLoc": {
+          "line": 101,
+          "column": 13,
+          "position": 754
+        }
+      },
+      "secondFile": {
+        "name": "src/mcp/handler.rs",
+        "start": 41,
+        "end": 48,
+        "startLoc": {
+          "line": 41,
+          "column": 5,
+          "position": 299
+        },
+        "endLoc": {
+          "line": 48,
+          "column": 73,
+          "position": 379
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 6,
+      "fragment": "() {\n        let dir = tempfile::tempdir().unwrap();\n        let (store, blob_store) = make_store_and_blobs(dir.path()).await;\n        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);\n\n        let mut",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/mcp/embed_worker.rs",
+        "start": 222,
+        "end": 227,
+        "startLoc": {
+          "line": 222,
+          "column": 37,
+          "position": 2035
+        },
+        "endLoc": {
+          "line": 227,
+          "column": 4,
+          "position": 2122
+        }
+      },
+      "secondFile": {
+        "name": "src/mcp/embed_worker.rs",
+        "start": 212,
+        "end": 217,
+        "startLoc": {
+          "line": 212,
+          "column": 39,
+          "position": 1900
+        },
+        "endLoc": {
+          "line": 217,
+          "column": 6,
+          "position": 1987
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 6,
+      "fragment": "() {\n        let dir = tempfile::tempdir().unwrap();\n        let (store, blob_store) = make_store_and_blobs(dir.path()).await;\n        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);\n\n        // make_test_chunk sets embedding = Some(vec![0.0; 384])",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/mcp/embed_worker.rs",
+        "start": 239,
+        "end": 244,
+        "startLoc": {
+          "line": 239,
+          "column": 44,
+          "position": 2232
+        },
+        "endLoc": {
+          "line": 244,
+          "column": 57,
+          "position": 2317
+        }
+      },
+      "secondFile": {
+        "name": "src/mcp/embed_worker.rs",
+        "start": 212,
+        "end": 217,
+        "startLoc": {
+          "line": 212,
+          "column": 39,
+          "position": 1900
+        },
+        "endLoc": {
+          "line": 217,
+          "column": 4,
+          "position": 1985
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 6,
+      "fragment": "() {\n        let dir = tempfile::tempdir().unwrap();\n        let (store, blob_store) = make_store_and_blobs(dir.path()).await;\n        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);\n\n        let chunks",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/mcp/embed_worker.rs",
+        "start": 257,
+        "end": 262,
+        "startLoc": {
+          "line": 257,
+          "column": 43,
+          "position": 2433
+        },
+        "endLoc": {
+          "line": 262,
+          "column": 7,
+          "position": 2520
+        }
+      },
+      "secondFile": {
+        "name": "src/mcp/embed_worker.rs",
+        "start": 212,
+        "end": 217,
+        "startLoc": {
+          "line": 212,
+          "column": 39,
+          "position": 1900
+        },
+        "endLoc": {
+          "line": 217,
+          "column": 6,
+          "position": 1987
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 7,
+      "fragment": ", e)))?;\n\n        if !resp.status().is_success() {\n            let status = resp.status();\n            let body = resp.text().await.unwrap_or_default();\n            return Err(crate::Error::llm(format!(\n                \"Ollama returned {}: {}\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/llm/ollama.rs",
+        "start": 41,
+        "end": 47,
+        "startLoc": {
+          "line": 41,
+          "column": 28,
+          "position": 328
+        },
+        "endLoc": {
+          "line": 47,
+          "column": 25,
+          "position": 405
+        }
+      },
+      "secondFile": {
+        "name": "src/llm/openai.rs",
+        "start": 48,
+        "end": 54,
+        "startLoc": {
+          "line": 48,
+          "column": 28,
+          "position": 395
+        },
+        "endLoc": {
+          "line": 54,
+          "column": 29,
+          "position": 472
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 8,
+      "fragment": "() {\n        let (_dir, git_dir) = setup_test_repo();\n        let store = MemoryStore::open(&git_dir, Some(\"test-memory\")).unwrap();\n\n        let entry = sample_entry();\n        store.store_entry(&entry).unwrap();\n\n        let model = \"gc-model\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/git/memory_store.rs",
+        "start": 728,
+        "end": 735,
+        "startLoc": {
+          "line": 728,
+          "column": 36,
+          "position": 5670
+        },
+        "endLoc": {
+          "line": 735,
+          "column": 11,
+          "position": 5754
+        }
+      },
+      "secondFile": {
+        "name": "src/git/memory_store.rs",
+        "start": 694,
+        "end": 701,
+        "startLoc": {
+          "line": 694,
+          "column": 26,
+          "position": 5314
+        },
+        "endLoc": {
+          "line": 701,
+          "column": 13,
+          "position": 5398
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 6,
+      "fragment": ").unwrap();\n        let texts = vec![\"Hello world\", \"This is a test\"];\n        let embeddings = embedder.embed(&texts).unwrap();\n\n        assert_eq!(embeddings.len(), 2);\n        assert_eq!(embeddings[0].len(), embedder",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/embedder/fastembed_impl.rs",
+        "start": 117,
+        "end": 122,
+        "startLoc": {
+          "line": 117,
+          "column": 2,
+          "position": 927
+        },
+        "endLoc": {
+          "line": 122,
+          "column": 9,
+          "position": 998
+        }
+      },
+      "secondFile": {
+        "name": "src/embedder/ollama_impl.rs",
+        "start": 204,
+        "end": 209,
+        "startLoc": {
+          "line": 204,
+          "column": 4,
+          "position": 1696
+        },
+        "endLoc": {
+          "line": 209,
+          "column": 4,
+          "position": 1767
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 7,
+      "fragment": ";\n\n    let derived_key = Zeroizing::new(derive_key(passphrase, &salt)?);\n    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&*derived_key));\n    let nonce = Nonce::from_slice(&nonce_bytes);\n\n    let plaintext",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/crypto/keystore.rs",
+        "start": 166,
+        "end": 172,
+        "startLoc": {
+          "line": 166,
+          "column": 2,
+          "position": 1243
+        },
+        "endLoc": {
+          "line": 172,
+          "column": 10,
+          "position": 1320
+        }
+      },
+      "secondFile": {
+        "name": "src/crypto/keystore.rs",
+        "start": 86,
+        "end": 92,
+        "startLoc": {
+          "line": 86,
+          "column": 2,
+          "position": 538
+        },
+        "endLoc": {
+          "line": 92,
+          "column": 11,
+          "position": 615
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 6,
+      "fragment": "());\n        fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();\n\n        let err = load(\"pass\", &path).unwrap_err();\n        assert!(\n            matches!(err, CryptoError::Keystore",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/crypto/keystore.rs",
+        "start": 330,
+        "end": 335,
+        "startLoc": {
+          "line": 330,
+          "column": 5,
+          "position": 2920
+        },
+        "endLoc": {
+          "line": 335,
+          "column": 9,
+          "position": 2989
+        }
+      },
+      "secondFile": {
+        "name": "src/crypto/keystore.rs",
+        "start": 302,
+        "end": 307,
+        "startLoc": {
+          "line": 302,
+          "column": 10,
+          "position": 2610
+        },
+        "endLoc": {
+          "line": 307,
+          "column": 12,
+          "position": 2679
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 9,
+      "fragment": "}))]);\n\n        let config = test_config(\"test\");\n\n        let rt = tokio::runtime::Runtime::new().unwrap();\n        let err = rt\n            .block_on(poll_for_token(&config, \"dev_code\", &http))\n            .unwrap_err();\n        assert!(matches!(err, DeviceFlowError::AccessDenied",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/crypto/device_flow.rs",
+        "start": 543,
+        "end": 551,
+        "startLoc": {
+          "line": 543,
+          "column": 16,
+          "position": 4155
+        },
+        "endLoc": {
+          "line": 551,
+          "column": 13,
+          "position": 4247
+        }
+      },
+      "secondFile": {
+        "name": "src/crypto/device_flow.rs",
+        "start": 530,
+        "end": 538,
+        "startLoc": {
+          "line": 530,
+          "column": 16,
+          "position": 4014
+        },
+        "endLoc": {
+          "line": 538,
+          "column": 12,
+          "position": 4106
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 10,
+      "fragment": ", \"always\").await?;\n\n        let store = StoreBackend::open_metadata(dir.path(), false).await?;\n        let entry = store.get_by_id(\"aaa111\").await?.unwrap();\n        assert_eq!(entry.visibility, \"always\");\n        Ok(())\n    }\n\n    #[tokio::test]\n    async fn test_think_promote_not_found",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/commands/think.rs",
+        "start": 259,
+        "end": 268,
+        "startLoc": {
+          "line": 259,
+          "column": 6,
+          "position": 2305
+        },
+        "endLoc": {
+          "line": 268,
+          "column": 29,
+          "position": 2391
+        }
+      },
+      "secondFile": {
+        "name": "src/commands/think.rs",
+        "start": 246,
+        "end": 255,
+        "startLoc": {
+          "line": 246,
+          "column": 9,
+          "position": 2164
+        },
+        "endLoc": {
+          "line": 255,
+          "column": 35,
+          "position": 2250
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 6,
+      "fragment": ").await?;\n\n        let store = StoreBackend::open_metadata(dir.path(), false).await?;\n        let source = store.get_by_id(\"aaa111\").await?.unwrap();\n        assert_eq!(source.relations.len(), 1);\n        assert_eq!(source.relations[0].kind, \"related_to\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/commands/think.rs",
+        "start": 309,
+        "end": 314,
+        "startLoc": {
+          "line": 309,
+          "column": 13,
+          "position": 2862
+        },
+        "endLoc": {
+          "line": 314,
+          "column": 13,
+          "position": 2943
+        }
+      },
+      "secondFile": {
+        "name": "src/commands/think.rs",
+        "start": 294,
+        "end": 299,
+        "startLoc": {
+          "line": 294,
+          "column": 15,
+          "position": 2680
+        },
+        "endLoc": {
+          "line": 299,
+          "column": 15,
+          "position": 2761
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 8,
+      "fragment": "() -> Result<()> {\n        let dir = TempDir::new()?;\n        seed_store(dir.path()).await;\n\n        think_relate(dir.path(), \"aaa111\", \"bbb222\", \"derived_from\").await?;\n\n        let store = StoreBackend::open_metadata(dir.path(), false).await?;\n        let target",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/commands/think.rs",
+        "start": 325,
+        "end": 332,
+        "startLoc": {
+          "line": 325,
+          "column": 47,
+          "position": 3056
+        },
+        "endLoc": {
+          "line": 332,
+          "column": 7,
+          "position": 3150
+        }
+      },
+      "secondFile": {
+        "name": "src/commands/think.rs",
+        "start": 290,
+        "end": 297,
+        "startLoc": {
+          "line": 290,
+          "column": 40,
+          "position": 2620
+        },
+        "endLoc": {
+          "line": 297,
+          "column": 7,
+          "position": 2714
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 9,
+      "fragment": "() {\n        use crate::chunk::{ChunkLevel, HierarchicalChunk};\n        let chunk = HierarchicalChunk::new(\n            \"content\".to_string(),\n            ChunkLevel::H1,\n            None,\n            String::new(),\n            \"src.md\".to_string(),\n        );",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/commands/sync.rs",
+        "start": 707,
+        "end": 715,
+        "startLoc": {
+          "line": 707,
+          "column": 48,
+          "position": 5574
+        },
+        "endLoc": {
+          "line": 715,
+          "column": 2,
+          "position": 5647
+        }
+      },
+      "secondFile": {
+        "name": "src/commands/sync.rs",
+        "start": 686,
+        "end": 695,
+        "startLoc": {
+          "line": 686,
+          "column": 76,
+          "position": 5404
+        },
+        "endLoc": {
+          "line": 695,
+          "column": 2,
+          "position": 5479
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 9,
+      "fragment": ")\n        .if_supports_color(Stream::Stdout, |s| s.bold())\n    );\n    println!(\n        \"{}\",\n        \"=\".repeat(60)\n            .if_supports_color(Stream::Stdout, |s| s.dimmed())\n    );\n    for chunk",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/commands/reflect.rs",
+        "start": 131,
+        "end": 139,
+        "startLoc": {
+          "line": 131,
+          "column": 9,
+          "position": 1078
+        },
+        "endLoc": {
+          "line": 139,
+          "column": 6,
+          "position": 1149
+        }
+      },
+      "secondFile": {
+        "name": "src/commands/reflect.rs",
+        "start": 65,
+        "end": 73,
+        "startLoc": {
+          "line": 65,
+          "column": 2,
+          "position": 520
+        },
+        "endLoc": {
+          "line": 73,
+          "column": 2,
+          "position": 591
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 7,
+      "fragment": "let store2 = StoreBackend::open_metadata(dir.path(), true).await?;\n        let aging_config = crate::aging::AgingConfig::default();\n        let stale = store2\n            .get_stale_chunks(aging_config.stale_seconds(), 100)\n            .await?;\n\n        let weights",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/commands/reflect.rs",
+        "start": 322,
+        "end": 328,
+        "startLoc": {
+          "line": 322,
+          "column": 9,
+          "position": 2783
+        },
+        "endLoc": {
+          "line": 328,
+          "column": 8,
+          "position": 2860
+        }
+      },
+      "secondFile": {
+        "name": "src/commands/reflect.rs",
+        "start": 291,
+        "end": 297,
+        "startLoc": {
+          "line": 291,
+          "column": 9,
+          "position": 2476
+        },
+        "endLoc": {
+          "line": 297,
+          "column": 16,
+          "position": 2553
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 14,
+      "fragment": "]);\n\n        let opts = MergeOptions {\n            force: true,\n            ..Default::default()\n        };\n        merge(target.path(), source.path(), &opts).await?;\n\n        let target_store = BlobStore::open(target.path())?;\n        assert_eq!(target_store.count()?, 2);\n        Ok(())\n    }\n\n    #[tokio::test]",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/commands/merge.rs",
+        "start": 341,
+        "end": 354,
+        "startLoc": {
+          "line": 341,
+          "column": 9,
+          "position": 3140
+        },
+        "endLoc": {
+          "line": 354,
+          "column": 15,
+          "position": 3249
+        }
+      },
+      "secondFile": {
+        "name": "src/commands/merge.rs",
+        "start": 322,
+        "end": 335,
+        "startLoc": {
+          "line": 322,
+          "column": 7,
+          "position": 2938
+        },
+        "endLoc": {
+          "line": 335,
+          "column": 60,
+          "position": 3047
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 9,
+      "fragment": "() -> Result<()> {\n        let source = TempDir::new().unwrap();\n        let target = TempDir::new().unwrap();\n\n        seed_blob_store(source.path(), &[\"alpha\", \"beta\"]);\n\n        let opts = MergeOptions {\n            force: true,\n            dry_run",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/commands/merge.rs",
+        "start": 355,
+        "end": 363,
+        "startLoc": {
+          "line": 355,
+          "column": 34,
+          "position": 3257
+        },
+        "endLoc": {
+          "line": 363,
+          "column": 8,
+          "position": 3349
+        }
+      },
+      "secondFile": {
+        "name": "src/commands/merge.rs",
+        "start": 318,
+        "end": 326,
+        "startLoc": {
+          "line": 318,
+          "column": 35,
+          "position": 2870
+        },
+        "endLoc": {
+          "line": 326,
+          "column": 3,
+          "position": 2962
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 7,
+      "fragment": ": true,\n            ..Default::default()\n        };\n        merge(target.path(), source.path(), &opts).await?;\n\n        let target_store = BlobStore::open(target.path())?;\n        assert_eq!(target_store.count()?, 0",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/commands/merge.rs",
+        "start": 363,
+        "end": 369,
+        "startLoc": {
+          "line": 363,
+          "column": 8,
+          "position": 3350
+        },
+        "endLoc": {
+          "line": 369,
+          "column": 2,
+          "position": 3425
+        }
+      },
+      "secondFile": {
+        "name": "src/commands/merge.rs",
+        "start": 325,
+        "end": 331,
+        "startLoc": {
+          "line": 325,
+          "column": 6,
+          "position": 2956
+        },
+        "endLoc": {
+          "line": 331,
+          "column": 2,
+          "position": 3031
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 6,
+      "fragment": "() -> Result<()> {\n        let source = TempDir::new().unwrap();\n        let target = TempDir::new().unwrap();\n\n        let source_store = BlobStore::open(source.path())?;\n        source_store.put(&test_blob(\"tagged entry\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/commands/merge.rs",
+        "start": 479,
+        "end": 484,
+        "startLoc": {
+          "line": 479,
+          "column": 25,
+          "position": 4474
+        },
+        "endLoc": {
+          "line": 484,
+          "column": 15,
+          "position": 4555
+        }
+      },
+      "secondFile": {
+        "name": "src/commands/merge.rs",
+        "start": 461,
+        "end": 466,
+        "startLoc": {
+          "line": 461,
+          "column": 22,
+          "position": 4263
+        },
+        "endLoc": {
+          "line": 466,
+          "column": 6,
+          "position": 4344
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 9,
+      "fragment": ";\n\n        let target_store = BlobStore::open(target.path())?;\n        let hash = target_store.iter_hashes().next().unwrap()?;\n        let blob = target_store.get(&hash)?.unwrap();\n        assert!(blob\n            .entry\n            .perspectives\n            .contains(&\"project:test\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/commands/merge.rs",
+        "start": 488,
+        "end": 496,
+        "startLoc": {
+          "line": 488,
+          "column": 2,
+          "position": 4621
+        },
+        "endLoc": {
+          "line": 496,
+          "column": 15,
+          "position": 4707
+        }
+      },
+      "secondFile": {
+        "name": "src/commands/merge.rs",
+        "start": 385,
+        "end": 393,
+        "startLoc": {
+          "line": 385,
+          "column": 7,
+          "position": 3586
+        },
+        "endLoc": {
+          "line": 393,
+          "column": 20,
+          "position": 3672
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 6,
+      "fragment": "() -> Result<()> {\n        let source = TempDir::new().unwrap();\n        let target = TempDir::new().unwrap();\n\n        let source_store = BlobStore::open(source.path())?;\n        source_store.put(&test_blob(\"dry\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/commands/merge.rs",
+        "start": 501,
+        "end": 506,
+        "startLoc": {
+          "line": 501,
+          "column": 24,
+          "position": 4734
+        },
+        "endLoc": {
+          "line": 506,
+          "column": 6,
+          "position": 4815
+        }
+      },
+      "secondFile": {
+        "name": "src/commands/merge.rs",
+        "start": 461,
+        "end": 466,
+        "startLoc": {
+          "line": 461,
+          "column": 22,
+          "position": 4263
+        },
+        "endLoc": {
+          "line": 466,
+          "column": 6,
+          "position": 4344
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 6,
+      "fragment": "() -> Result<()> {\n        let source = TempDir::new().unwrap();\n        let target = TempDir::new().unwrap();\n\n        let source_store = BlobStore::open(source.path())?;\n        source_store.put(&test_blob(\"shared\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/commands/merge.rs",
+        "start": 518,
+        "end": 523,
+        "startLoc": {
+          "line": 518,
+          "column": 29,
+          "position": 4931
+        },
+        "endLoc": {
+          "line": 523,
+          "column": 9,
+          "position": 5012
+        }
+      },
+      "secondFile": {
+        "name": "src/commands/merge.rs",
+        "start": 461,
+        "end": 466,
+        "startLoc": {
+          "line": 461,
+          "column": 22,
+          "position": 4263
+        },
+        "endLoc": {
+          "line": 466,
+          "column": 6,
+          "position": 4344
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 17,
+      "fragment": ",\n    passphrase: Option<&str>,\n) -> Result<()> {\n    let path = keystore::keystore_path(data_dir);\n    if !keystore::exists(&path) {\n        return Err(crate::Error::NotFound(\n            \"No identity found. Run `veclayer identity init` first.\".to_string(),\n        ));\n    }\n\n    let passphrase = match passphrase {\n        Some(p) => p.to_string(),\n        None => resolve_passphrase_for_read()?,\n    };\n\n    let signing_key =\n        keystore::load(&passphrase, &path).",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/commands/auth.rs",
+        "start": 136,
+        "end": 152,
+        "startLoc": {
+          "line": 136,
+          "column": 2,
+          "position": 1147
+        },
+        "endLoc": {
+          "line": 152,
+          "column": 2,
+          "position": 1298
+        }
+      },
+      "secondFile": {
+        "name": "src/commands/identity.rs",
+        "start": 73,
+        "end": 88,
+        "startLoc": {
+          "line": 73,
+          "column": 5,
+          "position": 533
+        },
+        "endLoc": {
+          "line": 88,
+          "column": 2,
+          "position": 683
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 7,
+      "fragment": ".to_string()];\n        let split: Vec<String> = raw\n            .iter()\n            .flat_map(|p| p.split(',').map(|s| s.trim().to_string()))\n            .filter(|s| !s.is_empty())\n            .collect();\n        assert_eq!(split, vec![\"decisions\", \"knowledge\"]",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/commands/add.rs",
+        "start": 593,
+        "end": 599,
+        "startLoc": {
+          "line": 593,
+          "column": 28,
+          "position": 5740
+        },
+        "endLoc": {
+          "line": 599,
+          "column": 2,
+          "position": 5836
+        }
+      },
+      "secondFile": {
+        "name": "src/commands/add.rs",
+        "start": 582,
+        "end": 588,
+        "startLoc": {
+          "line": 582,
+          "column": 12,
+          "position": 5612
+        },
+        "endLoc": {
+          "line": 588,
+          "column": 2,
+          "position": 5708
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 7,
+      "fragment": ".to_string()];\n        let split: Vec<String> = raw\n            .iter()\n            .flat_map(|p| p.split(',').map(|s| s.trim().to_string()))\n            .filter(|s| !s.is_empty())\n            .collect();\n        assert!",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/commands/add.rs",
+        "start": 604,
+        "end": 610,
+        "startLoc": {
+          "line": 604,
+          "column": 6,
+          "position": 5865
+        },
+        "endLoc": {
+          "line": 610,
+          "column": 8,
+          "position": 5950
+        }
+      },
+      "secondFile": {
+        "name": "src/commands/add.rs",
+        "start": 582,
+        "end": 25,
+        "startLoc": {
+          "line": 582,
+          "column": 12,
+          "position": 5612
+        },
+        "endLoc": {
+          "line": 25,
+          "column": 3,
+          "position": 227
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 9,
+      "fragment": ");\n        let pipeline =\n            ClusterPipeline::with_summarizer(embedder, summarizer).with_min_cluster_size(2);\n\n        let chunks = create_test_chunks(6);\n        let (_, summaries) = pipeline.process(chunks).await.unwrap();\n\n        for summary in &summaries {\n            // Verify summary structure",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/cluster/pipeline.rs",
+        "start": 439,
+        "end": 447,
+        "startLoc": {
+          "line": 439,
+          "column": 23,
+          "position": 3728
+        },
+        "endLoc": {
+          "line": 447,
+          "column": 28,
+          "position": 3810
+        }
+      },
+      "secondFile": {
+        "name": "src/cluster/pipeline.rs",
+        "start": 391,
+        "end": 399,
+        "startLoc": {
+          "line": 391,
+          "column": 23,
+          "position": 3310
+        },
+        "endLoc": {
+          "line": 399,
+          "column": 8,
+          "position": 3392
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 12,
+      "fragment": "(&hash)\n            .ok_or_else(|| Error::not_found(\"refresh token not found\"))?;\n\n        if record.revoked {\n            return Err(Error::InvalidOperation(\"refresh token revoked\".to_owned()));\n        }\n\n        if unix_now() > record.expires_at {\n            return Err(Error::InvalidOperation(\"refresh token expired\".to_owned()));\n        }\n\n        let",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/auth/token_store.rs",
+        "start": 297,
+        "end": 308,
+        "startLoc": {
+          "line": 297,
+          "column": 8,
+          "position": 2182
+        },
+        "endLoc": {
+          "line": 308,
+          "column": 4,
+          "position": 2276
+        }
+      },
+      "secondFile": {
+        "name": "src/auth/token_store.rs",
+        "start": 256,
+        "end": 267,
+        "startLoc": {
+          "line": 256,
+          "column": 4,
+          "position": 1883
+        },
+        "endLoc": {
+          "line": 267,
+          "column": 3,
+          "position": 1977
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 8,
+      "fragment": "() {\n        let (_dir, mut store) = tmp_store();\n        let client = store.register_client(\"App\", vec![]);\n        let (verifier, challenge) = pkce_pair();\n\n        let code = create_test_code(&mut store, &client, &challenge);\n\n        store",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/auth/token_store.rs",
+        "start": 415,
+        "end": 422,
+        "startLoc": {
+          "line": 415,
+          "column": 25,
+          "position": 3179
+        },
+        "endLoc": {
+          "line": 422,
+          "column": 6,
+          "position": 3267
+        }
+      },
+      "secondFile": {
+        "name": "src/auth/token_store.rs",
+        "start": 400,
+        "end": 407,
+        "startLoc": {
+          "line": 400,
+          "column": 29,
+          "position": 3008
+        },
+        "endLoc": {
+          "line": 407,
+          "column": 4,
+          "position": 3096
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 8,
+      "fragment": "() {\n        let (_dir, mut store) = tmp_store();\n        let client = store.register_client(\"App\", vec![]);\n        let (verifier, challenge) = pkce_pair();\n\n        let code = create_test_code(&mut store, &client, &challenge);\n\n        // Force-expire the code.",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/auth/token_store.rs",
+        "start": 431,
+        "end": 438,
+        "startLoc": {
+          "line": 431,
+          "column": 27,
+          "position": 3344
+        },
+        "endLoc": {
+          "line": 438,
+          "column": 26,
+          "position": 3432
+        }
+      },
+      "secondFile": {
+        "name": "src/auth/token_store.rs",
+        "start": 400,
+        "end": 407,
+        "startLoc": {
+          "line": 400,
+          "column": 29,
+          "position": 3008
+        },
+        "endLoc": {
+          "line": 407,
+          "column": 4,
+          "position": 3096
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 8,
+      "fragment": ");\n\n        #[cfg(unix)]\n        {\n            use std::os::unix::fs::MetadataExt;\n            let meta = std::fs::metadata(&path).unwrap();\n            let mode = meta.mode() & 0o777;\n            assert_eq!(mode, 0o600, \"expected 0o600, got 0o{mode:o}\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/auth/token_store.rs",
+        "start": 640,
+        "end": 647,
+        "startLoc": {
+          "line": 640,
+          "column": 21,
+          "position": 4944
+        },
+        "endLoc": {
+          "line": 647,
+          "column": 33,
+          "position": 5023
+        }
+      },
+      "secondFile": {
+        "name": "src/commands/auth.rs",
+        "start": 544,
+        "end": 553,
+        "startLoc": {
+          "line": 544,
+          "column": 30,
+          "position": 4718
+        },
+        "endLoc": {
+          "line": 553,
+          "column": 57,
+          "position": 4800
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 8,
+      "fragment": ", t, t + 3600);\n        let app = build_app_with_guard(auth_state(&key, true), |req, next| {\n            Box::pin(require_write(req, next))\n        });\n\n        let (status, body) = send(app, Some(&jwt)).await;\n\n        assert_eq!(status, StatusCode::OK",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/auth/middleware.rs",
+        "start": 328,
+        "end": 335,
+        "startLoc": {
+          "line": 328,
+          "column": 6,
+          "position": 2777
+        },
+        "endLoc": {
+          "line": 335,
+          "column": 3,
+          "position": 2875
+        }
+      },
+      "secondFile": {
+        "name": "src/auth/middleware.rs",
+        "start": 312,
+        "end": 319,
+        "startLoc": {
+          "line": 312,
+          "column": 5,
+          "position": 2592
+        },
+        "endLoc": {
+          "line": 319,
+          "column": 10,
+          "position": 2690
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 8,
+      "fragment": ") -> (\n    std::sync::Arc<crate::store::StoreBackend>,\n    std::path::PathBuf,\n    tempfile::TempDir,\n) {\n    let dir = tempfile::tempdir().unwrap();\n    let data_dir = dir.path().to_path_buf();\n    let store = crate::store::StoreBackend::open_metadata",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/test_helpers.rs",
+        "start": 80,
+        "end": 87,
+        "startLoc": {
+          "line": 80,
+          "column": 1,
+          "position": 643
+        },
+        "endLoc": {
+          "line": 87,
+          "column": 14,
+          "position": 742
+        }
+      },
+      "secondFile": {
+        "name": "src/test_helpers.rs",
+        "start": 61,
+        "end": 68,
+        "startLoc": {
+          "line": 61,
+          "column": 1,
+          "position": 460
+        },
+        "endLoc": {
+          "line": 68,
+          "column": 5,
+          "position": 559
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 13,
+      "fragment": "() {\n        let dir = tempfile::tempdir().unwrap();\n        let store = crate::store::StoreBackend::open(dir.path(), 384, false)\n            .await\n            .unwrap();\n        let store = Arc::new(store);\n\n        store\n            .insert_chunks(vec![make_test_chunk(\"abcdef1234567890\", \"content\")])\n            .await\n            .unwrap();\n\n        let result = resolve_id(&store, \"abcdef1\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/resolve.rs",
+        "start": 234,
+        "end": 246,
+        "startLoc": {
+          "line": 234,
+          "column": 29,
+          "position": 2412
+        },
+        "endLoc": {
+          "line": 246,
+          "column": 10,
+          "position": 2539
+        }
+      },
+      "secondFile": {
+        "name": "src/resolve.rs",
+        "start": 216,
+        "end": 228,
+        "startLoc": {
+          "line": 216,
+          "column": 28,
+          "position": 2241
+        },
+        "endLoc": {
+          "line": 228,
+          "column": 19,
+          "position": 2368
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 8,
+      "fragment": "() {\n        let dir = tempfile::tempdir().unwrap();\n        let store = crate::store::StoreBackend::open(dir.path(), 384, false)\n            .await\n            .unwrap();\n        let store = Arc::new(store);\n\n        let",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/resolve.rs",
+        "start": 252,
+        "end": 259,
+        "startLoc": {
+          "line": 252,
+          "column": 26,
+          "position": 2583
+        },
+        "endLoc": {
+          "line": 259,
+          "column": 4,
+          "position": 2667
+        }
+      },
+      "secondFile": {
+        "name": "src/resolve.rs",
+        "start": 216,
+        "end": 223,
+        "startLoc": {
+          "line": 216,
+          "column": 28,
+          "position": 2241
+        },
+        "endLoc": {
+          "line": 223,
+          "column": 6,
+          "position": 2325
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 8,
+      "fragment": "() {\n        let target_dir = TempDir::new().unwrap();\n        let source_dir = TempDir::new().unwrap();\n\n        init(target_dir.path()).unwrap();\n        init(source_dir.path()).unwrap();\n\n        // Add same custom to both",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/perspective.rs",
+        "start": 417,
+        "end": 424,
+        "startLoc": {
+          "line": 417,
+          "column": 33,
+          "position": 3900
+        },
+        "endLoc": {
+          "line": 424,
+          "column": 27,
+          "position": 3976
+        }
+      },
+      "secondFile": {
+        "name": "src/perspective.rs",
+        "start": 392,
+        "end": 399,
+        "startLoc": {
+          "line": 392,
+          "column": 28,
+          "position": 3650
+        },
+        "endLoc": {
+          "line": 399,
+          "column": 38,
+          "position": 3726
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 8,
+      "fragment": "add(\n            source_dir.path(),\n            Perspective::new(\"emotions\", \"Emotions\", \"Feelings\"),\n        )\n        .unwrap();\n\n        let (added, skipped) = merge_from(target_dir.path(), source_dir.path()).unwrap();\n        assert_eq!(added, 0",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/perspective.rs",
+        "start": 430,
+        "end": 437,
+        "startLoc": {
+          "line": 430,
+          "column": 9,
+          "position": 4017
+        },
+        "endLoc": {
+          "line": 437,
+          "column": 2,
+          "position": 4094
+        }
+      },
+      "secondFile": {
+        "name": "src/perspective.rs",
+        "start": 400,
+        "end": 407,
+        "startLoc": {
+          "line": 400,
+          "column": 9,
+          "position": 3729
+        },
+        "endLoc": {
+          "line": 407,
+          "column": 2,
+          "position": 3806
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 15,
+      "fragment": "StoredBlob {\n            entry: crate::entry::Entry {\n                content: content.to_string(),\n                entry_type: crate::chunk::EntryType::Raw,\n                source: \"test\".to_string(),\n                created_at: 0,\n                perspectives: vec![],\n                relations: vec![],\n                summarizes: vec![],\n                heading: None,\n                parent_id: None,\n                impression_hint: None,\n                impression_strength: 1.0,\n                expires_at: None,\n                visibility: \"default\"",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/blob_store.rs",
+        "start": 178,
+        "end": 192,
+        "startLoc": {
+          "line": 178,
+          "column": 9,
+          "position": 1551
+        },
+        "endLoc": {
+          "line": 192,
+          "column": 10,
+          "position": 1680
+        }
+      },
+      "secondFile": {
+        "name": "src/commands/merge.rs",
+        "start": 224,
+        "end": 238,
+        "startLoc": {
+          "line": 224,
+          "column": 2,
+          "position": 1952
+        },
+        "endLoc": {
+          "line": 238,
+          "column": 9,
+          "position": 2081
+        }
+      }
+    },
+    {
+      "format": "rust",
+      "lines": 7,
+      "fragment": ";\n        let store = MockStore::new(vec![chunk]);\n        let config = AgingConfig::default();\n        let result = apply_aging(&store, &config).await.unwrap();\n        assert_eq!(result.degraded_count, 0);\n    }\n}",
+      "tokens": 0,
+      "firstFile": {
+        "name": "src/aging.rs",
+        "start": 475,
+        "end": 481,
+        "startLoc": {
+          "line": 475,
+          "column": 2,
+          "position": 4000
+        },
+        "endLoc": {
+          "line": 481,
+          "column": 2,
+          "position": 4075
+        }
+      },
+      "secondFile": {
+        "name": "src/aging.rs",
+        "start": 439,
+        "end": 446,
+        "startLoc": {
+          "line": 439,
+          "column": 2,
+          "position": 3613
+        },
+        "endLoc": {
+          "line": 446,
+          "column": 15,
+          "position": 3690
+        }
+      }
+    }
+  ]
+}
