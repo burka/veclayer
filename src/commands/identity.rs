@@ -1,6 +1,6 @@
 //! Identity management commands — init and show.
 
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
 use std::path::Path;
 
 use owo_colors::{OwoColorize, Stream};
