@@ -76,7 +76,7 @@ pub fn from_config(config: &EmbedderConfig) -> Result<Box<dyn Embedder + Send + 
         }
         #[cfg(not(feature = "embedding-local"))]
         EmbedderConfig::FastEmbed { .. } => Err(crate::Error::config(
-            "FastEmbed embedder requires the 'embedding-local' feature flag",
+            "FastEmbed embedder requires the 'embedding-local' feature flag. Configure an external embedder instead: `veclayer setup ollama --apply`",
         )),
         #[cfg(feature = "llm")]
         EmbedderConfig::Ollama {
@@ -86,7 +86,7 @@ pub fn from_config(config: &EmbedderConfig) -> Result<Box<dyn Embedder + Send + 
         } => Ok(Box::new(OllamaEmbedder::new(model, base_url, *dimension)?)),
         #[cfg(not(feature = "llm"))]
         EmbedderConfig::Ollama { .. } => Err(crate::Error::config(
-            "Ollama embedder requires the 'llm' feature flag",
+            "Ollama embedder requires the 'llm' feature flag. Build with default features or `--features llm`",
         )),
     }
 }

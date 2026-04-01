@@ -135,13 +135,30 @@ dimension = {dimension}\n"
 
 pub fn setup_ollama() {
     println!("## Local Ollama Embedding Setup\n");
-    println!("VecLayer already supports external embedding providers.");
-    println!(
-        "This setup keeps VecLayer working out of the box by leaving the default build unchanged,"
-    );
-    println!(
-        "but configures this installation to use a local Ollama server instead of FastEmbed.\n"
-    );
+    println!("Ollama is the default embedding provider. This setup helps you configure it.\n");
+
+    #[cfg(feature = "llm")]
+    {
+        use crate::ollama_discover;
+        println!("Status:");
+        if let Some(info) = ollama_discover::detect_ollama() {
+            println!("  \u{2713} Ollama running at {}", info.base_url);
+            if let Some(model) = info.best_embedding_model() {
+                println!("  \u{2713} Embedding model available: {model}");
+            } else {
+                println!("  \u{2717} No embedding model found");
+                println!();
+                println!("Recommended:  ollama pull {DEFAULT_OLLAMA_EMBED_MODEL}");
+            }
+        } else {
+            println!("  \u{2717} Ollama not running at {DEFAULT_OLLAMA_BASE_URL}");
+            println!("  \u{2717} No embedding model found");
+            println!();
+            println!("Recommended:  ollama pull {DEFAULT_OLLAMA_EMBED_MODEL}");
+        }
+        println!();
+    }
+
     println!("1. Install and start Ollama.");
     println!("2. Pull the embedding model:");
     println!("   ollama pull {DEFAULT_OLLAMA_EMBED_MODEL}\n");

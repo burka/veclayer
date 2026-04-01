@@ -98,9 +98,11 @@ impl OllamaEmbedder {
 
         if !status.is_success() {
             return Err(Error::embedding(format!(
-                "Ollama API error {}: {}",
+                "Ollama API error {}: {}\nHint: ensure the model '{}' is pulled — run `ollama pull {}`",
                 status,
-                String::from_utf8_lossy(&bytes)
+                String::from_utf8_lossy(&bytes),
+                self.model,
+                self.model,
             )));
         }
 

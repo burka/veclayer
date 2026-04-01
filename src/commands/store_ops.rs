@@ -28,6 +28,24 @@ pub fn init(cwd: &Path, data_dir: &Path, share: bool) -> Result<()> {
         return Ok(());
     }
 
+    #[cfg(feature = "llm")]
+    {
+        use crate::ollama_discover;
+        use crate::util::DEFAULT_OLLAMA_EMBED_MODEL;
+        if let Some(info) = ollama_discover::detect_ollama() {
+            if let Some(model) = info.best_embedding_model() {
+                println!("\nEmbedding: Ollama ({model} @ {})", info.base_url);
+            } else {
+                println!("\nEmbedding: Ollama running but no embedding model found.");
+                println!("  Recommended:  ollama pull {DEFAULT_OLLAMA_EMBED_MODEL}");
+            }
+        } else {
+            println!("\nEmbedding: No Ollama detected at localhost:11434");
+            println!("  Install Ollama and pull an embedding model:");
+            println!("    ollama pull {DEFAULT_OLLAMA_EMBED_MODEL}");
+        }
+    }
+
     println!("\nNext steps:");
     println!("  veclayer store ./docs      # Store files");
     println!("  veclayer store \"text\"      # Store inline text");
