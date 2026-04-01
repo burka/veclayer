@@ -107,6 +107,7 @@ async fn spawn_auth_server(auto_approve: bool) -> (String, TempDir, SigningKey) 
     let state = AppState {
         store,
         embedder,
+        embedder_config: veclayer::config::EmbedderConfig::default(),
         blob_store,
         data_dir: tmp.path().to_path_buf(),
         project: None,
@@ -633,6 +634,7 @@ async fn test_backward_compat_no_auth() {
     let state = AppState {
         store,
         embedder,
+        embedder_config: veclayer::config::EmbedderConfig::default(),
         blob_store,
         data_dir: tmp.path().to_path_buf(),
         project: None,

@@ -34,6 +34,7 @@ async fn spawn_server_with_state(
     let state = AppState {
         store,
         embedder,
+        embedder_config: veclayer::config::EmbedderConfig::default(),
         blob_store,
         data_dir: tmp.path().to_path_buf(),
         project,

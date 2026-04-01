@@ -120,6 +120,13 @@ pub fn setup() {
     println!("  veclayer setup claude --apply --global");
     println!("      Merge configuration into ~/.claude/settings.json (all projects).");
     println!();
+    println!("  veclayer setup openclaw");
+    println!("      Print the OpenClaw MCP server configuration snippet.");
+    println!();
+    println!("  veclayer setup openclaw --apply");
+    println!("      Merge configuration into ~/.openclaw/openclaw.json.");
+    println!("      Safe to run on an existing file — preserves all current settings.");
+    println!();
     println!("Run `veclayer setup <target> --help` for details on what gets configured.");
 }
 
@@ -585,6 +592,150 @@ fn print_action(label: &str, added: bool, skipped: bool) {
 }
 
 // ---------------------------------------------------------------------------
+// veclayer setup openclaw (no --apply)
+// ---------------------------------------------------------------------------
+
+/// Build the canonical OpenClaw MCP server configuration block.
+pub fn openclaw_config() -> Value {
+    json!({
+        "mcp": {
+            "servers": {
+                "veclayer": openclaw_server_entry()
+            }
+        }
+    })
+}
+
+/// Print the OpenClaw configuration snippet with explanation.
+pub fn setup_openclaw() {
+    println!("## OpenClaw Memory Integration\n");
+    println!("VecLayer provides persistent, hierarchical vector memory for OpenClaw via MCP.\n");
+
+    #[cfg(feature = "llm")]
+    {
+        use crate::ollama_discover;
+        println!("Status:");
+        if let Some(info) = ollama_discover::detect_ollama() {
+            println!("  \u{2713} Ollama running at {}", info.base_url);
+            if let Some(model) = info.best_embedding_model() {
+                println!("  \u{2713} Embedding model available: {model}");
+            } else {
+                println!("  \u{2717} No embedding model found");
+                println!();
+                println!("Recommended:  ollama pull {DEFAULT_OLLAMA_EMBED_MODEL}");
+            }
+        } else {
+            println!("  \u{2717} Ollama not running at {DEFAULT_OLLAMA_BASE_URL}");
+            println!("  \u{2717} No embedding model found");
+            println!();
+            println!("Recommended:  ollama pull {DEFAULT_OLLAMA_EMBED_MODEL}");
+        }
+        println!();
+    }
+
+    let config = openclaw_config();
+    let json_str = serde_json::to_string_pretty(&config).expect("serialisation is infallible");
+
+    println!("Add this to your OpenClaw config (~/.openclaw/openclaw.json):\n");
+    println!("```json");
+    println!("{json_str}");
+    println!("```\n");
+    println!("To apply automatically:");
+    println!("  veclayer setup openclaw --apply");
+}
+
+// ---------------------------------------------------------------------------
+// veclayer setup openclaw --apply
+// ---------------------------------------------------------------------------
+
+/// Resolve the OpenClaw config file path.
+///
+/// Priority: `$OPENCLAW_CONFIG_PATH` → `$OPENCLAW_STATE_DIR/openclaw.json`
+/// → `~/.openclaw/openclaw.json`.
+fn openclaw_config_path() -> Result<std::path::PathBuf> {
+    if let Ok(path) = std::env::var("OPENCLAW_CONFIG_PATH") {
+        return Ok(std::path::PathBuf::from(path));
+    }
+    if let Ok(state_dir) = std::env::var("OPENCLAW_STATE_DIR") {
+        return Ok(std::path::PathBuf::from(state_dir).join("openclaw.json"));
+    }
+    let home = std::env::var("HOME").map_err(|_| {
+        crate::Error::config("HOME not set — cannot determine OpenClaw config path")
+    })?;
+    Ok(std::path::PathBuf::from(home)
+        .join(".openclaw")
+        .join("openclaw.json"))
+}
+
+/// The veclayer MCP server entry for OpenClaw configs.
+fn openclaw_server_entry() -> Value {
+    json!({ "command": "veclayer", "args": ["serve", "--mcp-stdio"] })
+}
+
+/// Merge veclayer MCP server entry into an existing OpenClaw config value.
+///
+/// Pure function — no file I/O — so it can be unit-tested directly.
+/// Returns `(merged, added)` where `added` is `true` when the entry was
+/// inserted and `false` when it was already present.
+pub fn merge_openclaw_config(existing: Value) -> Result<(Value, bool)> {
+    let mut root = match existing {
+        Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+
+    let mcp = root.entry("mcp").or_insert_with(|| json!({}));
+    let mcp = mcp
+        .as_object_mut()
+        .ok_or_else(|| crate::Error::config("openclaw.json: 'mcp' must be a JSON object"))?;
+
+    let servers = mcp.entry("servers").or_insert_with(|| json!({}));
+    let servers = servers.as_object_mut().ok_or_else(|| {
+        crate::Error::config("openclaw.json: 'mcp.servers' must be a JSON object")
+    })?;
+
+    if servers.contains_key(VECLAYER_MCP_KEY) {
+        return Ok((Value::Object(root), false));
+    }
+
+    servers.insert(VECLAYER_MCP_KEY.to_string(), openclaw_server_entry());
+    Ok((Value::Object(root), true))
+}
+
+/// Write merged OpenClaw config to a specific file path.
+///
+/// Extracted so tests can call this directly with a deterministic path
+/// instead of relying on environment variables (which are process-global and
+/// therefore unsafe with parallel tests).
+fn apply_openclaw_to_path(config_path: &Path) -> Result<()> {
+    let existing = read_existing_settings(config_path)?;
+    let (merged, added) = merge_openclaw_config(existing)?;
+    let json_str = serde_json::to_string_pretty(&merged).expect("serialisation is infallible");
+
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(config_path, format!("{json_str}\n"))?;
+
+    if added {
+        println!("Added veclayer MCP server to {}", config_path.display());
+    } else {
+        println!("Already configured, skipping ({}).", config_path.display());
+    }
+
+    Ok(())
+}
+
+/// Apply OpenClaw configuration by merging into `~/.openclaw/openclaw.json`
+/// (or the path resolved by environment variables).
+///
+/// The `cwd` parameter is accepted for API consistency with other apply
+/// functions but is not used — OpenClaw config is always global.
+pub fn setup_openclaw_apply(_cwd: &Path) -> Result<()> {
+    let config_path = openclaw_config_path()?;
+    apply_openclaw_to_path(&config_path)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -958,5 +1109,118 @@ mod tests {
         assert!(content.contains("auth_required = true"));
         assert!(content.contains("[embedder]"));
         assert!(content.contains("type = \"ollama\""));
+    }
+
+    // --- openclaw config structure ---
+
+    #[test]
+    fn test_openclaw_config_structure() {
+        let config = openclaw_config();
+        assert!(config["mcp"]["servers"]["veclayer"].is_object());
+        assert_eq!(config["mcp"]["servers"]["veclayer"]["command"], "veclayer");
+        let args = config["mcp"]["servers"]["veclayer"]["args"]
+            .as_array()
+            .unwrap();
+        assert_eq!(args[0], "serve");
+        assert_eq!(args[1], "--mcp-stdio");
+    }
+
+    // --- openclaw merge helpers ---
+
+    #[test]
+    fn test_merge_openclaw_config_into_empty() {
+        let (result, added) = merge_openclaw_config(json!({})).unwrap();
+        assert!(added);
+        assert!(result["mcp"]["servers"]["veclayer"].is_object());
+    }
+
+    #[test]
+    fn test_merge_openclaw_config_idempotent() {
+        let (first, added_first) = merge_openclaw_config(json!({})).unwrap();
+        assert!(added_first);
+        let (second, added_second) = merge_openclaw_config(first.clone()).unwrap();
+        assert!(!added_second);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn test_merge_openclaw_config_preserves_existing() {
+        let existing = json!({
+            "model": "gpt-4",
+            "mcp": {
+                "servers": {
+                    "other-tool": { "command": "other", "args": [] }
+                }
+            }
+        });
+        let (result, added) = merge_openclaw_config(existing).unwrap();
+        assert!(added);
+        assert_eq!(result["model"], "gpt-4");
+        assert!(result["mcp"]["servers"]["other-tool"].is_object());
+        assert!(result["mcp"]["servers"]["veclayer"].is_object());
+    }
+
+    #[test]
+    fn test_merge_openclaw_config_rejects_non_object_mcp() {
+        let result = merge_openclaw_config(json!({"mcp": null}));
+        assert!(result.is_err());
+        let result = merge_openclaw_config(json!({"mcp": 42}));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_merge_openclaw_config_rejects_non_object_servers() {
+        let result = merge_openclaw_config(json!({"mcp": {"servers": "bad"}}));
+        assert!(result.is_err());
+    }
+
+    // --- openclaw apply file I/O ---
+    // These tests call `apply_openclaw_to_path` directly to avoid setting
+    // process-global env vars, which would race with parallel tests.
+
+    #[test]
+    fn test_setup_openclaw_apply_creates_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_path = dir.path().join("openclaw.json");
+
+        let result = apply_openclaw_to_path(&config_path);
+
+        assert!(result.is_ok());
+        assert!(config_path.exists());
+
+        let content = fs::read_to_string(&config_path).unwrap();
+        let parsed: Value = serde_json::from_str(&content).unwrap();
+        assert!(parsed["mcp"]["servers"]["veclayer"].is_object());
+    }
+
+    #[test]
+    fn test_setup_openclaw_apply_idempotent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_path = dir.path().join("openclaw.json");
+
+        apply_openclaw_to_path(&config_path).unwrap();
+        let content_first = fs::read_to_string(&config_path).unwrap();
+        apply_openclaw_to_path(&config_path).unwrap();
+        let content_second = fs::read_to_string(&config_path).unwrap();
+
+        assert_eq!(content_first, content_second, "apply must be idempotent");
+    }
+
+    #[test]
+    fn test_setup_openclaw_apply_preserves_existing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_path = dir.path().join("openclaw.json");
+        fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&json!({"model": "gpt-4"})).unwrap(),
+        )
+        .unwrap();
+
+        apply_openclaw_to_path(&config_path).unwrap();
+
+        let content = fs::read_to_string(&config_path).unwrap();
+        let parsed: Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["model"], "gpt-4", "existing field must be preserved");
+        assert!(parsed["mcp"]["servers"]["veclayer"].is_object());
     }
 }

@@ -17,6 +17,7 @@ async fn open_state(tmp: &TempDir) -> AppState {
     AppState {
         store,
         embedder,
+        embedder_config: veclayer::config::EmbedderConfig::default(),
         blob_store,
         data_dir: tmp.path().to_path_buf(),
         project: None,
@@ -318,6 +319,7 @@ mod auth {
         let state = AppState {
             store,
             embedder,
+            embedder_config: veclayer::config::EmbedderConfig::default(),
             blob_store,
             data_dir: tmp.path().to_path_buf(),
             project: None,

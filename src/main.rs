@@ -10,10 +10,10 @@ use veclayer::commands::{
     add, archive, browse, compact, context, export_entries, focus, history, import_entries, init,
     merge, observe, orientation, perspective_add, perspective_list, perspective_remove,
     print_sources, rebuild_index, reflect, search, serve, setup, setup_claude, setup_claude_apply,
-    setup_ollama, setup_ollama_apply, show_config, stale, status, think_aging_apply,
-    think_aging_configure, think_demote, think_discover, think_prepare, think_promote,
-    think_relate, AddOptions, CompactAction, CompactOptions, ExportOptions, FocusOptions,
-    ImportOptions, MergeOptions, SearchOptions, ServeOptions,
+    setup_ollama, setup_ollama_apply, setup_openclaw, setup_openclaw_apply, show_config, stale,
+    status, think_aging_apply, think_aging_configure, think_demote, think_discover, think_prepare,
+    think_promote, think_relate, AddOptions, CompactAction, CompactOptions, ExportOptions,
+    FocusOptions, ImportOptions, MergeOptions, SearchOptions, ServeOptions,
 };
 #[cfg(feature = "auth")]
 use veclayer::commands::{auth_login, auth_status, auth_token, identity_init, identity_show};
@@ -645,6 +645,28 @@ What gets configured:\n\
         #[arg(long)]
         global: bool,
     },
+
+    /// Configure OpenClaw integration (MCP server)
+    #[command(
+        long_about = "Show or apply the OpenClaw integration configuration.\n\n\
+Without --apply: prints the JSON snippet to add to ~/.openclaw/openclaw.json.\n\
+With --apply:    merges the MCP server entry into ~/.openclaw/openclaw.json,\n\
+                 creating the file if absent and preserving all existing settings.\n\n\
+Config path resolution (first match wins):\n\
+  $OPENCLAW_CONFIG_PATH\n\
+  $OPENCLAW_STATE_DIR/openclaw.json\n\
+  ~/.openclaw/openclaw.json\n\n\
+What gets configured:\n\
+  MCP server:  veclayer serve --mcp-stdio  (tools: recall, store, focus, think …)"
+    )]
+    Openclaw {
+        /// Merge configuration into openclaw.json without clobbering existing settings
+        #[arg(long)]
+        apply: bool,
+        /// Accepted silently for consistency; OpenClaw config is always global
+        #[arg(long)]
+        global: bool,
+    },
 }
 
 /// Clap value parser for impression_strength that enforces the 0.0–1.0 range.
@@ -1147,6 +1169,12 @@ async fn main() -> Result<()> {
                 global,
             }) => {
                 setup_claude_apply(&cwd, global)?;
+            }
+            Some(SetupTarget::Openclaw { apply: false, .. }) => {
+                setup_openclaw();
+            }
+            Some(SetupTarget::Openclaw { apply: true, .. }) => {
+                setup_openclaw_apply(&cwd)?;
             }
         },
         Commands::Observe => {
