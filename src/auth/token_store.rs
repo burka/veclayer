@@ -363,6 +363,20 @@ mod tests {
         (verifier, challenge)
     }
 
+    fn create_test_code(
+        store: &mut TokenStore,
+        client: &RegisteredClient,
+        challenge: &str,
+    ) -> String {
+        store.create_code(
+            &client.client_id,
+            "did:key:zAlice",
+            Capability::Read,
+            "https://example.com/cb",
+            challenge,
+        )
+    }
+
     // ─── Client registry ──────────────────────────────────────────────────────
 
     #[test]
@@ -388,13 +402,7 @@ mod tests {
         let client = store.register_client("App", vec![]);
         let (verifier, challenge) = pkce_pair();
 
-        let code = store.create_code(
-            &client.client_id,
-            "did:key:zAlice",
-            Capability::Read,
-            "https://example.com/cb",
-            &challenge,
-        );
+        let code = create_test_code(&mut store, &client, &challenge);
 
         let consumed = store.consume_code(&code, &verifier).expect("consume");
         assert_eq!(consumed.code, code);
@@ -409,13 +417,7 @@ mod tests {
         let client = store.register_client("App", vec![]);
         let (verifier, challenge) = pkce_pair();
 
-        let code = store.create_code(
-            &client.client_id,
-            "did:key:zAlice",
-            Capability::Read,
-            "https://example.com/cb",
-            &challenge,
-        );
+        let code = create_test_code(&mut store, &client, &challenge);
 
         store.consume_code(&code, &verifier).expect("first consume");
         let err = store.consume_code(&code, &verifier).unwrap_err();
@@ -431,13 +433,7 @@ mod tests {
         let client = store.register_client("App", vec![]);
         let (verifier, challenge) = pkce_pair();
 
-        let code = store.create_code(
-            &client.client_id,
-            "did:key:zAlice",
-            Capability::Read,
-            "https://example.com/cb",
-            &challenge,
-        );
+        let code = create_test_code(&mut store, &client, &challenge);
 
         // Force-expire the code.
         let record = store.codes.get_mut(&code).unwrap();
