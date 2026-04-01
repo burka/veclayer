@@ -17,6 +17,8 @@ use std::time::Duration;
 use reqwest::Client;
 use serde::Deserialize;
 
+use crate::util::DEFAULT_OLLAMA_URL;
+
 /// Preferred chat models, best first. Balances quality, speed, and resource usage.
 const CHAT_MODEL_PRIORITY: &[&str] = &[
     "qwen3.5",     // Best quality/speed ratio (62 tok/s at 9b)
@@ -206,10 +208,9 @@ pub fn detect_ollama() -> Option<OllamaInfo> {
 /// Only `http://` and `https://` schemes are accepted to prevent SSRF.
 /// Invalid values fall back to the default localhost URL.
 pub fn ollama_base_url() -> String {
-    const DEFAULT: &str = "http://localhost:11434";
     match std::env::var("OLLAMA_HOST") {
         Ok(val) if val.starts_with("http://") || val.starts_with("https://") => val,
-        _ => DEFAULT.to_string(),
+        _ => DEFAULT_OLLAMA_URL.to_string(),
     }
 }
 
@@ -315,7 +316,7 @@ mod tests {
 
     fn make_info(chat: &[&str], embed: &[&str]) -> OllamaInfo {
         OllamaInfo {
-            base_url: "http://localhost:11434".to_string(),
+            base_url: DEFAULT_OLLAMA_URL.to_string(),
             chat_models: chat.iter().map(|s| s.to_string()).collect(),
             embedding_models: embed.iter().map(|s| s.to_string()).collect(),
         }
@@ -408,8 +409,7 @@ mod tests {
         // Only check that when OLLAMA_HOST is not set we get the default.
         // We cannot unset env vars reliably in parallel tests, so just verify the
         // fallback path returns the expected string when the var is absent.
-        let url =
-            std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string());
+        let url = std::env::var("OLLAMA_HOST").unwrap_or_else(|_| DEFAULT_OLLAMA_URL.to_string());
         assert!(!url.is_empty());
     }
 
@@ -439,10 +439,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a running Ollama instance at localhost:11434"]
     async fn probe_detects_local_ollama() {
-        let info = probe("http://localhost:11434").await;
+        let info = probe(DEFAULT_OLLAMA_URL).await;
         assert!(info.is_some(), "expected Ollama to be detected");
         let info = info.unwrap();
-        assert_eq!(info.base_url, "http://localhost:11434");
+        assert_eq!(info.base_url, DEFAULT_OLLAMA_URL);
     }
 
     #[tokio::test]

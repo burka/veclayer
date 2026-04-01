@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::auth::capability::Capability;
 use crate::auth::token::{self, Claims};
 use crate::crypto::{keypair, keystore};
-use crate::util::{set_file_mode_600, unix_now};
+use crate::util::{set_file_mode_600, unix_now, SECS_PER_DAY, SECS_PER_HOUR, TOKEN_EXPIRY_SECS};
 use crate::Result;
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -101,13 +101,13 @@ pub fn parse_duration_secs(s: &str) -> Result<u64> {
         let n: u64 = hours
             .parse()
             .map_err(|_| crate::Error::Parse(format!("invalid duration: {s}")))?;
-        return Ok(n * 3600);
+        return Ok(n * SECS_PER_HOUR);
     }
     if let Some(days) = s.strip_suffix('d') {
         let n: u64 = days
             .parse()
             .map_err(|_| crate::Error::Parse(format!("invalid duration: {s}")))?;
-        return Ok(n * 86400);
+        return Ok(n * SECS_PER_DAY);
     }
     s.parse::<u64>()
         .map_err(|_| crate::Error::Parse(format!("invalid duration: {s}")))
@@ -234,23 +234,15 @@ pub async fn auth_login(data_dir: &Path, server_url: &str) -> Result<()> {
         .await
         .map_err(|e| crate::Error::InvalidOperation(format!("metadata parse failed: {e}")))?;
 
-    let device_url = meta
-        .get("device_authorization_endpoint")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            crate::Error::InvalidOperation(
-                "server metadata missing device_authorization_endpoint".to_string(),
-            )
-        })?
-        .to_string();
+    /// Extract a required string field from JSON, returning an error if missing.
+    fn get_str<'a>(json: &'a serde_json::Value, key: &str) -> crate::Result<&'a str> {
+        json.get(key)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| crate::Error::InvalidOperation(format!("server metadata missing {key}")))
+    }
 
-    let token_url = meta
-        .get("token_endpoint")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            crate::Error::InvalidOperation("server metadata missing token_endpoint".to_string())
-        })?
-        .to_string();
+    let device_url = get_str(&meta, "device_authorization_endpoint")?.to_string();
+    let token_url = get_str(&meta, "token_endpoint")?.to_string();
 
     // Dynamic client registration.
     let reg_url = format!("{server_url}/oauth/register");
@@ -271,13 +263,7 @@ pub async fn auth_login(data_dir: &Path, server_url: &str) -> Result<()> {
             crate::Error::InvalidOperation(format!("registration response parse failed: {e}"))
         })?;
 
-    let client_id = reg_resp
-        .get("client_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            crate::Error::InvalidOperation("registration response missing client_id".to_string())
-        })?
-        .to_string();
+    let client_id = get_str(&reg_resp, "client_id")?.to_string();
 
     let config = DeviceFlowConfig {
         device_authorization_url: device_url,
@@ -300,7 +286,7 @@ pub async fn auth_login(data_dir: &Path, server_url: &str) -> Result<()> {
     .map_err(|e| crate::Error::InvalidOperation(e.to_string()))?;
 
     let now = unix_now();
-    let expires_at = now + token_resp.expires_in.unwrap_or(3600);
+    let expires_at = now + token_resp.expires_in.unwrap_or(TOKEN_EXPIRY_SECS);
     let scope = token_resp.scope.clone().unwrap_or_default();
 
     let cached = CachedToken {

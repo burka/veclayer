@@ -1,7 +1,32 @@
-//! Shared utility functions used across modules.
+//! Shared utility functions and constants used across modules.
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+// ─── Well-known URLs ─────────────────────────────────────────────────────────
+
+/// Default base URL for the Ollama API server.
+pub const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
+
+// ─── Ollama defaults ─────────────────────────────────────────────────────────
+
+/// Default Ollama embedding model.
+pub const DEFAULT_OLLAMA_EMBED_MODEL: &str = "nomic-embed-text";
+/// Default Ollama embedding dimension for the default model (768 for nomic-embed-text).
+pub const DEFAULT_OLLAMA_DIMENSION: usize = 768;
+
+// ─── Time constants ───────────────────────────────────────────────────────────
+
+/// Default JWT access token expiry (1 hour in seconds).
+pub const TOKEN_EXPIRY_SECS: u64 = 3_600;
+/// Default refresh token expiry (1 day in seconds).
+pub const REFRESH_EXPIRY_SECS: u64 = 86_400;
+/// Default refresh token max lifetime (30 days in seconds).
+pub const REFRESH_MAX_LIFETIME_SECS: u64 = 2_592_000;
+/// Seconds per hour (conversion factor for duration parsing).
+pub const SECS_PER_HOUR: u64 = 3_600;
+/// Seconds per day (conversion factor for duration parsing).
+pub const SECS_PER_DAY: u64 = 86_400;
 
 /// Truncate `s` to at most `max` bytes, replacing newlines with spaces.
 ///

@@ -116,8 +116,8 @@ impl Default for AuthConfig {
         Self {
             auth_required: false,
             server_url: None,
-            token_expiry_secs: 3600,
-            refresh_expiry_secs: 2_592_000,
+            token_expiry_secs: crate::util::TOKEN_EXPIRY_SECS,
+            refresh_expiry_secs: crate::util::REFRESH_MAX_LIFETIME_SECS,
             auto_approve: false,
         }
     }
@@ -566,11 +566,11 @@ const DEFAULT_SEARCH_TOP_K: usize = 5;
 const DEFAULT_SEARCH_CHILDREN_K: usize = 3;
 const DEFAULT_FASTEMBED_MODEL: &str = "Xenova/bge-small-en-v1.5";
 #[cfg(feature = "config")]
-const DEFAULT_OLLAMA_MODEL: &str = "nomic-embed-text";
+const DEFAULT_OLLAMA_MODEL: &str = crate::util::DEFAULT_OLLAMA_EMBED_MODEL;
 #[cfg(feature = "config")]
-const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
+const DEFAULT_OLLAMA_URL: &str = crate::util::DEFAULT_OLLAMA_URL;
 #[cfg(feature = "config")]
-const DEFAULT_OLLAMA_DIMENSION: usize = 768;
+const DEFAULT_OLLAMA_DIMENSION: usize = crate::util::DEFAULT_OLLAMA_DIMENSION;
 
 /// Summarised result of Ollama auto-discovery, used inside `Config::new()`.
 ///
@@ -768,7 +768,7 @@ impl Config {
             .ok()
             .or_else(|| file_llm.as_ref().and_then(|l| l.base_url.clone()))
             .or_else(|| detected.map(|d| d.base_url.clone()))
-            .unwrap_or_else(|| "http://localhost:11434".to_string());
+            .unwrap_or_else(|| DEFAULT_OLLAMA_URL.to_string());
         if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
             tracing::error!(
                 "LLM base_url must start with http:// or https://, got: {base_url} — \
@@ -965,7 +965,7 @@ impl Default for LlmConfig {
         Self {
             provider: "ollama".to_string(),
             model: "llama3.2".to_string(),
-            base_url: "http://localhost:11434".to_string(),
+            base_url: DEFAULT_OLLAMA_URL.to_string(),
             api_key: None,
             temperature: 0.7,
             max_tokens: 4096,
@@ -1203,9 +1203,9 @@ mod tests {
                 ref model,
                 ref base_url,
                 dimension
-            } if model == "nomic-embed-text"
-                && base_url == "http://localhost:11434"
-                && dimension == 768
+            } if model == DEFAULT_OLLAMA_MODEL
+                && base_url == DEFAULT_OLLAMA_URL
+                && dimension == DEFAULT_OLLAMA_DIMENSION
         ));
     }
 
@@ -1769,8 +1769,11 @@ project = "damalo"
         let auth = AuthConfig::default();
         assert!(!auth.auth_required);
         assert!(auth.server_url.is_none());
-        assert_eq!(auth.token_expiry_secs, 3600);
-        assert_eq!(auth.refresh_expiry_secs, 2_592_000);
+        assert_eq!(auth.token_expiry_secs, crate::util::TOKEN_EXPIRY_SECS);
+        assert_eq!(
+            auth.refresh_expiry_secs,
+            crate::util::REFRESH_MAX_LIFETIME_SECS
+        );
         assert!(!auth.auto_approve);
     }
 

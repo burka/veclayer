@@ -192,12 +192,12 @@ impl Embedder for OllamaEmbedder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::DEFAULT_OLLAMA_URL;
 
     #[tokio::test]
     #[ignore = "requires a running Ollama or TEI service at localhost:11434"]
     async fn test_ollama_embed() {
-        let embedder =
-            OllamaEmbedder::new("nomic-embed-text", "http://localhost:11434", 768).unwrap();
+        let embedder = OllamaEmbedder::new("nomic-embed-text", DEFAULT_OLLAMA_URL, 768).unwrap();
         let texts = vec!["Hello world", "This is a test"];
         let embeddings = embedder.embed(&texts).unwrap();
 
@@ -208,8 +208,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a running Ollama or TEI service at localhost:11434"]
     async fn test_ollama_embed_empty() {
-        let embedder =
-            OllamaEmbedder::new("nomic-embed-text", "http://localhost:11434", 768).unwrap();
+        let embedder = OllamaEmbedder::new("nomic-embed-text", DEFAULT_OLLAMA_URL, 768).unwrap();
         let embeddings = embedder.embed(&[]).unwrap();
         assert!(embeddings.is_empty());
     }
@@ -228,7 +227,7 @@ mod tests {
 
     #[test]
     fn test_new_returns_ok() {
-        let result = OllamaEmbedder::new("model", "http://localhost:11434", 384);
+        let result = OllamaEmbedder::new("model", DEFAULT_OLLAMA_URL, 384);
         assert!(result.is_ok());
     }
 }

@@ -1,4 +1,5 @@
 use super::Summarizer;
+use crate::util::DEFAULT_OLLAMA_URL;
 use crate::{Error, Result};
 
 /// Summarizer using Ollama for local LLM inference.
@@ -15,7 +16,7 @@ impl OllamaSummarizer {
     pub fn new() -> Self {
         Self {
             model: "llama3.2".to_string(),
-            base_url: "http://localhost:11434".to_string(),
+            base_url: DEFAULT_OLLAMA_URL.to_string(),
             client: reqwest::Client::new(),
         }
     }

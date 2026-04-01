@@ -73,8 +73,12 @@ fn write_git_storage_config(data_dir: &Path) -> Result<()> {
 
     if config_path.exists() {
         let mut content = std::fs::read_to_string(&config_path)?;
-        let existing: toml::Value =
-            toml::from_str(&content).unwrap_or(toml::Value::Table(Default::default()));
+        let existing: toml::Value = toml::from_str(&content).map_err(|e| {
+            crate::Error::InvalidOperation(format!(
+                "failed to parse existing {}: {e}",
+                config_path.display()
+            ))
+        })?;
         if existing.get("storage").is_none() {
             content.push_str("\nstorage = \"git\"\n");
         }
@@ -282,12 +286,21 @@ impl std::str::FromStr for OutputMode {
 /// `output` controls the output mode: "text" (human-readable) or "llm-nudge"
 /// Return the OS-temp-dir path of the per-`data_dir` stale-check marker file.
 fn stale_marker_path(data_dir: &Path) -> std::path::PathBuf {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    data_dir.hash(&mut h);
-    let digest = h.finish();
-    std::env::temp_dir().join(format!(".veclayer_stale_{digest:x}"))
+    use sha2::{Digest, Sha256};
+    // Canonicalize the path so symlinks don't cause collisions.
+    let path_str = data_dir
+        .canonicalize()
+        .unwrap_or_else(|_| data_dir.to_path_buf())
+        .to_string_lossy()
+        .to_string();
+    let hash = Sha256::digest(path_str.as_bytes());
+    // First 8 bytes as hex = 16 chars, ample entropy, no extra deps.
+    std::env::temp_dir().join(format!(".veclayer_stale_{}", hex_encode(&hash[..8])))
+}
+
+/// Encode bytes as lowercase hex string.
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 /// (machine-friendly, returns exit code 2 when stale).

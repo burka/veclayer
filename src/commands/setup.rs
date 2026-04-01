@@ -5,11 +5,11 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+use crate::util::{DEFAULT_OLLAMA_DIMENSION, DEFAULT_OLLAMA_EMBED_MODEL, DEFAULT_OLLAMA_URL};
 use crate::Result;
 
-const DEFAULT_OLLAMA_EMBED_MODEL: &str = "nomic-embed-text";
-const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
-const DEFAULT_OLLAMA_DIMENSION: usize = 768;
+/// Alias so existing local references continue to compile.
+const DEFAULT_OLLAMA_BASE_URL: &str = DEFAULT_OLLAMA_URL;
 
 // ---------------------------------------------------------------------------
 // Claude Code configuration constants
@@ -909,7 +909,7 @@ mod tests {
             dir.path(),
             false,
             Some("nomic-embed-text"),
-            Some("http://localhost:11434"),
+            Some(crate::util::DEFAULT_OLLAMA_URL),
             Some(768),
         )
         .unwrap();
