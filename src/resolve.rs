@@ -139,6 +139,16 @@ mod tests {
 
     use crate::test_helpers::make_test_chunk;
 
+    /// Create a temp directory with an open StoreBackend, wrapped in Arc.
+    async fn temp_store() -> (tempfile::TempDir, Arc<crate::store::StoreBackend>) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::StoreBackend::open(dir.path(), 384, false)
+            .await
+            .unwrap();
+        let store = Arc::new(store);
+        (dir, store)
+    }
+
     #[test]
     fn test_parse_temporal_epoch() {
         assert_eq!(parse_temporal("1740000000"), Some(1740000000));
@@ -214,11 +224,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_id_exact_match() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = crate::store::StoreBackend::open(dir.path(), 384, false)
-            .await
-            .unwrap();
-        let store = Arc::new(store);
+        let (_dir, store) = temp_store().await;
 
         store
             .insert_chunks(vec![make_test_chunk("abcdef1234567890", "content")])
@@ -232,11 +238,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_id_prefix_match() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = crate::store::StoreBackend::open(dir.path(), 384, false)
-            .await
-            .unwrap();
-        let store = Arc::new(store);
+        let (_dir, store) = temp_store().await;
 
         store
             .insert_chunks(vec![make_test_chunk("abcdef1234567890", "content")])
@@ -250,11 +252,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_id_not_found() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = crate::store::StoreBackend::open(dir.path(), 384, false)
-            .await
-            .unwrap();
-        let store = Arc::new(store);
+        let (_dir, store) = temp_store().await;
 
         let result = resolve_id(&store, "nonexistent").await;
         assert!(result.is_err());

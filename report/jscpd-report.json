@@ -1,6 +1,6 @@
 {
   "statistics": {
-    "detectionDate": "2026-04-01T21:59:11.664Z",
+    "detectionDate": "2026-04-01T22:01:57.485Z",
     "formats": {
       "rust": {
         "sources": {
@@ -701,14 +701,14 @@
             "newClones": 0
           },
           "src/resolve.rs": {
-            "lines": 283,
-            "tokens": 2947,
+            "lines": 281,
+            "tokens": 2897,
             "sources": 1,
-            "clones": 4,
-            "duplicatedLines": 38,
-            "duplicatedTokens": 422,
-            "percentage": 13.43,
-            "percentageTokens": 14.32,
+            "clones": 0,
+            "duplicatedLines": 0,
+            "duplicatedTokens": 0,
+            "percentage": 0,
+            "percentageTokens": 0,
             "newDuplicatedLines": 0,
             "newClones": 0
           },
@@ -846,28 +846,28 @@
           }
         },
         "total": {
-          "lines": 24597,
-          "tokens": 207217,
+          "lines": 24595,
+          "tokens": 207167,
           "sources": 70,
-          "clones": 40,
-          "duplicatedLines": 290,
-          "duplicatedTokens": 3417,
-          "percentage": 1.18,
-          "percentageTokens": 1.65,
+          "clones": 38,
+          "duplicatedLines": 271,
+          "duplicatedTokens": 3206,
+          "percentage": 1.1,
+          "percentageTokens": 1.55,
           "newDuplicatedLines": 0,
           "newClones": 0
         }
       }
     },
     "total": {
-      "lines": 24597,
-      "tokens": 207217,
+      "lines": 24595,
+      "tokens": 207167,
       "sources": 70,
-      "clones": 40,
-      "duplicatedLines": 290,
-      "duplicatedTokens": 3417,
-      "percentage": 1.18,
-      "percentageTokens": 1.65,
+      "clones": 38,
+      "duplicatedLines": 271,
+      "duplicatedTokens": 3206,
+      "percentage": 1.1,
+      "percentageTokens": 1.55,
       "newDuplicatedLines": 0,
       "newClones": 0
     }
@@ -2094,78 +2094,6 @@
           "line": 68,
           "column": 5,
           "position": 559
-        }
-      }
-    },
-    {
-      "format": "rust",
-      "lines": 13,
-      "fragment": "() {\n        let dir = tempfile::tempdir().unwrap();\n        let store = crate::store::StoreBackend::open(dir.path(), 384, false)\n            .await\n            .unwrap();\n        let store = Arc::new(store);\n\n        store\n            .insert_chunks(vec![make_test_chunk(\"abcdef1234567890\", \"content\")])\n            .await\n            .unwrap();\n\n        let result = resolve_id(&store, \"abcdef1\"",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/resolve.rs",
-        "start": 234,
-        "end": 246,
-        "startLoc": {
-          "line": 234,
-          "column": 29,
-          "position": 2412
-        },
-        "endLoc": {
-          "line": 246,
-          "column": 10,
-          "position": 2539
-        }
-      },
-      "secondFile": {
-        "name": "src/resolve.rs",
-        "start": 216,
-        "end": 228,
-        "startLoc": {
-          "line": 216,
-          "column": 28,
-          "position": 2241
-        },
-        "endLoc": {
-          "line": 228,
-          "column": 19,
-          "position": 2368
-        }
-      }
-    },
-    {
-      "format": "rust",
-      "lines": 8,
-      "fragment": "() {\n        let dir = tempfile::tempdir().unwrap();\n        let store = crate::store::StoreBackend::open(dir.path(), 384, false)\n            .await\n            .unwrap();\n        let store = Arc::new(store);\n\n        let",
-      "tokens": 0,
-      "firstFile": {
-        "name": "src/resolve.rs",
-        "start": 252,
-        "end": 259,
-        "startLoc": {
-          "line": 252,
-          "column": 26,
-          "position": 2583
-        },
-        "endLoc": {
-          "line": 259,
-          "column": 4,
-          "position": 2667
-        }
-      },
-      "secondFile": {
-        "name": "src/resolve.rs",
-        "start": 216,
-        "end": 223,
-        "startLoc": {
-          "line": 216,
-          "column": 28,
-          "position": 2241
-        },
-        "endLoc": {
-          "line": 223,
-          "column": 6,
-          "position": 2325
         }
       }
     },
