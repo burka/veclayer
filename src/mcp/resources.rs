@@ -12,6 +12,7 @@ use rmcp::model::{
 };
 
 use crate::store::{StoreBackend, VectorStore};
+use crate::HierarchicalChunk;
 
 use super::format;
 use super::tools::passes_scope_filter;
@@ -212,19 +213,7 @@ async fn read_recent(
         .take(10)
         .collect();
 
-    if filtered.is_empty() {
-        return Ok(text_resource(uri, "No entries found."));
-    }
-
-    let mut md = String::from("## Recent Entries\n\n");
-    for chunk in &filtered {
-        let heading = chunk.heading.as_deref().unwrap_or("(no heading)");
-        let short = crate::chunk::short_id(&chunk.id);
-        let created = format_epoch(chunk.access_profile.created_at);
-        md.push_str(&format!("- **{heading}** `{short}` — {created}\n"));
-    }
-    md.push_str(&format!("\n_{} entry(ies)._\n", filtered.len()));
-
+    let md = format_entries_list("Recent Entries", &filtered, "No entries found.");
     Ok(text_resource(uri, &md))
 }
 
@@ -284,19 +273,11 @@ async fn read_perspective_entries(
         .take(10)
         .collect();
 
-    let mut md = format!("## Perspective: {perspective_id}\n\n");
-    if filtered.is_empty() {
-        md.push_str("No entries in this perspective.\n");
-    } else {
-        for chunk in &filtered {
-            let heading = chunk.heading.as_deref().unwrap_or("(no heading)");
-            let short = crate::chunk::short_id(&chunk.id);
-            let created = format_epoch(chunk.access_profile.created_at);
-            md.push_str(&format!("- **{heading}** `{short}` — {created}\n"));
-        }
-        md.push_str(&format!("\n_{} entry(ies)._\n", filtered.len()));
-    }
-
+    let md = format_entries_list(
+        &format!("Perspective: {}", perspective_id),
+        &filtered,
+        "No entries in this perspective.",
+    );
     Ok(text_resource(uri, &md))
 }
 
@@ -374,6 +355,26 @@ fn format_epoch(epoch: i64) -> String {
     DateTime::from_timestamp(epoch, 0)
         .map(|dt: DateTime<Utc>| dt.format("%Y-%m-%d %H:%M UTC").to_string())
         .unwrap_or_else(|| "(unknown)".to_string())
+}
+
+/// Format a list of entries as a markdown section.
+fn format_entries_list(
+    title: &str,
+    chunks: &[HierarchicalChunk],
+    empty_msg: &str,
+) -> String {
+    if chunks.is_empty() {
+        return format!("## {title}\n\n{empty_msg}\n");
+    }
+    let mut md = format!("## {title}\n\n");
+    for chunk in chunks {
+        let heading = chunk.heading.as_deref().unwrap_or("(no heading)");
+        let short = crate::chunk::short_id(&chunk.id);
+        let created = format_epoch(chunk.access_profile.created_at);
+        md.push_str(&format!("- **{heading}** `{short}` — {created}\n"));
+    }
+    md.push_str(&format!("\n_{} entry(ies)._\n", chunks.len()));
+    md
 }
 
 #[cfg(all(test, feature = "store-lance"))]
