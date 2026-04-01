@@ -46,6 +46,18 @@ async fn compact_rotate(data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Print a section header followed by a separator line.
+fn print_section_header(title: impl std::fmt::Display) {
+    println!(
+        "{}",
+        title.if_supports_color(Stream::Stdout, |s| s.bold())
+    );
+    println!(
+        "{}",
+        "=".repeat(60).if_supports_color(Stream::Stdout, |s| s.dimmed())
+    );
+}
+
 /// Salience: compute and display salience scores.
 async fn compact_salience(data_dir: &Path, options: &CompactOptions) -> Result<()> {
     let store = StoreBackend::open_metadata(data_dir, true).await?;
@@ -60,16 +72,7 @@ async fn compact_salience(data_dir: &Path, options: &CompactOptions) -> Result<(
     let weights = crate::salience::SalienceWeights::default();
     let top = crate::salience::top_salient(&hot, &weights, options.limit);
 
-    println!(
-        "{}",
-        format!("Salience report (top {}):", top.len())
-            .if_supports_color(Stream::Stdout, |s| s.bold())
-    );
-    println!(
-        "{}",
-        "=".repeat(60)
-            .if_supports_color(Stream::Stdout, |s| s.dimmed())
-    );
+    print_section_header(format!("Salience report (top {}):", top.len()));
     for (idx, score) in &top {
         let chunk = &hot[*idx];
         println!(
@@ -122,20 +125,11 @@ async fn compact_archive_candidates(data_dir: &Path, options: &CompactOptions) -
         return Ok(());
     }
 
-    println!(
-        "{}",
-        format!(
-            "Archive candidates ({}, threshold {:.2}):",
-            candidates.len(),
-            options.archive_threshold
-        )
-        .if_supports_color(Stream::Stdout, |s| s.bold())
-    );
-    println!(
-        "{}",
-        "=".repeat(60)
-            .if_supports_color(Stream::Stdout, |s| s.dimmed())
-    );
+    print_section_header(format!(
+        "Archive candidates ({}, threshold {:.2}):",
+        candidates.len(),
+        options.archive_threshold
+    ));
     for chunk in &candidates {
         let score = crate::salience::compute(chunk, &weights);
         println!(

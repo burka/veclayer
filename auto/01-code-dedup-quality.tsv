@@ -19,3 +19,13 @@ round	timestamp	metric_before	metric_after	delta	status	description	commit
 17	2026-04-02T00:15:00Z	41 clones, 306l/24594t (1.24%)	40 clones, 290l/24597t (1.18%)	-16l, -1 clone, -0.06%	keep	Auth: extract load_signing_key_with_passphrase helper	64de685
 18	2026-04-02T00:25:00Z	40 clones, 290l/24597t (1.18%)	38 clones, 271l/24595t (1.10%)	-19l, -2 clones, -0.08%	keep	Resolve: extract async temp_store() helper	07a2b24
 19	2026-04-02T00:35:00Z	38 clones, 271l/24595t (1.10%)	36 clones, 257l/24581t (1.05%)	-14l, -2 clones, -0.05%	keep	Perspective: extract temp_perspective_pair helper	9d11404
+20	2026-04-02T00:45:00Z	36 clones, 257l/24581t (1.05%)	36 clones, 257l/24581t (1.05%)	0l, 0 clones, 0%	discard	Think: refactor seed_store discard pattern (no metric change)	9cee47c
+21	2026-04-02T00:55:00Z	36 clones, 257l/24581t (1.05%)	35 clones, 248l/24581t (1.01%)	-9l, -1 clone, -0.04%	keep	Token_store: extract code_test_harness helper	0f23ba5
+22	2026-04-02T01:05:00Z	35 clones, 248l/24581t (1.01%)	34 clones, 237l/24581t (0.96%)	-11l, -1 clone, -0.05%	keep	Token_store: extract check_refresh_record helper	6a6feb7
+23	2026-04-02T01:15:00Z	34 clones, 237l/24581t (0.96%)	31 clones, 222l/24581t (0.90%)	-15l, -3 clones, -0.06%	keep	Embed_worker: extract batch_harness_fixed helper	042e411
+24	2026-04-02T01:25:00Z	31 clones, 222l/24581t (0.90%)	30 clones, 217l/24581t (0.88%)	-5l, -1 clone, -0.02%	keep	Keystore: extract tamper_with_field helper	7ff9906
+25	2026-04-02T01:35:00Z	30 clones, 217l/24581t (0.88%)	29 clones, 209l/24581t (0.85%)	-8l, -1 clone, -0.03%	keep	Device_flow: extract poll_err helper	7d5f47e
+26	2026-04-02T01:45:00Z	29 clones, 209l/24581t (0.85%)	27 clones, 190l/24581t (0.77%)	-19l, -2 clones, -0.08%	keep	Merge: extract run_merge_with_force helper	1d306d9
+27	2026-04-02T01:55:00Z	27 clones, 190l/24581t (0.77%)	26 clones, 182l/24581t (0.74%)	-8l, -1 clone, -0.03%	keep	Merge: extract open_first_blob helper	47cad7d
+28	2026-04-02T02:05:00Z	26 clones, 182l/24581t (0.74%)	25 clones, 174l/24581t (0.71%)	-8l, -1 clone, -0.03%	keep	Sync: use existing test_chunk helpers in migrate-filter tests	4f81a4c
+29	2026-04-02T02:15:00Z	25 clones, 174l/24581t (0.71%)	24 clones, 166l/24581t (0.68%)	-8l, -1 clone, -0.03%	keep	Reflect: extract print_section_header helper to dedupe salience/archive output header	4f81a4c
