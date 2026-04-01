@@ -390,6 +390,17 @@ mod tests {
         crate::config::EmbedderConfig::default()
     }
 
+    /// Helper: create a metadata store and call read() with default config.
+    async fn read_test(uri: &str) -> Result<ReadResourceResult, rmcp::ErrorData> {
+        let dir = TempDir::new().unwrap();
+        let store = std::sync::Arc::new(
+            crate::store::StoreBackend::open_metadata(dir.path(), false)
+                .await
+                .unwrap(),
+        );
+        read(uri, &store, dir.path(), None, None, &default_embedder_config()).await
+    }
+
     // ── static_resources ────────────────────────────────────────────────
 
     #[test]
@@ -501,21 +512,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_rejects_non_veclayer_uri() {
-        let dir = TempDir::new().unwrap();
-        let store = std::sync::Arc::new(
-            crate::store::StoreBackend::open_metadata(dir.path(), false)
-                .await
-                .unwrap(),
-        );
-        let result = read(
-            "https://example.com/foo",
-            &store,
-            dir.path(),
-            None,
-            None,
-            &default_embedder_config(),
-        )
-        .await;
+        let result = read_test("https://example.com/foo").await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(format!("{:?}", err).contains("veclayer://"));
@@ -523,42 +520,13 @@ mod tests {
 
     #[tokio::test]
     async fn read_rejects_unknown_path() {
-        let dir = TempDir::new().unwrap();
-        let store = std::sync::Arc::new(
-            crate::store::StoreBackend::open_metadata(dir.path(), false)
-                .await
-                .unwrap(),
-        );
-        let result = read(
-            "veclayer://unknown_path_xyz",
-            &store,
-            dir.path(),
-            None,
-            None,
-            &default_embedder_config(),
-        )
-        .await;
+        let result = read_test("veclayer://unknown_path_xyz").await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn read_status_returns_markdown() {
-        let dir = TempDir::new().unwrap();
-        let store = std::sync::Arc::new(
-            crate::store::StoreBackend::open_metadata(dir.path(), false)
-                .await
-                .unwrap(),
-        );
-        let result = read(
-            "veclayer://status",
-            &store,
-            dir.path(),
-            None,
-            None,
-            &default_embedder_config(),
-        )
-        .await
-        .unwrap();
+        let result = read_test("veclayer://status").await.unwrap();
         let text = extract_text(&result);
         assert!(text.contains("## Store Status"));
     }
@@ -589,22 +557,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_perspectives_returns_default_perspectives() {
-        let dir = TempDir::new().unwrap();
-        let store = std::sync::Arc::new(
-            crate::store::StoreBackend::open_metadata(dir.path(), false)
-                .await
-                .unwrap(),
-        );
-        let result = read(
-            "veclayer://perspectives",
-            &store,
-            dir.path(),
-            None,
-            None,
-            &default_embedder_config(),
-        )
-        .await
-        .unwrap();
+        let result = read_test("veclayer://perspectives").await.unwrap();
         let text = extract_text(&result);
         assert!(text.contains("## Perspectives"));
         assert!(text.contains("decisions"));
