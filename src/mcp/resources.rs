@@ -386,6 +386,12 @@ mod tests {
         crate::config::EmbedderConfig::default()
     }
 
+    /// Helper: call read() and extract text (assumes success).
+    async fn read_text(uri: &str) -> String {
+        let result = read_test(uri, default_embedder_config()).await.unwrap();
+        extract_text(&result)
+    }
+
     /// Helper: create a metadata store and call read() with the given embedder config.
     async fn read_test(
         uri: &str,
@@ -581,10 +587,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_status_returns_markdown() {
-        let result = read_test("veclayer://status", default_embedder_config())
-            .await
-            .unwrap();
-        let text = extract_text(&result);
+        let text = read_text("veclayer://status").await;
         assert!(text.contains("## Store Status"));
     }
 
@@ -606,10 +609,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_perspectives_returns_default_perspectives() {
-        let result = read_test("veclayer://perspectives", default_embedder_config())
-            .await
-            .unwrap();
-        let text = extract_text(&result);
+        let text = read_text("veclayer://perspectives").await;
         assert!(text.contains("## Perspectives"));
         assert!(text.contains("decisions"));
     }
