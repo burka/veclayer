@@ -248,6 +248,19 @@ mod tests {
             .collect()
     }
 
+    /// Helper: create pipeline with summarizer and return (updated_chunks, summaries).
+    async fn setup_pipeline_summaries(
+        summarizer_text: &str,
+        num_chunks: usize,
+    ) -> (Vec<HierarchicalChunk>, Vec<HierarchicalChunk>) {
+        let embedder = MockEmbedder::new(384);
+        let summarizer = MockSummarizer::new(summarizer_text);
+        let pipeline =
+            ClusterPipeline::with_summarizer(embedder, summarizer).with_min_cluster_size(2);
+        let chunks = create_test_chunks(num_chunks);
+        pipeline.process(chunks).await.unwrap()
+    }
+
     #[test]
     fn test_pipeline_creation() {
         let embedder = MockEmbedder::new(384);
@@ -387,13 +400,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipeline_summary_has_embedding() {
-        let embedder = MockEmbedder::new(384);
-        let summarizer = MockSummarizer::new("Test summary content");
-        let pipeline =
-            ClusterPipeline::with_summarizer(embedder, summarizer).with_min_cluster_size(2);
-
-        let chunks = create_test_chunks(6);
-        let (_, summaries) = pipeline.process(chunks).await.unwrap();
+        let (_, summaries) = setup_pipeline_summaries("Test summary content", 6).await;
 
         for summary in &summaries {
             assert!(
@@ -435,13 +442,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipeline_summary_chunk_structure() {
-        let embedder = MockEmbedder::new(384);
-        let summarizer = MockSummarizer::new("Cluster summary text");
-        let pipeline =
-            ClusterPipeline::with_summarizer(embedder, summarizer).with_min_cluster_size(2);
-
-        let chunks = create_test_chunks(6);
-        let (_, summaries) = pipeline.process(chunks).await.unwrap();
+        let (_, summaries) = setup_pipeline_summaries("Cluster summary text", 6).await;
 
         for summary in &summaries {
             // Verify summary structure
