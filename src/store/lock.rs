@@ -74,7 +74,9 @@ impl FileLock {
                             )));
                         }
                         std::thread::sleep(wait);
-                        wait = std::time::Duration::from_millis((wait.as_millis() as u64 * 2).min(320));
+                        wait = std::time::Duration::from_millis(
+                            (wait.as_millis() as u64 * 2).min(320),
+                        );
                     } else {
                         return Err(e);
                     }

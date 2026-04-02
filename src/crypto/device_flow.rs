@@ -68,7 +68,7 @@ pub struct TokenResponse {
 }
 
 /// Error during the device authorization flow.
-#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, thiserror::Error)]
 pub enum DeviceFlowError {
     #[error("device authorization request failed: {0}")]
     AuthorizationRequest(String),
@@ -452,7 +452,7 @@ mod tests {
         let err = rt
             .block_on(poll_for_token(&config, "dev_code", &http))
             .unwrap_err();
-        assert!(matches!(err, expected));
+        assert_eq!(err, expected);
     }
 
     #[test]

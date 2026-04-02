@@ -297,10 +297,7 @@ mod tests {
 
     #[test]
     fn check_hooks_configured_returns_true_when_present() {
-        let tmp = with_claude_settings(
-            "settings.json",
-            r#"{"hooks":{"PreCompact":[]}}"#,
-        );
+        let tmp = with_claude_settings("settings.json", r#"{"hooks":{"PreCompact":[]}}"#);
         assert!(check_hooks_configured(tmp.path()));
     }
 
@@ -315,19 +312,13 @@ mod tests {
 
     #[test]
     fn check_hooks_configured_true_for_settings_local_json() {
-        let tmp = with_claude_settings(
-            "settings.local.json",
-            r#"{"hooks":{"PreCompact":[]}}"#,
-        );
+        let tmp = with_claude_settings("settings.local.json", r#"{"hooks":{"PreCompact":[]}}"#);
         assert!(check_hooks_configured(tmp.path()));
     }
 
     #[test]
     fn check_hooks_configured_ignores_unrelated_content() {
-        let tmp = with_claude_settings(
-            "settings.json",
-            r#"{"permissions":{"allow":["Bash"]}}"#,
-        );
+        let tmp = with_claude_settings("settings.json", r#"{"permissions":{"allow":["Bash"]}}"#);
         assert!(!check_hooks_configured(tmp.path()));
     }
 

@@ -269,7 +269,7 @@ mod tests {
             ..Default::default()
         };
         merge(target, source, &opts).await?;
-        Ok(BlobStore::open(target)?)
+        BlobStore::open(target)
     }
 
     /// Open target store and return (store, first blob).

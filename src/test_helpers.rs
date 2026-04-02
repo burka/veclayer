@@ -1,7 +1,6 @@
 /// Shared test helpers for use across all test modules.
 ///
 /// This module is compiled only when running tests.
-
 #[cfg(test)]
 use crate::store::VectorStore;
 
@@ -72,8 +71,7 @@ pub(crate) async fn test_store_with_chunks(
 ///
 /// For use with read-only store operations that don't require full embeddings.
 #[cfg(test)]
-pub(crate) async fn test_store_meta(
-) -> (
+pub(crate) async fn test_store_meta() -> (
     std::sync::Arc<crate::store::StoreBackend>,
     std::path::PathBuf,
     tempfile::TempDir,
@@ -112,10 +110,5 @@ pub(crate) fn assert_file_mode_600(path: &std::path::Path, context: &str) {
     use std::os::unix::fs::MetadataExt;
     let meta = std::fs::metadata(path).unwrap();
     let mode = meta.mode() & 0o777;
-    assert_eq!(
-        mode,
-        0o600,
-        "{}: expected 0o600, got 0o{mode:o}",
-        context
-    );
+    assert_eq!(mode, 0o600, "{}: expected 0o600, got 0o{mode:o}", context);
 }

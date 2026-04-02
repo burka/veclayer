@@ -48,13 +48,11 @@ async fn compact_rotate(data_dir: &Path) -> Result<()> {
 
 /// Print a section header followed by a separator line.
 fn print_section_header(title: impl std::fmt::Display) {
+    println!("{}", title.if_supports_color(Stream::Stdout, |s| s.bold()));
     println!(
         "{}",
-        title.if_supports_color(Stream::Stdout, |s| s.bold())
-    );
-    println!(
-        "{}",
-        "=".repeat(60).if_supports_color(Stream::Stdout, |s| s.dimmed())
+        "=".repeat(60)
+            .if_supports_color(Stream::Stdout, |s| s.dimmed())
     );
 }
 

@@ -73,7 +73,8 @@ pub(crate) async fn identity_show_with_passphrase(
     data_dir: &Path,
     passphrase: Option<&str>,
 ) -> Result<()> {
-    let signing_key = crate::commands::auth::load_signing_key_with_passphrase(data_dir, passphrase)?;
+    let signing_key =
+        crate::commands::auth::load_signing_key_with_passphrase(data_dir, passphrase)?;
     let verifying_key = signing_key.verifying_key();
     let did = keypair::to_did(&verifying_key);
     let path = keystore::keystore_path(data_dir);

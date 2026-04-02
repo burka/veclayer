@@ -404,7 +404,11 @@ mod tests {
         let ((_target_dir, target_path), (_source_dir, source_path)) = temp_perspective_pair();
 
         // Add a custom perspective to source
-        add(&source_path, Perspective::new("emotions", "Emotions", "Feelings")).unwrap();
+        add(
+            &source_path,
+            Perspective::new("emotions", "Emotions", "Feelings"),
+        )
+        .unwrap();
 
         let (added, skipped) = merge_from(&target_path, &source_path).unwrap();
         assert_eq!(added, 1);
@@ -421,8 +425,16 @@ mod tests {
         let ((_target_dir, target_path), (_source_dir, source_path)) = temp_perspective_pair();
 
         // Add same custom to both
-        add(&target_path, Perspective::new("emotions", "Emotions", "Feelings")).unwrap();
-        add(&source_path, Perspective::new("emotions", "Emotions", "Feelings")).unwrap();
+        add(
+            &target_path,
+            Perspective::new("emotions", "Emotions", "Feelings"),
+        )
+        .unwrap();
+        add(
+            &source_path,
+            Perspective::new("emotions", "Emotions", "Feelings"),
+        )
+        .unwrap();
 
         let (added, skipped) = merge_from(&target_path, &source_path).unwrap();
         assert_eq!(added, 0);

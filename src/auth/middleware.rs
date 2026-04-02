@@ -308,7 +308,13 @@ mod tests {
     #[tokio::test]
     async fn test_capability_enforcement_read_token_blocks_write_route() {
         let key = generate_key();
-        check_require_write(&key, Capability::Read, StatusCode::FORBIDDEN, &["need write", "have read"]).await;
+        check_require_write(
+            &key,
+            Capability::Read,
+            StatusCode::FORBIDDEN,
+            &["need write", "have read"],
+        )
+        .await;
     }
 
     #[tokio::test]

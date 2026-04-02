@@ -211,7 +211,11 @@ mod tests {
     /// Shared harness for process_batch tests with FixedEmbedder.
     async fn batch_harness_fixed(
         dir: &std::path::Path,
-    ) -> (Arc<StoreBackend>, Arc<BlobStore>, Arc<dyn crate::Embedder + Send + Sync>) {
+    ) -> (
+        Arc<StoreBackend>,
+        Arc<BlobStore>,
+        Arc<dyn crate::Embedder + Send + Sync>,
+    ) {
         let (store, blob_store) = make_store_and_blobs(dir).await;
         let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
         (store, blob_store, embedder)

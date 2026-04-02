@@ -309,7 +309,11 @@ mod tests {
         save(&signing_key, "pass", &path).unwrap();
 
         // Tamper with the DID field.
-        tamper_with_field(&path, "did", serde_json::Value::String("did:key:z6MkTampered".to_string()));
+        tamper_with_field(
+            &path,
+            "did",
+            serde_json::Value::String("did:key:z6MkTampered".to_string()),
+        );
 
         let err = load("pass", &path).unwrap_err();
         assert!(

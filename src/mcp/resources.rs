@@ -337,11 +337,7 @@ fn format_epoch(epoch: i64) -> String {
 }
 
 /// Format a list of entries as a markdown section.
-fn format_entries_list(
-    title: &str,
-    chunks: &[HierarchicalChunk],
-    empty_msg: &str,
-) -> String {
+fn format_entries_list(title: &str, chunks: &[HierarchicalChunk], empty_msg: &str) -> String {
     if chunks.is_empty() {
         return format!("## {title}\n\n{empty_msg}\n");
     }
@@ -357,9 +353,9 @@ fn format_entries_list(
 }
 
 /// List and filter entries from the store (shared between read_recent and read_perspective_entries).
-async fn list_filtered_entries<'a>(
+async fn list_filtered_entries(
     store: &StoreBackend,
-    perspective_ids: &'a [&str],
+    perspective_ids: &[&str],
     project: Option<&str>,
     branch: Option<&str>,
 ) -> Result<Vec<HierarchicalChunk>, rmcp::ErrorData> {
@@ -529,7 +525,9 @@ mod tests {
 
     #[tokio::test]
     async fn read_status_returns_markdown() {
-        let result = read_test("veclayer://status", default_embedder_config()).await.unwrap();
+        let result = read_test("veclayer://status", default_embedder_config())
+            .await
+            .unwrap();
         let text = extract_text(&result);
         assert!(text.contains("## Store Status"));
     }
@@ -552,7 +550,9 @@ mod tests {
 
     #[tokio::test]
     async fn read_perspectives_returns_default_perspectives() {
-        let result = read_test("veclayer://perspectives", default_embedder_config()).await.unwrap();
+        let result = read_test("veclayer://perspectives", default_embedder_config())
+            .await
+            .unwrap();
         let text = extract_text(&result);
         assert!(text.contains("## Perspectives"));
         assert!(text.contains("decisions"));
@@ -578,7 +578,8 @@ mod tests {
 
     #[tokio::test]
     async fn read_hot_returns_entries_when_store_has_data() {
-        let mut chunk = crate::test_helpers::make_test_chunk("hotentry001", "Very important decision");
+        let mut chunk =
+            crate::test_helpers::make_test_chunk("hotentry001", "Very important decision");
         chunk.access_profile.record_access();
         let (store, data_dir, _dir) = test_store_with_chunks(vec![chunk]).await;
 
@@ -599,7 +600,8 @@ mod tests {
 
     #[tokio::test]
     async fn read_hot_with_project_filter_excludes_unscoped() {
-        let mut chunk = crate::test_helpers::make_test_chunk("hotentry002", "Unscoped knowledge entry");
+        let mut chunk =
+            crate::test_helpers::make_test_chunk("hotentry002", "Unscoped knowledge entry");
         chunk.perspectives = vec!["project:other-project".to_string()];
         let (store, data_dir, _dir) = test_store_with_chunks(vec![chunk]).await;
 
@@ -638,10 +640,12 @@ mod tests {
 
     #[tokio::test]
     async fn read_recent_returns_entries_when_store_has_data() {
-        let (store, data_dir, _dir) = test_store_with_chunks(vec![
-            crate::test_helpers::make_test_chunk("recententry01", "Recent knowledge entry"),
-        ])
-        .await;
+        let (store, data_dir, _dir) =
+            test_store_with_chunks(vec![crate::test_helpers::make_test_chunk(
+                "recententry01",
+                "Recent knowledge entry",
+            )])
+            .await;
 
         let text = extract_text(
             &read(
@@ -661,7 +665,8 @@ mod tests {
 
     #[tokio::test]
     async fn read_recent_with_project_filter_excludes_unscoped() {
-        let mut chunk = crate::test_helpers::make_test_chunk("recententry02", "Other project entry");
+        let mut chunk =
+            crate::test_helpers::make_test_chunk("recententry02", "Other project entry");
         chunk.perspectives = vec!["project:other-project".to_string()];
         let (store, data_dir, _dir) = test_store_with_chunks(vec![chunk]).await;
 
@@ -734,7 +739,8 @@ mod tests {
 
     #[tokio::test]
     async fn read_perspective_entries_shows_entries() {
-        let mut chunk = crate::test_helpers::make_test_chunk("perspentry01", "A decision about databases");
+        let mut chunk =
+            crate::test_helpers::make_test_chunk("perspentry01", "A decision about databases");
         chunk.perspectives = vec!["decisions".to_string()];
         let (store, data_dir, _dir) = test_store_with_chunks(vec![chunk]).await;
 
@@ -771,10 +777,12 @@ mod tests {
 
     #[tokio::test]
     async fn read_entry_returns_detail_for_known_entry() {
-        let (store, data_dir, _dir) = test_store_with_chunks(vec![
-            crate::test_helpers::make_test_chunk("abc1230000", "Design decision: use Rust"),
-        ])
-        .await;
+        let (store, data_dir, _dir) =
+            test_store_with_chunks(vec![crate::test_helpers::make_test_chunk(
+                "abc1230000",
+                "Design decision: use Rust",
+            )])
+            .await;
 
         let text = extract_text(
             &read(
