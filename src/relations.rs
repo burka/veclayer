@@ -148,6 +148,28 @@ mod tests {
     use super::*;
     use crate::test_helpers::{make_test_chunk, test_store_with_chunks};
 
+    /// Check if a chunk has a relation with the given kind and target_id.
+    fn assert_chunk_has_relation(
+        chunk: &crate::HierarchicalChunk,
+        kind: &str,
+        target_id: &str,
+        label: &str,
+    ) {
+        assert!(
+            chunk.relations.iter().any(|r| r.kind == kind && r.target_id == target_id),
+            "{label}: expected relation {kind}→{target_id}",
+        );
+    }
+
+    /// Check that a chunk has no relations.
+    fn assert_chunk_no_relations(chunk: &crate::HierarchicalChunk, label: &str) {
+        assert!(
+            chunk.relations.is_empty(),
+            "{label}: expected no relations, got {:?}",
+            chunk.relations
+        );
+    }
+
     // --- validate_relation_kind ---
 
     #[test]
@@ -230,20 +252,8 @@ mod tests {
         let a_chunk = store.get_by_id("cccc000000000000").await.unwrap().unwrap();
         let b_chunk = store.get_by_id("dddd000000000000").await.unwrap().unwrap();
 
-        assert!(
-            a_chunk
-                .relations
-                .iter()
-                .any(|r| r.kind == "related_to" && r.target_id == "dddd000000000000"),
-            "expected forward related_to on source"
-        );
-        assert!(
-            b_chunk
-                .relations
-                .iter()
-                .any(|r| r.kind == "related_to" && r.target_id == "cccc000000000000"),
-            "expected backward related_to on target"
-        );
+        assert_chunk_has_relation(&a_chunk, "related_to", "dddd000000000000", "source");
+        assert_chunk_has_relation(&b_chunk, "related_to", "cccc000000000000", "target");
     }
 
     #[tokio::test]
@@ -263,20 +273,9 @@ mod tests {
             .unwrap();
 
         let source_chunk = store.get_by_id("ffff000000000000").await.unwrap().unwrap();
-        assert!(
-            source_chunk
-                .relations
-                .iter()
-                .any(|r| r.kind == "derived_from" && r.target_id == "eeee000000000000"),
-            "expected derived_from on source"
-        );
-
         let target_chunk = store.get_by_id("eeee000000000000").await.unwrap().unwrap();
-        assert!(
-            target_chunk.relations.is_empty(),
-            "target should have no relations, got: {:?}",
-            target_chunk.relations
-        );
+        assert_chunk_has_relation(&source_chunk, "derived_from", "eeee000000000000", "source");
+        assert_chunk_no_relations(&target_chunk, "target");
     }
 
     #[tokio::test]
@@ -296,18 +295,8 @@ mod tests {
             .unwrap();
 
         let source_chunk = store.get_by_id("1111000000000000").await.unwrap().unwrap();
-        assert!(
-            source_chunk
-                .relations
-                .iter()
-                .any(|r| r.kind == "contradicts" && r.target_id == "2222000000000000"),
-            "expected custom forward relation on source"
-        );
-
         let target_chunk = store.get_by_id("2222000000000000").await.unwrap().unwrap();
-        assert!(
-            target_chunk.relations.is_empty(),
-            "target should have no relations for custom kind"
-        );
+        assert_chunk_has_relation(&source_chunk, "contradicts", "2222000000000000", "source");
+        assert_chunk_no_relations(&target_chunk, "target");
     }
 }
