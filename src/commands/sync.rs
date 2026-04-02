@@ -27,6 +27,23 @@ fn open_memory_store() -> crate::Result<(PathBuf, MemoryStore)> {
     Ok((git_dir, git_store))
 }
 
+/// Open both the LanceDB store and git memory store.
+async fn open_stores(data_dir: &Path) -> crate::Result<(MemoryStore, crate::store::StoreBackend)> {
+    let (_git_dir, git_store) = open_memory_store()?;
+    let store = crate::store::StoreBackend::open_metadata(data_dir, true).await?;
+    Ok((git_store, store))
+}
+
+/// Print help for when no scopes are configured, or a named scope was not found.
+fn print_no_scopes_help(all_scopes: &[ResolvedScope], filter_name: &str) {
+    eprintln!("No scopes configured. Add scopes to your config:");
+    eprintln!("  veclayer init --share    # enable git memory for this project");
+    if !filter_name.is_empty() && !all_scopes.is_empty() {
+        let available: Vec<&str> = all_scopes.iter().map(|s| s.name.as_str()).collect();
+        eprintln!("Scope '{}' not found. Available scopes: {}", filter_name, available.join(", "));
+    }
+}
+
 /// Sync entries from all configured git-backed scopes into the local LanceDB index.
 ///
 /// For each scope with `storage = "git"` (same-repo orphan branch), opens the
@@ -49,27 +66,14 @@ pub async fn sync(
             let matched: Vec<&ResolvedScope> =
                 all_scopes.iter().filter(|s| s.name == name).collect();
             if matched.is_empty() {
-                if all_scopes.is_empty() {
-                    // No scopes at all — exit 0, advisory output to stderr.
-                    eprintln!("No scopes configured. Add scopes to your config:");
-                    eprintln!("  veclayer init --share    # enable git memory for this project");
-                } else {
-                    let available: Vec<&str> = all_scopes.iter().map(|s| s.name.as_str()).collect();
-                    eprintln!(
-                        "Scope '{name}' not found. Available scopes: {}",
-                        available.join(", ")
-                    );
-                }
+                print_no_scopes_help(all_scopes, name);
                 return Ok(());
             }
             matched
         }
         None => {
             if all_scopes.is_empty() {
-                // Exit 0 is intentional: no scopes is a valid "nothing to do" state, not an error.
-                // Print to stderr so scripts can distinguish advisory output from result output.
-                eprintln!("No scopes configured. Add scopes to your config:");
-                eprintln!("  veclayer init --share    # enable git memory for this project");
+                print_no_scopes_help(all_scopes, "");
                 return Ok(());
             }
             all_scopes.iter().collect()
@@ -307,9 +311,7 @@ impl MigrateFilters {
 ///
 /// Entries are filtered by `filters` before writing.
 pub async fn migrate(data_dir: &Path, filters: &MigrateFilters) -> crate::Result<()> {
-    let (_git_dir, git_store) = open_memory_store()?;
-
-    let store = crate::store::StoreBackend::open_metadata(data_dir, true).await?;
+    let (git_store, store) = open_stores(data_dir).await?;
     let all_chunks = store.list_entries(&[], None, None, usize::MAX).await?;
 
     if all_chunks.is_empty() {
@@ -481,9 +483,7 @@ pub async fn push_to_remote() -> crate::Result<()> {
 /// Looks up `id` (or ID prefix) in the local LanceDB store, converts it to an
 /// [`Entry`], and writes it to the git memory branch.
 pub async fn stage_entry(data_dir: &Path, id: &str) -> crate::Result<()> {
-    let (_git_dir, git_store) = open_memory_store()?;
-
-    let store = crate::store::StoreBackend::open_metadata(data_dir, true).await?;
+    let (git_store, store) = open_stores(data_dir).await?;
 
     let chunk = store
         .get_by_id_prefix(id)
