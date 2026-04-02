@@ -400,6 +400,28 @@ mod tests {
         read(uri, &store, dir.path(), None, None, &config).await
     }
 
+    /// Helper: call read() on an already-opened store and extract text.
+    async fn read_and_extract(
+        store: &std::sync::Arc<crate::store::StoreBackend>,
+        data_dir: &std::path::Path,
+        uri: &str,
+        project: Option<&str>,
+        branch: Option<&str>,
+    ) -> String {
+        extract_text(
+            &read(
+                uri,
+                store,
+                data_dir,
+                project,
+                branch,
+                &default_embedder_config(),
+            )
+            .await
+            .unwrap(),
+        )
+    }
+
     // ── static_resources ────────────────────────────────────────────────
 
     #[test]
@@ -722,18 +744,7 @@ mod tests {
     #[tokio::test]
     async fn read_perspective_entries_accepts_builtin_perspective() {
         let (store, data_dir, _dir) = test_store_meta().await;
-        let text = extract_text(
-            &read(
-                "veclayer://perspectives/decisions",
-                &store,
-                &data_dir,
-                None,
-                None,
-                &default_embedder_config(),
-            )
-            .await
-            .unwrap(),
-        );
+        let text = read_and_extract(&store, &data_dir, "veclayer://perspectives/decisions", None, None).await;
         assert!(text.contains("## Perspective: decisions"));
     }
 
@@ -744,18 +755,7 @@ mod tests {
         chunk.perspectives = vec!["decisions".to_string()];
         let (store, data_dir, _dir) = test_store_with_chunks(vec![chunk]).await;
 
-        let text = extract_text(
-            &read(
-                "veclayer://perspectives/decisions",
-                &store,
-                &data_dir,
-                None,
-                None,
-                &default_embedder_config(),
-            )
-            .await
-            .unwrap(),
-        );
+        let text = read_and_extract(&store, &data_dir, "veclayer://perspectives/decisions", None, None).await;
         assert!(text.contains("## Perspective: decisions"));
         assert!(text.contains("entry(ies)"));
     }
