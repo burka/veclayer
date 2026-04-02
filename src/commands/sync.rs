@@ -537,18 +537,6 @@ mod tests {
     use super::*;
     use crate::chunk::{ChunkLevel, HierarchicalChunk};
 
-    /// Create a test chunk with the given perspectives.
-    fn test_chunk_with_perspectives(perspectives: Vec<String>) -> HierarchicalChunk {
-        HierarchicalChunk::new(
-            "content".to_string(),
-            ChunkLevel::H1,
-            None,
-            String::new(),
-            "src.md".to_string(),
-        )
-        .with_perspectives(perspectives)
-    }
-
     /// Create a plain test chunk with no perspectives.
     fn test_chunk() -> HierarchicalChunk {
         HierarchicalChunk::new(
@@ -558,6 +546,11 @@ mod tests {
             String::new(),
             "src.md".to_string(),
         )
+    }
+
+    /// Create a test chunk with the given perspectives.
+    fn test_chunk_with_perspectives(perspectives: Vec<String>) -> HierarchicalChunk {
+        test_chunk().with_perspectives(perspectives)
     }
 
     #[test]
