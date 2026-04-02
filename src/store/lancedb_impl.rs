@@ -176,9 +176,14 @@ impl LanceStore {
             .await
             .map_err(|e| Error::store(format!("Failed to connect to LanceDB: {}", e)))?;
 
+        // If the table already exists, use its dimension to avoid schema mismatches.
+        // This allows opening a store created with a different embedder configuration
+        // (e.g., Ollama 768-dim vs FastEmbed 384-dim) without errors.
+        let effective_dimension = Self::detect_dimension(path).await.unwrap_or(dimension);
+
         let store = Self {
             connection,
-            dimension,
+            dimension: effective_dimension,
             lock_dir,
         };
 
@@ -426,7 +431,8 @@ impl LanceStore {
                 if current_field.data_type() != expected_field.data_type() {
                     return Err(Error::store(format!(
                         "Column '{}' has type {:?} in store but {:?} in this client. \
-                         Store may be from an incompatible version.",
+                         Store was created with a different embedder dimension. \
+                         Run `veclayer rebuild-index` to migrate to the current model.",
                         expected_field.name(),
                         current_field.data_type(),
                         expected_field.data_type()
@@ -572,7 +578,8 @@ impl LanceStore {
             if let Some(ref emb) = chunk.embedding {
                 if emb.len() != self.dimension {
                     return Err(Error::store(format!(
-                        "Embedding dimension mismatch: expected {}, got {}",
+                        "Embedding dimension mismatch: expected {}, got {}. \
+                     Run `veclayer rebuild-index` to re-embed all entries with the current model.",
                         self.dimension,
                         emb.len()
                     )));

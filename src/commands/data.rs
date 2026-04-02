@@ -93,15 +93,38 @@ pub async fn rebuild_index(data_dir: &Path) -> Result<()> {
 
     let model_name = embedder.name();
     let mut count = 0;
+    let mut skipped = 0;
 
     for hash_result in blob_store.iter_hashes() {
         let hash = hash_result?;
         if let Some(blob) = blob_store.get(&hash)? {
             let embedding = match blob.embedding_for_model(model_name) {
-                Some(cached) => cached.to_vec(),
+                Some(cached) if cached.len() == dimension => cached.to_vec(),
+                Some(cached) => {
+                    println!(
+                        "Skipping '{}': cached embedding is {}d but current model uses {}d",
+                        short_id(&blob.entry.content_id()),
+                        cached.len(),
+                        dimension
+                    );
+                    skipped += 1;
+                    continue;
+                }
                 None => {
-                    let vecs = embedder.embed(&[blob.entry.content.as_str()])?;
-                    vecs.into_iter().next().unwrap_or_default()
+                    // Try to re-embed; if it fails (e.g., too large for Ollama context),
+                    // skip the entry so the index build doesn't fail.
+                    match embedder.embed(&[blob.entry.content.as_str()]) {
+                        Ok(mut vecs) => vecs.pop().unwrap_or_default(),
+                        Err(e) => {
+                            println!(
+                                "Skipping '{}': re-embedding failed ({})",
+                                short_id(&blob.entry.content_id()),
+                                e
+                            );
+                            skipped += 1;
+                            continue;
+                        }
+                    }
                 }
             };
             let chunk = crate::HierarchicalChunk::from_entry(&blob.entry, embedding);
@@ -110,7 +133,10 @@ pub async fn rebuild_index(data_dir: &Path) -> Result<()> {
         }
     }
 
-    println!("Rebuilt index: {count} entries from blob store");
+    println!("Rebuilt index: {count} entries");
+    if skipped > 0 {
+        println!("Skipped: {skipped}");
+    }
     Ok(())
 }
 

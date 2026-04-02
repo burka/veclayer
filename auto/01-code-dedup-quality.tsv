@@ -41,7 +41,7 @@ round	timestamp	metric_before	metric_after	delta	status	description	commit
 39	2026-04-02T04:55:00Z	14 clones, 109l/24581t (0.44%)	13 clones, 101l/24581t (0.41%)	-8l, -1 clone, -0.03%	keep	Middleware: extract check_require_write() helper		247cb66
 40	2026-04-02T05:05:00Z	13 clones, 101l/24581t (0.41%)	12 clones, 95l/24581t (0.39%)	-6l, -1 clone, -0.02%	keep	Token_store: refactor test to use existing code_test_harness	d42807c
 41	2026-04-02T05:15:00Z	12 clones, 95l/24581t (0.39%)	11 clones, 89l/24581t (0.36%)	-6l, -1 clone, -0.03%	keep	MCP/mod: extract setup_tmp_store() helper			194f80f
-42	2026-04-02T05:59:09Z	11 clones, 89l/24581t (0.36%)	7 clones, 43l/544t (0.17%)	-46l, -4 clones, -0.19%	keep	MCP/resources: extract read_and_extract helper to dedupe read+extract pattern	cd08448
-43	2026-04-02T06:44:50Z	7 clones, 43l/544t (0.17%)	6 clones, 37l/473t (0.15%)	-6l, -1 clone, -0.02%	keep	Reflect: extract get_stale_chunks_for_test() helper to dedupe stale chunk query	92b81588
-44	2026-04-02T06:46:33Z	6 clones, 37l/473t (0.15%)	5 clones, 31l/390t (0.12%)	-6l, -1 clone, -0.03%	keep	LLM: extract http_error() helper to dedupe Ollama/OpenAI error handling	2551f4b
-45	2026-04-02T06:52:10Z	5 clones, 31l/390t (0.12%)	3 clones, 19l/232t (0.08%)	-12l, -2 clones, -0.04%	keep	MemoryStore+think: extract setup_with_entry and setup_relate_test helpers	7e2630d
+42	2026-04-02T05:59:09Z	11 clones, 89l/24581t (0.36%)	7 clones, 43l/544t (0.17%)	-46l, -4 clones, -0.19%	keep	MCP/resources: extract read_and_extract helper to dedupe read+extract pattern	3a9e925
+43	2026-04-02T06:44:50Z	7 clones, 43l/544t (0.17%)	6 clones, 37l/473t (0.15%)	-6l, -1 clone, -0.02%	keep	Reflect: extract get_stale_chunks_for_test() helper to dedupe stale chunk query	5e71561
+44	2026-04-02T06:46:33Z	6 clones, 37l/473t (0.15%)	5 clones, 31l/390t (0.12%)	-6l, -1 clone, -0.03%	keep	LLM: extract http_error() helper to dedupe Ollama/OpenAI error handling	f284df8
+45	2026-04-02T06:52:10Z	5 clones, 31l/390t (0.12%)	3 clones, 19l/232t (0.08%)	-12l, -2 clones, -0.04%	keep	MemoryStore+think: extract setup_with_entry and setup_relate_test helpers	e2b1e55
