@@ -9,3 +9,5 @@
 veclayer.toml
 .cargo/
 report/
+.claude/scheduled_tasks.json
+.claude/scheduled_tasks.lock
