@@ -308,32 +308,33 @@ mod tests {
     #[tokio::test]
     async fn test_capability_enforcement_read_token_blocks_write_route() {
         let key = generate_key();
-        let t = now();
-        let jwt = mint_token(&key, Capability::Read, t, t + 3600);
-        let app = build_app_with_guard(auth_state(&key, true), |req, next| {
-            Box::pin(require_write(req, next))
-        });
-
-        let (status, body) = send(app, Some(&jwt)).await;
-
-        assert_eq!(status, StatusCode::FORBIDDEN);
-        assert!(body.contains("need write"));
-        assert!(body.contains("have read"));
+        check_require_write(&key, Capability::Read, StatusCode::FORBIDDEN, &["need write", "have read"]).await;
     }
 
     #[tokio::test]
     async fn test_capability_enforcement_write_token_passes_write_route() {
         let key = generate_key();
+        check_require_write(&key, Capability::Write, StatusCode::OK, &["write"]).await;
+    }
+
+    /// Sends a request with the given JWT through the require_write guard and
+    /// asserts the expected status and that the body contains each expected substring.
+    async fn check_require_write(
+        key: &SigningKey,
+        cap: Capability,
+        expected_status: StatusCode,
+        body_checks: &[&str],
+    ) {
         let t = now();
-        let jwt = mint_token(&key, Capability::Write, t, t + 3600);
-        let app = build_app_with_guard(auth_state(&key, true), |req, next| {
+        let jwt = mint_token(key, cap, t, t + 3600);
+        let app = build_app_with_guard(auth_state(key, true), |req, next| {
             Box::pin(require_write(req, next))
         });
-
         let (status, body) = send(app, Some(&jwt)).await;
-
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, "write");
+        assert_eq!(status, expected_status);
+        for check in body_checks {
+            assert!(body.contains(check), "body should contain '{check}'");
+        }
     }
 
     #[tokio::test]
