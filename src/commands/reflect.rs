@@ -181,6 +181,13 @@ mod tests {
         chunk
     }
 
+    /// Open the store in metadata-only mode and query stale chunks.
+    async fn get_stale_chunks_for_test(dir: &Path) -> Result<Vec<crate::HierarchicalChunk>> {
+        let store2 = StoreBackend::open_metadata(dir, true).await?;
+        let aging_config = crate::aging::AgingConfig::default();
+        Ok(store2.get_stale_chunks(aging_config.stale_seconds(), 100).await?)
+    }
+
     // ── compact_salience on populated store ───────────────────────────────────
 
     /// Seeding entries with non-zero `total` access means `get_hot_chunks` returns
@@ -280,11 +287,7 @@ mod tests {
         drop(store);
 
         // The deep_only entry must not appear as a stale candidate.
-        let store2 = StoreBackend::open_metadata(dir.path(), true).await?;
-        let aging_config = crate::aging::AgingConfig::default();
-        let stale = store2
-            .get_stale_chunks(aging_config.stale_seconds(), 100)
-            .await?;
+        let stale = get_stale_chunks_for_test(dir.path()).await?;
 
         let deep_only_count = stale.iter().filter(|c| c.visibility == "deep_only").count();
         assert_eq!(
@@ -311,11 +314,7 @@ mod tests {
         store.insert_chunks(vec![low, high]).await?;
         drop(store);
 
-        let store2 = StoreBackend::open_metadata(dir.path(), true).await?;
-        let aging_config = crate::aging::AgingConfig::default();
-        let stale = store2
-            .get_stale_chunks(aging_config.stale_seconds(), 100)
-            .await?;
+        let stale = get_stale_chunks_for_test(dir.path()).await?;
 
         let weights = crate::salience::SalienceWeights::default();
         let degradable = vec!["normal".to_string()];
