@@ -41,3 +41,4 @@ round	timestamp	metric_before	metric_after	delta	status	description	commit
 39	2026-04-02T04:55:00Z	14 clones, 109l/24581t (0.44%)	13 clones, 101l/24581t (0.41%)	-8l, -1 clone, -0.03%	keep	Middleware: extract check_require_write() helper		247cb66
 40	2026-04-02T05:05:00Z	13 clones, 101l/24581t (0.41%)	12 clones, 95l/24581t (0.39%)	-6l, -1 clone, -0.02%	keep	Token_store: refactor test to use existing code_test_harness	d42807c
 41	2026-04-02T05:15:00Z	12 clones, 95l/24581t (0.39%)	11 clones, 89l/24581t (0.36%)	-6l, -1 clone, -0.03%	keep	MCP/mod: extract setup_tmp_store() helper			194f80f
+42	2026-04-02T15:30:00Z	7 clones, 43l/544t (0.17%)	-	-	current	7 clones remain after prior autoresearch fixes
