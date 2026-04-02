@@ -245,6 +245,20 @@ mod tests {
         Ok(entry)
     }
 
+    /// Opens the metadata store and returns the entry with the given id.
+    async fn get_entry(dir: &Path, id: &str) -> Result<crate::HierarchicalChunk> {
+        let store = StoreBackend::open_metadata(dir, false).await?;
+        let entry = store.get_by_id(id).await?.unwrap();
+        Ok(entry)
+    }
+
+    /// Verify a source entry has exactly one relation of the given kind/target.
+    fn verify_single_relation(entry: &crate::HierarchicalChunk, kind: &str, target_id: &str) {
+        assert_eq!(entry.relations.len(), 1);
+        assert_eq!(entry.relations[0].kind, kind);
+        assert_eq!(entry.relations[0].target_id, target_id);
+    }
+
     #[tokio::test]
     async fn test_think_promote_changes_visibility() -> Result<()> {
         let dir = TempDir::new()?;
@@ -282,9 +296,7 @@ mod tests {
         let _store = seed_store(dir.path()).await;
 
         think_demote(dir.path(), "aaa111", "deep_only").await?;
-
-        let store = StoreBackend::open_metadata(dir.path(), false).await?;
-        let entry = store.get_by_id("aaa111").await?.unwrap();
+        let entry = get_seeded_entry(dir.path()).await?;
         assert_eq!(entry.visibility, "deep_only");
         Ok(())
     }
@@ -295,12 +307,8 @@ mod tests {
         let _store = seed_store(dir.path()).await;
 
         think_relate(dir.path(), "aaa111", "bbb222", "derived_from").await?;
-
-        let store = StoreBackend::open_metadata(dir.path(), false).await?;
-        let source = store.get_by_id("aaa111").await?.unwrap();
-        assert_eq!(source.relations.len(), 1);
-        assert_eq!(source.relations[0].kind, "derived_from");
-        assert_eq!(source.relations[0].target_id, "bbb222");
+        let source = get_entry(dir.path(), "aaa111").await?;
+        verify_single_relation(&source, "derived_from", "bbb222");
         Ok(())
     }
 
@@ -310,17 +318,10 @@ mod tests {
         let _store = seed_store(dir.path()).await;
 
         think_relate(dir.path(), "aaa111", "bbb222", "related_to").await?;
-
-        let store = StoreBackend::open_metadata(dir.path(), false).await?;
-        let source = store.get_by_id("aaa111").await?.unwrap();
-        assert_eq!(source.relations.len(), 1);
-        assert_eq!(source.relations[0].kind, "related_to");
-        assert_eq!(source.relations[0].target_id, "bbb222");
-
-        let target = store.get_by_id("bbb222").await?.unwrap();
-        assert_eq!(target.relations.len(), 1);
-        assert_eq!(target.relations[0].kind, "related_to");
-        assert_eq!(target.relations[0].target_id, "aaa111");
+        let source = get_entry(dir.path(), "aaa111").await?;
+        verify_single_relation(&source, "related_to", "bbb222");
+        let target = get_entry(dir.path(), "bbb222").await?;
+        verify_single_relation(&target, "related_to", "aaa111");
         Ok(())
     }
 
@@ -330,9 +331,7 @@ mod tests {
         let _store = seed_store(dir.path()).await;
 
         think_relate(dir.path(), "aaa111", "bbb222", "derived_from").await?;
-
-        let store = StoreBackend::open_metadata(dir.path(), false).await?;
-        let target = store.get_by_id("bbb222").await?.unwrap();
+        let target = get_entry(dir.path(), "bbb222").await?;
         assert!(
             target.relations.is_empty(),
             "non-related_to should not add backward link"
