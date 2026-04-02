@@ -2628,8 +2628,8 @@ mod tests {
             err_msg
         );
         assert!(
-            err_msg.contains("incompatible"),
-            "Error should mention incompatibility: {}",
+            err_msg.contains("different"),
+            "Error should mention different schema: {}",
             err_msg
         );
     }
