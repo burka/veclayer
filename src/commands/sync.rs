@@ -787,8 +787,7 @@ mod tests {
     fn test_print_entry_list_entry_with_heading_and_perspectives() {
         use crate::entry::Entry;
 
-        let chunk =
-            test_chunk_with_perspectives(vec!["decisions".to_string(), "knowledge".to_string()]);
+        let chunk = test_chunk_with_perspectives(vec!["decisions".to_string(), "knowledge".to_string()]);
 
         let entry = Entry::from_chunk(&chunk);
         // Should not panic
