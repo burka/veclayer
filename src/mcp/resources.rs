@@ -422,6 +422,44 @@ mod tests {
         )
     }
 
+    /// Helper: read from a fresh metadata store.
+    async fn read_from_meta_store(uri: &str) -> String {
+        let (store, data_dir, _dir) = test_store_meta().await;
+        read_and_extract(&store, &data_dir, uri, None, None).await
+    }
+
+    /// Helper: read from a store pre-populated with chunks.
+    async fn read_from_store_with_chunks(uri: &str, chunks: Vec<HierarchicalChunk>) -> String {
+        let (store, data_dir, _dir) = test_store_with_chunks(chunks).await;
+        read_and_extract(&store, &data_dir, uri, None, None).await
+    }
+
+    /// Helper: read from a store pre-populated with chunks, with optional filters.
+    async fn read_from_store_with_chunks_filtered(
+        uri: &str,
+        chunks: Vec<HierarchicalChunk>,
+        project: Option<&str>,
+        branch: Option<&str>,
+    ) -> String {
+        let (store, data_dir, _dir) = test_store_with_chunks(chunks).await;
+        read_and_extract(&store, &data_dir, uri, project, branch).await
+    }
+
+    /// Helper: expect an error when reading from a fresh metadata store.
+    async fn read_err_from_meta_store(uri: &str) -> rmcp::ErrorData {
+        let (store, data_dir, _dir) = test_store_meta().await;
+        read(
+            uri,
+            &store,
+            &data_dir,
+            None,
+            None,
+            &default_embedder_config(),
+        )
+        .await
+        .unwrap_err()
+    }
+
     // ── static_resources ────────────────────────────────────────────────
 
     #[test]
@@ -466,21 +504,38 @@ mod tests {
         assert!(uris.contains(&"veclayer://identity".to_string()));
     }
 
+    fn assert_resource_has_audience(r: &Resource) {
+        let has_audience = r
+            .annotations
+            .as_ref()
+            .and_then(|a| a.audience.as_ref())
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
+        assert!(
+            has_audience,
+            "Resource '{}' should have audience set",
+            r.raw.uri
+        );
+    }
+
+    fn assert_template_has_audience(t: &ResourceTemplate) {
+        let has_audience = t
+            .annotations
+            .as_ref()
+            .and_then(|a| a.audience.as_ref())
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
+        assert!(
+            has_audience,
+            "Template '{}' should have audience",
+            t.raw.uri_template
+        );
+    }
+
     #[test]
     fn static_resources_have_audience_set() {
-        let resources = static_resources();
-        for r in &resources {
-            let has_audience = r
-                .annotations
-                .as_ref()
-                .and_then(|a| a.audience.as_ref())
-                .map(|a| !a.is_empty())
-                .unwrap_or(false);
-            assert!(
-                has_audience,
-                "Resource '{}' should have audience set",
-                r.raw.uri
-            );
+        for r in &static_resources() {
+            assert_resource_has_audience(r);
         }
     }
 
@@ -515,17 +570,7 @@ mod tests {
     #[test]
     fn templates_have_audience_set() {
         for t in templates() {
-            let has_audience = t
-                .annotations
-                .as_ref()
-                .and_then(|a| a.audience.as_ref())
-                .map(|a| !a.is_empty())
-                .unwrap_or(false);
-            assert!(
-                has_audience,
-                "Template '{}' should have audience",
-                t.raw.uri_template
-            );
+            assert_template_has_audience(&t);
         }
     }
 
@@ -582,19 +627,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_hot_returns_no_entries_when_store_empty() {
-        let (store, data_dir, _dir) = test_store_meta().await;
-        let text = extract_text(
-            &read(
-                "veclayer://hot",
-                &store,
-                &data_dir,
-                None,
-                None,
-                &default_embedder_config(),
-            )
-            .await
-            .unwrap(),
-        );
+        let text = read_from_meta_store("veclayer://hot").await;
         assert!(text.contains("No entries"));
     }
 
@@ -603,20 +636,7 @@ mod tests {
         let mut chunk =
             crate::test_helpers::make_test_chunk("hotentry001", "Very important decision");
         chunk.access_profile.record_access();
-        let (store, data_dir, _dir) = test_store_with_chunks(vec![chunk]).await;
-
-        let text = extract_text(
-            &read(
-                "veclayer://hot",
-                &store,
-                &data_dir,
-                None,
-                None,
-                &default_embedder_config(),
-            )
-            .await
-            .unwrap(),
-        );
+        let text = read_from_store_with_chunks("veclayer://hot", vec![chunk]).await;
         assert!(!text.contains("No entries"));
     }
 
@@ -625,62 +645,32 @@ mod tests {
         let mut chunk =
             crate::test_helpers::make_test_chunk("hotentry002", "Unscoped knowledge entry");
         chunk.perspectives = vec!["project:other-project".to_string()];
-        let (store, data_dir, _dir) = test_store_with_chunks(vec![chunk]).await;
-
-        let text = extract_text(
-            &read(
-                "veclayer://hot",
-                &store,
-                &data_dir,
-                Some("my-project"),
-                None,
-                &default_embedder_config(),
-            )
-            .await
-            .unwrap(),
-        );
+        let text = read_from_store_with_chunks_filtered(
+            "veclayer://hot",
+            vec![chunk],
+            Some("my-project"),
+            None,
+        )
+        .await;
         assert!(text.contains("No entries"));
     }
 
     #[tokio::test]
     async fn read_recent_returns_no_entries_when_store_empty() {
-        let (store, data_dir, _dir) = test_store_meta().await;
-        let text = extract_text(
-            &read(
-                "veclayer://recent",
-                &store,
-                &data_dir,
-                None,
-                None,
-                &default_embedder_config(),
-            )
-            .await
-            .unwrap(),
-        );
+        let text = read_from_meta_store("veclayer://recent").await;
         assert!(text.contains("No entries"));
     }
 
     #[tokio::test]
     async fn read_recent_returns_entries_when_store_has_data() {
-        let (store, data_dir, _dir) =
-            test_store_with_chunks(vec![crate::test_helpers::make_test_chunk(
+        let text = read_from_store_with_chunks(
+            "veclayer://recent",
+            vec![crate::test_helpers::make_test_chunk(
                 "recententry01",
                 "Recent knowledge entry",
-            )])
-            .await;
-
-        let text = extract_text(
-            &read(
-                "veclayer://recent",
-                &store,
-                &data_dir,
-                None,
-                None,
-                &default_embedder_config(),
-            )
-            .await
-            .unwrap(),
-        );
+            )],
+        )
+        .await;
         assert!(text.contains("## Recent Entries"));
         assert!(text.contains("entry(ies)"));
     }
@@ -690,68 +680,32 @@ mod tests {
         let mut chunk =
             crate::test_helpers::make_test_chunk("recententry02", "Other project entry");
         chunk.perspectives = vec!["project:other-project".to_string()];
-        let (store, data_dir, _dir) = test_store_with_chunks(vec![chunk]).await;
-
-        let text = extract_text(
-            &read(
-                "veclayer://recent",
-                &store,
-                &data_dir,
-                Some("my-project"),
-                None,
-                &default_embedder_config(),
-            )
-            .await
-            .unwrap(),
-        );
+        let text = read_from_store_with_chunks_filtered(
+            "veclayer://recent",
+            vec![chunk],
+            Some("my-project"),
+            None,
+        )
+        .await;
         assert!(text.contains("No entries found"));
     }
 
     #[tokio::test]
     async fn read_identity_returns_no_identity_when_store_empty() {
-        let (store, data_dir, _dir) = test_store_meta().await;
-        let text = extract_text(
-            &read(
-                "veclayer://identity",
-                &store,
-                &data_dir,
-                None,
-                None,
-                &default_embedder_config(),
-            )
-            .await
-            .unwrap(),
-        );
+        let text = read_from_meta_store("veclayer://identity").await;
         // Empty store → no identity data
         assert!(!text.is_empty());
     }
 
     #[tokio::test]
     async fn read_perspective_entries_rejects_unknown_perspective() {
-        let (store, data_dir, _dir) = test_store_meta().await;
-        let result = read(
-            "veclayer://perspectives/nonexistent_xyz",
-            &store,
-            &data_dir,
-            None,
-            None,
-            &default_embedder_config(),
-        )
-        .await;
-        assert!(result.is_err());
+        let result = read_err_from_meta_store("veclayer://perspectives/nonexistent_xyz").await;
+        assert!(result.message.contains("not found") || result.message.contains("Perspective"));
     }
 
     #[tokio::test]
     async fn read_perspective_entries_accepts_builtin_perspective() {
-        let (store, data_dir, _dir) = test_store_meta().await;
-        let text = read_and_extract(
-            &store,
-            &data_dir,
-            "veclayer://perspectives/decisions",
-            None,
-            None,
-        )
-        .await;
+        let text = read_from_meta_store("veclayer://perspectives/decisions").await;
         assert!(text.contains("## Perspective: decisions"));
     }
 
@@ -760,14 +714,9 @@ mod tests {
         let mut chunk =
             crate::test_helpers::make_test_chunk("perspentry01", "A decision about databases");
         chunk.perspectives = vec!["decisions".to_string()];
-        let (store, data_dir, _dir) = test_store_with_chunks(vec![chunk]).await;
-
-        let text = read_and_extract(
-            &store,
-            &data_dir,
+        let text = read_from_store_with_chunks(
             "veclayer://perspectives/decisions",
-            None,
-            None,
+            vec![chunk],
         )
         .await;
         assert!(text.contains("## Perspective: decisions"));
@@ -776,40 +725,20 @@ mod tests {
 
     #[tokio::test]
     async fn read_entry_returns_error_for_unknown_id() {
-        let (store, data_dir, _dir) = test_store_meta().await;
-        let result = read(
-            "veclayer://entries/nonexistent000",
-            &store,
-            &data_dir,
-            None,
-            None,
-            &default_embedder_config(),
-        )
-        .await;
-        assert!(result.is_err());
+        let result = read_err_from_meta_store("veclayer://entries/nonexistent000").await;
+        assert!(result.message.contains("not found") || result.message.contains("Entry"));
     }
 
     #[tokio::test]
     async fn read_entry_returns_detail_for_known_entry() {
-        let (store, data_dir, _dir) =
-            test_store_with_chunks(vec![crate::test_helpers::make_test_chunk(
+        let text = read_from_store_with_chunks(
+            "veclayer://entries/abc1230000",
+            vec![crate::test_helpers::make_test_chunk(
                 "abc1230000",
                 "Design decision: use Rust",
-            )])
-            .await;
-
-        let text = extract_text(
-            &read(
-                "veclayer://entries/abc1230000",
-                &store,
-                &data_dir,
-                None,
-                None,
-                &default_embedder_config(),
-            )
-            .await
-            .unwrap(),
-        );
+            )],
+        )
+        .await;
         assert!(text.contains("Design decision: use Rust"));
     }
 
