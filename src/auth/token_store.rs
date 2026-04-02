@@ -394,11 +394,7 @@ mod tests {
 
     #[test]
     fn test_create_and_consume_code() {
-        let (_dir, mut store) = tmp_store();
-        let client = store.register_client("App", vec![]);
-        let (verifier, challenge) = pkce_pair();
-
-        let code = create_test_code(&mut store, &client, &challenge);
+        let (_dir, mut store, verifier, code) = code_test_harness();
 
         let consumed = store.consume_code(&code, &verifier).expect("consume");
         assert_eq!(consumed.code, code);
