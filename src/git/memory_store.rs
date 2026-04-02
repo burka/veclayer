@@ -574,6 +574,14 @@ mod tests {
         }
     }
 
+    /// Set up a MemoryStore with a stored sample entry, returning both.
+    fn setup_with_entry(git_dir: &Path) -> (MemoryStore, Entry) {
+        let store = MemoryStore::open(git_dir, Some("test-memory")).unwrap();
+        let entry = sample_entry();
+        store.store_entry(&entry).unwrap();
+        (store, entry)
+    }
+
     // -----------------------------------------------------------------------
     // test_open_creates_branch
     // -----------------------------------------------------------------------
@@ -693,10 +701,7 @@ mod tests {
     #[test]
     fn test_load_with_embeddings() {
         let (_dir, git_dir) = setup_test_repo();
-        let store = MemoryStore::open(&git_dir, Some("test-memory")).unwrap();
-
-        let entry = sample_entry();
-        store.store_entry(&entry).unwrap();
+        let (store, entry) = setup_with_entry(&git_dir);
 
         let model = "test-model";
         let vector: Vec<f32> = (0..8).map(|i| i as f32 * 0.1).collect();
@@ -727,10 +732,7 @@ mod tests {
     #[test]
     fn test_gc_removes_orphaned_embeddings() {
         let (_dir, git_dir) = setup_test_repo();
-        let store = MemoryStore::open(&git_dir, Some("test-memory")).unwrap();
-
-        let entry = sample_entry();
-        store.store_entry(&entry).unwrap();
+        let (store, entry) = setup_with_entry(&git_dir);
 
         let model = "gc-model";
         let vector: Vec<f32> = (0..4).map(|i| i as f32 * 0.5).collect();

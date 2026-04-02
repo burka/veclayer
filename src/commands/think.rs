@@ -259,6 +259,14 @@ mod tests {
         assert_eq!(entry.relations[0].target_id, target_id);
     }
 
+    /// Set up TempDir, seed store, call think_relate, return dir.
+    async fn setup_relate_test(id1: &str, id2: &str, relation: &str) -> Result<TempDir> {
+        let dir = TempDir::new()?;
+        let _store = seed_store(dir.path()).await;
+        think_relate(dir.path(), id1, id2, relation).await?;
+        Ok(dir)
+    }
+
     #[tokio::test]
     async fn test_think_promote_changes_visibility() -> Result<()> {
         let dir = TempDir::new()?;
@@ -303,10 +311,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_think_relate_adds_forward_relation() -> Result<()> {
-        let dir = TempDir::new()?;
-        let _store = seed_store(dir.path()).await;
-
-        think_relate(dir.path(), "aaa111", "bbb222", "derived_from").await?;
+        let dir = setup_relate_test("aaa111", "bbb222", "derived_from").await?;
         let source = get_entry(dir.path(), "aaa111").await?;
         verify_single_relation(&source, "derived_from", "bbb222");
         Ok(())
@@ -314,10 +319,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_think_relate_bidirectional_for_related_to() -> Result<()> {
-        let dir = TempDir::new()?;
-        let _store = seed_store(dir.path()).await;
-
-        think_relate(dir.path(), "aaa111", "bbb222", "related_to").await?;
+        let dir = setup_relate_test("aaa111", "bbb222", "related_to").await?;
         let source = get_entry(dir.path(), "aaa111").await?;
         verify_single_relation(&source, "related_to", "bbb222");
         let target = get_entry(dir.path(), "bbb222").await?;
@@ -327,10 +329,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_think_relate_no_backward_for_derived_from() -> Result<()> {
-        let dir = TempDir::new()?;
-        let _store = seed_store(dir.path()).await;
-
-        think_relate(dir.path(), "aaa111", "bbb222", "derived_from").await?;
+        let dir = setup_relate_test("aaa111", "bbb222", "derived_from").await?;
         let target = get_entry(dir.path(), "bbb222").await?;
         assert!(
             target.relations.is_empty(),
