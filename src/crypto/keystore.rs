@@ -70,6 +70,12 @@ pub fn exists(path: &Path) -> bool {
     path.exists()
 }
 
+/// Derive a key from a passphrase and salt, then create an AES-GCM cipher.
+fn derive_and_make_cipher(passphrase: &str, salt: &[u8]) -> Result<Aes256Gcm, CryptoError> {
+    let derived_key = Zeroizing::new(derive_key(passphrase, salt)?);
+    Ok(Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&*derived_key)))
+}
+
 /// Persist an encrypted signing key to disk.
 ///
 /// The file is created with mode `0o600` on Unix (owner read/write only),
@@ -85,8 +91,7 @@ pub fn save(signing_key: &SigningKey, passphrase: &str, path: &Path) -> Result<(
     OsRng.fill_bytes(&mut salt);
     OsRng.fill_bytes(&mut nonce_bytes);
 
-    let derived_key = Zeroizing::new(derive_key(passphrase, &salt)?);
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&*derived_key));
+    let cipher = derive_and_make_cipher(passphrase, &salt)?;
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher
@@ -165,8 +170,7 @@ pub fn load(passphrase: &str, path: &Path) -> Result<SigningKey, CryptoError> {
         .decode(&envelope.ciphertext)
         .map_err(|e| CryptoError::Keystore(format!("base64 decode (ciphertext): {e}")))?;
 
-    let derived_key = Zeroizing::new(derive_key(passphrase, &salt)?);
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&*derived_key));
+    let cipher = derive_and_make_cipher(passphrase, &salt)?;
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let plaintext = Zeroizing::new(
