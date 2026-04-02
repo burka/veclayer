@@ -744,7 +744,14 @@ mod tests {
     #[tokio::test]
     async fn read_perspective_entries_accepts_builtin_perspective() {
         let (store, data_dir, _dir) = test_store_meta().await;
-        let text = read_and_extract(&store, &data_dir, "veclayer://perspectives/decisions", None, None).await;
+        let text = read_and_extract(
+            &store,
+            &data_dir,
+            "veclayer://perspectives/decisions",
+            None,
+            None,
+        )
+        .await;
         assert!(text.contains("## Perspective: decisions"));
     }
 
@@ -755,7 +762,14 @@ mod tests {
         chunk.perspectives = vec!["decisions".to_string()];
         let (store, data_dir, _dir) = test_store_with_chunks(vec![chunk]).await;
 
-        let text = read_and_extract(&store, &data_dir, "veclayer://perspectives/decisions", None, None).await;
+        let text = read_and_extract(
+            &store,
+            &data_dir,
+            "veclayer://perspectives/decisions",
+            None,
+            None,
+        )
+        .await;
         assert!(text.contains("## Perspective: decisions"));
         assert!(text.contains("entry(ies)"));
     }
