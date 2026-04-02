@@ -646,15 +646,7 @@ mod tests {
 
     #[test]
     fn test_migrate_filters_combined_perspective_and_since() {
-        use crate::chunk::{ChunkLevel, HierarchicalChunk};
-        let mut chunk = HierarchicalChunk::new(
-            "content".to_string(),
-            ChunkLevel::H1,
-            None,
-            String::new(),
-            "src.md".to_string(),
-        )
-        .with_perspectives(vec!["decisions".to_string()]);
+        let mut chunk = test_chunk_with_perspectives(vec!["decisions".to_string()]);
         chunk.access_profile.created_at = 1_000_000;
 
         // Both conditions pass
@@ -784,34 +776,18 @@ mod tests {
 
     #[test]
     fn test_print_entry_list_single_entry() {
-        use crate::chunk::{ChunkLevel, HierarchicalChunk};
         use crate::entry::Entry;
 
-        let chunk = HierarchicalChunk::new(
-            "Some content here".to_string(),
-            ChunkLevel::H1,
-            None,
-            String::new(),
-            "src.md".to_string(),
-        );
-        let entry = Entry::from_chunk(&chunk);
+        let entry = Entry::from_chunk(&test_chunk());
         // Should not panic
         print_entry_list(&[entry]);
     }
 
     #[test]
     fn test_print_entry_list_entry_with_heading_and_perspectives() {
-        use crate::chunk::{ChunkLevel, HierarchicalChunk};
         use crate::entry::Entry;
 
-        let chunk = HierarchicalChunk::new(
-            "Architecture decision: use SQLite for metadata".to_string(),
-            ChunkLevel::H1,
-            None,
-            String::new(),
-            "src.md".to_string(),
-        )
-        .with_perspectives(vec!["decisions".to_string(), "knowledge".to_string()]);
+        let chunk = test_chunk_with_perspectives(vec!["decisions".to_string(), "knowledge".to_string()]);
 
         let entry = Entry::from_chunk(&chunk);
         // Should not panic
@@ -820,17 +796,10 @@ mod tests {
 
     #[test]
     fn test_print_entry_list_long_heading_truncated() {
-        use crate::chunk::{ChunkLevel, HierarchicalChunk};
         use crate::entry::Entry;
 
         let long_heading = "A".repeat(100);
-        let mut chunk = HierarchicalChunk::new(
-            "content".to_string(),
-            ChunkLevel::H1,
-            None,
-            String::new(),
-            "src.md".to_string(),
-        );
+        let mut chunk = test_chunk();
         chunk.heading = Some(long_heading);
 
         let entry = Entry::from_chunk(&chunk);
