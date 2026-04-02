@@ -175,26 +175,7 @@ mod tests {
     use super::*;
 
     fn test_blob(content: &str) -> StoredBlob {
-        StoredBlob {
-            entry: crate::entry::Entry {
-                content: content.to_string(),
-                entry_type: crate::chunk::EntryType::Raw,
-                source: "test".to_string(),
-                created_at: 0,
-                perspectives: vec![],
-                relations: vec![],
-                summarizes: vec![],
-                heading: None,
-                parent_id: None,
-                impression_hint: None,
-                impression_strength: 1.0,
-                expires_at: None,
-                visibility: "default".to_string(),
-                level: crate::chunk::ChunkLevel(7),
-                path: String::new(),
-            },
-            embeddings: vec![],
-        }
+        crate::test_helpers::test_blob(content, "default")
     }
 
     #[test]

@@ -112,3 +112,34 @@ pub(crate) fn assert_file_mode_600(path: &std::path::Path, context: &str) {
     let mode = meta.mode() & 0o777;
     assert_eq!(mode, 0o600, "{}: expected 0o600, got 0o{mode:o}", context);
 }
+
+/// Create a test Entry with the given content and visibility.
+#[cfg(test)]
+pub(crate) fn make_test_entry(content: &str, visibility: &str) -> crate::Entry {
+    crate::Entry {
+        content: content.to_string(),
+        entry_type: crate::chunk::EntryType::Raw,
+        source: "test".to_string(),
+        created_at: 0,
+        perspectives: vec![],
+        relations: vec![],
+        summarizes: vec![],
+        heading: None,
+        parent_id: None,
+        impression_hint: None,
+        impression_strength: 1.0,
+        expires_at: None,
+        visibility: visibility.to_string(),
+        level: crate::chunk::ChunkLevel(7),
+        path: String::new(),
+    }
+}
+
+/// Create a test StoredBlob with the given content, visibility, and empty embeddings.
+#[cfg(test)]
+pub(crate) fn test_blob(content: &str, visibility: &str) -> crate::StoredBlob {
+    crate::StoredBlob {
+        entry: make_test_entry(content, visibility),
+        embeddings: vec![],
+    }
+}

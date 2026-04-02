@@ -221,30 +221,13 @@ mod tests {
     use tempfile::TempDir;
 
     fn test_blob(content: &str) -> crate::entry::StoredBlob {
-        crate::entry::StoredBlob {
-            entry: crate::entry::Entry {
-                content: content.to_string(),
-                entry_type: crate::chunk::EntryType::Raw,
-                source: "test".to_string(),
-                created_at: 0,
-                perspectives: vec![],
-                relations: vec![],
-                summarizes: vec![],
-                heading: None,
-                parent_id: None,
-                impression_hint: None,
-                impression_strength: 1.0,
-                expires_at: None,
-                visibility: "normal".to_string(),
-                level: crate::chunk::ChunkLevel(7),
-                path: String::new(),
-            },
-            embeddings: vec![crate::entry::EmbeddingCache {
-                model: "BAAI/bge-small-en-v1.5".to_string(),
-                dimensions: 384,
-                vector: vec![0.0f32; 384],
-            }],
-        }
+        let mut blob = crate::test_helpers::test_blob(content, "normal");
+        blob.embeddings = vec![crate::entry::EmbeddingCache {
+            model: "BAAI/bge-small-en-v1.5".to_string(),
+            dimensions: 384,
+            vector: vec![0.0f32; 384],
+        }];
+        blob
     }
 
     fn seed_blob_store(dir: &Path, contents: &[&str]) -> BlobStore {
