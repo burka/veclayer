@@ -464,6 +464,14 @@ fn require_read_and_parse<T: serde::de::DeserializeOwned + 'static>(
     Ok(input)
 }
 
+/// Check that the capability permits Read operations.
+fn require_read_capability(capability: &Capability) -> StdResult<(), AppError> {
+    if !capability.permits(Capability::Read) {
+        return Err(insufficient(Capability::Read));
+    }
+    Ok(())
+}
+
 async fn api_store(
     State(state): State<AppState>,
     Extension(required_capability): Extension<Capability>,
@@ -510,9 +518,7 @@ async fn api_stats(
     State(state): State<AppState>,
     Extension(required_capability): Extension<Capability>,
 ) -> StdResult<Json<serde_json::Value>, AppError> {
-    if !required_capability.permits(Capability::Read) {
-        return Err(insufficient(Capability::Read));
-    }
+    require_read_capability(&required_capability)?;
     let stats = state
         .store
         .stats()
@@ -531,9 +537,7 @@ async fn api_identity(
     State(state): State<AppState>,
     Extension(required_capability): Extension<Capability>,
 ) -> StdResult<Json<serde_json::Value>, AppError> {
-    if !required_capability.permits(Capability::Read) {
-        return Err(insufficient(Capability::Read));
-    }
+    require_read_capability(&required_capability)?;
     let snapshot = crate::identity::compute_identity(
         state.store.as_ref(),
         &state.data_dir,
