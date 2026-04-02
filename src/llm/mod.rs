@@ -21,6 +21,13 @@ pub fn make_standard_http_client() -> Client {
         .expect("reqwest client")
 }
 
+/// Read the body from a non-success HTTP response and format it as an LLM error.
+pub async fn http_error(service_name: &str, resp: reqwest::Response) -> crate::Error {
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    crate::Error::llm(format!("{service_name} returned {status}: {body}"))
+}
+
 /// A message in a chat conversation.
 #[derive(Debug, Clone)]
 pub struct Message {

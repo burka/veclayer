@@ -41,12 +41,7 @@ impl LlmProvider for OllamaLlm {
             .map_err(|e| crate::Error::llm(format!("Ollama request failed: {}", e)))?;
 
         if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(crate::Error::llm(format!(
-                "Ollama returned {}: {}",
-                status, body
-            )));
+            return Err(crate::llm::http_error("Ollama", resp).await);
         }
 
         let body: serde_json::Value = resp
