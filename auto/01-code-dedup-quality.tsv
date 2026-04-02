@@ -33,3 +33,11 @@ round	timestamp	metric_before	metric_after	delta	status	description	commit
 31	2026-04-02T02:35:00Z	23 clones, 156l/24581t (0.64%)	22 clones, 149l/24581t (0.61%)	-7l, -1 clone, -0.03%	keep	Token_store+auth: extract assert_file_mode_600 to test_helpers	5abc292
 32	2026-04-02T03:00:00Z	22 clones, 149l/24581t (0.61%)	21 clones, 142l/24581t (0.58%)	-7l, -1 clone, -0.03%	keep	MCP/resources: extend read_test to accept config, eliminate inline store clone	d7e5f33
 33	2026-04-02T03:30:00Z	21 clones, 142l/24581t (0.58%)	19 clones, 149l/24581t (0.61%)	+7l, -2 clones, +0.03%	keep	Commands/add: extract split_perspectives helper to dedupe 3 identical perspective-split test blocks	901cd48
+34	2026-04-02T04:05:00Z	19 clones, 149l/24581t (0.61%)	18 clones, 139l/24581t (0.57%)	-10l, -1 clone, -0.04%	keep	Think: extract get_seeded_entry() helper for promote test dupes	94c7989
+35	2026-04-02T04:15:00Z	18 clones, 139l/24581t (0.57%)	17 clones, 131l/24581t (0.53%)	-8l, -1 clone, -0.04%	keep	Test_helpers: extract test_store_setup(kind) helper		fdfccda
+36	2026-04-02T04:25:00Z	17 clones, 131l/24581t (0.53%)	16 clones, 124l/24581t (0.51%)	-7l, -1 clone, -0.02%	keep	Aging: extract apply_aging_chunk() helper		42b2ec9
+37	2026-04-02T04:35:00Z	16 clones, 124l/24581t (0.51%)	15 clones, 116l/24581t (0.47%)	-8l, -1 clone, -0.04%	keep	Think: extract get_entry()+verify_single_relation() helpers	69ea8eb
+38	2026-04-02T04:45:00Z	15 clones, 116l/24581t (0.47%)	14 clones, 109l/24581t (0.44%)	-7l, -1 clone, -0.03%	keep	Keystore: extract derive_and_make_cipher() helper	9c3f9c6
+39	2026-04-02T04:55:00Z	14 clones, 109l/24581t (0.44%)	13 clones, 101l/24581t (0.41%)	-8l, -1 clone, -0.03%	keep	Middleware: extract check_require_write() helper		247cb66
+40	2026-04-02T05:05:00Z	13 clones, 101l/24581t (0.41%)	12 clones, 95l/24581t (0.39%)	-6l, -1 clone, -0.02%	keep	Token_store: refactor test to use existing code_test_harness	d42807c
+41	2026-04-02T05:15:00Z	12 clones, 95l/24581t (0.39%)	11 clones, 89l/24581t (0.36%)	-6l, -1 clone, -0.03%	keep	MCP/mod: extract setup_tmp_store() helper			194f80f
