@@ -347,12 +347,17 @@ mod tests {
         assert!(result.contains("\n\n---\n\n"));
     }
 
-    #[tokio::test]
-    async fn compute_instructions_without_hooks_includes_nudge() {
+    async fn setup_tmp_store() -> (tempfile::TempDir, crate::store::StoreBackend) {
         let tmp = tempfile::tempdir().expect("temp dir");
         let store = crate::store::StoreBackend::open(tmp.path(), 384, false)
             .await
             .expect("open store");
+        (tmp, store)
+    }
+
+    #[tokio::test]
+    async fn compute_instructions_without_hooks_includes_nudge() {
+        let (tmp, store) = setup_tmp_store().await;
         // No .claude/settings files in tmp — hooks not configured
         let result =
             super::compute_instructions(&store, tmp.path(), None, None, Some(tmp.path())).await;
@@ -366,10 +371,7 @@ mod tests {
 
     #[tokio::test]
     async fn compute_instructions_with_hooks_omits_nudge() {
-        let tmp = tempfile::tempdir().expect("temp dir");
-        let store = crate::store::StoreBackend::open(tmp.path(), 384, false)
-            .await
-            .expect("open store");
+        let (tmp, store) = setup_tmp_store().await;
         // Create hooks config
         let claude_dir = tmp.path().join(".claude");
         std::fs::create_dir_all(&claude_dir).expect("create .claude dir");
