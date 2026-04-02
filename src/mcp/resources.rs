@@ -714,11 +714,8 @@ mod tests {
         let mut chunk =
             crate::test_helpers::make_test_chunk("perspentry01", "A decision about databases");
         chunk.perspectives = vec!["decisions".to_string()];
-        let text = read_from_store_with_chunks(
-            "veclayer://perspectives/decisions",
-            vec![chunk],
-        )
-        .await;
+        let text =
+            read_from_store_with_chunks("veclayer://perspectives/decisions", vec![chunk]).await;
         assert!(text.contains("## Perspective: decisions"));
         assert!(text.contains("entry(ies)"));
     }

@@ -989,7 +989,7 @@ impl Default for LlmConfig {
         Self {
             provider: "ollama".to_string(),
             model: "llama3.2".to_string(),
-            base_url: DEFAULT_OLLAMA_URL.to_string(),
+            base_url: crate::util::DEFAULT_OLLAMA_URL.to_string(),
             api_key: None,
             temperature: 0.7,
             max_tokens: 4096,

@@ -6,7 +6,7 @@ use crate::store::VectorStore;
 
 /// Returns the embedding dimension that Config::new() would resolve.
 /// Uses the real config resolution so tests match production behavior.
-#[cfg(test)]
+#[cfg(all(test, feature = "config"))]
 pub(crate) fn config_dimension() -> usize {
     let config = crate::Config::new();
     crate::embedder::from_config(&config.embedder)
@@ -70,7 +70,7 @@ pub(crate) async fn test_store_with_chunks(
 /// Open a test metadata store, returning (store, data_dir, temp_dir_guard).
 ///
 /// For use with read-only store operations that don't require full embeddings.
-#[cfg(test)]
+#[cfg(all(test, feature = "store-lance"))]
 pub(crate) async fn test_store_meta() -> (
     std::sync::Arc<crate::store::StoreBackend>,
     std::path::PathBuf,
@@ -95,6 +95,7 @@ async fn test_store_setup(
         "full" => crate::store::StoreBackend::open(&data_dir, dimension, false)
             .await
             .unwrap(),
+        #[cfg(feature = "store-lance")]
         "metadata" => crate::store::StoreBackend::open_metadata(&data_dir, false)
             .await
             .unwrap(),
