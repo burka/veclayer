@@ -504,32 +504,21 @@ mod tests {
         assert!(uris.contains(&"veclayer://identity".to_string()));
     }
 
-    fn assert_resource_has_audience(r: &Resource) {
-        let has_audience = r
-            .annotations
+    fn assert_has_audience(annotations: &Option<rmcp::model::Annotations>, uri: &str, what: &str) {
+        let has_audience = annotations
             .as_ref()
             .and_then(|a| a.audience.as_ref())
             .map(|a| !a.is_empty())
             .unwrap_or(false);
-        assert!(
-            has_audience,
-            "Resource '{}' should have audience set",
-            r.raw.uri
-        );
+        assert!(has_audience, "{what} '{}' should have audience set", uri);
+    }
+
+    fn assert_resource_has_audience(r: &Resource) {
+        assert_has_audience(&r.annotations, &r.raw.uri, "Resource");
     }
 
     fn assert_template_has_audience(t: &ResourceTemplate) {
-        let has_audience = t
-            .annotations
-            .as_ref()
-            .and_then(|a| a.audience.as_ref())
-            .map(|a| !a.is_empty())
-            .unwrap_or(false);
-        assert!(
-            has_audience,
-            "Template '{}' should have audience",
-            t.raw.uri_template
-        );
+        assert_has_audience(&t.annotations, &t.raw.uri_template, "Template");
     }
 
     #[test]
