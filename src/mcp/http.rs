@@ -419,10 +419,7 @@ async fn api_recall(
     Extension(required_capability): Extension<Capability>,
     body: StdResult<Json<RecallInput>, JsonRejection>,
 ) -> StdResult<Json<Vec<SearchResultResponse>>, AppError> {
-    if !required_capability.permits(Capability::Read) {
-        return Err(insufficient(Capability::Read));
-    }
-    let Json(input) = body?;
+    let input = require_read_and_parse(&required_capability, body)?;
     let ctx = state.tool_context();
     let results = tools::execute_recall(&ctx, input, Some(state.push_mode))
         .await
@@ -435,10 +432,7 @@ async fn api_focus(
     Extension(required_capability): Extension<Capability>,
     body: StdResult<Json<FocusInput>, JsonRejection>,
 ) -> StdResult<Json<FocusResponse>, AppError> {
-    if !required_capability.permits(Capability::Read) {
-        return Err(insufficient(Capability::Read));
-    }
-    let Json(input) = body?;
+    let input = require_read_and_parse(&required_capability, body)?;
     let ctx = state.tool_context();
     let response = tools::execute_focus(&ctx, input)
         .await
@@ -453,6 +447,18 @@ fn require_write_and_parse<T: serde::de::DeserializeOwned + 'static>(
 ) -> StdResult<T, AppError> {
     if !capability.permits(Capability::Write) {
         return Err(insufficient(Capability::Write));
+    }
+    let Json(input) = body?;
+    Ok(input)
+}
+
+/// Parse and validate a read operation: check capability + extract JSON body.
+fn require_read_and_parse<T: serde::de::DeserializeOwned + 'static>(
+    capability: &Capability,
+    body: StdResult<Json<T>, JsonRejection>,
+) -> StdResult<T, AppError> {
+    if !capability.permits(Capability::Read) {
+        return Err(insufficient(Capability::Read));
     }
     let Json(input) = body?;
     Ok(input)
