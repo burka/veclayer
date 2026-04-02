@@ -446,15 +446,24 @@ async fn api_focus(
     Ok(Json(response))
 }
 
+/// Parse and validate a write operation: check capability + extract JSON body.
+fn require_write_and_parse<T: serde::de::DeserializeOwned + 'static>(
+    capability: &Capability,
+    body: StdResult<Json<T>, JsonRejection>,
+) -> StdResult<T, AppError> {
+    if !capability.permits(Capability::Write) {
+        return Err(insufficient(Capability::Write));
+    }
+    let Json(input) = body?;
+    Ok(input)
+}
+
 async fn api_store(
     State(state): State<AppState>,
     Extension(required_capability): Extension<Capability>,
     body: StdResult<Json<StoreInput>, JsonRejection>,
 ) -> StdResult<Json<String>, AppError> {
-    if !required_capability.permits(Capability::Write) {
-        return Err(insufficient(Capability::Write));
-    }
-    let Json(input) = body?;
+    let input = require_write_and_parse(&required_capability, body)?;
     if input.content.is_empty() {
         return Err(AppError::bad_request("content is required"));
     }
@@ -473,10 +482,7 @@ async fn api_think(
     Extension(required_capability): Extension<Capability>,
     body: StdResult<Json<ThinkInput>, JsonRejection>,
 ) -> StdResult<Json<String>, AppError> {
-    if !required_capability.permits(Capability::Write) {
-        return Err(insufficient(Capability::Write));
-    }
-    let Json(input) = body?;
+    let input = require_write_and_parse(&required_capability, body)?;
     let ctx = state.tool_context();
     let text = tools::execute_think(&ctx, input, Some(state.push_mode))
         .await
