@@ -135,13 +135,8 @@ pub async fn read(
 // ---------------------------------------------------------------------------
 
 /// Load perspectives from disk, mapping errors to MCP internal errors.
-fn load_perspectives(
-    data_dir: &Path,
-) -> Result<Vec<crate::perspective::Perspective>, rmcp::ErrorData> {
-    crate::perspective::load(data_dir).map_err(|e| {
-        tracing::error!("Failed to load perspectives: {e}");
-        rmcp::ErrorData::internal_error("Internal server error", None)
-    })
+fn load_perspectives(data_dir: &Path) -> Result<Vec<crate::perspective::Perspective>, rmcp::ErrorData> {
+    crate::perspective::load(data_dir).map_err(|e| map_store_err(e, "Failed to load perspectives"))
 }
 
 async fn read_status(
@@ -150,10 +145,7 @@ async fn read_status(
     data_dir: &Path,
     embedder_config: &crate::config::EmbedderConfig,
 ) -> Result<ReadResourceResult, rmcp::ErrorData> {
-    let stats = store.stats().await.map_err(|e| {
-        tracing::error!("Failed to read store stats: {e}");
-        rmcp::ErrorData::internal_error("Internal server error", None)
-    })?;
+    let stats = store.stats().await.map_err(|e| map_store_err(e, "Failed to read store stats"))?;
     let aging_config = crate::aging::AgingConfig::load(data_dir);
     let md = format::format_store_status(&stats, &aging_config, Some(embedder_config));
     Ok(text_resource(uri, &md))
@@ -182,10 +174,7 @@ async fn read_hot(
     project: Option<&str>,
     branch: Option<&str>,
 ) -> Result<ReadResourceResult, rmcp::ErrorData> {
-    let hot = store.get_hot_chunks(20).await.map_err(|e| {
-        tracing::error!("Failed to get hot chunks: {e}");
-        rmcp::ErrorData::internal_error("Internal server error", None)
-    })?;
+    let hot = store.get_hot_chunks(20).await.map_err(|e| map_store_err(e, "Failed to get hot chunks"))?;
 
     let filtered: Vec<_> = hot
         .into_iter()
@@ -224,10 +213,7 @@ async fn read_identity(
 ) -> Result<ReadResourceResult, rmcp::ErrorData> {
     let snapshot = crate::identity::compute_identity(store, data_dir, project, branch)
         .await
-        .map_err(|e| {
-            tracing::error!("Failed to compute identity: {e}");
-            rmcp::ErrorData::internal_error("Internal server error", None)
-        })?;
+        .map_err(|e| map_store_err(e, "Failed to compute identity"))?;
 
     let priming = crate::identity::generate_priming(&snapshot);
     if priming.is_empty() {
@@ -280,10 +266,7 @@ async fn read_entry(
             rmcp::ErrorData::invalid_params(format!("Entry '{entry_id}' not found"), None)
         })?;
 
-    let children = store.get_children(&chunk.id).await.map_err(|e| {
-        tracing::error!("Failed to get children: {e}");
-        rmcp::ErrorData::internal_error("Internal server error", None)
-    })?;
+    let children = store.get_children(&chunk.id).await.map_err(|e| map_store_err(e, "Failed to get children"))?;
 
     let md = format::format_entry_detail(&chunk, &children);
     Ok(text_resource(uri, &md))
@@ -341,6 +324,12 @@ fn format_epoch(epoch: i64) -> String {
 }
 
 /// Format a list of entries as a markdown section.
+/// Map a store error to an MCP internal error, with tracing.
+fn map_store_err(e: impl std::fmt::Display, context: &str) -> rmcp::ErrorData {
+    tracing::error!("{context}: {e}");
+    rmcp::ErrorData::internal_error("Internal server error", None)
+}
+
 fn format_entries_list(title: &str, chunks: &[HierarchicalChunk], empty_msg: &str) -> String {
     if chunks.is_empty() {
         return format!("## {title}\n\n{empty_msg}\n");
@@ -366,10 +355,7 @@ async fn list_filtered_entries(
     let entries = store
         .list_entries(perspective_ids, None, None, 20)
         .await
-        .map_err(|e| {
-            tracing::error!("Failed to list entries: {e}");
-            rmcp::ErrorData::internal_error("Internal server error", None)
-        })?;
+        .map_err(|e| map_store_err(e, "Failed to list entries"))?;
 
     let filtered: Vec<_> = entries
         .into_iter()
