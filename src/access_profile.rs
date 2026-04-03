@@ -276,6 +276,15 @@ pub fn now_epoch_secs() -> i64 {
 mod tests {
     use super::*;
 
+    /// Create a profile with 3 recorded accesses at base+10, base+20, base+30.
+    fn profile_with_three_accesses(base: i64) -> AccessProfile {
+        let mut profile = AccessProfile::with_created_at(base);
+        profile.record_access_at(base + 10);
+        profile.record_access_at(base + 20);
+        profile.record_access_at(base + 30);
+        profile
+    }
+
     #[test]
     fn test_access_profile_new() {
         let profile = AccessProfile::new();
@@ -298,11 +307,7 @@ mod tests {
 
     #[test]
     fn test_roll_up_within_hour() {
-        let base = 1_000_000;
-        let mut profile = AccessProfile::with_created_at(base);
-        profile.record_access_at(base + 10);
-        profile.record_access_at(base + 20);
-        profile.record_access_at(base + 30);
+        let profile = profile_with_three_accesses(1_000_000);
         assert_eq!(profile.hour, 3);
         assert_eq!(profile.day, 0);
         assert_eq!(profile.total, 3);
@@ -310,13 +315,8 @@ mod tests {
 
     #[test]
     fn test_roll_up_hour_to_day() {
-        let base = 1_000_000;
-        let mut profile = AccessProfile::with_created_at(base);
-        profile.record_access_at(base + 10);
-        profile.record_access_at(base + 20);
-        profile.record_access_at(base + 30);
-
-        profile.record_access_at(base + SECS_PER_HOUR + 100);
+        let mut profile = profile_with_three_accesses(1_000_000);
+        profile.record_access_at(1_000_000 + SECS_PER_HOUR + 100);
         assert_eq!(profile.hour, 1);
         assert_eq!(profile.day, 3);
         assert_eq!(profile.total, 4);
