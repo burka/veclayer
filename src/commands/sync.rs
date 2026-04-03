@@ -553,6 +553,26 @@ mod tests {
         test_chunk().with_perspectives(perspectives)
     }
 
+    /// Construct a MigrateFilters with a perspective include list.
+    fn filters_with_perspectives(persps: Vec<String>) -> MigrateFilters {
+        MigrateFilters { perspectives: persps, ..Default::default() }
+    }
+
+    /// Construct a MigrateFilters with an exclude perspective.
+    fn filters_with_exclude(excl: Option<&str>) -> MigrateFilters {
+        MigrateFilters { exclude_perspective: excl.map(String::from), ..Default::default() }
+    }
+
+    /// Construct a MigrateFilters with a since timestamp.
+    fn filters_with_since(since: Option<i64>) -> MigrateFilters {
+        MigrateFilters { since, ..Default::default() }
+    }
+
+    /// Construct a MigrateFilters with perspectives and optional since.
+    fn filters_with_perspectives_and_since(persps: Vec<String>, since: Option<i64>) -> MigrateFilters {
+        MigrateFilters { perspectives: persps, since, ..Default::default() }
+    }
+
     #[test]
     fn test_is_remote_git_url_ssh() {
         assert!(is_remote_git_url("git@github.com:org/repo.git"));
@@ -587,34 +607,16 @@ mod tests {
     fn test_migrate_filters_perspective_include() {
         let chunk = test_chunk_with_perspectives(vec!["decisions".to_string()]);
 
-        let filters = MigrateFilters {
-            perspectives: vec!["decisions".to_string()],
-            ..Default::default()
-        };
-        assert!(filters.accepts(&chunk));
-
-        let filters = MigrateFilters {
-            perspectives: vec!["knowledge".to_string()],
-            ..Default::default()
-        };
-        assert!(!filters.accepts(&chunk));
+        assert!(filters_with_perspectives(vec!["decisions".to_string()]).accepts(&chunk));
+        assert!(!filters_with_perspectives(vec!["knowledge".to_string()]).accepts(&chunk));
     }
 
     #[test]
     fn test_migrate_filters_perspective_exclude() {
         let chunk = test_chunk_with_perspectives(vec!["decisions".to_string()]);
 
-        let filters = MigrateFilters {
-            exclude_perspective: Some("decisions".to_string()),
-            ..Default::default()
-        };
-        assert!(!filters.accepts(&chunk));
-
-        let filters = MigrateFilters {
-            exclude_perspective: Some("knowledge".to_string()),
-            ..Default::default()
-        };
-        assert!(filters.accepts(&chunk));
+        assert!(!filters_with_exclude(Some("decisions")).accepts(&chunk));
+        assert!(filters_with_exclude(Some("knowledge")).accepts(&chunk));
     }
 
     #[test]
@@ -622,17 +624,8 @@ mod tests {
         let mut chunk = test_chunk();
         chunk.access_profile.created_at = 1_000_000;
 
-        let filters = MigrateFilters {
-            since: Some(500_000),
-            ..Default::default()
-        };
-        assert!(filters.accepts(&chunk));
-
-        let filters = MigrateFilters {
-            since: Some(2_000_000),
-            ..Default::default()
-        };
-        assert!(!filters.accepts(&chunk));
+        assert!(filters_with_since(Some(500_000)).accepts(&chunk));
+        assert!(!filters_with_since(Some(2_000_000)).accepts(&chunk));
     }
 
     // ── MigrateFilters: combined filters ──────────────────────────────────────
@@ -643,28 +636,11 @@ mod tests {
         chunk.access_profile.created_at = 1_000_000;
 
         // Both conditions pass
-        let filters = MigrateFilters {
-            perspectives: vec!["decisions".to_string()],
-            since: Some(500_000),
-            ..Default::default()
-        };
-        assert!(filters.accepts(&chunk));
-
+        assert!(filters_with_perspectives_and_since(vec!["decisions".to_string()], Some(500_000)).accepts(&chunk));
         // Perspective matches but since fails
-        let filters = MigrateFilters {
-            perspectives: vec!["decisions".to_string()],
-            since: Some(2_000_000),
-            ..Default::default()
-        };
-        assert!(!filters.accepts(&chunk));
-
+        assert!(!filters_with_perspectives_and_since(vec!["decisions".to_string()], Some(2_000_000)).accepts(&chunk));
         // since passes but perspective fails
-        let filters = MigrateFilters {
-            perspectives: vec!["knowledge".to_string()],
-            since: Some(500_000),
-            ..Default::default()
-        };
-        assert!(!filters.accepts(&chunk));
+        assert!(!filters_with_perspectives_and_since(vec!["knowledge".to_string()], Some(500_000)).accepts(&chunk));
     }
 
     #[test]
@@ -686,20 +662,10 @@ mod tests {
 
         // No perspective filter → accepts
         assert!(MigrateFilters::default().accepts(&chunk));
-
         // Require specific perspective → rejects (no perspectives on chunk)
-        let filters = MigrateFilters {
-            perspectives: vec!["decisions".to_string()],
-            ..Default::default()
-        };
-        assert!(!filters.accepts(&chunk));
-
+        assert!(!filters_with_perspectives(vec!["decisions".to_string()]).accepts(&chunk));
         // Exclude perspective not present → still accepts
-        let filters = MigrateFilters {
-            exclude_perspective: Some("decisions".to_string()),
-            ..Default::default()
-        };
-        assert!(filters.accepts(&chunk));
+        assert!(filters_with_exclude(Some("decisions")).accepts(&chunk));
     }
 
     // ── is_remote_git_url: additional cases ──────────────────────────────────
