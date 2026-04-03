@@ -180,34 +180,38 @@ mod tests {
         )
     }
 
-    /// Mint a test token with a Read capability and 1-hour expiry.
-    /// Returns (token, signing_key, issued_at).
-    fn mint_test_token() -> (String, ed25519_dalek::SigningKey, u64) {
+    /// Mint a test token with the given capability and 1-hour expiry.
+    /// Returns (token, signing_key, claims, issued_at).
+    fn mint_with_cap(
+        cap: Capability,
+    ) -> (String, ed25519_dalek::SigningKey, Claims, u64) {
         let key = generate_key();
         let t = now();
-        let claims = make_claims(Capability::Read, t, t + 3600);
+        let claims = make_claims(cap, t, t + 3600);
         let token = mint(&key, &claims).expect("mint");
-        (token, key, t)
+        (token, key, claims, t)
+    }
+
+    /// Assert two Claims structs have equal fields.
+    fn assert_claims_eq(recovered: &Claims, expected: &Claims) {
+        assert_eq!(recovered.iss, expected.iss);
+        assert_eq!(recovered.sub, expected.sub);
+        assert_eq!(recovered.aud, expected.aud);
+        assert_eq!(recovered.cap, expected.cap);
+        assert_eq!(recovered.nbf, expected.nbf);
+        assert_eq!(recovered.iat, expected.iat);
+        assert_eq!(recovered.exp, expected.exp);
+        assert_eq!(recovered.jti, expected.jti);
     }
 
     #[test]
     fn test_mint_verify_roundtrip() {
-        let key = generate_key();
-        let t = now();
-        let claims = make_claims(Capability::Write, t, t + 3600);
+        let (token, key, claims, _t) = mint_with_cap(Capability::Write);
 
-        let token = mint(&key, &claims).expect("mint");
         let recovered =
             verify(&token, &key.verifying_key(), Some("did:key:zServer")).expect("verify");
 
-        assert_eq!(recovered.iss, claims.iss);
-        assert_eq!(recovered.sub, claims.sub);
-        assert_eq!(recovered.aud, claims.aud);
-        assert_eq!(recovered.cap, claims.cap);
-        assert_eq!(recovered.nbf, claims.nbf);
-        assert_eq!(recovered.iat, claims.iat);
-        assert_eq!(recovered.exp, claims.exp);
-        assert_eq!(recovered.jti, claims.jti);
+        assert_claims_eq(&recovered, &claims);
     }
 
     #[test]
@@ -263,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_audience_none_skips_check() {
-        let (token, key, _t) = mint_test_token();
+        let (token, key, _claims, _t) = mint_with_cap(Capability::Read);
         // passing None should succeed regardless of aud
         let recovered = verify(&token, &key.verifying_key(), None).expect("verify with None aud");
         assert_eq!(recovered.sub, "did:key:zAlice");
@@ -300,7 +304,7 @@ mod tests {
 
     #[test]
     fn test_issuer_validation_accepted() {
-        let (token, key, _t) = mint_test_token();
+        let (token, key, _claims, _t) = mint_with_cap(Capability::Read);
         let recovered = verify_with_issuer(
             &token,
             &key.verifying_key(),
@@ -313,7 +317,7 @@ mod tests {
 
     #[test]
     fn test_issuer_validation_rejected() {
-        let (token, key, _t) = mint_test_token();
+        let (token, key, _claims, _t) = mint_with_cap(Capability::Read);
         let err = verify_with_issuer(
             &token,
             &key.verifying_key(),
@@ -329,7 +333,7 @@ mod tests {
 
     #[test]
     fn test_nbf_present_in_minted_token() {
-        let (token, key, t) = mint_test_token();
+        let (token, key, _claims, t) = mint_with_cap(Capability::Read);
         let recovered = verify(&token, &key.verifying_key(), None).expect("verify");
         assert_eq!(recovered.nbf, t, "nbf must equal iat");
     }
