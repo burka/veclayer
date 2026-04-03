@@ -111,8 +111,8 @@ pub async fn read(
     match path {
         "status" => read_status(uri, store, data_dir, embedder_config).await,
         "perspectives" => read_perspectives(uri, data_dir),
-        "hot" => read_hot(uri, store, project, branch).await,
-        "recent" => read_recent(uri, store, project, branch).await,
+        "hot" => read_hot_or_recent(uri, store, project, branch, HotOrRecent::Hot).await,
+        "recent" => read_hot_or_recent(uri, store, project, branch, HotOrRecent::Recent).await,
         "identity" => read_identity(uri, store, data_dir, project, branch).await,
         other => {
             if let Some(perspective_id) = other.strip_prefix("perspectives/") {
@@ -168,39 +168,46 @@ fn read_perspectives(uri: &str, data_dir: &Path) -> Result<ReadResourceResult, r
     Ok(text_resource(uri, &md))
 }
 
-async fn read_hot(
-    uri: &str,
-    store: &StoreBackend,
-    project: Option<&str>,
-    branch: Option<&str>,
-) -> Result<ReadResourceResult, rmcp::ErrorData> {
-    let hot = store.get_hot_chunks(20).await.map_err(|e| map_store_err(e, "Failed to get hot chunks"))?;
-
-    let filtered: Vec<_> = hot
-        .into_iter()
-        .filter(|c| passes_scope_filter(c, project, branch))
-        .collect();
-
-    if filtered.is_empty() {
-        return Ok(text_resource(uri, "No entries to display."));
-    }
-
-    let weights = crate::salience::SalienceWeights::default();
-    let top = crate::salience::top_salient(&filtered, &weights, 10);
-    let md = format::format_hot_entries(&filtered, &top);
-
-    Ok(text_resource(uri, &md))
+/// Mode for read_hot_or_recent.
+enum HotOrRecent {
+    Hot,
+    Recent,
 }
 
-async fn read_recent(
+async fn read_hot_or_recent(
     uri: &str,
     store: &StoreBackend,
     project: Option<&str>,
     branch: Option<&str>,
+    mode: HotOrRecent,
 ) -> Result<ReadResourceResult, rmcp::ErrorData> {
-    let filtered = list_filtered_entries(store, &[] as &[&str], project, branch).await?;
+    let (entries, empty_msg) = match mode {
+        HotOrRecent::Hot => {
+            let hot = store.get_hot_chunks(20).await.map_err(|e| map_store_err(e, "Failed to get hot chunks"))?;
+            let filtered: Vec<_> = hot
+                .into_iter()
+                .filter(|c| passes_scope_filter(c, project, branch))
+                .collect();
+            (filtered, "No entries to display.")
+        }
+        HotOrRecent::Recent => {
+            let filtered = list_filtered_entries(store, &[] as &[&str], project, branch).await?;
+            (filtered, "No entries found.")
+        }
+    };
 
-    let md = format_entries_list("Recent Entries", &filtered, "No entries found.");
+    if entries.is_empty() {
+        return Ok(text_resource(uri, empty_msg));
+    }
+
+    let md = match mode {
+        HotOrRecent::Hot => {
+            let weights = crate::salience::SalienceWeights::default();
+            let top = crate::salience::top_salient(&entries, &weights, 10);
+            format::format_hot_entries(&entries, &top)
+        }
+        HotOrRecent::Recent => format_entries_list("Recent Entries", &entries, empty_msg),
+    };
     Ok(text_resource(uri, &md))
 }
 
