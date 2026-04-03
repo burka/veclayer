@@ -134,6 +134,14 @@ pub async fn read(
 // Individual resource readers
 // ---------------------------------------------------------------------------
 
+/// Load perspectives from disk, mapping errors to MCP internal errors.
+fn load_perspectives(data_dir: &Path) -> Result<Vec<crate::perspective::Perspective>, rmcp::ErrorData> {
+    crate::perspective::load(data_dir).map_err(|e| {
+        tracing::error!("Failed to load perspectives: {e}");
+        rmcp::ErrorData::internal_error("Internal server error", None)
+    })
+}
+
 async fn read_status(
     uri: &str,
     store: &StoreBackend,
@@ -150,10 +158,7 @@ async fn read_status(
 }
 
 fn read_perspectives(uri: &str, data_dir: &Path) -> Result<ReadResourceResult, rmcp::ErrorData> {
-    let perspectives = crate::perspective::load(data_dir).map_err(|e| {
-        tracing::error!("Failed to load perspectives: {e}");
-        rmcp::ErrorData::internal_error("Internal server error", None)
-    })?;
+    let perspectives = load_perspectives(data_dir)?;
 
     if perspectives.is_empty() {
         return Ok(text_resource(uri, "No perspectives defined."));
@@ -239,10 +244,7 @@ async fn read_perspective_entries(
     branch: Option<&str>,
 ) -> Result<ReadResourceResult, rmcp::ErrorData> {
     // Validate the perspective exists
-    let perspectives = crate::perspective::load(data_dir).map_err(|e| {
-        tracing::error!("Failed to load perspectives: {e}");
-        rmcp::ErrorData::internal_error("Internal server error", None)
-    })?;
+    let perspectives = load_perspectives(data_dir)?;
     if !perspectives.iter().any(|p| p.id == perspective_id) {
         return Err(rmcp::ErrorData::invalid_params(
             format!("Perspective '{perspective_id}' not found"),
