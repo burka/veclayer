@@ -559,22 +559,38 @@ mod tests {
 
     /// Construct a MigrateFilters with a perspective include list.
     fn filters_with_perspectives(persps: Vec<String>) -> MigrateFilters {
-        MigrateFilters { perspectives: persps, ..Default::default() }
+        MigrateFilters {
+            perspectives: persps,
+            ..Default::default()
+        }
     }
 
     /// Construct a MigrateFilters with an exclude perspective.
     fn filters_with_exclude(excl: Option<&str>) -> MigrateFilters {
-        MigrateFilters { exclude_perspective: excl.map(String::from), ..Default::default() }
+        MigrateFilters {
+            exclude_perspective: excl.map(String::from),
+            ..Default::default()
+        }
     }
 
     /// Construct a MigrateFilters with a since timestamp.
     fn filters_with_since(since: Option<i64>) -> MigrateFilters {
-        MigrateFilters { since, ..Default::default() }
+        MigrateFilters {
+            since,
+            ..Default::default()
+        }
     }
 
     /// Construct a MigrateFilters with perspectives and optional since.
-    fn filters_with_perspectives_and_since(persps: Vec<String>, since: Option<i64>) -> MigrateFilters {
-        MigrateFilters { perspectives: persps, since, ..Default::default() }
+    fn filters_with_perspectives_and_since(
+        persps: Vec<String>,
+        since: Option<i64>,
+    ) -> MigrateFilters {
+        MigrateFilters {
+            perspectives: persps,
+            since,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -640,11 +656,21 @@ mod tests {
         chunk.access_profile.created_at = 1_000_000;
 
         // Both conditions pass
-        assert!(filters_with_perspectives_and_since(vec!["decisions".to_string()], Some(500_000)).accepts(&chunk));
+        assert!(
+            filters_with_perspectives_and_since(vec!["decisions".to_string()], Some(500_000))
+                .accepts(&chunk)
+        );
         // Perspective matches but since fails
-        assert!(!filters_with_perspectives_and_since(vec!["decisions".to_string()], Some(2_000_000)).accepts(&chunk));
+        assert!(!filters_with_perspectives_and_since(
+            vec!["decisions".to_string()],
+            Some(2_000_000)
+        )
+        .accepts(&chunk));
         // since passes but perspective fails
-        assert!(!filters_with_perspectives_and_since(vec!["knowledge".to_string()], Some(500_000)).accepts(&chunk));
+        assert!(
+            !filters_with_perspectives_and_since(vec!["knowledge".to_string()], Some(500_000))
+                .accepts(&chunk)
+        );
     }
 
     #[test]

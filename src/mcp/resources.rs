@@ -135,7 +135,9 @@ pub async fn read(
 // ---------------------------------------------------------------------------
 
 /// Load perspectives from disk, mapping errors to MCP internal errors.
-fn load_perspectives(data_dir: &Path) -> Result<Vec<crate::perspective::Perspective>, rmcp::ErrorData> {
+fn load_perspectives(
+    data_dir: &Path,
+) -> Result<Vec<crate::perspective::Perspective>, rmcp::ErrorData> {
     crate::perspective::load(data_dir).map_err(|e| map_store_err(e, "Failed to load perspectives"))
 }
 
@@ -145,7 +147,10 @@ async fn read_status(
     data_dir: &Path,
     embedder_config: &crate::config::EmbedderConfig,
 ) -> Result<ReadResourceResult, rmcp::ErrorData> {
-    let stats = store.stats().await.map_err(|e| map_store_err(e, "Failed to read store stats"))?;
+    let stats = store
+        .stats()
+        .await
+        .map_err(|e| map_store_err(e, "Failed to read store stats"))?;
     let aging_config = crate::aging::AgingConfig::load(data_dir);
     let md = format::format_store_status(&stats, &aging_config, Some(embedder_config));
     Ok(text_resource(uri, &md))
@@ -183,7 +188,10 @@ async fn read_hot_or_recent(
 ) -> Result<ReadResourceResult, rmcp::ErrorData> {
     let (entries, empty_msg) = match mode {
         HotOrRecent::Hot => {
-            let hot = store.get_hot_chunks(20).await.map_err(|e| map_store_err(e, "Failed to get hot chunks"))?;
+            let hot = store
+                .get_hot_chunks(20)
+                .await
+                .map_err(|e| map_store_err(e, "Failed to get hot chunks"))?;
             let filtered: Vec<_> = hot
                 .into_iter()
                 .filter(|c| passes_scope_filter(c, project, branch))
@@ -273,7 +281,10 @@ async fn read_entry(
             rmcp::ErrorData::invalid_params(format!("Entry '{entry_id}' not found"), None)
         })?;
 
-    let children = store.get_children(&chunk.id).await.map_err(|e| map_store_err(e, "Failed to get children"))?;
+    let children = store
+        .get_children(&chunk.id)
+        .await
+        .map_err(|e| map_store_err(e, "Failed to get children"))?;
 
     let md = format::format_entry_detail(&chunk, &children);
     Ok(text_resource(uri, &md))
@@ -706,7 +717,11 @@ mod tests {
     async fn read_perspective_entries_shows_entries() {
         let text = read_from_store_with_chunks(
             "veclayer://perspectives/decisions",
-            vec![perspective_chunk("perspentry01", "A decision about databases", "decisions")],
+            vec![perspective_chunk(
+                "perspentry01",
+                "A decision about databases",
+                "decisions",
+            )],
         )
         .await;
         assert!(text.contains("## Perspective: decisions"));
