@@ -248,11 +248,7 @@ mod tests {
 
     #[test]
     fn test_audience_check() {
-        let key = generate_key();
-        let t = now();
-        let claims = make_claims(Capability::Admin, t, t + 3600);
-
-        let token = mint(&key, &claims).expect("mint");
+        let (token, key, _claims, _t) = mint_with_cap(Capability::Admin);
         let err = verify(&token, &key.verifying_key(), Some("did:key:zOtherServer")).unwrap_err();
 
         assert!(
