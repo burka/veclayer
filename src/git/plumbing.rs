@@ -213,20 +213,23 @@ mod tests {
     use crate::git::test_helpers::setup_test_repo;
     use crate::git::GitMemoryBranch;
 
+    /// Open a test branch on a temp repository.
+    fn test_branch() -> ( tempfile::TempDir, GitMemoryBranch) {
+        let (dir, git_dir) = setup_test_repo();
+        let branch = GitMemoryBranch::open(&git_dir, Some("veclayer-memory")).unwrap();
+        (dir, branch)
+    }
+
     #[test]
     fn test_read_file_from_branch() {
-        let (_dir, git_dir) = setup_test_repo();
-        let branch = GitMemoryBranch::open(&git_dir, Some("veclayer-memory")).unwrap();
-
+        let (_dir, branch) = test_branch();
         let content = branch.read_file("test.md").unwrap();
         assert_eq!(content, b"hello world");
     }
 
     #[test]
     fn test_list_files() {
-        let (_dir, git_dir) = setup_test_repo();
-        let branch = GitMemoryBranch::open(&git_dir, Some("veclayer-memory")).unwrap();
-
+        let (_dir, branch) = test_branch();
         let mut files = branch.list_files().unwrap();
         files.sort();
 
@@ -235,9 +238,7 @@ mod tests {
 
     #[test]
     fn test_read_files_batch() {
-        let (_dir, git_dir) = setup_test_repo();
-        let branch = GitMemoryBranch::open(&git_dir, Some("veclayer-memory")).unwrap();
-
+        let (_dir, branch) = test_branch();
         let paths = ["test.md", "second.md"];
         let mut results = branch.read_files_batch(&paths).unwrap();
         results.sort_by(|a, b| a.0.cmp(&b.0));
@@ -251,9 +252,7 @@ mod tests {
 
     #[test]
     fn test_read_files_batch_skips_missing() {
-        let (_dir, git_dir) = setup_test_repo();
-        let branch = GitMemoryBranch::open(&git_dir, Some("veclayer-memory")).unwrap();
-
+        let (_dir, branch) = test_branch();
         let paths = ["test.md", "does-not-exist.md", "second.md"];
         let results = branch.read_files_batch(&paths).unwrap();
 
@@ -281,9 +280,7 @@ mod tests {
 
     #[test]
     fn test_read_file_nonexistent_path() {
-        let (_dir, git_dir) = setup_test_repo();
-        let branch = GitMemoryBranch::open(&git_dir, Some("veclayer-memory")).unwrap();
-
+        let (_dir, branch) = test_branch();
         let result = branch.read_file("no-such-file.md");
         assert!(
             matches!(result, Err(GitError::CommandFailed { .. })),
@@ -294,9 +291,7 @@ mod tests {
 
     #[test]
     fn test_read_files_batch_empty_input() {
-        let (_dir, git_dir) = setup_test_repo();
-        let branch = GitMemoryBranch::open(&git_dir, Some("veclayer-memory")).unwrap();
-
+        let (_dir, branch) = test_branch();
         let results = branch.read_files_batch(&[]).unwrap();
         assert!(results.is_empty());
     }
