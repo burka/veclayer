@@ -192,6 +192,17 @@ mod tests {
         (token, key, claims, t)
     }
 
+    /// Mint a token and verify it, returning the error.
+    /// The `verify_key` allows checking with a different key than the signing key.
+    fn mint_and_verify_err(
+        signing_key: &SigningKey,
+        claims: &Claims,
+        verify_key: &VerifyingKey,
+    ) -> AuthError {
+        let token = mint(signing_key, claims).expect("mint");
+        verify(&token, verify_key, None).unwrap_err()
+    }
+
     /// Assert two Claims structs have equal fields.
     fn assert_claims_eq(recovered: &Claims, expected: &Claims) {
         assert_eq!(recovered.iss, expected.iss);
@@ -217,12 +228,9 @@ mod tests {
     #[test]
     fn test_expired_token_rejected() {
         let key = generate_key();
-        // exp in the past
         let t = now();
         let claims = make_claims(Capability::Read, t - 7200, t - 3600);
-
-        let token = mint(&key, &claims).expect("mint");
-        let err = verify(&token, &key.verifying_key(), None).unwrap_err();
+        let err = mint_and_verify_err(&key, &claims, &key.verifying_key());
 
         assert!(
             matches!(err, AuthError::TokenExpired),
@@ -236,9 +244,7 @@ mod tests {
         let key_b = generate_key();
         let t = now();
         let claims = make_claims(Capability::Read, t, t + 3600);
-
-        let token = mint(&key_a, &claims).expect("mint");
-        let err = verify(&token, &key_b.verifying_key(), None).unwrap_err();
+        let err = mint_and_verify_err(&key_a, &claims, &key_b.verifying_key());
 
         assert!(
             matches!(err, AuthError::InvalidToken(_)),
