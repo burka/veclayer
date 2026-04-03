@@ -214,7 +214,7 @@ mod tests {
     use crate::git::GitMemoryBranch;
 
     /// Open a test branch on a temp repository.
-    fn test_branch() -> ( tempfile::TempDir, GitMemoryBranch) {
+    fn test_branch() -> (tempfile::TempDir, GitMemoryBranch) {
         let (dir, git_dir) = setup_test_repo();
         let branch = GitMemoryBranch::open(&git_dir, Some("veclayer-memory")).unwrap();
         (dir, branch)

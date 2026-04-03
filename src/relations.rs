@@ -156,7 +156,10 @@ mod tests {
         label: &str,
     ) {
         assert!(
-            chunk.relations.iter().any(|r| r.kind == kind && r.target_id == target_id),
+            chunk
+                .relations
+                .iter()
+                .any(|r| r.kind == kind && r.target_id == target_id),
             "{label}: expected relation {kind}→{target_id}",
         );
     }

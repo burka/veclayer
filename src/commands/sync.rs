@@ -40,7 +40,11 @@ fn print_no_scopes_help(all_scopes: &[ResolvedScope], filter_name: &str) {
     eprintln!("  veclayer init --share    # enable git memory for this project");
     if !filter_name.is_empty() && !all_scopes.is_empty() {
         let available: Vec<&str> = all_scopes.iter().map(|s| s.name.as_str()).collect();
-        eprintln!("Scope '{}' not found. Available scopes: {}", filter_name, available.join(", "));
+        eprintln!(
+            "Scope '{}' not found. Available scopes: {}",
+            filter_name,
+            available.join(", ")
+        );
     }
 }
 
@@ -780,7 +784,8 @@ mod tests {
     fn test_print_entry_list_entry_with_heading_and_perspectives() {
         use crate::entry::Entry;
 
-        let chunk = test_chunk_with_perspectives(vec!["decisions".to_string(), "knowledge".to_string()]);
+        let chunk =
+            test_chunk_with_perspectives(vec!["decisions".to_string(), "knowledge".to_string()]);
 
         let entry = Entry::from_chunk(&chunk);
         // Should not panic

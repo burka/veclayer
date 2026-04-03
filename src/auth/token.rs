@@ -182,9 +182,7 @@ mod tests {
 
     /// Mint a test token with the given capability and 1-hour expiry.
     /// Returns (token, signing_key, claims, issued_at).
-    fn mint_with_cap(
-        cap: Capability,
-    ) -> (String, ed25519_dalek::SigningKey, Claims, u64) {
+    fn mint_with_cap(cap: Capability) -> (String, ed25519_dalek::SigningKey, Claims, u64) {
         let key = generate_key();
         let t = now();
         let claims = make_claims(cap, t, t + 3600);

@@ -135,7 +135,9 @@ pub async fn read(
 // ---------------------------------------------------------------------------
 
 /// Load perspectives from disk, mapping errors to MCP internal errors.
-fn load_perspectives(data_dir: &Path) -> Result<Vec<crate::perspective::Perspective>, rmcp::ErrorData> {
+fn load_perspectives(
+    data_dir: &Path,
+) -> Result<Vec<crate::perspective::Perspective>, rmcp::ErrorData> {
     crate::perspective::load(data_dir).map_err(|e| {
         tracing::error!("Failed to load perspectives: {e}");
         rmcp::ErrorData::internal_error("Internal server error", None)
@@ -705,11 +707,8 @@ mod tests {
         let mut chunk =
             crate::test_helpers::make_test_chunk("perspentry01", "A decision about databases");
         chunk.perspectives = vec!["decisions".to_string()];
-        let text = read_from_store_with_chunks(
-            "veclayer://perspectives/decisions",
-            vec![chunk],
-        )
-        .await;
+        let text =
+            read_from_store_with_chunks("veclayer://perspectives/decisions", vec![chunk]).await;
         assert!(text.contains("## Perspective: decisions"));
         assert!(text.contains("entry(ies)"));
     }
