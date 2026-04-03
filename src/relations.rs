@@ -187,20 +187,23 @@ mod tests {
         assert!(validate_relation_kind("blocks").is_ok());
     }
 
-    #[test]
-    fn test_validate_typo_suggests() {
-        let err = validate_relation_kind("supsersedes").unwrap_err();
+    /// Check that an invalid kind within Levenshtein distance ≤ 2 of a known kind
+    /// produces an error with a "did you mean" suggestion for that kind.
+    fn assert_did_you_mean_typo(bad_kind: &str, suggestion: &str) {
+        let err = validate_relation_kind(bad_kind).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("did you mean"), "got: {msg}");
-        assert!(msg.contains("supersedes"), "got: {msg}");
+        assert!(msg.contains(suggestion), "got: {msg}");
+    }
+
+    #[test]
+    fn test_validate_typo_suggests() {
+        assert_did_you_mean_typo("supsersedes", "supersedes");
     }
 
     #[test]
     fn test_validate_typo_related() {
-        let err = validate_relation_kind("relatd_to").unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("did you mean"), "got: {msg}");
-        assert!(msg.contains("related_to"), "got: {msg}");
+        assert_did_you_mean_typo("relatd_to", "related_to");
     }
 
     // --- process_relations ---
