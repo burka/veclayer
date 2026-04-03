@@ -433,8 +433,7 @@ mod tests {
 
     /// Helper: read from a store pre-populated with chunks.
     async fn read_from_store_with_chunks(uri: &str, chunks: Vec<HierarchicalChunk>) -> String {
-        let (store, data_dir, _dir) = test_store_with_chunks(chunks).await;
-        read_and_extract(&store, &data_dir, uri, None, None).await
+        read_from_store_with_chunks_filtered(uri, chunks, None, None).await
     }
 
     /// Helper: read from a store pre-populated with chunks, with optional filters.
@@ -446,6 +445,20 @@ mod tests {
     ) -> String {
         let (store, data_dir, _dir) = test_store_with_chunks(chunks).await;
         read_and_extract(&store, &data_dir, uri, project, branch).await
+    }
+
+    /// Helper: make a chunk scoped to a project (excluded by other-project filter).
+    fn scoped_chunk(id: &str, content: &str) -> HierarchicalChunk {
+        let mut chunk = crate::test_helpers::make_test_chunk(id, content);
+        chunk.perspectives = vec!["project:other-project".to_string()];
+        chunk
+    }
+
+    /// Helper: make a chunk tagged with a specific perspective.
+    fn perspective_chunk(id: &str, content: &str, perspective: &str) -> HierarchicalChunk {
+        let mut chunk = crate::test_helpers::make_test_chunk(id, content);
+        chunk.perspectives = vec![perspective.to_string()];
+        chunk
     }
 
     /// Helper: expect an error when reading from a fresh metadata store.
@@ -628,12 +641,9 @@ mod tests {
 
     #[tokio::test]
     async fn read_hot_with_project_filter_excludes_unscoped() {
-        let mut chunk =
-            crate::test_helpers::make_test_chunk("hotentry002", "Unscoped knowledge entry");
-        chunk.perspectives = vec!["project:other-project".to_string()];
         let text = read_from_store_with_chunks_filtered(
             "veclayer://hot",
-            vec![chunk],
+            vec![scoped_chunk("hotentry002", "Unscoped knowledge entry")],
             Some("my-project"),
             None,
         )
@@ -663,12 +673,9 @@ mod tests {
 
     #[tokio::test]
     async fn read_recent_with_project_filter_excludes_unscoped() {
-        let mut chunk =
-            crate::test_helpers::make_test_chunk("recententry02", "Other project entry");
-        chunk.perspectives = vec!["project:other-project".to_string()];
         let text = read_from_store_with_chunks_filtered(
             "veclayer://recent",
-            vec![chunk],
+            vec![scoped_chunk("recententry02", "Other project entry")],
             Some("my-project"),
             None,
         )
@@ -697,11 +704,11 @@ mod tests {
 
     #[tokio::test]
     async fn read_perspective_entries_shows_entries() {
-        let mut chunk =
-            crate::test_helpers::make_test_chunk("perspentry01", "A decision about databases");
-        chunk.perspectives = vec!["decisions".to_string()];
-        let text =
-            read_from_store_with_chunks("veclayer://perspectives/decisions", vec![chunk]).await;
+        let text = read_from_store_with_chunks(
+            "veclayer://perspectives/decisions",
+            vec![perspective_chunk("perspentry01", "A decision about databases", "decisions")],
+        )
+        .await;
         assert!(text.contains("## Perspective: decisions"));
         assert!(text.contains("entry(ies)"));
     }
