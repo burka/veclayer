@@ -20,6 +20,9 @@ use crate::{ChunkLevel, ClusterMembership, Error, HierarchicalChunk, Result};
 
 pub(crate) const TABLE_NAME: &str = "chunks";
 
+/// Auto-compaction threshold: prune old versions when version count exceeds this.
+const MAX_VERSIONS: usize = 50;
+
 const EMBEDDING_EMBEDDED_FILTER: &str = "embedding_status = 'embedded'";
 const EMBEDDING_PENDING_FILTER: &str = "embedding_status = 'pending'";
 const EMBEDDING_EMBEDDED_SQL: &str = "'embedded'";
@@ -164,6 +167,93 @@ pub struct LanceStore {
 }
 
 impl LanceStore {
+    /// Returns true if this store was opened in read-only mode.
+    fn is_read_only(&self) -> bool {
+        self.lock_dir.is_none()
+    }
+
+    /// Prune old LanceDB versions if we exceed MAX_VERSIONS.
+    /// Keeps the last 3 versions as a safety margin for concurrent access.
+    async fn auto_compact_if_needed(&self) -> Result<()> {
+        if self.is_read_only() {
+            return Ok(());
+        }
+
+        let table = match self.connection.open_table(TABLE_NAME).execute().await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!("Auto-compact: failed to open table: {}", e);
+                return Ok(());
+            }
+        };
+
+        // list_versions is available on lancedb::Table
+        let versions = match table.list_versions().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Auto-compact: failed to list versions: {}", e);
+                return Ok(());
+            }
+        };
+
+        if versions.len() <= MAX_VERSIONS {
+            return Ok(());
+        }
+
+        // Sort descending by version number (most recent first)
+        let mut sorted = versions;
+        sorted.sort_by(|a, b| b.version.cmp(&a.version));
+
+        // Keep at least 3 versions as safety margin for concurrent access
+        const KEEP_VERSIONS: usize = 3;
+        if sorted.len() <= KEEP_VERSIONS {
+            return Ok(());
+        }
+
+        // Cutoff = timestamp of the KEEP_VERSIONS-th most recent version
+        let cutoff = sorted[KEEP_VERSIONS - 1].timestamp;
+        let duration_since_cutoff = chrono::TimeDelta::from_std(
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::from(cutoff))
+                .unwrap_or(std::time::Duration::ZERO),
+        )
+        .unwrap_or(chrono::TimeDelta::zero());
+
+        tracing::info!(
+            "Auto-compacting: {} versions (limit {}), pruning older than {:?}, keeping {}",
+            sorted.len(),
+            MAX_VERSIONS,
+            duration_since_cutoff,
+            KEEP_VERSIONS
+        );
+
+        // Use the public table.optimize(Prune) API which internally calls cleanup_old_versions
+        use lancedb::table::OptimizeAction;
+        match table
+            .optimize(OptimizeAction::Prune {
+                older_than: Some(duration_since_cutoff),
+                delete_unverified: Some(true),
+                error_if_tagged_old_versions: None,
+            })
+            .await
+        {
+            Ok(stats) => {
+                if let Some(prune) = stats.prune {
+                    tracing::info!(
+                        "Auto-compact: removed {} old versions, reclaimed {} bytes",
+                        prune.old_versions,
+                        prune.bytes_removed
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Auto-compact failed: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn open(path: impl AsRef<Path>, dimension: usize, read_only: bool) -> Result<Self> {
         let path = path.as_ref();
         let lock_dir = (!read_only).then(|| path.to_path_buf());
@@ -906,6 +996,11 @@ impl VectorStore for LanceStore {
                 .await
                 .map_err(|e| Error::store(format!("Failed to insert chunks: {}", e)))?;
 
+            // Fire-and-forget auto-compaction after writes
+            if let Err(e) = self.auto_compact_if_needed().await {
+                tracing::warn!("Auto-compact after insert failed (non-fatal): {}", e);
+            }
+
             Ok(())
         })
         .await
@@ -1503,7 +1598,14 @@ impl VectorStore for LanceStore {
 
             Ok(())
         })
-        .await
+        .await?;
+
+        // Fire-and-forget auto-compaction after writes
+        if let Err(e) = self.auto_compact_if_needed().await {
+            tracing::warn!("Auto-compact after batch update failed (non-fatal): {}", e);
+        }
+
+        Ok(())
     }
 
     async fn count_pending_embeddings(&self) -> Result<usize> {
