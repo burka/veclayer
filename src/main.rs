@@ -516,9 +516,9 @@ enum ReflectAction {
         threshold: f32,
     },
 
-    /// Prune old LanceDB versions to reclaim disk space.
-    /// Uses the same auto-compaction logic: keeps the last 3 versions.
-    /// Run this to manually trigger compaction without waiting for writes.
+    /// Compact old LanceDB versions — keeps the 3 most recent, deletes the rest.
+    /// Reclaims disk space used by redundant version manifests.
+    /// Auto-compaction also runs automatically after every 50 writes.
     Prune,
 }
 

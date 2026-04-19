@@ -49,7 +49,7 @@ async fn compact_rotate(data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// compact: run auto-compact to prune old LanceDB versions.
+/// Compact old LanceDB versions — keeps the 3 most recent, deletes older ones.
 async fn compact_prune(data_dir: &Path) -> Result<()> {
     let (_config, _embedder, store, _blob_store) = open_store(data_dir).await?;
     store.auto_compact_if_needed().await?;
