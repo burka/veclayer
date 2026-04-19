@@ -291,6 +291,39 @@ impl LanceStore {
         };
         store.ensure_table().await?;
 
+        // On first open after deploying the auto-compaction fix: if the store has a
+        // wildly excessive version count (>500, e.g. 57k on lumi), do a one-time
+        // aggressive prune in the background so the next invocation starts clean.
+        // This is fire-and-forget — errors are logged but never block store use.
+        let conn = store.connection.clone();
+        if !read_only {
+            tokio::spawn(async move {
+                if let Ok(table) = conn.open_table(TABLE_NAME).execute().await {
+                    if let Ok(versions) = table.list_versions().await {
+                        if versions.len() > 500 {
+                            tracing::warn!(
+                                "Store has {} old versions -- running one-time aggressive prune",
+                                versions.len()
+                            );
+                            use lancedb::table::OptimizeAction;
+                            if let Err(e) = table
+                                .optimize(OptimizeAction::Prune {
+                                    older_than: Some(chrono::TimeDelta::zero()),
+                                    delete_unverified: Some(true),
+                                    error_if_tagged_old_versions: None,
+                                })
+                                .await
+                            {
+                                tracing::warn!("One-time prune failed: {}", e);
+                            } else {
+                                tracing::info!("One-time prune complete");
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
         Ok(store)
     }
 
