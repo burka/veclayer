@@ -174,7 +174,7 @@ impl LanceStore {
 
     /// Prune old LanceDB versions if we exceed MAX_VERSIONS.
     /// Keeps the last 3 versions as a safety margin for concurrent access.
-    async fn auto_compact_if_needed(&self) -> Result<()> {
+    pub(crate) async fn auto_compact_if_needed(&self) -> Result<()> {
         if self.is_read_only() {
             return Ok(());
         }

@@ -219,6 +219,16 @@ impl StoreBackend {
             SqliteStore::open(path, dimension, read_only).await?,
         ))
     }
+
+    /// Run auto-compaction if version count exceeds the threshold.
+    #[cfg(feature = "store-lance")]
+    pub async fn auto_compact_if_needed(&self) -> Result<()> {
+        match self {
+            Self::Lance(s) => s.auto_compact_if_needed().await,
+            #[cfg(feature = "store-sqlite")]
+            Self::Sqlite(_) => Ok(()),
+        }
+    }
 }
 
 /// Dispatch a method call to the active backend variant.

@@ -8,6 +8,8 @@ pub enum CompactAction {
     Rotate,
     Salience,
     ArchiveCandidates,
+    /// Prune old LanceDB versions (calls auto-compact logic directly).
+    Prune,
 }
 
 /// Run a compact sub-action.
@@ -20,6 +22,7 @@ pub async fn compact(
         CompactAction::Rotate => compact_rotate(data_dir).await,
         CompactAction::Salience => compact_salience(data_dir, options).await,
         CompactAction::ArchiveCandidates => compact_archive_candidates(data_dir, options).await,
+        CompactAction::Prune => compact_prune(data_dir).await,
     }
 }
 
@@ -43,6 +46,15 @@ async fn compact_rotate(data_dir: &Path) -> Result<()> {
         println!("    {}", short_id(id));
     }
 
+    Ok(())
+}
+
+/// compact: run auto-compact to prune old LanceDB versions.
+async fn compact_prune(data_dir: &Path) -> Result<()> {
+    let (_config, _embedder, store, _blob_store) = open_store(data_dir).await?;
+    store.auto_compact_if_needed().await?;
+    println!("Compact: prune");
+    println!("  (Run `veclayer status` to see version count before/after)");
     Ok(())
 }
 

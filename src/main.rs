@@ -515,6 +515,11 @@ enum ReflectAction {
         #[arg(short, long, default_value = "0.1")]
         threshold: f32,
     },
+
+    /// Prune old LanceDB versions to reclaim disk space.
+    /// Uses the same auto-compaction logic: keeps the last 3 versions.
+    /// Run this to manually trigger compaction without waiting for writes.
+    Prune,
 }
 
 #[derive(Subcommand)]
@@ -1087,6 +1092,9 @@ async fn main() -> Result<()> {
                     archive_threshold: threshold,
                 };
                 compact(&data_dir, CompactAction::ArchiveCandidates, &options).await?;
+            }
+            Some(ReflectAction::Prune) => {
+                compact(&data_dir, CompactAction::Prune, &CompactOptions::default()).await?;
             }
         },
         Commands::Think { action } => match action {
