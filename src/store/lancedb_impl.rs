@@ -3591,4 +3591,89 @@ mod tests {
         );
         assert_eq!(retrieved.unwrap().id, tricky_id);
     }
+
+    // ── force_compact ─────────────────────────────────────────────────────────
+
+    /// Each insert creates a new LanceDB version. After N inserts there are N+1
+    /// versions (including the initial empty table version). force_compact must
+    /// reduce that count and leave the data intact.
+    #[tokio::test]
+    async fn test_force_compact_reduces_version_count() {
+        let (store, _dir) = create_test_store().await;
+
+        // 20 separate inserts → 20 additional versions on top of the initial one.
+        for i in 0..20u32 {
+            let chunk = create_test_chunk(
+                &format!("prune{i:03}"),
+                &format!("prunable content {i}"),
+                ChunkLevel::CONTENT,
+            );
+            store.insert_chunks(vec![chunk]).await.unwrap();
+        }
+
+        let table = store
+            .connection
+            .open_table(TABLE_NAME)
+            .execute()
+            .await
+            .unwrap();
+        let versions_before = table.list_versions().await.unwrap().len();
+        assert!(
+            versions_before > 1,
+            "expected multiple versions after 20 inserts, got {versions_before}"
+        );
+
+        let stats = store.force_compact().await.unwrap();
+        assert!(
+            stats.versions_removed > 0,
+            "force_compact must remove at least one old version (got {})",
+            stats.versions_removed
+        );
+
+        let versions_after = table.list_versions().await.unwrap().len();
+        assert!(
+            versions_after < versions_before,
+            "force_compact must reduce version count ({versions_before} → {versions_after})"
+        );
+
+        // Data must survive the compact.
+        let store_stats = store.stats().await.unwrap();
+        assert_eq!(
+            store_stats.total_chunks, 20,
+            "all 20 chunks must still be present after compact"
+        );
+    }
+
+    /// force_compact on a freshly opened store (1 version, no history) must
+    /// succeed without error even when there is nothing to reclaim.
+    #[tokio::test]
+    async fn test_force_compact_noop_on_fresh_store() {
+        let (store, _dir) = create_test_store().await;
+        // No writes — only the initial table version exists.
+        let result = store.force_compact().await;
+        assert!(
+            result.is_ok(),
+            "force_compact on fresh store must not error: {:?}",
+            result
+        );
+    }
+
+    /// force_compact on a read-only store must return an error immediately
+    /// without touching the data.
+    #[tokio::test]
+    async fn test_force_compact_errors_on_read_only_store() {
+        let temp_dir = TempDir::new().unwrap();
+        // Open once read-write to create the table, then open read-only.
+        let rw = LanceStore::open(temp_dir.path(), 384, false).await.unwrap();
+        rw.insert_chunks(vec![create_test_chunk("ro001", "read-only test", ChunkLevel::CONTENT)])
+            .await
+            .unwrap();
+        drop(rw);
+
+        let ro = LanceStore::open(temp_dir.path(), 384, true).await.unwrap();
+        assert!(
+            ro.force_compact().await.is_err(),
+            "force_compact on a read-only store must return an error"
+        );
+    }
 }
