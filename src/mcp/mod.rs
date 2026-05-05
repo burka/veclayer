@@ -7,6 +7,7 @@
 //! - `stdio` -- MCP stdio transport (rmcp)
 //! - `http` -- HTTP REST API + Streamable HTTP MCP transport (rmcp)
 
+pub mod compact_worker;
 pub mod embed_worker;
 pub mod format;
 pub mod handler;

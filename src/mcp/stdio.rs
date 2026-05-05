@@ -33,6 +33,7 @@ pub async fn run_stdio(config: Config) -> Result<()> {
             Arc::clone(&embedder),
             Arc::clone(&blob_store),
         );
+        let _compact = super::compact_worker::spawn(Arc::clone(&store));
     }
 
     let instructions = super::compute_instructions(

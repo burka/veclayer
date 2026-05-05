@@ -302,6 +302,7 @@ pub async fn run_http(config: Config) -> Result<()> {
             Arc::clone(&embedder),
             Arc::clone(&blob_store),
         );
+        let _compact = super::compact_worker::spawn(Arc::clone(&store));
     }
 
     let auth = build_auth_setup(&config)?;
