@@ -13,7 +13,7 @@ use lancedb::table::NewColumnTransform;
 use lancedb::{connect, Connection, Table};
 
 use super::{
-    FileLock, SearchResult, StoreStats, VectorStore, EMBEDDING_STATUS_EMBEDDED,
+    CompactStats, FileLock, SearchResult, StoreStats, VectorStore, EMBEDDING_STATUS_EMBEDDED,
     EMBEDDING_STATUS_PENDING,
 };
 use crate::{ChunkLevel, ClusterMembership, Error, HierarchicalChunk, Result};
@@ -172,86 +172,146 @@ impl LanceStore {
         self.lock_dir.is_none()
     }
 
-    /// Prune old LanceDB versions if we exceed MAX_VERSIONS.
+    /// Compact fragments + prune old versions if version count exceeds MAX_VERSIONS.
     /// Keeps the last 3 versions as a safety margin for concurrent access.
-    pub(crate) async fn auto_compact_if_needed(&self) -> Result<()> {
+    /// Below the threshold this is a near-free `list_versions()` check.
+    pub(crate) async fn auto_compact_if_needed(&self) -> Result<CompactStats> {
         if self.is_read_only() {
-            return Ok(());
+            return Ok(CompactStats::default());
         }
 
         let table = match self.connection.open_table(TABLE_NAME).execute().await {
             Ok(t) => t,
             Err(e) => {
                 tracing::warn!("Auto-compact: failed to open table: {}", e);
-                return Ok(());
+                return Ok(CompactStats::default());
             }
         };
 
-        // list_versions is available on lancedb::Table
         let versions = match table.list_versions().await {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("Auto-compact: failed to list versions: {}", e);
-                return Ok(());
+                return Ok(CompactStats::default());
             }
         };
 
         if versions.len() <= MAX_VERSIONS {
-            return Ok(());
+            return Ok(CompactStats::default());
         }
 
-        // Sort descending by version number (most recent first)
+        Self::run_compact(&table, versions).await
+    }
+
+    /// Run compact + prune unconditionally, returning detailed stats.
+    /// Used by the user-invoked `veclayer reflect prune` command and the daily
+    /// background timer in the MCP server, where we want progress regardless of
+    /// the version-count threshold.
+    pub(crate) async fn force_compact(&self) -> Result<CompactStats> {
+        if self.is_read_only() {
+            return Err(Error::store("Cannot compact a read-only store".to_string()));
+        }
+
+        let table = self
+            .connection
+            .open_table(TABLE_NAME)
+            .execute()
+            .await
+            .map_err(|e| Error::store(format!("Failed to open table: {}", e)))?;
+        let versions = table
+            .list_versions()
+            .await
+            .map_err(|e| Error::store(format!("Failed to list versions: {}", e)))?;
+
+        Self::run_compact(&table, versions).await
+    }
+
+    /// Compact fragments and prune old versions, keeping the last `KEEP_VERSIONS`.
+    async fn run_compact(
+        table: &Table,
+        versions: Vec<lancedb::table::Version>,
+    ) -> Result<CompactStats> {
+        const KEEP_VERSIONS: usize = 3;
+
+        // Cutoff = timestamp of the KEEP_VERSIONS-th most recent version, so prune
+        // removes everything older than that.
         let mut sorted = versions;
         sorted.sort_by(|a, b| b.version.cmp(&a.version));
-
-        // Keep at least 3 versions as safety margin for concurrent access
-        const KEEP_VERSIONS: usize = 3;
-        if sorted.len() <= KEEP_VERSIONS {
-            return Ok(());
-        }
-
-        // Cutoff = timestamp of the KEEP_VERSIONS-th most recent version
-        let cutoff = sorted[KEEP_VERSIONS - 1].timestamp;
-        let duration_since_cutoff = chrono::TimeDelta::from_std(
-            std::time::SystemTime::now()
-                .duration_since(std::time::SystemTime::from(cutoff))
-                .unwrap_or(std::time::Duration::ZERO),
-        )
-        .unwrap_or(chrono::TimeDelta::zero());
+        let total_versions = sorted.len();
+        let older_than = if sorted.len() > KEEP_VERSIONS {
+            let cutoff = sorted[KEEP_VERSIONS - 1].timestamp;
+            chrono::TimeDelta::from_std(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::SystemTime::from(cutoff))
+                    .unwrap_or(std::time::Duration::ZERO),
+            )
+            .unwrap_or(chrono::TimeDelta::zero())
+        } else {
+            chrono::TimeDelta::zero()
+        };
 
         tracing::info!(
-            "Auto-compacting: {} versions (limit {}), pruning older than {:?}, keeping {}",
-            sorted.len(),
-            MAX_VERSIONS,
-            duration_since_cutoff,
+            "Auto-compact: {} versions, compacting fragments and pruning older than {:?} (keep {})",
+            total_versions,
+            older_than,
             KEEP_VERSIONS
         );
 
-        // Use the public table.optimize(Prune) API which internally calls cleanup_old_versions
         use lancedb::table::OptimizeAction;
+        let mut stats = CompactStats::default();
+
+        // 1. Compact fragments — merges small files and materializes deletions.
+        //    This is what physically reclaims space from updates and tombstoned rows.
+        match table
+            .optimize(OptimizeAction::Compact {
+                options: lancedb::table::CompactionOptions::default(),
+                remap_options: None,
+            })
+            .await
+        {
+            Ok(s) => {
+                if let Some(c) = s.compaction {
+                    stats.fragments_removed = c.fragments_removed as u64;
+                    stats.fragments_added = c.fragments_added as u64;
+                    stats.files_removed = c.files_removed as u64;
+                    stats.files_added = c.files_added as u64;
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Auto-compact: fragment compaction failed: {}", e);
+            }
+        }
+
+        // 2. Prune old version manifests + their orphaned data files.
         match table
             .optimize(OptimizeAction::Prune {
-                older_than: Some(duration_since_cutoff),
+                older_than: Some(older_than),
                 delete_unverified: Some(true),
                 error_if_tagged_old_versions: None,
             })
             .await
         {
-            Ok(stats) => {
-                if let Some(prune) = stats.prune {
-                    tracing::info!(
-                        "Auto-compact: removed {} old versions, reclaimed {} bytes",
-                        prune.old_versions,
-                        prune.bytes_removed
-                    );
+            Ok(s) => {
+                if let Some(p) = s.prune {
+                    stats.versions_removed = p.old_versions;
+                    stats.bytes_reclaimed = p.bytes_removed;
                 }
             }
             Err(e) => {
-                tracing::warn!("Auto-compact failed: {}", e);
+                tracing::warn!("Auto-compact: version prune failed: {}", e);
             }
         }
 
-        Ok(())
+        tracing::info!(
+            "Auto-compact done: {} versions removed, {} fragments merged ({} -> {}), {} bytes reclaimed",
+            stats.versions_removed,
+            stats.fragments_removed,
+            stats.fragments_removed,
+            stats.fragments_added,
+            stats.bytes_reclaimed
+        );
+
+        Ok(stats)
     }
 
     pub async fn open(path: impl AsRef<Path>, dimension: usize, read_only: bool) -> Result<Self> {
@@ -293,7 +353,7 @@ impl LanceStore {
 
         // On first open after deploying the auto-compaction fix: if the store has a
         // wildly excessive version count (>500, e.g. 57k on lumi), do a one-time
-        // aggressive prune in the background so the next invocation starts clean.
+        // aggressive compact+prune in the background so the next invocation starts clean.
         // This is fire-and-forget — errors are logged but never block store use.
         let conn = store.connection.clone();
         if !read_only {
@@ -302,21 +362,15 @@ impl LanceStore {
                     if let Ok(versions) = table.list_versions().await {
                         if versions.len() > 500 {
                             tracing::warn!(
-                                "Store has {} old versions -- running one-time aggressive prune",
+                                "Store has {} old versions -- running one-time aggressive compact+prune",
                                 versions.len()
                             );
-                            use lancedb::table::OptimizeAction;
-                            if let Err(e) = table
-                                .optimize(OptimizeAction::Prune {
-                                    older_than: Some(chrono::TimeDelta::zero()),
-                                    delete_unverified: Some(true),
-                                    error_if_tagged_old_versions: None,
-                                })
-                                .await
-                            {
-                                tracing::warn!("One-time prune failed: {}", e);
-                            } else {
-                                tracing::info!("One-time prune complete");
+                            match Self::run_compact(&table, versions).await {
+                                Ok(s) => tracing::info!(
+                                    "One-time compact done: {} versions, {} fragments merged, {} bytes reclaimed",
+                                    s.versions_removed, s.fragments_removed, s.bytes_reclaimed
+                                ),
+                                Err(e) => tracing::warn!("One-time compact failed: {}", e),
                             }
                         }
                     }

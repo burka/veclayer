@@ -49,12 +49,22 @@ async fn compact_rotate(data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Compact old LanceDB versions — keeps the 3 most recent, deletes older ones.
+/// Compact LanceDB: merge fragments, materialize deletions, prune old versions.
+/// Always runs (ignores the auto-compact threshold) and reports what was reclaimed.
 async fn compact_prune(data_dir: &Path) -> Result<()> {
     let (_config, _embedder, store, _blob_store) = open_store(data_dir).await?;
-    store.auto_compact_if_needed().await?;
-    println!("Compact: prune");
-    println!("  (Run `veclayer status` to see version count before/after)");
+
+    let stats = store.force_compact().await?;
+
+    println!("Compact: fragments + versions");
+    println!(
+        "  Fragments: {} merged → {} ({} files removed, {} added)",
+        stats.fragments_removed, stats.fragments_added, stats.files_removed, stats.files_added
+    );
+    println!(
+        "  Versions:  {} pruned, {} bytes reclaimed",
+        stats.versions_removed, stats.bytes_reclaimed
+    );
     Ok(())
 }
 

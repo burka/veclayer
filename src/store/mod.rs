@@ -33,6 +33,23 @@ pub struct SearchResult {
     pub score: f32,
 }
 
+/// Outcome of a compact + prune pass. Zeroed when nothing was eligible.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CompactStats {
+    /// Old version manifests removed.
+    pub versions_removed: u64,
+    /// Bytes freed by version pruning (manifest + orphaned data files).
+    pub bytes_reclaimed: u64,
+    /// Fragments rewritten (deletions materialized, small files merged).
+    pub fragments_removed: u64,
+    /// Fragments produced by the rewrite.
+    pub fragments_added: u64,
+    /// Data + deletion files removed by compaction.
+    pub files_removed: u64,
+    /// Data files added by compaction.
+    pub files_added: u64,
+}
+
 /// Trait for vector storage backends.
 /// All operations are async to support both local and remote backends.
 pub trait VectorStore: Send + Sync {
@@ -221,12 +238,25 @@ impl StoreBackend {
     }
 
     /// Run auto-compaction if version count exceeds the threshold.
+    /// No-op for non-Lance backends. Returns the actual stats so callers can
+    /// log what was reclaimed.
     #[cfg(feature = "store-lance")]
-    pub async fn auto_compact_if_needed(&self) -> Result<()> {
+    pub async fn auto_compact_if_needed(&self) -> Result<CompactStats> {
         match self {
             Self::Lance(s) => s.auto_compact_if_needed().await,
             #[cfg(feature = "store-sqlite")]
-            Self::Sqlite(_) => Ok(()),
+            Self::Sqlite(_) => Ok(CompactStats::default()),
+        }
+    }
+
+    /// Force a compact + prune pass regardless of thresholds. Returns stats.
+    /// No-op for non-Lance backends.
+    #[cfg(feature = "store-lance")]
+    pub async fn force_compact(&self) -> Result<CompactStats> {
+        match self {
+            Self::Lance(s) => s.force_compact().await,
+            #[cfg(feature = "store-sqlite")]
+            Self::Sqlite(_) => Ok(CompactStats::default()),
         }
     }
 }
