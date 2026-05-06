@@ -62,8 +62,9 @@ async fn compact_prune(data_dir: &Path) -> Result<()> {
         stats.fragments_removed, stats.fragments_added, stats.files_removed, stats.files_added
     );
     println!(
-        "  Versions:  {} pruned, {} bytes reclaimed",
-        stats.versions_removed, stats.bytes_reclaimed
+        "  Versions:  {} pruned, {} reclaimed",
+        stats.versions_removed,
+        crate::util::format_bytes(stats.bytes_reclaimed)
     );
     Ok(())
 }

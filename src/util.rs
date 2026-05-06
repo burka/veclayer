@@ -56,6 +56,38 @@ pub fn unix_now() -> u64 {
         .as_secs()
 }
 
+/// Format a byte count as a human-readable string with ~4 significant digits.
+///
+/// Uses binary units (1024-based) labelled as `B` / `KB` / `MB` / `GB`, matching
+/// the conventional `du -h` style. Decimal precision shrinks as the value grows
+/// so the result stays around four significant digits (e.g. `1.234 GB`,
+/// `18.05 MB`, `123.4 KB`).
+pub fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+
+    let b = bytes as f64;
+    let (val, unit) = if b >= GB {
+        (b / GB, "GB")
+    } else if b >= MB {
+        (b / MB, "MB")
+    } else if b >= KB {
+        (b / KB, "KB")
+    } else {
+        return format!("{bytes} B");
+    };
+
+    let precision = if val >= 100.0 {
+        1
+    } else if val >= 10.0 {
+        2
+    } else {
+        3
+    };
+    format!("{val:.precision$} {unit}")
+}
+
 /// Set file permissions to 0o600 on Unix; no-op on other platforms.
 pub fn set_file_mode_600(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
@@ -84,6 +116,22 @@ mod tests {
             now > 1_704_067_200,
             "unix_now returned suspiciously low value: {now}"
         );
+    }
+
+    #[test]
+    fn test_format_bytes() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(1024), "1.000 KB");
+        assert_eq!(format_bytes(1536), "1.500 KB");
+        assert_eq!(format_bytes(123 * 1024), "123.0 KB");
+        // 18928031 ≈ 18.05 MiB — the original report from the user.
+        assert_eq!(format_bytes(18_928_031), "18.05 MB");
+        assert_eq!(format_bytes(1024 * 1024), "1.000 MB");
+        // 4 GiB → "4.000 GB" (3-decimal precision when val < 10).
+        assert_eq!(format_bytes(4u64 * 1024 * 1024 * 1024), "4.000 GB");
+        // 250 GiB → "250.0 GB" (1-decimal precision when val ≥ 100).
+        assert_eq!(format_bytes(250u64 * 1024 * 1024 * 1024), "250.0 GB");
     }
 
     #[test]
