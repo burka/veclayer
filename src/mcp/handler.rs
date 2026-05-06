@@ -54,6 +54,9 @@ pub struct McpHandler {
     git_store: Option<Arc<crate::git::memory_store::MemoryStore>>,
     /// Push mode governing how entries are staged/pushed to git.
     push_mode: PushMode,
+    // Read by `#[tool_handler]`-generated `call_tool`/`list_tools`; rustc's
+    // dead-code pass doesn't trace the macro expansion.
+    #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
 
