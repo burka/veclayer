@@ -168,6 +168,14 @@ mod tests {
             .output()
             .unwrap();
 
+        // Disable commit signing so the temp repo is hermetic: tests must not
+        // depend on the host's global `commit.gpgsign` / signing-key config.
+        std::process::Command::new("git")
+            .args(["config", "commit.gpgsign", "false"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
         std::process::Command::new("git")
             .args(["-c", "user.email=test@test.com", "-c", "user.name=Test"])
             .args(["commit", "--allow-empty", "-m", "init"])

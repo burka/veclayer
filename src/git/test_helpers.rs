@@ -27,7 +27,10 @@ pub(crate) fn setup_test_repo() -> (tempfile::TempDir, PathBuf) {
             .expect("git command failed")
     };
 
-    run(&["init"]);
+    run(&["init", "-b", "main"]);
+    // Disable commit signing so the temp repo is hermetic: tests must not depend
+    // on the host's global `commit.gpgsign` / signing-key configuration.
+    run(&["config", "commit.gpgsign", "false"]);
     run(&["commit", "--allow-empty", "-m", "init"]);
     run(&["checkout", "--orphan", "veclayer-memory"]);
     run(&["rm", "-rf", "."]);

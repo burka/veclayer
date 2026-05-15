@@ -160,6 +160,17 @@ mod tests {
         // Make the directory read-only so no file can be created inside it.
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o444)).unwrap();
 
+        // A privileged user (root, common in CI containers) bypasses directory
+        // permission bits, making this scenario impossible to exercise. Probe
+        // for that and skip rather than report a false failure.
+        let probe = dir.path().join(".probe");
+        let privileged = std::fs::write(&probe, b"x").is_ok();
+        let _ = std::fs::remove_file(&probe);
+        if privileged {
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+
         let result = FileLock::acquire_blocking(dir.path());
 
         // Restore permissions so TempDir cleanup succeeds.
