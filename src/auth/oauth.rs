@@ -332,7 +332,20 @@ async fn register_handler(
             .into_response();
     }
 
-    let client = store.register_client(&body.client_name, body.redirect_uris);
+    let client = match store.register_client(&body.client_name, body.redirect_uris) {
+        Ok(client) => client,
+        Err(e) => {
+            warn!("OAuth client registration failed to persist: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "server_error",
+                    "error_description": "failed to persist client registration"
+                })),
+            )
+                .into_response();
+        }
+    };
 
     info!(
         "OAuth client registered: {} ({})",
@@ -495,7 +508,18 @@ async fn authorize_get_handler(
                 &code_challenge,
             );
 
-        return redirect_with_code(&redirect_uri, &code, params.state.as_deref());
+        return match code {
+            Ok(code) => redirect_with_code(&redirect_uri, &code, params.state.as_deref()),
+            Err(e) => {
+                warn!("Authorization code failed to persist: {e}");
+                redirect_with_error(
+                    &redirect_uri,
+                    "server_error",
+                    "failed to persist authorization code",
+                    params.state.as_deref(),
+                )
+            }
+        };
     }
 
     // Generate a CSRF token for this consent session and store it server-side
@@ -633,7 +657,18 @@ async fn authorize_post_handler(
             &form.code_challenge,
         );
 
-    redirect_with_code(&redirect_uri, &code, oauth_state)
+    match code {
+        Ok(code) => redirect_with_code(&redirect_uri, &code, oauth_state),
+        Err(e) => {
+            warn!("Authorization code failed to persist: {e}");
+            redirect_with_error(
+                &redirect_uri,
+                "server_error",
+                "failed to persist authorization code",
+                oauth_state,
+            )
+        }
+    }
 }
 
 // ─── Token Endpoint ───────────────────────────────────────────────────────────
@@ -855,11 +890,22 @@ fn mint_token_response(
     let refresh_token = generate_opaque_token();
     let refresh_exp = now + state.refresh_expiry_secs;
 
-    state
+    if let Err(e) = state
         .token_store
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .store_refresh(&refresh_token, client_id, did, capability, refresh_exp);
+        .store_refresh(&refresh_token, client_id, did, capability, refresh_exp)
+    {
+        warn!("Refresh token failed to persist: {e}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": "server_error",
+                "error_description": "failed to persist refresh token"
+            })),
+        )
+            .into_response();
+    }
 
     (
         StatusCode::OK,
@@ -2672,6 +2718,7 @@ mod tests {
             let mut store = state.token_store.lock().unwrap();
             store
                 .register_client("App", vec![redirect_uri.to_owned()])
+                .expect("register")
                 .client_id
                 .clone()
         };

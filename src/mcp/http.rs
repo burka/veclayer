@@ -407,7 +407,9 @@ fn build_auth_setup(config: &Config) -> Result<Option<AuthSetup>> {
 
     let mut token_store = TokenStore::open(&config.data_dir)
         .map_err(|e| crate::Error::Config(format!("Failed to open token store: {e}")))?;
-    token_store.purge_expired();
+    token_store
+        .purge_expired()
+        .map_err(|e| crate::Error::Config(format!("Failed to purge token store: {e}")))?;
 
     let oauth_state = OAuthState {
         token_store: Arc::new(Mutex::new(token_store)),
