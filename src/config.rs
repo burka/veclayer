@@ -785,12 +785,15 @@ impl Config {
             .or_else(|| file_llm.as_ref().and_then(|l| l.base_url.clone()))
             .or_else(|| detected.map(|d| d.base_url.clone()))
             .unwrap_or_else(|| DEFAULT_OLLAMA_URL.to_string());
-        if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
+        let base_url = if base_url.starts_with("http://") || base_url.starts_with("https://") {
+            base_url
+        } else {
             tracing::error!(
                 "LLM base_url must start with http:// or https://, got: {base_url} — \
-                 falling back to default"
+                 falling back to default {DEFAULT_OLLAMA_URL}"
             );
-        }
+            DEFAULT_OLLAMA_URL.to_string()
+        };
         let api_key_from_env = std::env::var("VECLAYER_LLM_API_KEY").ok();
         let api_key_from_file = file_llm.as_ref().and_then(|l| l.api_key.clone());
         if api_key_from_env.is_none() && api_key_from_file.is_some() {
@@ -1212,6 +1215,25 @@ mod tests {
                 "Expected Ollama variant when embedding-local is disabled"
             );
         }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_resolve_llm_invalid_base_url_falls_back_to_default() {
+        std::env::remove_var("VECLAYER_LLM_BASE_URL");
+        let bad = FileLlmConfig {
+            provider: "ollama".to_string(),
+            model: None,
+            base_url: Some("ftp://not-http".to_string()),
+            api_key: None,
+            temperature: None,
+            max_tokens: None,
+        };
+        let llm = Config::resolve_llm(Some(bad), None);
+        assert_eq!(
+            llm.base_url, DEFAULT_OLLAMA_URL,
+            "an invalid base_url must actually fall back to the default"
+        );
     }
 
     #[test]
