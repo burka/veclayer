@@ -52,6 +52,8 @@ pub enum GitError {
         stderr: String,
         exit_code: i32,
     },
+    /// The configured branch name failed validation (see [`validate_branch_name`]).
+    InvalidBranchName(String),
     /// An I/O error occurred while spawning or communicating with a git subprocess.
     Io(std::io::Error),
 }
@@ -73,6 +75,7 @@ impl fmt::Display for GitError {
                 stderr,
                 exit_code,
             } => write!(f, "git {command} failed (exit {exit_code}): {stderr}"),
+            Self::InvalidBranchName(msg) => write!(f, "invalid memory branch name: {msg}"),
             Self::Io(e) => write!(f, "I/O error during git subprocess: {e}"),
         }
     }
@@ -138,6 +141,7 @@ impl GitMemoryBranch {
         }
 
         let branch = branch.unwrap_or(DEFAULT_BRANCH).to_string();
+        validate_branch_name(&branch)?;
         let worktree_path = worktree::worktree_path(&git_dir, &branch);
 
         Ok(Self {
@@ -157,6 +161,36 @@ impl GitMemoryBranch {
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
+
+/// Validate a memory-branch name before it is passed to `git`.
+///
+/// Branch names reach `git` as positional arguments in fetch/push/log refspecs.
+/// A name beginning with `-` would be parsed by `git` as an option — and
+/// `git fetch origin --upload-pack=<cmd>` is remote code execution — so names
+/// are restricted to a conservative allowlist. This matters because the branch
+/// name can originate from a cloned repository's `.veclayer/config.toml`.
+fn validate_branch_name(name: &str) -> Result<(), GitError> {
+    let reject = |reason: &str| Err(GitError::InvalidBranchName(format!("{name:?}: {reason}")));
+    if name.is_empty() {
+        return reject("must not be empty");
+    }
+    if name.len() > 255 {
+        return reject("too long (max 255 characters)");
+    }
+    if name.starts_with('-') {
+        return reject("must not start with '-'");
+    }
+    if name.contains("..") {
+        return reject("must not contain '..'");
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-'))
+    {
+        return reject("may only contain ASCII letters, digits, '.', '_', '/', '-'");
+    }
+    Ok(())
+}
 
 /// Apply standard environment variables to a git command:
 /// - `GIT_TERMINAL_PROMPT=0` / `GIT_ASKPASS=echo` — prevent credential prompts
@@ -227,6 +261,46 @@ pub(crate) fn check_output(output: &Output, command: &str) -> Result<(), GitErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // validate_branch_name — git option-injection guard
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_branch_name_accepts_normal_names() {
+        assert!(validate_branch_name("veclayer-memory").is_ok());
+        assert!(validate_branch_name("feature/foo_bar.v2").is_ok());
+        assert!(validate_branch_name("main").is_ok());
+    }
+
+    #[test]
+    fn test_validate_branch_name_rejects_option_injection() {
+        // The critical case: a leading '-' is parsed by git as an option, and
+        // `git fetch origin --upload-pack=<cmd>` is remote code execution.
+        assert!(validate_branch_name("--upload-pack=touch /tmp/pwned").is_err());
+        assert!(validate_branch_name("-o").is_err());
+    }
+
+    #[test]
+    fn test_validate_branch_name_rejects_unsafe_characters() {
+        assert!(validate_branch_name("").is_err());
+        assert!(validate_branch_name("has space").is_err());
+        assert!(validate_branch_name("evil;rm -rf").is_err());
+        assert!(validate_branch_name("a..b").is_err());
+        assert!(validate_branch_name(&"x".repeat(256)).is_err());
+    }
+
+    #[test]
+    fn test_open_rejects_malicious_branch_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir(&git_dir).unwrap();
+        let result = GitMemoryBranch::open(&git_dir, Some("--upload-pack=evil"));
+        assert!(
+            matches!(result, Err(GitError::InvalidBranchName(_))),
+            "malicious branch name must be rejected"
+        );
+    }
 
     // -----------------------------------------------------------------------
     // is_file_not_found — pattern documentation and regression tests
