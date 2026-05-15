@@ -118,6 +118,10 @@ pub fn verify_with_issuer(
     let mut validation = Validation::new(Algorithm::EdDSA);
     // Audience is validated manually after decoding so we can return a precise error.
     validation.validate_aud = false;
+    // `exp` is validated by default; also reject tokens whose `nbf` (not-before)
+    // is still in the future, and require both claims to be present.
+    validation.validate_nbf = true;
+    validation.set_required_spec_claims(&["exp", "nbf"]);
 
     if let Some(iss) = expected_issuer {
         validation.set_issuer(&[iss]);
@@ -336,5 +340,19 @@ mod tests {
         let (token, key, _claims, t) = mint_with_cap(Capability::Read);
         let recovered = verify(&token, &key.verifying_key(), None).expect("verify");
         assert_eq!(recovered.nbf, t, "nbf must equal iat");
+    }
+
+    #[test]
+    fn test_token_with_future_nbf_rejected() {
+        let key = generate_key();
+        let t = now();
+        // Valid window opens an hour from now; the token is not yet usable.
+        let mut claims = make_claims(Capability::Read, t, t + 7200);
+        claims.nbf = t + 3600;
+        let err = mint_and_verify_err(&key, &claims, &key.verifying_key());
+        assert!(
+            matches!(err, AuthError::InvalidToken(_)),
+            "a token whose nbf is in the future must be rejected, got: {err}"
+        );
     }
 }

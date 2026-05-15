@@ -87,6 +87,9 @@ impl TokenStore {
         let path = data_dir.join(STORE_FILE);
 
         let data = if path.exists() {
+            // Repair permissions on a store written by an older version or
+            // external tooling with looser bits — it holds token hashes.
+            set_file_mode_600(&path)?;
             let raw = std::fs::read_to_string(&path)?;
             serde_json::from_str::<StoreData>(&raw)?
         } else {
@@ -111,10 +114,11 @@ impl TokenStore {
 
         let json = serde_json::to_string_pretty(&data)?;
 
-        // Write atomically via a temporary sibling file, then rename.
+        // Write atomically via a temporary sibling file, then rename. The temp
+        // file is created with 0o600 from the start so the token hashes it
+        // holds are never briefly world-readable.
         let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, json)?;
-        set_file_mode_600(&tmp)?;
+        crate::util::write_file_0600(&tmp, json.as_bytes())?;
         std::fs::rename(&tmp, &self.path)?;
 
         Ok(())
@@ -326,10 +330,29 @@ impl TokenStore {
 // ─── PKCE ─────────────────────────────────────────────────────────────────────
 
 /// Verify PKCE S256: `BASE64URL(SHA-256(code_verifier)) == code_challenge`.
+///
+/// The stored challenge is decoded back to raw digest bytes and compared in
+/// constant time, so verification time does not depend on how many leading
+/// bytes matched.
 fn verify_pkce(code_verifier: &str, code_challenge: &str) -> bool {
-    let hash = Sha256::digest(code_verifier.as_bytes());
-    let computed = URL_SAFE_NO_PAD.encode(hash);
-    computed == code_challenge
+    let expected = Sha256::digest(code_verifier.as_bytes());
+    match URL_SAFE_NO_PAD.decode(code_challenge) {
+        Ok(stored) => constant_time_eq(expected.as_slice(), &stored),
+        Err(_) => false,
+    }
+}
+
+/// Constant-time byte-slice equality: the comparison time does not depend on
+/// the position of the first differing byte. Used for secret comparisons.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -437,6 +460,50 @@ mod tests {
             err.to_string().contains("expired"),
             "expected 'expired' error, got: {err}"
         );
+    }
+
+    #[test]
+    fn test_constant_time_eq() {
+        assert!(constant_time_eq(b"abc", b"abc"));
+        assert!(!constant_time_eq(b"abc", b"abd"));
+        assert!(!constant_time_eq(b"abc", b"ab"));
+        assert!(constant_time_eq(b"", b""));
+    }
+
+    #[test]
+    fn test_verify_pkce_accepts_correct_and_rejects_wrong() {
+        let (verifier, challenge) = pkce_pair();
+        assert!(
+            verify_pkce(&verifier, &challenge),
+            "correct pair must verify"
+        );
+
+        // A challenge differing in one byte must be rejected.
+        let mut wrong: Vec<char> = challenge.chars().collect();
+        wrong[5] = if wrong[5] == 'A' { 'B' } else { 'A' };
+        let wrong: String = wrong.into_iter().collect();
+        assert!(
+            !verify_pkce(&verifier, &wrong),
+            "altered challenge must fail"
+        );
+
+        // A malformed (non-base64) challenge must be rejected, not panic.
+        assert!(!verify_pkce(&verifier, "!!!not-base64!!!"));
+    }
+
+    #[test]
+    fn test_open_repairs_loose_permissions() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("oauth_store.json");
+        std::fs::write(&path, r#"{"clients":{},"codes":{},"refresh_tokens":{}}"#).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let _store = TokenStore::open(dir.path()).expect("open");
+        #[cfg(unix)]
+        assert_file_mode_600(&path, "reopened store with loose permissions");
     }
 
     #[test]
