@@ -58,8 +58,11 @@ pub async fn import_entries(data_dir: &Path, options: &ImportOptions) -> Result<
     }
 
     let skipped = skipped_duplicates + skipped_parse_errors + skipped_import_errors;
-    let skip_detail =
-        build_skip_detail(skipped_parse_errors, skipped_import_errors, skipped_duplicates);
+    let skip_detail = build_skip_detail(
+        skipped_parse_errors,
+        skipped_import_errors,
+        skipped_duplicates,
+    );
     eprintln!(
         "Imported {} entries, {} skipped{}.",
         imported, skipped, skip_detail
@@ -83,7 +86,10 @@ pub(crate) fn build_skip_detail(
     let plural = |n: usize| if n == 1 { "" } else { "s" };
     let mut parts = Vec::new();
     if parse_errors > 0 {
-        parts.push(format!("{parse_errors} parse error{}", plural(parse_errors)));
+        parts.push(format!(
+            "{parse_errors} parse error{}",
+            plural(parse_errors)
+        ));
     }
     if import_errors > 0 {
         parts.push(format!(

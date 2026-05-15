@@ -3665,9 +3665,13 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         // Open once read-write to create the table, then open read-only.
         let rw = LanceStore::open(temp_dir.path(), 384, false).await.unwrap();
-        rw.insert_chunks(vec![create_test_chunk("ro001", "read-only test", ChunkLevel::CONTENT)])
-            .await
-            .unwrap();
+        rw.insert_chunks(vec![create_test_chunk(
+            "ro001",
+            "read-only test",
+            ChunkLevel::CONTENT,
+        )])
+        .await
+        .unwrap();
         drop(rw);
 
         let ro = LanceStore::open(temp_dir.path(), 384, true).await.unwrap();
