@@ -252,14 +252,17 @@ fn compute_centroids(
 
             for chunk in &members {
                 let score = salience::compute(chunk, weights);
-                let w = score.composite.max(0.01); // minimum weight to avoid zero-division
-                total_weight += w;
                 total_salience += score.composite;
 
                 if let Some(ref emb) = chunk.embedding {
                     if emb.len() != dim {
                         continue; // skip mismatched embeddings
                     }
+                    // Weight is accumulated only for chunks that actually
+                    // contribute to the centroid sum; counting skipped chunks
+                    // would inflate the divisor and shrink the centroid.
+                    let w = score.composite.max(0.01); // min weight avoids zero-division
+                    total_weight += w;
                     for (i, val) in emb.iter().enumerate() {
                         centroid[i] += val * w;
                     }
@@ -718,6 +721,34 @@ mod tests {
         assert_eq!(centroids[0].perspective, "decisions");
         assert_eq!(centroids[0].entry_count, 1);
         assert_eq!(centroids[0].centroid.len(), 3);
+    }
+
+    #[test]
+    fn test_compute_centroids_excludes_mismatched_dim_from_weight() {
+        // A chunk whose embedding dimension differs from the perspective's
+        // dimension contributes nothing to the centroid sum, so it must not
+        // contribute to the divisor (total_weight) either.
+        let mut good = test_chunk("correct dimension");
+        good.embedding = Some(vec![1.0, 0.0, 0.0]);
+        good.perspectives = vec!["decisions".to_string()];
+
+        let mut mismatched = test_chunk("wrong dimension");
+        mismatched.embedding = Some(vec![9.0, 9.0]);
+        mismatched.perspectives = vec!["decisions".to_string()];
+
+        let perspectives = crate::perspective::defaults();
+        let weights = SalienceWeights::default();
+        let centroids = compute_centroids(&[good, mismatched], &perspectives, &weights);
+
+        let decisions = centroids
+            .iter()
+            .find(|c| c.perspective == "decisions")
+            .expect("decisions centroid");
+        assert!(
+            (decisions.centroid[0] - 1.0).abs() < 1e-6,
+            "mismatched-dim chunk inflated total_weight: centroid[0] = {}",
+            decisions.centroid[0]
+        );
     }
 
     #[test]

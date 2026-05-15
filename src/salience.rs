@@ -76,6 +76,10 @@ pub fn compute(chunk: &HierarchicalChunk, weights: &SalienceWeights) -> Salience
         composite *= chunk.impression_strength;
     }
 
+    // The composite is contractually in [0, 1]; the summary bonus and the
+    // impression-strength multiplier can otherwise push it outside that range.
+    let composite = composite.clamp(0.0, 1.0);
+
     SalienceScore {
         interaction,
         perspective,
@@ -202,6 +206,28 @@ mod tests {
         let score = compute(&chunk, &SalienceWeights::default());
         // tanh(20/5) ≈ 1.0
         assert!(score.revision > 0.99);
+    }
+
+    #[test]
+    fn test_salience_composite_clamped_to_one() {
+        // impression_strength amplifies the composite; a strength well above 1.0
+        // must not push the composite past the documented [0, 1] range.
+        let mut chunk = test_chunk("over-strength impression");
+        chunk.entry_type = crate::chunk::EntryType::Impression;
+        chunk.impression_strength = 20.0;
+        chunk.perspectives = (0..20).map(|i| format!("p{i}")).collect();
+        for i in 0..20 {
+            chunk
+                .relations
+                .push(ChunkRelation::related_to(format!("r{i}")));
+        }
+        let score = compute(&chunk, &SalienceWeights::default());
+        assert!(
+            score.composite <= 1.0,
+            "composite must stay within [0, 1], got {}",
+            score.composite
+        );
+        assert!(score.composite >= 0.0);
     }
 
     #[test]
