@@ -253,6 +253,27 @@ async fn inject_admin_capability(
     next.run(request).await
 }
 
+/// Returns true if `origin` is exactly a loopback origin — `http://localhost`
+/// or `http://127.0.0.1`, optionally followed by `:<port>`.
+///
+/// A bare `starts_with` check would also accept look-alike hosts such as
+/// `http://localhost.evil.com`, letting an attacker page drive the API from a
+/// victim's browser. An Origin header has no path, so the only legal trailer
+/// after the host is a `:port`.
+fn is_loopback_origin(origin: &[u8]) -> bool {
+    for host in [
+        b"http://localhost".as_slice(),
+        b"http://127.0.0.1".as_slice(),
+    ] {
+        if let Some(rest) = origin.strip_prefix(host) {
+            if rest.is_empty() || rest.starts_with(b":") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Build the CORS layer.
 ///
 /// Always allows localhost origins.  When a remote `server_url` is provided
@@ -263,8 +284,7 @@ fn build_cors(server_url: Option<String>) -> CorsLayer {
     CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(move |origin, _| {
             let s = origin.as_bytes();
-            if s.starts_with(b"http://localhost")
-                || s.starts_with(b"http://127.0.0.1")
+            if is_loopback_origin(s)
                 || s == b"https://claude.ai"
                 || (s.starts_with(b"https://") && s.ends_with(b".claude.ai"))
             {
@@ -609,6 +629,26 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
+
+    // ── CORS origin matching ─────────────────────────────────────────────
+
+    #[test]
+    fn is_loopback_origin_accepts_real_loopback_hosts() {
+        assert!(is_loopback_origin(b"http://localhost"));
+        assert!(is_loopback_origin(b"http://localhost:3000"));
+        assert!(is_loopback_origin(b"http://127.0.0.1"));
+        assert!(is_loopback_origin(b"http://127.0.0.1:8080"));
+    }
+
+    #[test]
+    fn is_loopback_origin_rejects_lookalike_hosts() {
+        assert!(!is_loopback_origin(b"http://localhost.evil.com"));
+        assert!(!is_loopback_origin(b"http://127.0.0.1.attacker.net"));
+        assert!(!is_loopback_origin(b"http://localhostx"));
+        assert!(!is_loopback_origin(b"http://127.0.0.1x"));
+        assert!(!is_loopback_origin(b"https://localhost"));
+        assert!(!is_loopback_origin(b"http://evil.com"));
+    }
 
     // ── AppError ─────────────────────────────────────────────────────────
 
