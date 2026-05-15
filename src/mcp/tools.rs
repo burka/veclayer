@@ -44,6 +44,46 @@ fn temporal_fetch_limit(limit: usize, since: Option<i64>, until: Option<i64>) ->
     }
 }
 
+/// Resolve the perspective list for a `store` request given the requested
+/// `scope`, appending the `project:`/`branch:` facets implied by the scope.
+///
+/// An unrecognized scope is rejected rather than silently treated as
+/// `personal` — a typo must not widen an entry's visibility past the project
+/// or branch the caller intended.
+fn resolve_scope_perspectives(
+    scope: &str,
+    base: &[String],
+    project: Option<&str>,
+    branch: Option<&str>,
+) -> Result<Vec<String>> {
+    let mut perspectives = base.to_vec();
+    match scope {
+        "project" => {
+            if let Some(proj) = project {
+                perspectives.push(format!("project:{proj}"));
+            }
+        }
+        "branch" => {
+            if let Some(proj) = project {
+                perspectives.push(format!("project:{proj}"));
+            }
+            if let Some(br) = branch {
+                match project {
+                    Some(proj) => perspectives.push(format!("branch:{proj}@{br}")),
+                    None => perspectives.push(format!("branch:{br}")),
+                }
+            }
+        }
+        "personal" => {}
+        other => {
+            return Err(crate::Error::config(format!(
+                "unknown scope '{other}', expected one of: project, branch, personal"
+            )));
+        }
+    }
+    Ok(perspectives)
+}
+
 use super::types::*;
 
 /// Shared execution context passed to all tool functions.
@@ -284,36 +324,8 @@ async fn store_single_entry(
         Some(s) => s.parse().map_err(|e: String| crate::Error::config(e))?,
     };
 
-    let perspectives = match input.scope.as_str() {
-        "project" => {
-            if let Some(proj) = project {
-                let mut perspectives = input.perspectives.clone();
-                perspectives.push(format!("project:{}", proj));
-                perspectives
-            } else {
-                input.perspectives.clone()
-            }
-        }
-        "branch" => {
-            let mut perspectives = input.perspectives.clone();
-            if let Some(proj) = project {
-                perspectives.push(format!("project:{}", proj));
-            }
-            if let Some(br) = branch {
-                if let Some(proj) = project {
-                    perspectives.push(format!("branch:{}@{}", proj, br));
-                } else {
-                    perspectives.push(format!("branch:{}", br));
-                }
-            }
-            perspectives
-        }
-        "personal" => input.perspectives.clone(),
-        other => {
-            tracing::warn!("Unknown scope '{}', treating as personal", other);
-            input.perspectives.clone()
-        }
-    };
+    let perspectives =
+        resolve_scope_perspectives(&input.scope, &input.perspectives, project, branch)?;
 
     let mut chunk = crate::HierarchicalChunk::new(
         input.content,
@@ -1348,6 +1360,33 @@ mod tests {
             serde_json::json!(["recall", "focus", "store"])
         );
         assert_eq!(token2["expires"], "90d");
+    }
+
+    #[test]
+    fn test_resolve_scope_perspectives_appends_facets() {
+        let base = vec!["decisions".to_string()];
+        let project = resolve_scope_perspectives("project", &base, Some("veclayer"), None).unwrap();
+        assert_eq!(project, vec!["decisions", "project:veclayer"]);
+
+        let branch =
+            resolve_scope_perspectives("branch", &base, Some("veclayer"), Some("main")).unwrap();
+        assert_eq!(
+            branch,
+            vec!["decisions", "project:veclayer", "branch:veclayer@main"]
+        );
+
+        let personal = resolve_scope_perspectives("personal", &base, Some("veclayer"), None);
+        assert_eq!(personal.unwrap(), base);
+    }
+
+    #[test]
+    fn test_resolve_scope_perspectives_rejects_unknown_scope() {
+        // A typo must not silently fall through to the widest (personal) scope.
+        let result = resolve_scope_perspectives("prject", &[], Some("veclayer"), None);
+        assert!(
+            result.is_err(),
+            "an unknown scope must be rejected, not treated as personal"
+        );
     }
 
     #[test]
