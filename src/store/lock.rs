@@ -20,28 +20,47 @@ pub struct FileLock {
     _file: File,
 }
 
+/// Outcome of a single non-blocking lock attempt — distinguishes the
+/// retryable "another process holds it" case from a hard failure without
+/// matching on error message text.
+enum AcquireError {
+    /// Another process currently holds the lock (retryable).
+    Contended,
+    /// A non-retryable error (I/O, permissions).
+    Failed(Error),
+}
+
 impl FileLock {
     /// Acquire an exclusive lock on `data_dir`.
     ///
     /// Returns an error immediately if another process already holds the lock.
     pub fn acquire(data_dir: &Path) -> Result<Self> {
-        std::fs::create_dir_all(data_dir)?;
+        Self::try_acquire(data_dir).map_err(|e| match e {
+            AcquireError::Contended => Error::store(
+                "Another VecLayer process is writing to this store. \
+                 Use --read-only for concurrent read access.",
+            ),
+            AcquireError::Failed(err) => err,
+        })
+    }
+
+    /// Single non-blocking lock attempt with a typed outcome.
+    fn try_acquire(data_dir: &Path) -> std::result::Result<Self, AcquireError> {
+        std::fs::create_dir_all(data_dir).map_err(|e| AcquireError::Failed(e.into()))?;
 
         let lock_path = data_dir.join(LOCK_FILE_NAME);
         let file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(false)
-            .open(&lock_path)?;
+            .open(&lock_path)
+            .map_err(|e| AcquireError::Failed(e.into()))?;
 
         file.try_lock_exclusive().map_err(|e| {
             if e.kind() == std::io::ErrorKind::WouldBlock {
-                Error::store(
-                    "Another VecLayer process is writing to this store. \
-                     Use --read-only for concurrent read access.",
-                )
+                AcquireError::Contended
             } else {
-                Error::store(format!("Failed to acquire store lock: {}", e))
+                AcquireError::Failed(Error::store(format!("Failed to acquire store lock: {e}")))
             }
         })?;
 
@@ -58,28 +77,22 @@ impl FileLock {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
 
         loop {
-            match Self::acquire(data_dir) {
+            match Self::try_acquire(data_dir) {
                 Ok(lock) => return Ok(lock),
-                Err(e) => {
-                    let is_would_block = e.to_string().contains("Another VecLayer process");
-                    if is_would_block {
-                        if std::time::Instant::now() + wait > deadline {
-                            let lock_path = data_dir.join(LOCK_FILE_NAME);
-                            return Err(Error::store(format!(
-                                "Timed out waiting for write lock on {} — \
-                                 another veclayer process may be holding it. \
-                                 Check for stale processes: lsof {}",
-                                lock_path.display(),
-                                lock_path.display(),
-                            )));
-                        }
-                        std::thread::sleep(wait);
-                        wait = std::time::Duration::from_millis(
-                            (wait.as_millis() as u64 * 2).min(320),
-                        );
-                    } else {
-                        return Err(e);
+                Err(AcquireError::Failed(e)) => return Err(e),
+                Err(AcquireError::Contended) => {
+                    if std::time::Instant::now() + wait > deadline {
+                        let lock_path = data_dir.join(LOCK_FILE_NAME);
+                        return Err(Error::store(format!(
+                            "Timed out waiting for write lock on {} — \
+                             another veclayer process may be holding it. \
+                             Check for stale processes: lsof {}",
+                            lock_path.display(),
+                            lock_path.display(),
+                        )));
                     }
+                    std::thread::sleep(wait);
+                    wait = std::time::Duration::from_millis((wait.as_millis() as u64 * 2).min(320));
                 }
             }
         }

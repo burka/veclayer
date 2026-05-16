@@ -120,18 +120,30 @@ fn entry_type_from_str(s: &str) -> EntryType {
     s.parse().unwrap_or_default()
 }
 
+/// Convert an `i64` column value to a narrower integer type, failing loudly on
+/// out-of-range data instead of silently truncating with an `as` cast.
+fn narrow<T: TryFrom<i64>>(value: i64, column: &str) -> rusqlite::Result<T> {
+    T::try_from(value).map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Integer,
+            format!("column '{column}' value {value} is out of range").into(),
+        )
+    })
+}
+
 fn row_to_chunk(row: &rusqlite::Row) -> rusqlite::Result<HierarchicalChunk> {
     let id: String = row.get("id")?;
     let content: String = row.get("content")?;
     let embedding_blob: Option<Vec<u8>> = row.get("embedding")?;
     let embedding_status: String = row.get("embedding_status")?;
-    let level_depth: u8 = row.get::<_, i64>("level")? as u8;
+    let level_depth: u8 = narrow(row.get::<_, i64>("level")?, "level")?;
     let parent_id: Option<String> = row.get("parent_id")?;
     let path: String = row.get("path")?;
     let source_file: String = row.get("source_file")?;
     let heading: Option<String> = row.get("heading")?;
-    let start_offset: usize = row.get::<_, i64>("start_offset")? as usize;
-    let end_offset: usize = row.get::<_, i64>("end_offset")? as usize;
+    let start_offset: usize = narrow(row.get::<_, i64>("start_offset")?, "start_offset")?;
+    let end_offset: usize = narrow(row.get::<_, i64>("end_offset")?, "end_offset")?;
     let entry_type_str: String = row.get("entry_type")?;
     let visibility: String = row.get("visibility")?;
     let perspectives_json: String = row.get("perspectives")?;
@@ -140,12 +152,12 @@ fn row_to_chunk(row: &rusqlite::Row) -> rusqlite::Result<HierarchicalChunk> {
     let summarizes_json: String = row.get("summarizes")?;
     let created_at: i64 = row.get("created_at")?;
     let last_rolled: i64 = row.get("last_rolled")?;
-    let access_hour: u16 = row.get::<_, i64>("access_hour")? as u16;
-    let access_day: u16 = row.get::<_, i64>("access_day")? as u16;
-    let access_week: u16 = row.get::<_, i64>("access_week")? as u16;
-    let access_month: u16 = row.get::<_, i64>("access_month")? as u16;
-    let access_year: u16 = row.get::<_, i64>("access_year")? as u16;
-    let access_total: u32 = row.get::<_, i64>("access_total")? as u32;
+    let access_hour: u16 = narrow(row.get::<_, i64>("access_hour")?, "access_hour")?;
+    let access_day: u16 = narrow(row.get::<_, i64>("access_day")?, "access_day")?;
+    let access_week: u16 = narrow(row.get::<_, i64>("access_week")?, "access_week")?;
+    let access_month: u16 = narrow(row.get::<_, i64>("access_month")?, "access_month")?;
+    let access_year: u16 = narrow(row.get::<_, i64>("access_year")?, "access_year")?;
+    let access_total: u32 = narrow(row.get::<_, i64>("access_total")?, "access_total")?;
     let expires_at: Option<i64> = row.get("expires_at")?;
     let impression_hint: Option<String> = row.get("impression_hint")?;
     let impression_strength: f32 = row.get::<_, f64>("impression_strength")? as f32;
@@ -966,6 +978,16 @@ mod tests {
     #[allow(unused_imports)]
     use crate::chunk::{visibility, EntryType};
     use tempfile::TempDir;
+
+    #[test]
+    fn test_narrow_accepts_in_range_and_rejects_overflow() {
+        assert_eq!(narrow::<u8>(7, "level").unwrap(), 7u8);
+        assert_eq!(narrow::<u16>(60_000, "access_hour").unwrap(), 60_000u16);
+        // Out-of-range values must error, not silently truncate.
+        assert!(narrow::<u8>(300, "level").is_err());
+        assert!(narrow::<u16>(100_000, "access_hour").is_err());
+        assert!(narrow::<usize>(-1, "start_offset").is_err());
+    }
 
     async fn create_test_store() -> (SqliteStore, TempDir) {
         let dir = TempDir::new().expect("tempdir");
