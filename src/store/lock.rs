@@ -23,6 +23,7 @@ pub struct FileLock {
 /// Outcome of a single non-blocking lock attempt — distinguishes the
 /// retryable "another process holds it" case from a hard failure without
 /// matching on error message text.
+#[derive(Debug)]
 enum AcquireError {
     /// Another process currently holds the lock (retryable).
     Contended,
@@ -31,20 +32,10 @@ enum AcquireError {
 }
 
 impl FileLock {
-    /// Acquire an exclusive lock on `data_dir`.
-    ///
-    /// Returns an error immediately if another process already holds the lock.
-    pub fn acquire(data_dir: &Path) -> Result<Self> {
-        Self::try_acquire(data_dir).map_err(|e| match e {
-            AcquireError::Contended => Error::store(
-                "Another VecLayer process is writing to this store. \
-                 Use --read-only for concurrent read access.",
-            ),
-            AcquireError::Failed(err) => err,
-        })
-    }
-
     /// Single non-blocking lock attempt with a typed outcome.
+    ///
+    /// Returns [`AcquireError::Contended`] when another process holds the lock
+    /// (retryable) and [`AcquireError::Failed`] for a hard error.
     fn try_acquire(data_dir: &Path) -> std::result::Result<Self, AcquireError> {
         std::fs::create_dir_all(data_dir).map_err(|e| AcquireError::Failed(e.into()))?;
 
@@ -113,7 +104,7 @@ mod tests {
     #[test]
     fn test_lock_file_created() {
         let dir = TempDir::new().unwrap();
-        let _lock = FileLock::acquire(dir.path()).unwrap();
+        let _lock = FileLock::try_acquire(dir.path()).expect("acquire");
         assert!(dir.path().join(".lock").exists());
     }
 
@@ -121,31 +112,29 @@ mod tests {
     fn test_lock_acquire_release() {
         let dir = TempDir::new().unwrap();
         {
-            let _lock = FileLock::acquire(dir.path()).unwrap();
+            let _lock = FileLock::try_acquire(dir.path()).expect("acquire");
         }
         // After drop, a new acquisition must succeed.
-        FileLock::acquire(dir.path()).unwrap();
+        FileLock::try_acquire(dir.path()).expect("re-acquire after release");
     }
 
     #[test]
     fn test_lock_exclusive() {
         let dir = TempDir::new().unwrap();
-        let _lock = FileLock::acquire(dir.path()).unwrap();
+        let _lock = FileLock::try_acquire(dir.path()).expect("acquire");
 
-        let result = FileLock::acquire(dir.path());
-        assert!(result.is_err());
-
-        let msg = result.unwrap_err().to_string();
+        // A second attempt must report typed contention, not a hard failure.
+        let result = FileLock::try_acquire(dir.path());
         assert!(
-            msg.contains("Another VecLayer process"),
-            "unexpected message: {msg}"
+            matches!(result, Err(AcquireError::Contended)),
+            "expected Contended, got: {result:?}"
         );
     }
 
     #[test]
     fn test_lock_timeout() {
         let dir = TempDir::new().unwrap();
-        let _lock = FileLock::acquire(dir.path()).unwrap();
+        let _lock = FileLock::try_acquire(dir.path()).expect("acquire");
 
         // Second acquisition should timeout (not hang forever)
         let start = std::time::Instant::now();
