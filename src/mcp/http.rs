@@ -421,6 +421,7 @@ fn build_auth_setup(config: &Config) -> Result<Option<AuthSetup>> {
         auto_approve: config.auth.auto_approve,
         device_codes: Arc::new(Mutex::new(HashMap::new())),
         pending_consents: Arc::new(Mutex::new(HashMap::new())),
+        device_csrf_tokens: Arc::new(Mutex::new(std::collections::HashSet::new())),
     };
 
     let auth_state = AuthState {

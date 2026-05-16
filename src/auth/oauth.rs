@@ -9,7 +9,7 @@
 //! Build the router with [`oauth_router`] and merge it into the main
 //! application router when ready.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{Form, Query, State};
@@ -132,7 +132,14 @@ pub struct OAuthState {
     pub device_codes: Arc<Mutex<HashMap<String, PendingDeviceAuth>>>,
     /// Pending consent page sessions keyed by CSRF token.
     pub pending_consents: Arc<Mutex<HashMap<String, PendingConsent>>>,
+    /// One-time CSRF tokens issued by the device verification page (GET),
+    /// validated and consumed on the device approval POST.
+    pub device_csrf_tokens: Arc<Mutex<HashSet<String>>>,
 }
+
+/// Upper bound on outstanding device-page CSRF tokens; when exceeded the set is
+/// cleared (a stale page simply needs reloading) so it cannot grow unbounded.
+const MAX_DEVICE_CSRF_TOKENS: usize = 1024;
 
 // ─── Consent CSRF tracking ────────────────────────────────────────────────────
 
@@ -1004,7 +1011,26 @@ async fn device_page_handler(
     Query(params): Query<HashMap<String, String>>,
 ) -> Html<String> {
     let prefill = params.get("user_code").cloned().unwrap_or_default();
-    Html(device_verification_page(&state.server_url, &prefill))
+
+    // Issue a one-time CSRF token so a forged cross-site POST cannot submit a
+    // device-approval decision on the victim's behalf.
+    let csrf_token = generate_opaque_token();
+    {
+        let mut tokens = state
+            .device_csrf_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if tokens.len() >= MAX_DEVICE_CSRF_TOKENS {
+            tokens.clear();
+        }
+        tokens.insert(csrf_token.clone());
+    }
+
+    Html(device_verification_page(
+        &state.server_url,
+        &prefill,
+        &csrf_token,
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1012,6 +1038,7 @@ pub struct DeviceApproveForm {
     pub user_code: String,
     pub scope: Option<String>,
     pub approved: Option<String>,
+    pub csrf_token: Option<String>,
 }
 
 /// POST /oauth/device — handle device approval.
@@ -1019,6 +1046,26 @@ async fn device_approve_handler(
     State(state): State<OAuthState>,
     Form(form): Form<DeviceApproveForm>,
 ) -> Html<String> {
+    // Validate and consume the one-time CSRF token before acting on the form,
+    // so a forged cross-site POST is rejected.
+    let csrf_ok = form
+        .csrf_token
+        .as_deref()
+        .map(|t| {
+            state
+                .device_csrf_tokens
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(t)
+        })
+        .unwrap_or(false);
+    if !csrf_ok {
+        warn!("Device approval rejected: missing or invalid CSRF token");
+        return Html(error_page(
+            "Invalid or expired request. Reload the device authorization page and try again.",
+        ));
+    }
+
     // Normalize user_code: strip dashes, uppercase.
     let normalized = normalize_user_code(&form.user_code);
 
@@ -1134,13 +1181,16 @@ fn consent_page(
     page_shell("Authorize Access", extra_css, &body)
 }
 
-fn device_verification_page(server_url: &str, prefill_code: &str) -> String {
+fn device_verification_page(server_url: &str, prefill_code: &str, csrf_token: &str) -> String {
     let _ = server_url; // available for future use if needed
     let prefill_code = html_escape(prefill_code);
+    // CSRF token is URL-safe alphanumeric; escape defensively regardless.
+    let csrf_token = html_escape(csrf_token);
     let body = format!(
         r#"<h1>Authorize Device</h1>
     <p>Enter the code shown on your device to grant it access.</p>
     <form method="POST" action="/oauth/device">
+      <input type="hidden" name="csrf_token" value="{csrf_token}">
       <label for="user_code">Device Code</label>
       <input type="text" id="user_code" name="user_code" value="{prefill_code}" placeholder="ABCD-EFGH" required>
       <label for="scope">Access Level</label>
@@ -1351,6 +1401,7 @@ mod tests {
             auto_approve,
             device_codes: Arc::new(Mutex::new(HashMap::new())),
             pending_consents: Arc::new(Mutex::new(HashMap::new())),
+            device_csrf_tokens: Arc::new(Mutex::new(HashSet::new())),
         };
         (oauth_state, dir)
     }
@@ -1391,6 +1442,21 @@ mod tests {
             .header("content-type", "application/x-www-form-urlencoded")
             .body(Body::from(body.to_owned()))
             .expect("request")
+    }
+
+    /// GET the device verification page and extract its one-time CSRF token,
+    /// mirroring how a real browser obtains the token before submitting.
+    async fn device_csrf_token(app: &Router) -> String {
+        let resp = app
+            .clone()
+            .oneshot(get_req("/oauth/device"))
+            .await
+            .expect("device page");
+        let html = String::from_utf8(body_vec(resp).await).expect("utf8");
+        let marker = r#"name="csrf_token" value=""#;
+        let start = html.find(marker).expect("csrf input present") + marker.len();
+        let end = html[start..].find('"').expect("csrf value terminator") + start;
+        html[start..end].to_owned()
     }
 
     /// Register a client and return its client_id.
@@ -1726,7 +1792,9 @@ mod tests {
         assert_eq!(json_pending["error"], "authorization_pending");
 
         // Step 3: Approve the device via the browser flow.
-        let approve_body = format!("user_code={user_code}&scope=read&approved=true");
+        let csrf = device_csrf_token(&app).await;
+        let approve_body =
+            format!("user_code={user_code}&scope=read&approved=true&csrf_token={csrf}");
         let resp = app
             .clone()
             .oneshot(post_form("/oauth/device", &approve_body))
@@ -2645,7 +2713,8 @@ mod tests {
         let user_code = json["user_code"].as_str().unwrap().to_owned();
 
         // Deny the device
-        let deny_body = format!("user_code={user_code}&approved=false");
+        let csrf = device_csrf_token(&app).await;
+        let deny_body = format!("user_code={user_code}&approved=false&csrf_token={csrf}");
         let resp = app
             .clone()
             .oneshot(post_form("/oauth/device", &deny_body))
@@ -2703,17 +2772,90 @@ mod tests {
         let (state, _dir) = make_state(false);
         let app = oauth_router(state);
 
+        let csrf = device_csrf_token(&app).await;
         let resp = app
             .oneshot(post_form(
                 "/oauth/device",
-                "user_code=ZZZZ-ZZZZ&approved=true",
+                &format!("user_code=ZZZZ-ZZZZ&approved=true&csrf_token={csrf}"),
             ))
             .await
             .expect("request");
 
         assert_eq!(resp.status(), StatusCode::OK);
         let html = String::from_utf8(body_vec(resp).await).unwrap();
-        assert!(html.contains("Error") || html.contains("Unknown") || html.contains("expired"));
+        assert!(
+            html.contains("Unknown"),
+            "expected unknown-code page, got: {html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_device_approve_without_csrf_token_rejected() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        // A POST with no csrf_token (a forged cross-site request) must be rejected.
+        let resp = app
+            .oneshot(post_form(
+                "/oauth/device",
+                "user_code=ABCD-EFGH&approved=true",
+            ))
+            .await
+            .expect("request");
+        let html = String::from_utf8(body_vec(resp).await).unwrap();
+        assert!(
+            html.contains("Invalid or expired request"),
+            "a CSRF-less device approval must be rejected, got: {html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_device_double_approve_rejected() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+        let client_id = register_client(&app, "https://app.example.com/cb").await;
+
+        let resp = app
+            .clone()
+            .oneshot(post_form(
+                "/oauth/device/code",
+                &format!("client_id={client_id}&scope=read"),
+            ))
+            .await
+            .unwrap();
+        let user_code = body_json(resp).await["user_code"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // First approval succeeds.
+        let csrf = device_csrf_token(&app).await;
+        let resp = app
+            .clone()
+            .oneshot(post_form(
+                "/oauth/device",
+                &format!("user_code={user_code}&scope=read&approved=true&csrf_token={csrf}"),
+            ))
+            .await
+            .unwrap();
+        assert!(String::from_utf8(body_vec(resp).await)
+            .unwrap()
+            .contains("Authorized"));
+
+        // A second approval (with a fresh, valid CSRF token) must be rejected.
+        let csrf2 = device_csrf_token(&app).await;
+        let resp = app
+            .oneshot(post_form(
+                "/oauth/device",
+                &format!("user_code={user_code}&scope=read&approved=true&csrf_token={csrf2}"),
+            ))
+            .await
+            .unwrap();
+        let html = String::from_utf8(body_vec(resp).await).unwrap();
+        assert!(
+            html.contains("already been processed"),
+            "a second device approval must be rejected, got: {html}"
+        );
     }
 
     // ── Device flow: expired device code ─────────────────────────────────────
@@ -2844,6 +2986,7 @@ mod tests {
             auto_approve: true,
             device_codes: Arc::new(Mutex::new(HashMap::new())),
             pending_consents: Arc::new(Mutex::new(HashMap::new())),
+            device_csrf_tokens: Arc::new(Mutex::new(HashSet::new())),
         };
 
         let _ = oauth_router(state);

@@ -102,6 +102,7 @@ async fn spawn_auth_server(auto_approve: bool) -> (String, TempDir, SigningKey) 
         auto_approve,
         device_codes: Arc::new(Mutex::new(HashMap::new())),
         pending_consents: Arc::new(Mutex::new(HashMap::new())),
+        device_csrf_tokens: Arc::new(Mutex::new(std::collections::HashSet::new())),
     };
 
     let state = AppState {
@@ -564,13 +565,27 @@ async fn test_oauth_device_flow() {
         "pending response must use authorization_pending error"
     );
 
-    // Step 3: simulate user approving the device via the browser endpoint.
+    // Step 3: fetch the device page for a CSRF token, then approve.
+    let page = client
+        .get(format!("{base}/oauth/device"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let marker = r#"name="csrf_token" value=""#;
+    let start = page.find(marker).expect("csrf input present") + marker.len();
+    let end = page[start..].find('"').expect("csrf value terminator") + start;
+    let csrf = page[start..end].to_owned();
+
     let resp = client
         .post(format!("{base}/oauth/device"))
         .form(&[
             ("user_code", user_code.as_str()),
             ("scope", "read"),
             ("approved", "true"),
+            ("csrf_token", csrf.as_str()),
         ])
         .send()
         .await
