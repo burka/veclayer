@@ -23,6 +23,67 @@ use crate::search::{HierarchicalSearch, SearchConfig, TEMPORAL_PREFETCH_FACTOR};
 use crate::store::StoreBackend;
 use crate::{Embedder, Result, VectorStore};
 
+/// Maximum number of results any single tool call may request. Caller-supplied
+/// limits are clamped to this bound so one request cannot drive unbounded
+/// allocation or an integer overflow in downstream fetch-size arithmetic.
+const MAX_RESULT_LIMIT: usize = 1000;
+
+/// Clamp a caller-supplied result limit to [`MAX_RESULT_LIMIT`].
+fn clamp_result_limit(requested: usize) -> usize {
+    requested.min(MAX_RESULT_LIMIT)
+}
+
+/// Store fetch size for recall: when a time filter is active the limit is
+/// over-fetched by [`TEMPORAL_PREFETCH_FACTOR`] (saturating, so a large limit
+/// cannot overflow), otherwise it is used as-is.
+fn temporal_fetch_limit(limit: usize, since: Option<i64>, until: Option<i64>) -> usize {
+    if since.is_some() || until.is_some() {
+        limit.saturating_mul(TEMPORAL_PREFETCH_FACTOR)
+    } else {
+        limit
+    }
+}
+
+/// Resolve the perspective list for a `store` request given the requested
+/// `scope`, appending the `project:`/`branch:` facets implied by the scope.
+///
+/// An unrecognized scope is rejected rather than silently treated as
+/// `personal` — a typo must not widen an entry's visibility past the project
+/// or branch the caller intended.
+fn resolve_scope_perspectives(
+    scope: &str,
+    base: &[String],
+    project: Option<&str>,
+    branch: Option<&str>,
+) -> Result<Vec<String>> {
+    let mut perspectives = base.to_vec();
+    match scope {
+        "project" => {
+            if let Some(proj) = project {
+                perspectives.push(format!("project:{proj}"));
+            }
+        }
+        "branch" => {
+            if let Some(proj) = project {
+                perspectives.push(format!("project:{proj}"));
+            }
+            if let Some(br) = branch {
+                match project {
+                    Some(proj) => perspectives.push(format!("branch:{proj}@{br}")),
+                    None => perspectives.push(format!("branch:{br}")),
+                }
+            }
+        }
+        "personal" => {}
+        other => {
+            return Err(crate::Error::config(format!(
+                "unknown scope '{other}', expected one of: project, branch, personal"
+            )));
+        }
+    }
+    Ok(perspectives)
+}
+
 use super::types::*;
 
 /// Shared execution context passed to all tool functions.
@@ -263,36 +324,8 @@ async fn store_single_entry(
         Some(s) => s.parse().map_err(|e: String| crate::Error::config(e))?,
     };
 
-    let perspectives = match input.scope.as_str() {
-        "project" => {
-            if let Some(proj) = project {
-                let mut perspectives = input.perspectives.clone();
-                perspectives.push(format!("project:{}", proj));
-                perspectives
-            } else {
-                input.perspectives.clone()
-            }
-        }
-        "branch" => {
-            let mut perspectives = input.perspectives.clone();
-            if let Some(proj) = project {
-                perspectives.push(format!("project:{}", proj));
-            }
-            if let Some(br) = branch {
-                if let Some(proj) = project {
-                    perspectives.push(format!("branch:{}@{}", proj, br));
-                } else {
-                    perspectives.push(format!("branch:{}", br));
-                }
-            }
-            perspectives
-        }
-        "personal" => input.perspectives.clone(),
-        other => {
-            tracing::warn!("Unknown scope '{}', treating as personal", other);
-            input.perspectives.clone()
-        }
-    };
+    let perspectives =
+        resolve_scope_perspectives(&input.scope, &input.perspectives, project, branch)?;
 
     let mut chunk = crate::HierarchicalChunk::new(
         input.content,
@@ -360,6 +393,7 @@ pub async fn execute_recall(
     let project = ctx.project.as_deref();
     let branch = ctx.branch.as_deref();
     let git_store = ctx.git_store.as_deref();
+    let limit = clamp_result_limit(input.limit);
     // PushMode::Always implies bidirectional continuous sync — pull before
     // recall to serve the freshest data. Non-blocking: recall proceeds with
     // local data if the pull fails or conflicts.
@@ -397,11 +431,7 @@ pub async fn execute_recall(
             .await?;
 
     if let Some(ref target_id) = input.similar_to {
-        let fetch_limit = if since_epoch.is_some() || until_epoch.is_some() {
-            input.limit * TEMPORAL_PREFETCH_FACTOR
-        } else {
-            input.limit
-        };
+        let fetch_limit = temporal_fetch_limit(limit, since_epoch, until_epoch);
         let config =
             SearchConfig::try_for_query(fetch_limit, input.deep, input.recency.as_deref())?
                 .with_perspectives(input.perspectives.clone().unwrap_or_default())
@@ -423,7 +453,7 @@ pub async fn execute_recall(
                     &open_thread_ids,
                 )
             })
-            .take(input.limit)
+            .take(limit)
             .collect();
 
         return Ok(map_search_results(filtered));
@@ -432,11 +462,7 @@ pub async fn execute_recall(
     match input.query {
         Some(ref query) if !query.is_empty() => {
             // Semantic search path with keyword fallback
-            let fetch_limit = if since_epoch.is_some() || until_epoch.is_some() {
-                input.limit * TEMPORAL_PREFETCH_FACTOR
-            } else {
-                input.limit
-            };
+            let fetch_limit = temporal_fetch_limit(limit, since_epoch, until_epoch);
             let config =
                 SearchConfig::try_for_query(fetch_limit, input.deep, input.recency.as_deref())?
                     .with_perspectives(input.perspectives.clone().unwrap_or_default())
@@ -465,7 +491,7 @@ pub async fn execute_recall(
                         &open_thread_ids,
                     )
                 })
-                .take(input.limit)
+                .take(limit)
                 .collect();
 
             Ok(map_search_results(filtered))
@@ -490,7 +516,7 @@ pub async fn execute_recall(
                         // because list_entries doesn't support these filters natively.
                         10_000
                     } else {
-                        input.limit
+                        limit
                     },
                 )
                 .await?;
@@ -501,7 +527,7 @@ pub async fn execute_recall(
                     passes_scope_filter(chunk, project, branch)
                         && crate::identity::passes_ongoing_filter(&open_thread_ids, &chunk.id)
                 })
-                .take(input.limit)
+                .take(limit)
                 .map(|chunk| SearchResultResponse {
                     chunk: ChunkResponse::from(chunk),
                     score: 1.0,
@@ -519,6 +545,7 @@ pub async fn execute_focus(ctx: &ToolContext, input: FocusInput) -> Result<Focus
     let embedder = &ctx.embedder;
     let project = ctx.project.as_deref();
     let branch = ctx.branch.as_deref();
+    let limit = clamp_result_limit(input.limit);
     let node = store
         .get_by_id_prefix(&input.id)
         .await?
@@ -547,7 +574,7 @@ pub async fn execute_focus(ctx: &ToolContext, input: FocusInput) -> Result<Focus
             .collect();
 
         crate::chunk::sort_f32_desc(&mut scored, |r| r.1);
-        scored.truncate(input.limit);
+        scored.truncate(limit);
 
         scored
             .into_iter()
@@ -560,7 +587,7 @@ pub async fn execute_focus(ctx: &ToolContext, input: FocusInput) -> Result<Focus
         children
             .into_iter()
             .filter(|child| passes_scope_filter(child, project, branch))
-            .take(input.limit)
+            .take(limit)
             .map(|chunk| FocusChild {
                 chunk: ChunkResponse::from(&chunk),
                 relevance: None,
@@ -718,8 +745,8 @@ async fn think_reflect(
     project: Option<&str>,
     branch: Option<&str>,
 ) -> Result<String> {
-    let hot_limit = input.hot_limit.unwrap_or(10);
-    let stale_limit = input.stale_limit.unwrap_or(10);
+    let hot_limit = clamp_result_limit(input.hot_limit.unwrap_or(10));
+    let stale_limit = clamp_result_limit(input.stale_limit.unwrap_or(10));
     execute_reflect(store, data_dir, hot_limit, stale_limit, project, branch).await
 }
 
@@ -927,8 +954,8 @@ async fn think_prepare(store: &Arc<StoreBackend>, data_dir: &std::path::Path) ->
 }
 
 async fn think_salience(store: &Arc<StoreBackend>, input: &ThinkInput) -> Result<String> {
-    let limit = input.hot_limit.unwrap_or(10);
-    let hot = store.get_hot_chunks(limit * 2).await?;
+    let limit = clamp_result_limit(input.hot_limit.unwrap_or(10));
+    let hot = store.get_hot_chunks(limit.saturating_mul(2)).await?;
     if hot.is_empty() {
         return Ok("No entries to analyze.".to_string());
     }
@@ -1041,7 +1068,7 @@ async fn think_history(store: &Arc<StoreBackend>, input: &ThinkInput) -> Result<
 
 #[cfg(feature = "llm")]
 async fn think_discover(store: &Arc<StoreBackend>, input: &ThinkInput) -> Result<String> {
-    let limit = input.hot_limit.unwrap_or(10);
+    let limit = clamp_result_limit(input.hot_limit.unwrap_or(10));
     crate::think::discover_unlinked_pairs(store, limit).await
 }
 
@@ -1333,6 +1360,60 @@ mod tests {
             serde_json::json!(["recall", "focus", "store"])
         );
         assert_eq!(token2["expires"], "90d");
+    }
+
+    #[test]
+    fn test_resolve_scope_perspectives_appends_facets() {
+        let base = vec!["decisions".to_string()];
+        let project = resolve_scope_perspectives("project", &base, Some("veclayer"), None).unwrap();
+        assert_eq!(project, vec!["decisions", "project:veclayer"]);
+
+        let branch =
+            resolve_scope_perspectives("branch", &base, Some("veclayer"), Some("main")).unwrap();
+        assert_eq!(
+            branch,
+            vec!["decisions", "project:veclayer", "branch:veclayer@main"]
+        );
+
+        let personal = resolve_scope_perspectives("personal", &base, Some("veclayer"), None);
+        assert_eq!(personal.unwrap(), base);
+    }
+
+    #[test]
+    fn test_resolve_scope_perspectives_rejects_unknown_scope() {
+        // A typo must not silently fall through to the widest (personal) scope.
+        let result = resolve_scope_perspectives("prject", &[], Some("veclayer"), None);
+        assert!(
+            result.is_err(),
+            "an unknown scope must be rejected, not treated as personal"
+        );
+    }
+
+    #[test]
+    fn test_clamp_result_limit_bounds_huge_values() {
+        assert_eq!(clamp_result_limit(usize::MAX), MAX_RESULT_LIMIT);
+        assert_eq!(clamp_result_limit(MAX_RESULT_LIMIT + 1), MAX_RESULT_LIMIT);
+        assert_eq!(clamp_result_limit(10), 10);
+        assert_eq!(clamp_result_limit(0), 0);
+    }
+
+    #[test]
+    fn test_temporal_fetch_limit_saturates_and_passes_through() {
+        // No time filter: the limit is used as-is.
+        assert_eq!(temporal_fetch_limit(50, None, None), 50);
+        // Time filter active: over-fetched by the prefetch factor.
+        assert_eq!(
+            temporal_fetch_limit(50, Some(0), None),
+            50 * TEMPORAL_PREFETCH_FACTOR
+        );
+        // A huge limit saturates instead of overflowing.
+        assert_eq!(temporal_fetch_limit(usize::MAX, Some(0), None), usize::MAX);
+        // A clamped limit can never overflow the downstream prefetch multiply.
+        assert_eq!(
+            clamp_result_limit(usize::MAX).checked_mul(TEMPORAL_PREFETCH_FACTOR),
+            Some(MAX_RESULT_LIMIT * TEMPORAL_PREFETCH_FACTOR),
+            "clamped limit must not overflow downstream arithmetic"
+        );
     }
 
     #[test]

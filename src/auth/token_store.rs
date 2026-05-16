@@ -87,6 +87,9 @@ impl TokenStore {
         let path = data_dir.join(STORE_FILE);
 
         let data = if path.exists() {
+            // Repair permissions on a store written by an older version or
+            // external tooling with looser bits — it holds token hashes.
+            set_file_mode_600(&path)?;
             let raw = std::fs::read_to_string(&path)?;
             serde_json::from_str::<StoreData>(&raw)?
         } else {
@@ -111,10 +114,11 @@ impl TokenStore {
 
         let json = serde_json::to_string_pretty(&data)?;
 
-        // Write atomically via a temporary sibling file, then rename.
+        // Write atomically via a temporary sibling file, then rename. The temp
+        // file is created with 0o600 from the start so the token hashes it
+        // holds are never briefly world-readable.
         let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, json)?;
-        set_file_mode_600(&tmp)?;
+        crate::util::write_file_0600(&tmp, json.as_bytes())?;
         std::fs::rename(&tmp, &self.path)?;
 
         Ok(())
@@ -128,7 +132,14 @@ impl TokenStore {
     }
 
     /// Register a new OAuth client and persist.
-    pub fn register_client(&mut self, name: &str, redirect_uris: Vec<String>) -> RegisteredClient {
+    ///
+    /// Returns an error if the store could not be persisted, so the caller
+    /// never reports success for a registration that was not durably written.
+    pub fn register_client(
+        &mut self,
+        name: &str,
+        redirect_uris: Vec<String>,
+    ) -> Result<RegisteredClient> {
         let client = RegisteredClient {
             client_id: Uuid::new_v4().to_string(),
             client_name: name.to_owned(),
@@ -137,10 +148,8 @@ impl TokenStore {
         };
         self.clients
             .insert(client.client_id.clone(), client.clone());
-        // Best-effort persist; callers that need hard durability should handle
-        // errors at a higher level.
-        let _ = self.save();
-        client
+        self.save()?;
+        Ok(client)
     }
 
     /// Look up a client by its ID.
@@ -152,7 +161,8 @@ impl TokenStore {
 
     /// Create a short-lived authorization code and persist.
     ///
-    /// Returns the raw code string (must be delivered to the client).
+    /// Returns the raw code string (must be delivered to the client), or an
+    /// error if the store could not be persisted.
     pub fn create_code(
         &mut self,
         client_id: &str,
@@ -160,7 +170,7 @@ impl TokenStore {
         capability: Capability,
         redirect_uri: &str,
         code_challenge: &str,
-    ) -> String {
+    ) -> Result<String> {
         let code = Uuid::new_v4().to_string();
         let auth_code = AuthCode {
             code: code.clone(),
@@ -174,8 +184,8 @@ impl TokenStore {
             used: false,
         };
         self.codes.insert(code.clone(), auth_code);
-        let _ = self.save();
-        code
+        self.save()?;
+        Ok(code)
     }
 
     /// Consume an authorization code after PKCE verification.
@@ -226,6 +236,9 @@ impl TokenStore {
     // ─── Refresh tokens ───────────────────────────────────────────────────────
 
     /// Store a refresh token (only the SHA-256 hash is persisted).
+    ///
+    /// Returns an error if the store could not be persisted, so a refresh
+    /// token is never handed out without being durably recorded.
     pub fn store_refresh(
         &mut self,
         token: &str,
@@ -233,7 +246,7 @@ impl TokenStore {
         did: &str,
         capability: Capability,
         expires_at: u64,
-    ) {
+    ) -> Result<()> {
         let hash = sha256_hex(token);
         let record = RefreshRecord {
             token_hash: hash.clone(),
@@ -244,7 +257,7 @@ impl TokenStore {
             revoked: false,
         };
         self.refresh_tokens.insert(hash, record);
-        let _ = self.save();
+        self.save()
     }
 
     /// Shared validation logic for a refresh token record (revoked + expiry checks).
@@ -314,22 +327,41 @@ impl TokenStore {
 
     /// Remove expired or used authorization codes and expired/revoked refresh
     /// tokens.  Call periodically to keep the file small.
-    pub fn purge_expired(&mut self) {
+    pub fn purge_expired(&mut self) -> Result<()> {
         let now = unix_now();
         self.codes.retain(|_, c| !c.used && now <= c.expires_at);
         self.refresh_tokens
             .retain(|_, r| !r.revoked && now <= r.expires_at);
-        let _ = self.save();
+        self.save()
     }
 }
 
 // ─── PKCE ─────────────────────────────────────────────────────────────────────
 
 /// Verify PKCE S256: `BASE64URL(SHA-256(code_verifier)) == code_challenge`.
+///
+/// The stored challenge is decoded back to raw digest bytes and compared in
+/// constant time, so verification time does not depend on how many leading
+/// bytes matched.
 fn verify_pkce(code_verifier: &str, code_challenge: &str) -> bool {
-    let hash = Sha256::digest(code_verifier.as_bytes());
-    let computed = URL_SAFE_NO_PAD.encode(hash);
-    computed == code_challenge
+    let expected = Sha256::digest(code_verifier.as_bytes());
+    match URL_SAFE_NO_PAD.decode(code_challenge) {
+        Ok(stored) => constant_time_eq(expected.as_slice(), &stored),
+        Err(_) => false,
+    }
+}
+
+/// Constant-time byte-slice equality: the comparison time does not depend on
+/// the position of the first differing byte. Used for secret comparisons.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -364,13 +396,15 @@ mod tests {
         client: &RegisteredClient,
         challenge: &str,
     ) -> String {
-        store.create_code(
-            &client.client_id,
-            "did:key:zAlice",
-            Capability::Read,
-            "https://example.com/cb",
-            challenge,
-        )
+        store
+            .create_code(
+                &client.client_id,
+                "did:key:zAlice",
+                Capability::Read,
+                "https://example.com/cb",
+                challenge,
+            )
+            .expect("create_code")
     }
 
     // ─── Client registry ──────────────────────────────────────────────────────
@@ -379,7 +413,9 @@ mod tests {
     fn test_register_and_get_client() {
         let (_dir, mut store) = tmp_store();
 
-        let client = store.register_client("Test App", vec!["https://example.com/cb".to_owned()]);
+        let client = store
+            .register_client("Test App", vec!["https://example.com/cb".to_owned()])
+            .expect("register");
 
         assert!(!client.client_id.is_empty());
         assert_eq!(client.client_name, "Test App");
@@ -406,7 +442,7 @@ mod tests {
     /// Shared setup for code-consumption tests: store + client + PKCE pair + issued code.
     fn code_test_harness() -> (TempDir, TokenStore, String, String) {
         let (_dir, mut store) = tmp_store();
-        let client = store.register_client("App", vec![]);
+        let client = store.register_client("App", vec![]).expect("register");
         let (verifier, challenge) = pkce_pair();
         let code = create_test_code(&mut store, &client, &challenge);
         (_dir, store, verifier, code)
@@ -440,18 +476,64 @@ mod tests {
     }
 
     #[test]
+    fn test_constant_time_eq() {
+        assert!(constant_time_eq(b"abc", b"abc"));
+        assert!(!constant_time_eq(b"abc", b"abd"));
+        assert!(!constant_time_eq(b"abc", b"ab"));
+        assert!(constant_time_eq(b"", b""));
+    }
+
+    #[test]
+    fn test_verify_pkce_accepts_correct_and_rejects_wrong() {
+        let (verifier, challenge) = pkce_pair();
+        assert!(
+            verify_pkce(&verifier, &challenge),
+            "correct pair must verify"
+        );
+
+        // A challenge differing in one byte must be rejected.
+        let mut wrong: Vec<char> = challenge.chars().collect();
+        wrong[5] = if wrong[5] == 'A' { 'B' } else { 'A' };
+        let wrong: String = wrong.into_iter().collect();
+        assert!(
+            !verify_pkce(&verifier, &wrong),
+            "altered challenge must fail"
+        );
+
+        // A malformed (non-base64) challenge must be rejected, not panic.
+        assert!(!verify_pkce(&verifier, "!!!not-base64!!!"));
+    }
+
+    #[test]
+    fn test_open_repairs_loose_permissions() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("oauth_store.json");
+        std::fs::write(&path, r#"{"clients":{},"codes":{},"refresh_tokens":{}}"#).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let _store = TokenStore::open(dir.path()).expect("open");
+        #[cfg(unix)]
+        assert_file_mode_600(&path, "reopened store with loose permissions");
+    }
+
+    #[test]
     fn test_pkce_wrong_verifier_rejected() {
         let (_dir, mut store) = tmp_store();
-        let client = store.register_client("App", vec![]);
+        let client = store.register_client("App", vec![]).expect("register");
         let (_verifier, challenge) = pkce_pair();
 
-        let code = store.create_code(
-            &client.client_id,
-            "did:key:zAlice",
-            Capability::Read,
-            "https://example.com/cb",
-            &challenge,
-        );
+        let code = store
+            .create_code(
+                &client.client_id,
+                "did:key:zAlice",
+                Capability::Read,
+                "https://example.com/cb",
+                &challenge,
+            )
+            .expect("create_code");
 
         // 43 chars (minimum RFC 7636 length) but wrong content.
         let wrong_verifier = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -471,13 +553,15 @@ mod tests {
         let raw_token = "super-secret-refresh-token";
         let expires_at = unix_now() + 86_400;
 
-        store.store_refresh(
-            raw_token,
-            "client-abc",
-            "did:key:zAlice",
-            Capability::Write,
-            expires_at,
-        );
+        store
+            .store_refresh(
+                raw_token,
+                "client-abc",
+                "did:key:zAlice",
+                Capability::Write,
+                expires_at,
+            )
+            .expect("store_refresh");
 
         // Validate succeeds.
         let record = store.validate_refresh(raw_token).expect("valid");
@@ -504,13 +588,15 @@ mod tests {
 
         let raw_token = "atomic-refresh-token";
         let expires_at = unix_now() + 86_400;
-        store.store_refresh(
-            raw_token,
-            "client-1",
-            "did:key:zAlice",
-            Capability::Write,
-            expires_at,
-        );
+        store
+            .store_refresh(
+                raw_token,
+                "client-1",
+                "did:key:zAlice",
+                Capability::Write,
+                expires_at,
+            )
+            .expect("store_refresh");
 
         // Atomic validate + revoke should return the record data.
         let (client_id, did, cap) = store
@@ -533,33 +619,41 @@ mod tests {
     #[test]
     fn test_purge_expired() {
         let (_dir, mut store) = tmp_store();
-        let client = store.register_client("App", vec![]);
+        let client = store.register_client("App", vec![]).expect("register");
         let (_verifier, challenge) = pkce_pair();
 
         // Create one live code and one used code.
-        let live_code = store.create_code(
-            &client.client_id,
-            "did:key:zA",
-            Capability::Read,
-            "",
-            &challenge,
-        );
-        let dead_code = store.create_code(
-            &client.client_id,
-            "did:key:zB",
-            Capability::Read,
-            "",
-            &challenge,
-        );
+        let live_code = store
+            .create_code(
+                &client.client_id,
+                "did:key:zA",
+                Capability::Read,
+                "",
+                &challenge,
+            )
+            .expect("create_code");
+        let dead_code = store
+            .create_code(
+                &client.client_id,
+                "did:key:zB",
+                Capability::Read,
+                "",
+                &challenge,
+            )
+            .expect("create_code");
         store.codes.get_mut(&dead_code).unwrap().used = true;
 
         // Create one live refresh token and one expired one.
         let live_token = "live-token";
         let dead_token = "dead-token";
-        store.store_refresh(live_token, "c", "d", Capability::Read, unix_now() + 3600);
-        store.store_refresh(dead_token, "c", "d", Capability::Read, 1); // epoch
+        store
+            .store_refresh(live_token, "c", "d", Capability::Read, unix_now() + 3600)
+            .expect("store_refresh");
+        store
+            .store_refresh(dead_token, "c", "d", Capability::Read, 1)
+            .expect("store_refresh"); // epoch
 
-        store.purge_expired();
+        store.purge_expired().expect("purge_expired");
 
         assert!(store.codes.contains_key(&live_code), "live code removed");
         assert!(
@@ -592,24 +686,30 @@ mod tests {
         // Write data in a first store instance.
         {
             let mut store = TokenStore::open(dir.path()).expect("open 1");
-            let client = store.register_client("Persistent App", vec!["https://cb".to_owned()]);
+            let client = store
+                .register_client("Persistent App", vec!["https://cb".to_owned()])
+                .expect("register");
             client_id = client.client_id.clone();
 
-            code = store.create_code(
-                &client_id,
-                "did:key:zAlice",
-                Capability::Admin,
-                "https://cb",
-                &challenge,
-            );
+            code = store
+                .create_code(
+                    &client_id,
+                    "did:key:zAlice",
+                    Capability::Admin,
+                    "https://cb",
+                    &challenge,
+                )
+                .expect("create_code");
 
-            store.store_refresh(
-                "my-refresh-token",
-                &client_id,
-                "did:key:zAlice",
-                Capability::Write,
-                unix_now() + 3600,
-            );
+            store
+                .store_refresh(
+                    "my-refresh-token",
+                    &client_id,
+                    "did:key:zAlice",
+                    Capability::Write,
+                    unix_now() + 3600,
+                )
+                .expect("store_refresh");
         }
 
         // Reopen from disk.

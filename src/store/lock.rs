@@ -20,28 +20,38 @@ pub struct FileLock {
     _file: File,
 }
 
+/// Outcome of a single non-blocking lock attempt — distinguishes the
+/// retryable "another process holds it" case from a hard failure without
+/// matching on error message text.
+#[derive(Debug)]
+enum AcquireError {
+    /// Another process currently holds the lock (retryable).
+    Contended,
+    /// A non-retryable error (I/O, permissions).
+    Failed(Error),
+}
+
 impl FileLock {
-    /// Acquire an exclusive lock on `data_dir`.
+    /// Single non-blocking lock attempt with a typed outcome.
     ///
-    /// Returns an error immediately if another process already holds the lock.
-    pub fn acquire(data_dir: &Path) -> Result<Self> {
-        std::fs::create_dir_all(data_dir)?;
+    /// Returns [`AcquireError::Contended`] when another process holds the lock
+    /// (retryable) and [`AcquireError::Failed`] for a hard error.
+    fn try_acquire(data_dir: &Path) -> std::result::Result<Self, AcquireError> {
+        std::fs::create_dir_all(data_dir).map_err(|e| AcquireError::Failed(e.into()))?;
 
         let lock_path = data_dir.join(LOCK_FILE_NAME);
         let file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(false)
-            .open(&lock_path)?;
+            .open(&lock_path)
+            .map_err(|e| AcquireError::Failed(e.into()))?;
 
         file.try_lock_exclusive().map_err(|e| {
             if e.kind() == std::io::ErrorKind::WouldBlock {
-                Error::store(
-                    "Another VecLayer process is writing to this store. \
-                     Use --read-only for concurrent read access.",
-                )
+                AcquireError::Contended
             } else {
-                Error::store(format!("Failed to acquire store lock: {}", e))
+                AcquireError::Failed(Error::store(format!("Failed to acquire store lock: {e}")))
             }
         })?;
 
@@ -58,28 +68,22 @@ impl FileLock {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
 
         loop {
-            match Self::acquire(data_dir) {
+            match Self::try_acquire(data_dir) {
                 Ok(lock) => return Ok(lock),
-                Err(e) => {
-                    let is_would_block = e.to_string().contains("Another VecLayer process");
-                    if is_would_block {
-                        if std::time::Instant::now() + wait > deadline {
-                            let lock_path = data_dir.join(LOCK_FILE_NAME);
-                            return Err(Error::store(format!(
-                                "Timed out waiting for write lock on {} — \
-                                 another veclayer process may be holding it. \
-                                 Check for stale processes: lsof {}",
-                                lock_path.display(),
-                                lock_path.display(),
-                            )));
-                        }
-                        std::thread::sleep(wait);
-                        wait = std::time::Duration::from_millis(
-                            (wait.as_millis() as u64 * 2).min(320),
-                        );
-                    } else {
-                        return Err(e);
+                Err(AcquireError::Failed(e)) => return Err(e),
+                Err(AcquireError::Contended) => {
+                    if std::time::Instant::now() + wait > deadline {
+                        let lock_path = data_dir.join(LOCK_FILE_NAME);
+                        return Err(Error::store(format!(
+                            "Timed out waiting for write lock on {} — \
+                             another veclayer process may be holding it. \
+                             Check for stale processes: lsof {}",
+                            lock_path.display(),
+                            lock_path.display(),
+                        )));
                     }
+                    std::thread::sleep(wait);
+                    wait = std::time::Duration::from_millis((wait.as_millis() as u64 * 2).min(320));
                 }
             }
         }
@@ -100,7 +104,7 @@ mod tests {
     #[test]
     fn test_lock_file_created() {
         let dir = TempDir::new().unwrap();
-        let _lock = FileLock::acquire(dir.path()).unwrap();
+        let _lock = FileLock::try_acquire(dir.path()).expect("acquire");
         assert!(dir.path().join(".lock").exists());
     }
 
@@ -108,31 +112,29 @@ mod tests {
     fn test_lock_acquire_release() {
         let dir = TempDir::new().unwrap();
         {
-            let _lock = FileLock::acquire(dir.path()).unwrap();
+            let _lock = FileLock::try_acquire(dir.path()).expect("acquire");
         }
         // After drop, a new acquisition must succeed.
-        FileLock::acquire(dir.path()).unwrap();
+        FileLock::try_acquire(dir.path()).expect("re-acquire after release");
     }
 
     #[test]
     fn test_lock_exclusive() {
         let dir = TempDir::new().unwrap();
-        let _lock = FileLock::acquire(dir.path()).unwrap();
+        let _lock = FileLock::try_acquire(dir.path()).expect("acquire");
 
-        let result = FileLock::acquire(dir.path());
-        assert!(result.is_err());
-
-        let msg = result.unwrap_err().to_string();
+        // A second attempt must report typed contention, not a hard failure.
+        let result = FileLock::try_acquire(dir.path());
         assert!(
-            msg.contains("Another VecLayer process"),
-            "unexpected message: {msg}"
+            matches!(result, Err(AcquireError::Contended)),
+            "expected Contended, got: {result:?}"
         );
     }
 
     #[test]
     fn test_lock_timeout() {
         let dir = TempDir::new().unwrap();
-        let _lock = FileLock::acquire(dir.path()).unwrap();
+        let _lock = FileLock::try_acquire(dir.path()).expect("acquire");
 
         // Second acquisition should timeout (not hang forever)
         let start = std::time::Instant::now();
@@ -159,6 +161,17 @@ mod tests {
 
         // Make the directory read-only so no file can be created inside it.
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        // A privileged user (root, common in CI containers) bypasses directory
+        // permission bits, making this scenario impossible to exercise. Probe
+        // for that and skip rather than report a false failure.
+        let probe = dir.path().join(".probe");
+        let privileged = std::fs::write(&probe, b"x").is_ok();
+        let _ = std::fs::remove_file(&probe);
+        if privileged {
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
 
         let result = FileLock::acquire_blocking(dir.path());
 

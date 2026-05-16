@@ -195,7 +195,11 @@ impl SearchConfig {
             };
             let relevancy_signal = relevancy_signal + creation_boost;
 
-            vector_score * (1.0 - self.recency_alpha) + relevancy_signal * self.recency_alpha
+            // The salience bonus and creation boost can push the blended signal
+            // past 1.0; clamp to the documented normalized [0, 1] score range.
+            let blended =
+                vector_score * (1.0 - self.recency_alpha) + relevancy_signal * self.recency_alpha;
+            blended.clamp(0.0, 1.0)
         } else {
             vector_score
         }
@@ -550,9 +554,17 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
 
     if norm_a == 0.0 || norm_b == 0.0 {
-        0.0
+        return 0.0;
+    }
+
+    // A non-finite result (NaN/Inf from a corrupted embedding) would propagate
+    // into ranking comparisons and silently corrupt result order — treat it as
+    // a non-match instead.
+    let result = dot / (norm_a * norm_b);
+    if result.is_finite() {
+        result
     } else {
-        dot / (norm_a * norm_b)
+        0.0
     }
 }
 
@@ -801,6 +813,17 @@ mod tests {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![-1.0, 0.0, 0.0];
         assert!((cosine_similarity(&a, &b) + 1.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_cosine_similarity_nan_input_returns_zero() {
+        // A corrupted embedding containing NaN must not produce a NaN score:
+        // NaN propagates into ranking comparisons and silently corrupts order.
+        let a = vec![f32::NAN, 1.0, 0.0];
+        let b = vec![1.0, 1.0, 0.0];
+        let result = cosine_similarity(&a, &b);
+        assert!(result.is_finite(), "result must be finite, got {result}");
+        assert_eq!(result, 0.0, "NaN input must yield 0.0");
     }
 
     #[test]
@@ -1900,6 +1923,34 @@ mod tests {
         let chunk = blend_test_chunk();
         let score = config.blend_score(1.5, &chunk);
         assert_eq!(score, 1.5, "Scores > 1.0 should pass through unchanged");
+    }
+
+    #[test]
+    fn test_blend_score_bounded_to_one() {
+        // With a high salience signal plus the fresh-creation boost the blended
+        // score can exceed 1.0; it must be clamped to the documented [0, 1] range.
+        let config = SearchConfig {
+            recency_alpha: 0.5,
+            salience_weight: 1.0,
+            min_salience: None,
+            ..Default::default()
+        };
+        let mut chunk = blend_test_chunk();
+        chunk.entry_type = crate::chunk::EntryType::Impression;
+        chunk.impression_strength = 20.0;
+        chunk.perspectives = (0..8).map(|i| format!("p{i}")).collect();
+        for i in 0..8 {
+            chunk
+                .relations
+                .push(crate::ChunkRelation::related_to(format!("r{i}")));
+        }
+        chunk.access_profile.created_at = now_epoch_secs();
+        let score = config.blend_score(1.0, &chunk);
+        assert!(
+            score <= 1.0,
+            "blended score must be clamped to <= 1.0, got {score}"
+        );
+        assert!(score >= 0.0, "blended score must be >= 0.0, got {score}");
     }
 
     #[test]

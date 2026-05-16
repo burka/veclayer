@@ -36,20 +36,33 @@ pub async fn import_entries(data_dir: &Path, options: &ImportOptions) -> Result<
     let mut imported = 0usize;
     let mut skipped_duplicates = 0usize;
     let mut skipped_parse_errors = 0usize;
+    let mut skipped_import_errors = 0usize;
 
     for (line_number, line) in lines.into_iter().enumerate() {
-        match import_one_entry(&embedder, &store, &blob_store, &line).await {
+        let chunk = match serde_json::from_str::<crate::HierarchicalChunk>(&line) {
+            Ok(chunk) => chunk,
+            Err(e) => {
+                warn!("Skipping line {}: invalid JSON: {}", line_number + 1, e);
+                skipped_parse_errors += 1;
+                continue;
+            }
+        };
+        match import_parsed_entry(&embedder, &store, &blob_store, chunk).await {
             Ok(true) => imported += 1,
             Ok(false) => skipped_duplicates += 1,
             Err(e) => {
                 warn!("Skipping line {}: {}", line_number + 1, e);
-                skipped_parse_errors += 1;
+                skipped_import_errors += 1;
             }
         }
     }
 
-    let skipped = skipped_duplicates + skipped_parse_errors;
-    let skip_detail = build_skip_detail(skipped_parse_errors, skipped_duplicates);
+    let skipped = skipped_duplicates + skipped_parse_errors + skipped_import_errors;
+    let skip_detail = build_skip_detail(
+        skipped_parse_errors,
+        skipped_import_errors,
+        skipped_duplicates,
+    );
     eprintln!(
         "Imported {} entries, {} skipped{}.",
         imported, skipped, skip_detail
@@ -58,16 +71,39 @@ pub async fn import_entries(data_dir: &Path, options: &ImportOptions) -> Result<
 }
 
 /// Build a parenthetical breakdown of skip reasons for the import summary.
+///
+/// Distinguishes three causes so the summary is not misleading:
+/// - `parse_errors`: a line was not valid JSON for an entry,
+/// - `import_errors`: the entry parsed but could not be embedded or stored,
+/// - `duplicates`: the entry already exists in the target store.
+///
 /// Returns an empty string when there are no skips.
-pub(crate) fn build_skip_detail(parse_errors: usize, duplicates: usize) -> String {
-    match (parse_errors, duplicates) {
-        (0, 0) => String::new(),
-        (0, _) => " (already exist)".to_string(),
-        (_, 0) => format!(" ({} parse errors)", parse_errors),
-        _ => format!(
-            " ({} parse errors, {} already exist)",
-            parse_errors, duplicates
-        ),
+pub(crate) fn build_skip_detail(
+    parse_errors: usize,
+    import_errors: usize,
+    duplicates: usize,
+) -> String {
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    let mut parts = Vec::new();
+    if parse_errors > 0 {
+        parts.push(format!(
+            "{parse_errors} parse error{}",
+            plural(parse_errors)
+        ));
+    }
+    if import_errors > 0 {
+        parts.push(format!(
+            "{import_errors} import error{}",
+            plural(import_errors)
+        ));
+    }
+    if duplicates > 0 {
+        parts.push(format!("{duplicates} already exist"));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", parts.join(", "))
     }
 }
 
@@ -162,15 +198,17 @@ fn collect_non_empty_lines(reader: impl BufRead) -> Result<Vec<String>> {
     Ok(lines)
 }
 
-/// Attempt to import one JSONL line.
-async fn import_one_entry(
+/// Embed and store one already-parsed entry.
+///
+/// Returns `Ok(false)` when the entry is a duplicate already present in the
+/// store. Errors here are import failures (embedding, blob, or store writes) —
+/// distinct from JSON parse failures, which the caller handles separately.
+async fn import_parsed_entry(
     embedder: &impl crate::Embedder,
     store: &impl crate::store::VectorStore,
     blob_store: &BlobStore,
-    line: &str,
+    mut chunk: crate::HierarchicalChunk,
 ) -> Result<bool> {
-    let mut chunk: crate::HierarchicalChunk = serde_json::from_str(line)?;
-
     if store.get_by_id(&chunk.id).await?.is_some() {
         return Ok(false);
     }
@@ -342,24 +380,37 @@ mod tests {
 
     #[test]
     fn test_build_skip_detail_no_skips() {
-        assert_eq!(build_skip_detail(0, 0), "");
+        assert_eq!(build_skip_detail(0, 0, 0), "");
     }
 
     #[test]
     fn test_build_skip_detail_duplicates_only() {
-        assert_eq!(build_skip_detail(0, 3), " (already exist)");
+        assert_eq!(build_skip_detail(0, 0, 3), " (3 already exist)");
     }
 
     #[test]
     fn test_build_skip_detail_parse_errors_only() {
-        assert_eq!(build_skip_detail(2, 0), " (2 parse errors)");
+        assert_eq!(build_skip_detail(2, 0, 0), " (2 parse errors)");
+    }
+
+    #[test]
+    fn test_build_skip_detail_import_errors_only() {
+        assert_eq!(build_skip_detail(0, 2, 0), " (2 import errors)");
+    }
+
+    #[test]
+    fn test_build_skip_detail_singular_uses_no_plural_suffix() {
+        assert_eq!(
+            build_skip_detail(1, 1, 0),
+            " (1 parse error, 1 import error)"
+        );
     }
 
     #[test]
     fn test_build_skip_detail_mixed() {
         assert_eq!(
-            build_skip_detail(2, 3),
-            " (2 parse errors, 3 already exist)"
+            build_skip_detail(2, 1, 3),
+            " (2 parse errors, 1 import error, 3 already exist)"
         );
     }
 

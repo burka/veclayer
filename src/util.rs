@@ -88,6 +88,36 @@ pub fn format_bytes(bytes: u64) -> String {
     format!("{val:.precision$} {unit}")
 }
 
+/// Write `contents` to `path`, creating the file with 0o600 permissions
+/// *before* any data is written so the file is never briefly world-readable.
+///
+/// Use this instead of `std::fs::write` followed by a chmod when the file
+/// holds secrets (token hashes, keys): the write-then-chmod sequence leaves a
+/// window during which the file is readable with the process umask.
+pub fn write_file_0600(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        // `mode()` only applies when the file is created; repair the mode in
+        // case a stale temp file pre-existed with looser permissions.
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(contents)?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, contents)?;
+        set_file_mode_600(path)?;
+    }
+    Ok(())
+}
+
 /// Set file permissions to 0o600 on Unix; no-op on other platforms.
 pub fn set_file_mode_600(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]

@@ -1104,9 +1104,14 @@ impl VectorStore for LanceStore {
 
         let query_vec: Vec<f32> = query_embedding.to_vec();
 
-        let mut query = table.query().nearest_to(query_vec).map_err(|e| {
-            Error::search(format!("Failed to create nearest neighbor query: {}", e))
-        })?;
+        // Use cosine distance so the score (`1.0 - distance`) is cosine
+        // similarity in [-1, 1] — matching the SQLite backend and the
+        // documented blend-score contract. LanceDB defaults to L2 otherwise.
+        let mut query = table
+            .query()
+            .nearest_to(query_vec)
+            .map_err(|e| Error::search(format!("Failed to create nearest neighbor query: {}", e)))?
+            .distance_type(lancedb::DistanceType::Cosine);
 
         query = query.only_if(EMBEDDING_EMBEDDED_FILTER);
         if let Some(level) = level_filter {
@@ -1146,7 +1151,12 @@ impl VectorStore for LanceStore {
 
             let chunks = self.batch_to_chunks(&batch)?;
             for (i, chunk) in chunks.into_iter().enumerate() {
-                let score = distances.map(|d| 1.0 - d.value(i)).unwrap_or(1.0);
+                // Cosine distance is in [0, 2]; `1.0 - distance` is cosine
+                // similarity. Clamp to [-1, 1] to absorb floating-point error
+                // (identical vectors can yield a tiny negative distance).
+                let score = distances
+                    .map(|d| (1.0 - d.value(i)).clamp(-1.0, 1.0))
+                    .unwrap_or(1.0);
                 search_results.push(SearchResult { chunk, score });
             }
         }
@@ -1167,7 +1177,11 @@ impl VectorStore for LanceStore {
             .await
             .map_err(|e| Error::search(format!("Failed to collect children: {}", e)))?;
 
-        self.collect_chunks(&results)
+        // LanceDB returns batches in unspecified order; sort by id so the
+        // result order is deterministic across calls and backends.
+        let mut chunks = self.collect_chunks(&results)?;
+        chunks.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(chunks)
     }
 
     async fn get_by_id(&self, id: &str) -> Result<Option<HierarchicalChunk>> {
@@ -1243,7 +1257,10 @@ impl VectorStore for LanceStore {
             .await
             .map_err(|e| Error::search(format!("Failed to collect results: {}", e)))?;
 
-        self.collect_chunks(&results)
+        // Sort by id for a deterministic, backend-independent result order.
+        let mut chunks = self.collect_chunks(&results)?;
+        chunks.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(chunks)
     }
 
     async fn delete_by_source(&self, source_file: &str) -> Result<usize> {
@@ -1871,8 +1888,9 @@ mod tests {
         assert!(children
             .iter()
             .all(|c| c.parent_id.as_deref() == Some("parent-1")));
-        assert!(children.iter().any(|c| c.id == "child-1"));
-        assert!(children.iter().any(|c| c.id == "child-2"));
+        // Results are sorted by id for a deterministic, backend-independent order.
+        let ids: Vec<&str> = children.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["child-1", "child-2"]);
     }
 
     #[tokio::test]
@@ -3665,9 +3683,13 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         // Open once read-write to create the table, then open read-only.
         let rw = LanceStore::open(temp_dir.path(), 384, false).await.unwrap();
-        rw.insert_chunks(vec![create_test_chunk("ro001", "read-only test", ChunkLevel::CONTENT)])
-            .await
-            .unwrap();
+        rw.insert_chunks(vec![create_test_chunk(
+            "ro001",
+            "read-only test",
+            ChunkLevel::CONTENT,
+        )])
+        .await
+        .unwrap();
         drop(rw);
 
         let ro = LanceStore::open(temp_dir.path(), 384, true).await.unwrap();

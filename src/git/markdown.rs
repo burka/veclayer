@@ -265,14 +265,14 @@ fn entry_to_frontmatter(entry: &Entry) -> Result<Frontmatter, GitError> {
 
     let expires = entry.expires_at.map(unix_to_iso8601).transpose()?;
 
-    // Impression strength is only meaningful when an impression hint exists.
-    // Omit when at the default (exactly 1.0) or when there's no hint.
-    let impression_strength =
-        if entry.impression_hint.is_some() && entry.impression_strength != 1.0_f32 {
-            Some(entry.impression_strength)
-        } else {
-            None
-        };
+    // Serialize impression_strength whenever it differs from the default
+    // (exactly 1.0). It modulates salience independently of the hint, so it
+    // must round-trip even when no impression hint is set.
+    let impression_strength = if entry.impression_strength != 1.0_f32 {
+        Some(entry.impression_strength)
+    } else {
+        None
+    };
 
     Ok(Frontmatter {
         id,
@@ -854,6 +854,24 @@ mod tests {
         assert_eq!(parsed.impression_hint, Some("curious".to_string()));
         assert!((parsed.impression_strength - 0.4).abs() < 0.001);
         assert_eq!(parsed.entry_type, EntryType::Impression);
+    }
+
+    #[test]
+    fn test_roundtrip_impression_strength_without_hint() {
+        // impression_strength modulates salience on its own, so it must survive
+        // a git roundtrip even when no impression hint is set.
+        let mut entry = minimal_entry();
+        entry.impression_hint = None;
+        entry.impression_strength = 0.6;
+
+        let rendered = render(&entry).unwrap();
+        let (parsed, _) = parse(rendered.as_bytes()).unwrap();
+
+        assert!(
+            (parsed.impression_strength - 0.6).abs() < 0.001,
+            "impression_strength lost on roundtrip: got {}",
+            parsed.impression_strength
+        );
     }
 
     #[test]

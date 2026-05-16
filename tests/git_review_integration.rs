@@ -28,7 +28,7 @@ fn setup_repo() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("tempdir");
     let git_dir = dir.path().join(".git");
 
-    run_git(dir.path(), &["init"]);
+    git_init(dir.path());
     run_git(
         dir.path(),
         &[
@@ -53,6 +53,16 @@ fn run_git(cwd: &Path, args: &[&str]) {
         .args(args)
         .output()
         .expect("git command failed to spawn");
+}
+
+/// Initialise a non-bare git repository with commit signing disabled.
+///
+/// Tests must be hermetic: they must not depend on the host's global
+/// `commit.gpgsign` / signing-key configuration, which would otherwise make
+/// every `git commit` fail in environments that enforce signed commits.
+fn git_init(cwd: &Path) {
+    run_git(cwd, &["init"]);
+    run_git(cwd, &["config", "commit.gpgsign", "false"]);
 }
 
 /// Build an `Entry` with deterministic, unique content.
@@ -676,7 +686,7 @@ fn setup_two_clients_with_remote() -> (TempDir, TempDir, TempDir, PathBuf, PathB
     // Client A.
     let client_a_dir = tempfile::tempdir().expect("client_a tempdir");
     let client_a_git = client_a_dir.path().join(".git");
-    run_git(client_a_dir.path(), &["init"]);
+    git_init(client_a_dir.path());
     run_git(
         client_a_dir.path(),
         &[
@@ -703,7 +713,7 @@ fn setup_two_clients_with_remote() -> (TempDir, TempDir, TempDir, PathBuf, PathB
     // Client B — independent clone seeded from the same bare repo.
     let client_b_dir = tempfile::tempdir().expect("client_b tempdir");
     let client_b_git = client_b_dir.path().join(".git");
-    run_git(client_b_dir.path(), &["init"]);
+    git_init(client_b_dir.path());
     run_git(
         client_b_dir.path(),
         &[
