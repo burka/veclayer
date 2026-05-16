@@ -748,9 +748,14 @@ async fn handle_auth_code_grant(state: OAuthState, form: TokenRequest) -> Respon
     if client_id != auth_code.client_id {
         return token_error("invalid_client", "client_id mismatch");
     }
-    if let Some(uri) = form.redirect_uri.as_deref() {
-        if uri != auth_code.redirect_uri {
-            return token_error("invalid_grant", "redirect_uri mismatch");
+    // RFC 6749 §4.1.3: when the authorization request used a redirect_uri,
+    // the token request must include the identical value. Only checking it
+    // when the client chooses to send it weakens code-injection defenses.
+    if !auth_code.redirect_uri.is_empty() {
+        match form.redirect_uri.as_deref() {
+            Some(uri) if uri == auth_code.redirect_uri => {}
+            Some(_) => return token_error("invalid_grant", "redirect_uri mismatch"),
+            None => return token_error("invalid_request", "redirect_uri is required"),
         }
     }
 
@@ -1030,6 +1035,10 @@ async fn device_approve_handler(
     match entry {
         None => Html(error_page("Unknown or expired user code")),
         Some(entry) if unix_now() > entry.expires_at => Html(error_page("Code has expired")),
+        Some(entry) if entry.approved.is_some() || entry.denied => {
+            // Already decided — a second POST must not flip or re-confirm it.
+            Html(error_page("This code has already been processed"))
+        }
         Some(entry) => {
             if form.approved.as_deref() == Some("true") {
                 entry.approved = Some(capability);
