@@ -59,3 +59,152 @@ impl LlmProvider for OllamaLlm {
         &self.model
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::LlmConfig;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    /// Bind a TCP listener on a free port and return it together with the base URL.
+    async fn mock_listener() -> (TcpListener, String) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base_url = format!("http://127.0.0.1:{port}");
+        (listener, base_url)
+    }
+
+    /// Serve exactly one HTTP request, then reply with the given status + body.
+    fn serve_once(listener: TcpListener, status: u16, body: &'static str) {
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            // Drain the request bytes (we don't need to inspect them for these tests).
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: {len}\r\nContent-Type: application/json\r\n\r\n{body}",
+                status = status,
+                reason = if status == 200 { "OK" } else { "Error" },
+                len = body.len(),
+                body = body,
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("mock write failed");
+        });
+    }
+
+    fn ollama_at(base_url: &str) -> OllamaLlm {
+        OllamaLlm::new(&LlmConfig {
+            provider: "ollama".to_string(),
+            model: "llama3.2".to_string(),
+            base_url: base_url.to_string(),
+            api_key: None,
+            temperature: 0.0,
+            max_tokens: 256,
+        })
+    }
+
+    // --- green path ---
+
+    #[tokio::test]
+    async fn complete_returns_content_on_200() {
+        let (listener, base_url) = mock_listener().await;
+        serve_once(listener, 200, r#"{"message":{"content":"hello world"}}"#);
+
+        let llm = ollama_at(&base_url);
+        let result = llm.complete(&[Message::user("ping")]).await;
+
+        assert_eq!(result.unwrap(), "hello world");
+    }
+
+    // --- error path: non-2xx response ---
+
+    #[tokio::test]
+    async fn complete_returns_err_on_500() {
+        let (listener, base_url) = mock_listener().await;
+        serve_once(listener, 500, r#"{"error":"internal server error"}"#);
+
+        let llm = ollama_at(&base_url);
+        let result = llm.complete(&[Message::user("ping")]).await;
+
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("500"),
+            "expected HTTP status in error, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_returns_err_on_404() {
+        let (listener, base_url) = mock_listener().await;
+        serve_once(listener, 404, r#"not found"#);
+
+        let llm = ollama_at(&base_url);
+        let result = llm.complete(&[Message::user("ping")]).await;
+
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("404"),
+            "expected HTTP 404 in error, got: {msg}"
+        );
+    }
+
+    // --- edge path: 200 but missing message.content ---
+
+    #[tokio::test]
+    async fn complete_returns_err_when_content_field_absent() {
+        let (listener, base_url) = mock_listener().await;
+        // `message` object exists but `content` key is missing.
+        serve_once(listener, 200, r#"{"message":{}}"#);
+
+        let llm = ollama_at(&base_url);
+        let result = llm.complete(&[Message::user("ping")]).await;
+
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("missing message.content"),
+            "expected missing-content error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_returns_err_when_message_field_absent() {
+        let (listener, base_url) = mock_listener().await;
+        // Top-level `message` key is absent entirely.
+        serve_once(listener, 200, r#"{"response":"unexpected shape"}"#);
+
+        let llm = ollama_at(&base_url);
+        let result = llm.complete(&[Message::user("ping")]).await;
+
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("missing message.content"),
+            "expected missing-content error, got: {err}"
+        );
+    }
+
+    // --- connection-refused path ---
+
+    #[tokio::test]
+    async fn complete_returns_err_on_connection_refused() {
+        // Bind and immediately drop to ensure the port is not listening.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let base_url = format!("http://127.0.0.1:{port}");
+
+        let llm = ollama_at(&base_url);
+        let result = llm.complete(&[Message::user("ping")]).await;
+
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("request failed"),
+            "expected request-failed error, got: {err}"
+        );
+    }
+}

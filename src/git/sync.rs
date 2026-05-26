@@ -524,4 +524,380 @@ CONFLICT (modify/delete): Merge conflict in src/deleted.rs
             "expected empty vec for output with no conflicts"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // try_resolve_identical_conflicts — test helpers
+    // -----------------------------------------------------------------------
+
+    /// Run a git command in `dir` with hermetic author identity env vars.
+    /// Panics on spawn failure; returns the raw `Output` (caller checks status).
+    fn git_in_hermetic(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+        let mut cmd = std::process::Command::new("git");
+        cmd.current_dir(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_EDITOR", ":")
+            .env("GIT_SEQUENCE_EDITOR", ":")
+            .env("LC_ALL", "C");
+        cmd.output().expect("git command failed to spawn")
+    }
+
+    /// Store `content` as a git loose blob and return its hex SHA-1.
+    fn store_git_blob(worktree: &std::path::Path, content: &[u8]) -> String {
+        let mut cmd = std::process::Command::new("git");
+        cmd.current_dir(worktree)
+            .args(["hash-object", "-w", "--stdin"])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("LC_ALL", "C")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped());
+        let mut child = cmd.spawn().expect("git hash-object failed to spawn");
+        {
+            use std::io::Write;
+            child.stdin.take().unwrap().write_all(content).unwrap();
+        }
+        let out = child.wait_with_output().unwrap();
+        let hash = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert!(!hash.is_empty(), "git hash-object produced empty hash");
+        hash
+    }
+
+    /// Overwrite stages 2 and 3 for `filename` in the repo at `worktree` to
+    /// use the blobs identified by `stage2_hash` and `stage3_hash`.
+    fn patch_index_stages(
+        worktree: &std::path::Path,
+        filename: &str,
+        stage2_hash: &str,
+        stage3_hash: &str,
+    ) {
+        let index_info =
+            format!("100644 {stage2_hash} 2\t{filename}\n100644 {stage3_hash} 3\t{filename}\n");
+        let mut cmd = std::process::Command::new("git");
+        cmd.current_dir(worktree)
+            .args(["update-index", "--index-info"])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("LC_ALL", "C")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn().expect("git update-index failed to spawn");
+        {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(index_info.as_bytes())
+                .unwrap();
+        }
+        child.wait_with_output().unwrap();
+    }
+
+    /// Build a `GitMemoryBranch` whose `worktree_path` is `worktree` and
+    /// `git_dir` is `git_dir`.  Branch name is set to "test-memory".
+    fn branch_for_worktree(
+        git_dir: &std::path::Path,
+        worktree: &std::path::Path,
+    ) -> GitMemoryBranch {
+        GitMemoryBranch {
+            git_dir: git_dir.to_path_buf(),
+            branch: "test-memory".to_string(),
+            worktree_path: worktree.to_path_buf(),
+        }
+    }
+
+    /// Set up a git repo with a genuine rebase conflict where `feature_content`
+    /// and `main_content` are **different**, so git actually pauses at a conflict.
+    ///
+    /// `feature_content` and `main_content` must be distinct byte sequences —
+    /// git would skip identical changes as "already upstream".
+    ///
+    /// Returns `(TempDir, git_dir, worktree_path)` with:
+    ///   - `git rebase main` paused at a content conflict on `filename`.
+    ///   - Index stage 2 = upstream (main's HEAD), stage 3 = feature's commit.
+    fn setup_different_content_conflict(
+        filename: &str,
+        base_content: &[u8],
+        feature_content: &[u8],
+        main_content: &[u8],
+    ) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        assert_ne!(
+            feature_content, main_content,
+            "setup_different_content_conflict: feature and main content must differ"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let worktree = dir.path().to_path_buf();
+        let git_dir = worktree.join(".git");
+
+        git_in_hermetic(&worktree, &["init", "-b", "main"]);
+        git_in_hermetic(&worktree, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(worktree.join(filename), base_content).unwrap();
+        git_in_hermetic(&worktree, &["add", filename]);
+        git_in_hermetic(&worktree, &["commit", "-m", "base"]);
+
+        // Feature branch — changes `filename` to `feature_content`.
+        git_in_hermetic(&worktree, &["checkout", "-b", "feature"]);
+        std::fs::write(worktree.join(filename), feature_content).unwrap();
+        git_in_hermetic(&worktree, &["add", filename]);
+        git_in_hermetic(&worktree, &["commit", "-m", "feature change"]);
+
+        // Main — changes `filename` to `main_content` (different).
+        git_in_hermetic(&worktree, &["checkout", "main"]);
+        std::fs::write(worktree.join(filename), main_content).unwrap();
+        git_in_hermetic(&worktree, &["add", filename]);
+        git_in_hermetic(&worktree, &["commit", "-m", "main change"]);
+
+        // Rebase feature onto main.  Exit status is non-zero on conflict — that's expected.
+        git_in_hermetic(&worktree, &["checkout", "feature"]);
+        let _ = git_in_hermetic(&worktree, &["rebase", "main"]);
+
+        // Assert the repo is genuinely in conflict state.
+        let status = git_in_hermetic(&worktree, &["status", "--short"]);
+        let status_out = String::from_utf8_lossy(&status.stdout);
+        assert!(
+            status_out.contains("UU"),
+            "expected rebase conflict (UU) for filename={filename:?}, got status: {status_out}"
+        );
+
+        (dir, git_dir, worktree)
+    }
+
+    /// Set up a rebase conflict where both stage 2 and stage 3 of `filename`
+    /// contain identical bytes (`resolved_content`).
+    ///
+    /// Because git auto-skips commits whose result is already in the new base,
+    /// a normal rebase cannot produce stage2 == stage3.  Instead we:
+    ///   1. Create a genuine conflict with sentinel strings (different content).
+    ///   2. Overwrite both stages via `git update-index --index-info`.
+    ///   3. Write conflict markers to the working-tree file so that
+    ///      `git checkout --theirs` can subsequently write the clean file.
+    ///
+    /// Returns `(TempDir, git_dir, worktree_path)` ready for
+    /// `try_resolve_identical_conflicts`.
+    fn setup_identical_stages_conflict(
+        filename: &str,
+        resolved_content: &[u8],
+    ) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let (dir, git_dir, worktree) = setup_different_content_conflict(
+            filename,
+            b"SENTINEL_BASE\n",
+            b"SENTINEL_FEATURE\n",
+            b"SENTINEL_MAIN\n",
+        );
+
+        let blob_hash = store_git_blob(&worktree, resolved_content);
+        patch_index_stages(&worktree, filename, &blob_hash, &blob_hash);
+
+        // Write conflict markers so `git checkout --theirs` has something to replace.
+        let markers = "<<<<<<< HEAD\nSENTINEL_MAIN\n=======\nSENTINEL_FEATURE\n>>>>>>> feature\n";
+        std::fs::write(worktree.join(filename), markers.as_bytes()).unwrap();
+
+        (dir, git_dir, worktree)
+    }
+
+    // -----------------------------------------------------------------------
+    // try_resolve_identical_conflicts — empty file list
+    // -----------------------------------------------------------------------
+
+    /// An empty conflict list must return `false` — there is nothing to resolve,
+    /// and calling `rebase --continue` on a clean tree would be wrong.
+    #[test]
+    fn test_try_resolve_identical_conflicts_empty_list_returns_false() {
+        let (_dir, git_dir) = setup_test_repo();
+        let branch = open_branch(&git_dir);
+        let result = branch.try_resolve_identical_conflicts(&[]).unwrap();
+        assert!(
+            !result,
+            "empty conflict list must return false (nothing to resolve)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // try_resolve_identical_conflicts — non-identical content (must NOT resolve)
+    // -----------------------------------------------------------------------
+
+    /// When ours and theirs differ, the function must return `false` — it must
+    /// NOT auto-resolve a genuine conflict.  This is the data-integrity guard.
+    #[test]
+    fn test_try_resolve_identical_conflicts_different_content_returns_false() {
+        let (_dir, git_dir, worktree) = setup_different_content_conflict(
+            "data.md",
+            b"ORIGINAL\n",
+            b"FEATURE_EDIT\n",
+            b"MAIN_EDIT\n",
+        );
+
+        let branch = branch_for_worktree(&git_dir, &worktree);
+        let result = branch
+            .try_resolve_identical_conflicts(&["data.md".to_string()])
+            .unwrap();
+
+        assert!(
+            !result,
+            "non-identical conflict must NOT be auto-resolved (data integrity)"
+        );
+    }
+
+    /// Short-circuit: with two files listed, a differing first file must cause
+    /// immediate `false` without touching the second file.
+    #[test]
+    fn test_try_resolve_identical_conflicts_short_circuits_on_first_difference() {
+        let (_dir, git_dir, worktree) = setup_different_content_conflict(
+            "notes.md",
+            b"ORIGINAL\n",
+            b"FEATURE_EDIT\n",
+            b"MAIN_EDIT\n",
+        );
+
+        let branch = branch_for_worktree(&git_dir, &worktree);
+        // Passing the same file twice: the first iteration will find a difference
+        // and return false immediately.
+        let result = branch
+            .try_resolve_identical_conflicts(&["notes.md".to_string(), "notes.md".to_string()])
+            .unwrap();
+
+        assert!(!result, "any differing file must cause false return");
+    }
+
+    /// A trailing-newline difference (`content\n` vs `content`) is a genuine
+    /// byte-level difference.  The function must NOT treat it as identical.
+    ///
+    /// Single-character differences can confuse git's "already upstream" skip,
+    /// so we patch the index manually to inject the exact bytes we want.
+    #[test]
+    fn test_try_resolve_identical_conflicts_trailing_newline_difference_is_not_identical() {
+        let (_dir, git_dir, worktree) = setup_different_content_conflict(
+            "ws.md",
+            b"ORIGINAL\n",
+            b"SENTINEL_A\n",
+            b"SENTINEL_B\n",
+        );
+
+        // Overwrite stage 2/3 with the strings that differ only in trailing newline.
+        let hash_with_newline = store_git_blob(&worktree, b"content\n");
+        let hash_without_newline = store_git_blob(&worktree, b"content");
+        patch_index_stages(
+            &worktree,
+            "ws.md",
+            &hash_with_newline,
+            &hash_without_newline,
+        );
+
+        let branch = branch_for_worktree(&git_dir, &worktree);
+        let result = branch
+            .try_resolve_identical_conflicts(&["ws.md".to_string()])
+            .unwrap();
+
+        assert!(
+            !result,
+            "trailing-newline difference must not be treated as identical"
+        );
+    }
+
+    /// Internal whitespace difference (`hello world` vs `hello  world`) is a
+    /// genuine byte difference and must not be auto-resolved.
+    ///
+    /// Single-line, whitespace-near-identical files are susceptible to git's
+    /// "already upstream" skip, so we patch the index manually after a real
+    /// conflict to isolate the exact bytes we want to compare.
+    #[test]
+    fn test_try_resolve_identical_conflicts_internal_whitespace_difference_is_not_identical() {
+        let (_dir, git_dir, worktree) = setup_different_content_conflict(
+            "spaces.md",
+            b"ORIGINAL\n",
+            b"SENTINEL_A\n", // content that reliably triggers a real conflict
+            b"SENTINEL_B\n",
+        );
+
+        // Overwrite stage 2 and 3 with the whitespace-differing strings.
+        let hash_one_space = store_git_blob(&worktree, b"hello world\n");
+        let hash_two_spaces = store_git_blob(&worktree, b"hello  world\n");
+        patch_index_stages(&worktree, "spaces.md", &hash_one_space, &hash_two_spaces);
+
+        let branch = branch_for_worktree(&git_dir, &worktree);
+        let result = branch
+            .try_resolve_identical_conflicts(&["spaces.md".to_string()])
+            .unwrap();
+
+        assert!(
+            !result,
+            "internal whitespace difference must not be treated as identical"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // try_resolve_identical_conflicts — identical content (happy path)
+    // -----------------------------------------------------------------------
+
+    /// When both stages are byte-identical, the conflict is spurious.
+    /// The function must resolve it, continue the rebase, and return `true`.
+    #[test]
+    fn test_try_resolve_identical_conflicts_identical_content_returns_true() {
+        let (_dir, git_dir, worktree) =
+            setup_identical_stages_conflict("memory.md", b"identical update\n");
+
+        let branch = branch_for_worktree(&git_dir, &worktree);
+        let result = branch
+            .try_resolve_identical_conflicts(&["memory.md".to_string()])
+            .unwrap();
+
+        assert!(
+            result,
+            "identical stage 2/3 must be auto-resolved and rebase continued"
+        );
+
+        // Rebase completion: the rebase-merge state directory must be gone.
+        // (REBASE_HEAD is a stale file that git leaves behind even after a
+        // successful rebase, so we check the state dir instead.)
+        let rebase_merge_dir = worktree.join(".git").join("rebase-merge");
+        assert!(
+            !rebase_merge_dir.exists(),
+            "rebase-merge dir must be gone after successful rebase --continue"
+        );
+    }
+
+    /// After resolution the working-tree file must not contain conflict markers.
+    #[test]
+    fn test_try_resolve_identical_conflicts_resolved_file_has_no_markers() {
+        let (_dir, git_dir, worktree) =
+            setup_identical_stages_conflict("clean.md", b"clean resolved content\n");
+
+        let branch = branch_for_worktree(&git_dir, &worktree);
+        branch
+            .try_resolve_identical_conflicts(&["clean.md".to_string()])
+            .unwrap();
+
+        let text =
+            String::from_utf8_lossy(&std::fs::read(worktree.join("clean.md")).unwrap()).to_string();
+        assert!(
+            !text.contains("<<<<<<<"),
+            "resolved file must not contain conflict markers, got: {text:?}"
+        );
+        assert!(
+            !text.contains(">>>>>>>"),
+            "resolved file must not contain conflict markers, got: {text:?}"
+        );
+    }
+
+    /// Byte-identical content that includes trailing spaces must also resolve.
+    #[test]
+    fn test_try_resolve_identical_conflicts_whitespace_identical_resolves() {
+        let content = b"line with trailing spaces   \n";
+        let (_dir, git_dir, worktree) = setup_identical_stages_conflict("spaces_same.md", content);
+
+        let branch = branch_for_worktree(&git_dir, &worktree);
+        let result = branch
+            .try_resolve_identical_conflicts(&["spaces_same.md".to_string()])
+            .unwrap();
+
+        assert!(
+            result,
+            "byte-identical content (with whitespace) must be auto-resolved"
+        );
+    }
 }
