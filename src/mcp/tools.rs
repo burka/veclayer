@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-const THINK_ACTIONS: &[&str] = &[
+pub(crate) const THINK_ACTIONS: &[&str] = &[
     "promote",
     "demote",
     "relate",

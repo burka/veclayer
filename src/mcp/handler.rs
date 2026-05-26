@@ -253,7 +253,7 @@ impl McpHandler {
     }
 
     #[tool(
-        description = "Reflect and curate memory. Without action: reflection report. Actions: promote, demote, relate, configure_aging, apply_aging, salience, consolidate, discover, perspectives, status, history, sync."
+        description = "Reflect and curate memory. Without action: reflection report. Actions: promote, demote, relate, configure_aging, apply_aging, salience, consolidate, prepare, discover, perspectives, status, history, sync."
     )]
     async fn think(
         &self,
@@ -659,5 +659,36 @@ mod tests {
             Some(true),
             "write-capability handler must not block read operations"
         );
+    }
+
+    // ── think description completeness ───────────────────────────────────────
+
+    /// Every action in `THINK_ACTIONS` must appear in the live `#[tool]` description.
+    ///
+    /// This test reads the description directly from the rmcp router — the same
+    /// value that the MCP protocol sends to agents — so it catches the class of
+    /// drift where the `#[tool(description = "...")]` attribute is edited without
+    /// updating `THINK_ACTIONS`, or vice versa. It cannot be defeated by editing a
+    /// separate copy of the string.
+    ///
+    /// If this test fails, update the `#[tool(description = "...")]` attribute on
+    /// `McpHandler::think` to list every entry in `tools::THINK_ACTIONS`.
+    #[test]
+    fn think_description_covers_all_actions() {
+        let router = McpHandler::tool_router();
+        let tool = router
+            .get("think")
+            .expect("think tool must be registered in the router");
+        let desc = tool
+            .description
+            .as_deref()
+            .expect("think tool must have a description");
+        for action in tools::THINK_ACTIONS {
+            assert!(
+                desc.contains(*action),
+                "think #[tool] description is missing action: {action}\n\
+                 Update the #[tool(description = \"...\")] attribute on McpHandler::think."
+            );
+        }
     }
 }
