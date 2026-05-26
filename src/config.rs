@@ -1011,6 +1011,11 @@ impl Config {
         }
         self
     }
+
+    pub fn with_auth_required(mut self, auth_required: bool) -> Self {
+        self.auth.auth_required = auth_required;
+        self
+    }
 }
 
 /// Parse a push mode string, with backward-compatible mapping of "auto" → Always.
@@ -2258,5 +2263,44 @@ storage = "git"
         // "unknown" is skipped; only "known" resolves
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].name, "known");
+    }
+
+    // with_auth_required builder tests
+
+    #[test]
+    fn test_with_auth_required_sets_true() {
+        // Builder must propagate true regardless of env/file defaults.
+        let config = Config::new().with_auth_required(true);
+        assert!(config.auth.auth_required);
+    }
+
+    #[test]
+    fn test_with_auth_required_sets_false() {
+        // Builder must propagate false, making it authoritative for the merged CLI value.
+        let config = Config::new().with_auth_required(false);
+        assert!(!config.auth.auth_required);
+    }
+
+    #[test]
+    fn test_with_auth_required_overrides_prior_true() {
+        // Start with auth_required=true (via builder), then override with false.
+        // Documents that with_auth_required is fully authoritative — the last call wins.
+        let config = Config::new()
+            .with_auth_required(true)
+            .with_auth_required(false);
+        assert!(!config.auth.auth_required);
+    }
+
+    #[test]
+    fn test_with_auth_required_composes_in_chain() {
+        // Verify that with_auth_required returns Self and can be composed
+        // with the other builder methods without breaking anything.
+        let config = Config::new()
+            .with_port(9090)
+            .with_auth_required(true)
+            .with_read_only(false);
+        assert!(config.auth.auth_required);
+        assert_eq!(config.port, 9090);
+        assert!(!config.read_only);
     }
 }

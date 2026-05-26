@@ -21,7 +21,8 @@ pub async fn serve(data_dir: &Path, options: &ServeOptions) -> Result<()> {
         .with_project(options.project.clone())
         .with_branch(options.branch.clone())
         .with_storage(options.storage.clone())
-        .with_push_mode(options.push.as_deref());
+        .with_push_mode(options.push.as_deref())
+        .with_auth_required(options.auth_required);
 
     if options.mcp_stdio {
         crate::mcp::run_stdio(config).await
