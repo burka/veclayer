@@ -89,11 +89,10 @@ CREATE INDEX IF NOT EXISTS idx_chunks_last_rolled ON chunks(last_rolled);
 /// executor.
 pub(crate) struct SqliteStore {
     conn: Arc<Mutex<Connection>>,
-    /// Dimension hint stored for future validation use.
-    #[allow(dead_code)]
+    /// Expected embedding dimension. Every inserted or updated embedding must
+    /// have exactly this many `f32` elements.
     dimension: usize,
-    /// Read-only flag preserved for guard assertions and open/close logic.
-    #[allow(dead_code)]
+    /// When `true`, all write operations are rejected with a store error.
     read_only: bool,
     _lock: Option<FileLock>,
 }
@@ -310,7 +309,24 @@ impl VectorStore for SqliteStore {
         &self,
         chunks: Vec<HierarchicalChunk>,
     ) -> impl std::future::Future<Output = Result<()>> + Send {
+        let read_only = self.read_only;
+        let dimension = self.dimension;
         self.with_conn_mut(move |conn| {
+            if read_only {
+                return Err(Error::store(
+                    "write rejected: store was opened in read-only mode",
+                ));
+            }
+            for chunk in &chunks {
+                if let Some(emb) = chunk.embedding.as_deref() {
+                    if emb.len() != dimension {
+                        return Err(Error::store(format!(
+                            "dimension mismatch in insert_chunks: expected {dimension}, got {}",
+                            emb.len()
+                        )));
+                    }
+                }
+            }
             let tx = conn
                 .transaction()
                 .map_err(|e| Error::store(format!("begin transaction: {e}")))?;
@@ -570,8 +586,14 @@ impl VectorStore for SqliteStore {
         source_file: &str,
     ) -> impl std::future::Future<Output = Result<usize>> + Send {
         let source_file = source_file.to_owned();
+        let read_only = self.read_only;
 
         self.with_conn(move |conn| {
+            if read_only {
+                return Err(Error::store(
+                    "write rejected: store was opened in read-only mode",
+                ));
+            }
             let changed = conn
                 .execute(
                     "DELETE FROM chunks WHERE source_file = ?1",
@@ -634,7 +656,13 @@ impl VectorStore for SqliteStore {
         &self,
         updates: Vec<(String, AccessProfile)>,
     ) -> impl std::future::Future<Output = Result<()>> + Send {
+        let read_only = self.read_only;
         self.with_conn_mut(move |conn| {
+            if read_only {
+                return Err(Error::store(
+                    "write rejected: store was opened in read-only mode",
+                ));
+            }
             let tx = conn
                 .transaction()
                 .map_err(|e| Error::store(format!("begin transaction: {e}")))?;
@@ -684,8 +712,14 @@ impl VectorStore for SqliteStore {
     ) -> impl std::future::Future<Output = Result<()>> + Send {
         let chunk_id = chunk_id.to_owned();
         let visibility = visibility.to_owned();
+        let read_only = self.read_only;
 
         self.with_conn(move |conn| {
+            if read_only {
+                return Err(Error::store(
+                    "write rejected: store was opened in read-only mode",
+                ));
+            }
             conn.execute(
                 "UPDATE chunks SET visibility = ?2 WHERE id = ?1",
                 params![chunk_id, visibility],
@@ -701,8 +735,14 @@ impl VectorStore for SqliteStore {
         relation: ChunkRelation,
     ) -> impl std::future::Future<Output = Result<()>> + Send {
         let chunk_id = chunk_id.to_owned();
+        let read_only = self.read_only;
 
         self.with_conn(move |conn| {
+            if read_only {
+                return Err(Error::store(
+                    "write rejected: store was opened in read-only mode",
+                ));
+            }
             let relation_json = serde_json::to_string(&relation)
                 .map_err(|e| Error::store(format!("serialize relation: {e}")))?;
             let updated = conn
@@ -929,7 +969,22 @@ impl VectorStore for SqliteStore {
         &self,
         updates: Vec<(String, Vec<f32>)>,
     ) -> impl std::future::Future<Output = Result<()>> + Send {
+        let read_only = self.read_only;
+        let dimension = self.dimension;
         self.with_conn_mut(move |conn| {
+            if read_only {
+                return Err(Error::store(
+                    "write rejected: store was opened in read-only mode",
+                ));
+            }
+            for (id, emb) in &updates {
+                if emb.len() != dimension {
+                    return Err(Error::store(format!(
+                        "dimension mismatch in batch_update_embeddings for '{id}': expected {dimension}, got {}",
+                        emb.len()
+                    )));
+                }
+            }
             let tx = conn
                 .transaction()
                 .map_err(|e| Error::store(format!("begin transaction: {e}")))?;
@@ -1988,5 +2043,215 @@ mod tests {
             results.is_empty(),
             "bare '%' perspective should not match any stored chunk"
         );
+    }
+
+    // --- dimension enforcement ---
+
+    #[tokio::test]
+    async fn insert_correct_dimension_succeeds() {
+        // dimension=4; a 4-element embedding must insert without error.
+        let (store, _dir) = create_test_store().await;
+        let chunk = make_chunk_with_embedding("good dim", "dim.md", vec![0.1, 0.2, 0.3, 0.4]);
+        store
+            .insert_chunks(vec![chunk])
+            .await
+            .expect("correct dimension should succeed");
+    }
+
+    #[tokio::test]
+    async fn insert_wrong_dimension_returns_error() {
+        // dimension=4; a 3-element embedding must be rejected.
+        let (store, _dir) = create_test_store().await;
+        let chunk = make_chunk_with_embedding("bad dim", "dim.md", vec![0.1, 0.2, 0.3]);
+        let result = store.insert_chunks(vec![chunk]).await;
+        assert!(result.is_err(), "wrong-dimension insert must error");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("dimension mismatch"),
+            "error message should mention 'dimension mismatch', got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn insert_oversized_dimension_returns_error() {
+        // dimension=4; a 5-element embedding must be rejected.
+        let (store, _dir) = create_test_store().await;
+        let chunk = make_chunk_with_embedding("over dim", "dim.md", vec![0.1, 0.2, 0.3, 0.4, 0.5]);
+        let result = store.insert_chunks(vec![chunk]).await;
+        assert!(result.is_err(), "oversized-dimension insert must error");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("dimension mismatch"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn insert_pending_chunk_without_embedding_skips_dimension_check() {
+        // A chunk with no embedding (pending) must always be accepted regardless
+        // of the store's configured dimension.
+        let (store, _dir) = create_test_store().await;
+        let chunk = make_chunk("no embedding yet", "pending.md"); // embedding = None
+        store
+            .insert_chunks(vec![chunk])
+            .await
+            .expect("pending chunk with no embedding should succeed");
+    }
+
+    #[tokio::test]
+    async fn batch_update_embeddings_wrong_dimension_returns_error() {
+        // Insert a pending chunk then try to update it with the wrong dimension.
+        let (store, _dir) = create_test_store().await;
+        let chunk = make_chunk("pending", "bdim.md");
+        let id = chunk.id.clone();
+        store.insert_chunks(vec![chunk]).await.expect("insert");
+
+        // 3-element vector into a dimension=4 store must fail.
+        let result = store
+            .batch_update_embeddings(vec![(id, vec![0.1, 0.2, 0.3])])
+            .await;
+        assert!(result.is_err(), "wrong-dimension batch update must error");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("dimension mismatch"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn batch_update_embeddings_correct_dimension_succeeds() {
+        let (store, _dir) = create_test_store().await;
+        let chunk = make_chunk("pending", "bdim_ok.md");
+        let id = chunk.id.clone();
+        store.insert_chunks(vec![chunk]).await.expect("insert");
+
+        store
+            .batch_update_embeddings(vec![(id, vec![0.1, 0.2, 0.3, 0.4])])
+            .await
+            .expect("correct dimension batch update should succeed");
+    }
+
+    // --- read_only enforcement ---
+
+    /// Open an existing DB in read-only mode. The DB must already be populated
+    /// (schema created) by a prior writable open, otherwise the read-only open
+    /// would fail at the SQLite level.
+    async fn create_read_only_store(dir: &TempDir) -> SqliteStore {
+        // First open: create schema and insert a seed chunk.
+        {
+            let rw = SqliteStore::open(dir.path(), 4, false)
+                .await
+                .expect("open rw");
+            let seed = make_chunk("seed", "seed.md");
+            rw.insert_chunks(vec![seed]).await.expect("seed insert");
+        }
+        // Second open: read-only.
+        SqliteStore::open(dir.path(), 4, true)
+            .await
+            .expect("open read-only")
+    }
+
+    #[tokio::test]
+    async fn read_only_store_allows_reads() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = create_read_only_store(&dir).await;
+
+        // stats() is a read — must succeed.
+        let s = store.stats().await.expect("stats on read-only store");
+        assert_eq!(s.total_chunks, 1);
+    }
+
+    #[tokio::test]
+    async fn read_only_store_rejects_insert_chunks() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = create_read_only_store(&dir).await;
+
+        let chunk = make_chunk("blocked", "ro.md");
+        let result = store.insert_chunks(vec![chunk]).await;
+        assert!(result.is_err(), "insert on read-only store must error");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("read-only"),
+            "error should mention read-only, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_only_store_rejects_delete_by_source() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = create_read_only_store(&dir).await;
+
+        let result = store.delete_by_source("seed.md").await;
+        assert!(result.is_err(), "delete on read-only store must error");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("read-only"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn read_only_store_rejects_update_visibility() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = create_read_only_store(&dir).await;
+
+        // We don't need a valid chunk id — the read-only check fires first.
+        let result = store.update_visibility("any-id", "archived").await;
+        assert!(
+            result.is_err(),
+            "update_visibility on read-only store must error"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("read-only"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn read_only_store_rejects_update_access_profiles() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = create_read_only_store(&dir).await;
+
+        let now = now_epoch_secs();
+        let profile = AccessProfile {
+            created_at: now,
+            last_rolled: now,
+            hour: 0,
+            day: 0,
+            week: 0,
+            month: 0,
+            year: 0,
+            total: 0,
+        };
+        let result = store
+            .update_access_profiles(vec![("any-id".to_string(), profile)])
+            .await;
+        assert!(
+            result.is_err(),
+            "update_access_profiles on read-only store must error"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("read-only"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn read_only_store_rejects_add_relation() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = create_read_only_store(&dir).await;
+
+        let result = store
+            .add_relation("any-id", ChunkRelation::related_to("other"))
+            .await;
+        assert!(
+            result.is_err(),
+            "add_relation on read-only store must error"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("read-only"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn read_only_store_rejects_batch_update_embeddings() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = create_read_only_store(&dir).await;
+
+        let result = store
+            .batch_update_embeddings(vec![("any-id".to_string(), vec![0.1, 0.2, 0.3, 0.4])])
+            .await;
+        assert!(
+            result.is_err(),
+            "batch_update_embeddings on read-only store must error"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("read-only"), "got: {msg}");
     }
 }
