@@ -25,14 +25,15 @@
 //! ### Other features
 //! - `parser`: Enables `DocumentParser` and Markdown parsing (requires `pulldown-cmark`)
 //! - `config`: Enables config file discovery, user config, and `git` module (requires `toml`, `glob`, `directories`, `shellexpand`, `regex`, `serde_yml`, `walkdir`)
-//! - `cli`: Enables the CLI binary, implies `store-lance`, `mcp`, `embedding-local`, `config`, and `parser`
+//! - `cli`: Enables the CLI binary, implies `store-lance`, `mcp`, `config`, and `parser`
 //! - `mcp`: Enables the MCP server module, implies `config`
 //! - `embedding-local`: Enables local embedding via `FastEmbed` (`ONNX`)
 //! - `llm`: Enables LLM-powered summarization and clustering
 //! - `http`: Enables HTTP REST API, Streamable HTTP MCP transport, and OAuth; implies `auth` and `mcp`
 //! - `auth`: Enables cryptographic identity (Ed25519), JWT tokens, and keystore
 //! - `sync`: Enables cross-store synchronization
-//! - `full`: Enables `cli`, `llm`, `http`, and `auth`
+//! - `full`: Enables `cli`, `store-sqlite`, `llm`, `http`, and `auth`
+//! - `full-local`: Enables `full` plus `embedding-local`
 //!
 //! For lightweight consumers, use `store-sqlite` to avoid ~185 transitive crates from `LanceDB`:
 //! ```toml

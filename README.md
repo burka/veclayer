@@ -7,7 +7,7 @@
 
 **Long-term memory for AI agents. Hierarchical, perspectival, aging knowledge.**
 
-> Status: 0.1.0 — MCP tool & CLI for local use. APIs are evolving.
+> Status: 0.1.0 alpha / pre-release — MCP tool & CLI for local use. APIs are evolving and may change without notice.
 > Author: Florian Burka, developed in dialogue with Claude
 
 ## What is VecLayer?
@@ -168,6 +168,10 @@ VecLayer provides an MCP server for integration with Claude Code and Opencode.
 Ensure veclayer is installed and available in your PATH:
 
 ```bash
+# From crates.io (recommended)
+cargo install veclayer
+
+# From source (dev / unreleased builds)
 cargo install --path .
 ```
 
@@ -272,19 +276,32 @@ Project-scoped knowledge:
 |---------|-------------|
 | `init` | Initialize a new VecLayer store |
 | `store` | Store knowledge (text, file, directory) |
-| `recall` | Semantic search with perspective filter |
-| `focus` | Drill into an entry, show children |
+| `recall` | Recall knowledge — semantic search with hierarchical results |
+| `focus` | Focus on an entry — show details and children |
 | `reflect` | Identity snapshot, salience ranking, archive candidates |
-| `think` | Curate: promote, demote, relate, discover, aging, LLM consolidation |
-| `serve` | Start MCP/HTTP server |
-| `status` | Store statistics |
+| `think` | Curate memory: promote, demote, relate, discover, aging, LLM consolidation |
+| `serve` | Start the MCP/HTTP server |
+| `status` | Show store statistics |
+| `config` | Show resolved configuration for the current directory |
+| `stale` | Check whether memory has been stored recently (used as a hook) |
+| `sources` | List all indexed source files |
 | `perspective` | Manage perspectives (list, add, remove) |
 | `history` | Show version/relation history of an entry |
 | `archive` | Demote entries to deep_only visibility |
-| `export` | Export entries to JSONL |
-| `import` | Import entries from JSONL |
+| `export` | Export all entries to JSONL |
+| `import` | Import entries from a JSONL file (or stdin) |
+| `rebuild-index` | Rebuild the Lance index from the blob store |
+| `merge` | Merge blobs from another VecLayer store |
+| `identity` | Manage cryptographic identity (DID, keypairs) |
+| `auth` | Manage authentication tokens |
+| `setup` | Set up VecLayer integrations — `setup claude`, `setup ollama`, `setup openclaw` |
+| `observe` | Capture a tool observation from a Claude Code PostToolUse hook |
+| `context` | Print identity briefing to stdout for Claude Code SessionStart injection |
+| `sync` | Sync memory from git scopes into the local index |
 
-Aliases: `add` = `store`, `search`/`s` = `recall`, `f` = `focus`, `id` = `reflect`
+Aliases: `add` = `store`, `search`/`s` = `recall`, `f` = `focus`, `id` = `reflect`, `reindex` = `rebuild-index`, `p` = `perspective`
+
+Run `veclayer --help` or `veclayer <command> --help` for the full flag reference.
 
 ## Building from Source
 
