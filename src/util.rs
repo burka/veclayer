@@ -34,6 +34,60 @@ pub const SECS_PER_MONTH: u64 = 2_592_000;
 /// Seconds per 365-day year.
 pub const SECS_PER_YEAR: u64 = 31_536_000;
 
+/// Run a short-lived async service-discovery probe to completion from a
+/// synchronous context (e.g. `Config::new()`), returning `None` when blocking
+/// is impossible.
+///
+/// Dispatch mirrors the constraints `block_in_place` imposes:
+/// - Multi-threaded runtime present → `block_in_place` + `block_on`.
+/// - Current-thread runtime (e.g. default `#[tokio::test]`) → `None`, because
+///   `block_in_place` would panic there.
+/// - No runtime → spin up a temporary current-thread runtime for the probe.
+///
+/// Shared by the Ollama and OpenAI-compatible discovery paths.
+#[cfg(feature = "llm")]
+pub fn block_on_probe<F, T>(fut: F) -> Option<T>
+where
+    F: std::future::Future<Output = Option<T>>,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread {
+                tracing::debug!("Service auto-discovery skipped: single-threaded runtime");
+                return None;
+            }
+            tokio::task::block_in_place(|| handle.block_on(fut))
+        }
+        Err(_) => match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt.block_on(fut),
+            Err(e) => {
+                tracing::debug!("Service discovery: could not build runtime: {e}");
+                None
+            }
+        },
+    }
+}
+
+/// Build a short-lived `reqwest` client for service-discovery probes.
+///
+/// Shared by the Ollama and OpenAI-compatible discovery paths so both apply the
+/// same connect/overall timeout policy from a single place. Returns `None` if
+/// the client cannot be constructed (e.g. a TLS backend init failure).
+#[cfg(feature = "llm")]
+pub fn build_probe_client(
+    connect_timeout: std::time::Duration,
+    timeout: std::time::Duration,
+) -> Option<reqwest::Client> {
+    reqwest::Client::builder()
+        .connect_timeout(connect_timeout)
+        .timeout(timeout)
+        .build()
+        .ok()
+}
+
 /// Truncate `s` to at most `max` bytes, replacing newlines with spaces.
 ///
 /// Uses `floor_char_boundary` so multi-byte codepoints are never split.

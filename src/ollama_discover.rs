@@ -7,14 +7,16 @@
 //! explicit embedder or LLM provider via environment variables or config file.
 //!
 //! Model classification follows Ollama naming conventions:
-//! - Embedding models: names containing "embed" (e.g. `nomic-embed-text`, `mxbai-embed-large`)
+//! - Embedding models: names containing "embed" (e.g. `nomic-embed-text`,
+//!   `mxbai-embed-large`) *or* matching a known embed family from
+//!   [`EMBED_MODEL_PRIORITY`] whose name omits the word (e.g. `bge-m3`,
+//!   `all-minilm`).
 //! - Chat models: everything else (e.g. `llama3.2`, `mistral`, `phi3`)
 //!
 //! The module is gated behind the `llm` feature because it requires `reqwest`.
 
 use std::time::Duration;
 
-use reqwest::Client;
 use serde::Deserialize;
 
 use crate::util::DEFAULT_OLLAMA_URL;
@@ -43,6 +45,20 @@ const EMBED_MODEL_PRIORITY: &[&str] = &[
     "all-minilm",
     "bge-m3",
 ];
+
+/// Connect + overall timeout for the `/api/tags` probe. Ollama is a local
+/// endpoint, so a tight 500 ms bound keeps startup snappy when it is absent.
+const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Classify a (tag-stripped) model name as an embedding model.
+///
+/// Catches both the obvious `*embed*` names and the embed families in
+/// [`EMBED_MODEL_PRIORITY`] whose names omit the word (`bge-m3`, `all-minilm`),
+/// keeping classification consistent with selection so those models are never
+/// misfiled as chat models.
+fn is_embedding_model(name: &str) -> bool {
+    name.contains("embed") || EMBED_MODEL_PRIORITY.iter().any(|p| name.starts_with(p))
+}
 
 /// Information about a running Ollama instance.
 #[derive(Debug, Clone, PartialEq)]
@@ -174,33 +190,7 @@ struct TagsResponse {
 ///   because blocking is not possible on a single-thread scheduler.
 pub fn detect_ollama() -> Option<OllamaInfo> {
     let base_url = ollama_base_url();
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            // Only block_in_place on multi-threaded runtimes.  On current-thread
-            // schedulers (e.g. the default #[tokio::test] runtime) this would
-            // panic — return None so Config::new() stays safe everywhere.
-            if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread {
-                tracing::debug!(
-                    "Ollama auto-discovery skipped: running on a single-threaded runtime"
-                );
-                return None;
-            }
-            tokio::task::block_in_place(|| handle.block_on(probe(&base_url)))
-        }
-        Err(_) => {
-            // No active runtime — build a minimal one for the probe.
-            match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt.block_on(probe(&base_url)),
-                Err(e) => {
-                    tracing::debug!("Ollama discovery: could not build runtime: {e}");
-                    None
-                }
-            }
-        }
-    }
+    crate::util::block_on_probe(probe(&base_url))
 }
 
 /// Return the Ollama base URL, respecting the `OLLAMA_HOST` env var.
@@ -216,11 +206,7 @@ pub fn ollama_base_url() -> String {
 
 /// Async inner of the probe — separated so it can be unit-tested directly.
 async fn probe(base_url: &str) -> Option<OllamaInfo> {
-    let client = Client::builder()
-        .connect_timeout(Duration::from_millis(500))
-        .timeout(Duration::from_millis(500))
-        .build()
-        .ok()?;
+    let client = crate::util::build_probe_client(PROBE_TIMEOUT, PROBE_TIMEOUT)?;
 
     let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
     let response = client.get(&url).send().await.ok()?;
@@ -235,7 +221,7 @@ async fn probe(base_url: &str) -> Option<OllamaInfo> {
         .models
         .into_iter()
         .map(|m| strip_tag(&m.name))
-        .partition(|name| name.contains("embed"));
+        .partition(|name| is_embedding_model(name));
 
     Some(OllamaInfo {
         base_url: base_url.trim_end_matches('/').to_string(),
@@ -306,10 +292,40 @@ mod tests {
             .models
             .into_iter()
             .map(|m| strip_tag(&m.name))
-            .partition(|name| name.contains("embed"));
+            .partition(|name| is_embedding_model(name));
 
         assert_eq!(embedding, vec!["nomic-embed-text", "mxbai-embed-large"]);
         assert_eq!(chat, vec!["llama3.2", "mistral:7b"]);
+    }
+
+    #[test]
+    fn is_embedding_model_classifies_embed_families_without_the_word() {
+        // The obvious `*embed*` names.
+        assert!(is_embedding_model("nomic-embed-text"));
+        assert!(is_embedding_model("mxbai-embed-large"));
+        assert!(is_embedding_model("snowflake-arctic-embed"));
+        // Embed families whose names omit "embed" — must still be embeddings.
+        assert!(is_embedding_model("bge-m3"));
+        assert!(is_embedding_model("all-minilm"));
+        assert!(is_embedding_model("all-minilm:33m"));
+        // Chat models must not be misclassified.
+        assert!(!is_embedding_model("llama3.2"));
+        assert!(!is_embedding_model("mistral:7b"));
+        assert!(!is_embedding_model("qwen3:8b"));
+    }
+
+    #[test]
+    fn embed_only_bge_m3_is_selected_not_misfiled_as_chat() {
+        // Regression: a host whose only embed model is bge-m3 (no "embed" in the
+        // name) must yield bge-m3 as the embedding model and no chat model — not
+        // the other way around, which would suppress embed detection entirely.
+        let info = OllamaInfo {
+            base_url: DEFAULT_OLLAMA_URL.to_string(),
+            embedding_models: vec!["bge-m3".to_string()],
+            chat_models: vec![],
+        };
+        assert_eq!(info.best_embedding_model(), Some("bge-m3"));
+        assert_eq!(info.best_chat_model(), None);
     }
 
     // --- OllamaInfo helpers ---

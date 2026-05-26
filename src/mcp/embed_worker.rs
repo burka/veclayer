@@ -15,8 +15,18 @@ use crate::{Embedder, VectorStore};
 const BATCH_SIZE: usize = 32;
 const POLL_INTERVAL_IDLE: std::time::Duration = std::time::Duration::from_secs(10);
 const POLL_INTERVAL_BUSY: std::time::Duration = std::time::Duration::from_secs(2);
-/// Approximate embed time per batch (inference + overhead).
-const EMBED_TIME_SECS: u64 = 2;
+/// Approximate embed time per batch (inference + overhead). Benchmarked at
+/// ~129ms for a batch of 32 on CPU (tests/embedder_bench.rs); rounded up to 1s
+/// to stay conservative on slower machines without grossly over-reporting ETAs.
+const EMBED_TIME_SECS: u64 = 1;
+
+// Regression guard: the prior 2s value over-reported ETAs ~15x versus the
+// measured ~129ms batch-32 cost. Keep the budget at most 1s — bumping it back
+// up should fail the build, not silently inflate user-facing ETAs.
+const _: () = assert!(
+    EMBED_TIME_SECS <= 1,
+    "EMBED_TIME_SECS is too pessimistic; batch-32 measures ~129ms (tests/embedder_bench.rs)"
+);
 
 /// Conservative ETA for processing `pending` entries.
 pub(crate) fn eta_seconds(pending: usize) -> u64 {
@@ -96,7 +106,7 @@ async fn process_batch(
 
     // Update blob store for each embedded entry
     let embedder_name = embedder.name();
-    for (chunk, embedding) in pending.iter().zip(embeddings.into_iter()) {
+    for (chunk, embedding) in pending.iter().zip(embeddings) {
         let mut chunk_with_embedding = chunk.clone();
         chunk_with_embedding.embedding = Some(embedding);
         let blob = crate::entry::StoredBlob::from_chunk_and_embedding(

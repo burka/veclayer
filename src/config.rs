@@ -598,6 +598,35 @@ struct DetectedOllama {
     chat_model: Option<String>,
 }
 
+/// Summarised result of OpenAI-compatible embedding-service auto-discovery
+/// (vLLM, HuggingFace TEI, …), used inside `Config::new()`.
+///
+/// Unlike [`DetectedOllama`] this always carries a concrete `dimension`, learned
+/// from a live `/v1/embeddings` probe, so the store is sized to the served model
+/// instead of the Ollama default.
+#[cfg(feature = "config")]
+struct DetectedOpenAiEmbed {
+    base_url: String,
+    model: String,
+    dimension: usize,
+}
+
+/// True when the user has explicitly pinned the embedder, by any means:
+/// the `VECLAYER_EMBEDDER` type selector, a `[embedder]` TOML block, or any of
+/// the Ollama embedder overrides (`VECLAYER_OLLAMA_URL/MODEL/DIMENSION`).
+///
+/// Auto-discovery (Ollama *and* OpenAI-compatible) is suppressed in all of these
+/// cases. Counting the `VECLAYER_OLLAMA_*` vars here is what prevents a probe
+/// from injecting a model/dimension that conflicts with a user-pinned endpoint.
+#[cfg(feature = "config")]
+fn embedder_explicitly_set(file_embedder: &Option<FileEmbedderConfig>) -> bool {
+    std::env::var("VECLAYER_EMBEDDER").is_ok()
+        || file_embedder.is_some()
+        || std::env::var("VECLAYER_OLLAMA_URL").is_ok()
+        || std::env::var("VECLAYER_OLLAMA_MODEL").is_ok()
+        || std::env::var("VECLAYER_OLLAMA_DIMENSION").is_ok()
+}
+
 #[cfg(feature = "config")]
 impl Config {
     /// Build config with full layered resolution: ENV > TOML file > Defaults.
@@ -642,7 +671,17 @@ impl Config {
         // Returns (base_url, embed_model, chat_model) or None.
         let detected_ollama = Self::maybe_detect_ollama(&file.embedder, &file.llm);
 
-        let embedder = Self::resolve_embedder(file.embedder, detected_ollama.as_ref());
+        // When no embedder is configured and Ollama offered no embedding model,
+        // fall back to probing for a local OpenAI-compatible embedding service
+        // (vLLM/TEI) so a GPU-backed endpoint is used automatically when present.
+        let detected_openai =
+            Self::maybe_detect_openai_embedder(&file.embedder, detected_ollama.as_ref());
+
+        let embedder = Self::resolve_embedder(
+            file.embedder,
+            detected_ollama.as_ref(),
+            detected_openai.as_ref(),
+        );
         let llm = Self::resolve_llm(file.llm, detected_ollama.as_ref());
         let auth = Self::resolve_auth(file.auth);
 
@@ -673,12 +712,10 @@ impl Config {
         file_embedder: &Option<FileEmbedderConfig>,
         file_llm: &Option<FileLlmConfig>,
     ) -> Option<DetectedOllama> {
-        let embedder_explicitly_set =
-            std::env::var("VECLAYER_EMBEDDER").is_ok() || file_embedder.is_some();
         let llm_explicitly_set =
             std::env::var("VECLAYER_LLM_PROVIDER").is_ok() || file_llm.is_some();
 
-        if embedder_explicitly_set && llm_explicitly_set {
+        if embedder_explicitly_set(file_embedder) && llm_explicitly_set {
             return None;
         }
 
@@ -700,21 +737,89 @@ impl Config {
         None
     }
 
+    /// Probe for a local OpenAI-compatible embedding service (vLLM, TEI, …) only
+    /// when no embedder is explicitly configured *and* Ollama auto-discovery did
+    /// not already yield an embedding model.
+    ///
+    /// Returns `None` without probing in those short-circuit cases, so the extra
+    /// `/v1/models` + `/v1/embeddings` round-trip never fires for users who have
+    /// an explicit embedder or a working Ollama embed model.
+    fn maybe_detect_openai_embedder(
+        file_embedder: &Option<FileEmbedderConfig>,
+        detected_ollama: Option<&DetectedOllama>,
+    ) -> Option<DetectedOpenAiEmbed> {
+        if embedder_explicitly_set(file_embedder) {
+            return None;
+        }
+
+        let ollama_has_embed_model = detected_ollama
+            .and_then(|d| d.embed_model.as_deref())
+            .is_some();
+        if ollama_has_embed_model {
+            return None;
+        }
+
+        #[cfg(feature = "llm")]
+        if let Some(info) = crate::openai_compat_discover::detect() {
+            tracing::info!(
+                "Detected OpenAI-compatible embedding service at {} with model {} ({} dims)",
+                info.base_url,
+                info.embed_model,
+                info.dimension,
+            );
+            return Some(DetectedOpenAiEmbed {
+                base_url: info.base_url,
+                model: info.embed_model,
+                dimension: info.dimension,
+            });
+        }
+
+        None
+    }
+
     fn resolve_embedder(
         file_embedder: Option<FileEmbedderConfig>,
         detected: Option<&DetectedOllama>,
+        openai: Option<&DetectedOpenAiEmbed>,
     ) -> EmbedderConfig {
-        // Determine the embedder type.  When no explicit config is present and
-        // Ollama was detected with at least one embedding model, switch to Ollama.
+        // Resolve a *single* detected network-embedder source up front, so that
+        // model / base_url / dimension can never be drawn from two different
+        // servers. A native Ollama embed model takes precedence over an
+        // OpenAI-compatible match (it is the more specific protocol hit); the two
+        // are mutually exclusive in practice because `maybe_detect_openai_embedder`
+        // bails when Ollama already offers an embed model. Both kinds are served
+        // through the Ollama-protocol embedder, which transparently falls back to
+        // `/v1/embeddings` for OpenAI-compatible endpoints.
+        //
+        // Ollama discovery does not learn dimensions, so that source contributes
+        // `None` and the dimension falls through to the default; only the
+        // OpenAI-compat probe carries a measured dimension.
+        let (detected_model, detected_base_url, detected_dimension): (
+            Option<String>,
+            Option<String>,
+            Option<usize>,
+        ) = match (detected.and_then(|d| d.embed_model.as_deref()), openai) {
+            (Some(embed_model), _) => (
+                Some(embed_model.to_string()),
+                detected.map(|d| d.base_url.clone()),
+                None,
+            ),
+            (None, Some(o)) => (
+                Some(o.model.clone()),
+                Some(o.base_url.clone()),
+                Some(o.dimension),
+            ),
+            (None, None) => (None, None, None),
+        };
+
+        // Determine the embedder type. When no explicit config is present and a
+        // network embedder (Ollama embed model or OpenAI-compatible service) was
+        // detected, switch to the Ollama-protocol embedder.
         let explicit_type = std::env::var("VECLAYER_EMBEDDER")
             .ok()
             .or_else(|| file_embedder.as_ref().map(|e| e.embedder_type.clone()));
 
-        let use_ollama_auto = explicit_type.is_none()
-            && detected
-                .as_ref()
-                .and_then(|d| d.embed_model.as_deref())
-                .is_some();
+        let use_ollama_auto = explicit_type.is_none() && detected_model.is_some();
 
         let embedder_type = explicit_type.unwrap_or_else(|| {
             if use_ollama_auto {
@@ -731,21 +836,25 @@ impl Config {
 
         match embedder_type.as_str() {
             "ollama" => {
-                // Prefer: env var > TOML file > auto-detected model > hardcoded default
+                // Prefer: env var > TOML file > detected source > hardcoded default.
+                // All three fields draw from the same `detected_*` source, so a
+                // chat-only Ollama can never supply a base_url while the model and
+                // dimension come from a different (OpenAI-compatible) server.
                 let model = std::env::var("VECLAYER_OLLAMA_MODEL")
                     .ok()
                     .or_else(|| file_embedder.as_ref().and_then(|e| e.model.clone()))
-                    .or_else(|| detected.and_then(|d| d.embed_model.clone()))
+                    .or(detected_model)
                     .unwrap_or_else(|| DEFAULT_OLLAMA_MODEL.to_string());
                 let base_url = std::env::var("VECLAYER_OLLAMA_URL")
                     .ok()
                     .or_else(|| file_embedder.as_ref().and_then(|e| e.base_url.clone()))
-                    .or_else(|| detected.map(|d| d.base_url.clone()))
+                    .or(detected_base_url)
                     .unwrap_or_else(|| DEFAULT_OLLAMA_URL.to_string());
                 let dimension = std::env::var("VECLAYER_OLLAMA_DIMENSION")
                     .ok()
                     .and_then(|v| v.parse().ok())
                     .or_else(|| file_embedder.as_ref().and_then(|e| e.dimension))
+                    .or(detected_dimension)
                     .unwrap_or(DEFAULT_OLLAMA_DIMENSION);
                 EmbedderConfig::Ollama {
                     model,
@@ -1237,13 +1346,14 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_resolve_embedder_ollama_from_env() {
         std::env::set_var("VECLAYER_EMBEDDER", "ollama");
         std::env::set_var("VECLAYER_OLLAMA_MODEL", "nomic-embed-text");
         std::env::set_var("VECLAYER_OLLAMA_URL", "http://localhost:11434");
         std::env::set_var("VECLAYER_OLLAMA_DIMENSION", "768");
 
-        let embedder = Config::resolve_embedder(None, None);
+        let embedder = Config::resolve_embedder(None, None, None);
 
         std::env::remove_var("VECLAYER_EMBEDDER");
         std::env::remove_var("VECLAYER_OLLAMA_MODEL");
@@ -1260,6 +1370,159 @@ mod tests {
                 && base_url == DEFAULT_OLLAMA_URL
                 && dimension == DEFAULT_OLLAMA_DIMENSION
         ));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_resolve_embedder_prefers_openai_compat_when_no_ollama_embed() {
+        // No explicit embedder is configured and Ollama offered no embedding
+        // model, but a local OpenAI-compatible service (e.g. vLLM) was detected
+        // serving a 1024-dim model. resolve_embedder must point the Ollama-
+        // protocol embedder — which transparently falls back to /v1/embeddings —
+        // at that endpoint, carrying the probed dimension so the store is sized
+        // correctly rather than defaulting to 768.
+        std::env::remove_var("VECLAYER_EMBEDDER");
+        std::env::remove_var("VECLAYER_OLLAMA_MODEL");
+        std::env::remove_var("VECLAYER_OLLAMA_URL");
+        std::env::remove_var("VECLAYER_OLLAMA_DIMENSION");
+
+        let openai = DetectedOpenAiEmbed {
+            base_url: "http://localhost:8000".to_string(),
+            model: "BAAI/bge-m3".to_string(),
+            dimension: 1024,
+        };
+        let embedder = Config::resolve_embedder(None, None, Some(&openai));
+
+        assert!(matches!(
+            embedder,
+            EmbedderConfig::Ollama {
+                ref model,
+                ref base_url,
+                dimension
+            } if model == "BAAI/bge-m3"
+                && base_url == "http://localhost:8000"
+                && dimension == 1024
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_resolve_embedder_ollama_embed_wins_over_openai() {
+        // When both an Ollama embed model and an OpenAI-compat service are
+        // available, the Ollama-native model takes precedence (it is the more
+        // specific, native protocol match).
+        std::env::remove_var("VECLAYER_EMBEDDER");
+        std::env::remove_var("VECLAYER_OLLAMA_MODEL");
+        std::env::remove_var("VECLAYER_OLLAMA_URL");
+        std::env::remove_var("VECLAYER_OLLAMA_DIMENSION");
+
+        let ollama = DetectedOllama {
+            base_url: "http://localhost:11434".to_string(),
+            embed_model: Some("nomic-embed-text".to_string()),
+            chat_model: None,
+        };
+        let openai = DetectedOpenAiEmbed {
+            base_url: "http://localhost:8000".to_string(),
+            model: "BAAI/bge-m3".to_string(),
+            dimension: 1024,
+        };
+        let embedder = Config::resolve_embedder(None, Some(&ollama), Some(&openai));
+
+        // All three fields must come from Ollama — never a mix where the model
+        // is Ollama's but the dimension leaks from the OpenAI-compat probe. Since
+        // Ollama discovery learns no dimension, it falls back to the default.
+        assert!(
+            matches!(
+                embedder,
+                EmbedderConfig::Ollama {
+                    ref model,
+                    ref base_url,
+                    dimension
+                } if model == "nomic-embed-text"
+                    && base_url == "http://localhost:11434"
+                    && dimension == DEFAULT_OLLAMA_DIMENSION
+            ),
+            "Ollama embed must win on all fields with no OpenAI-compat leakage"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_resolve_embedder_chat_only_ollama_does_not_contaminate_openai() {
+        // Regression: a chat-only Ollama (no embed model) plus a detected
+        // OpenAI-compatible embed service must yield an embedder whose model,
+        // base_url AND dimension all come from the OpenAI-compat server. The
+        // chat-only Ollama's base_url must NOT leak in.
+        std::env::remove_var("VECLAYER_EMBEDDER");
+        std::env::remove_var("VECLAYER_OLLAMA_MODEL");
+        std::env::remove_var("VECLAYER_OLLAMA_URL");
+        std::env::remove_var("VECLAYER_OLLAMA_DIMENSION");
+
+        let ollama = DetectedOllama {
+            base_url: "http://localhost:11434".to_string(),
+            embed_model: None,
+            chat_model: Some("llama3.2".to_string()),
+        };
+        let openai = DetectedOpenAiEmbed {
+            base_url: "http://localhost:8000".to_string(),
+            model: "BAAI/bge-m3".to_string(),
+            dimension: 1024,
+        };
+        let embedder = Config::resolve_embedder(None, Some(&ollama), Some(&openai));
+
+        assert!(
+            matches!(
+                embedder,
+                EmbedderConfig::Ollama {
+                    ref model,
+                    ref base_url,
+                    dimension
+                } if model == "BAAI/bge-m3"
+                    && base_url == "http://localhost:8000"
+                    && dimension == 1024
+            ),
+            "chat-only Ollama must not contaminate the OpenAI-compat embedder"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_embedder_explicitly_set_detects_ollama_env_overrides() {
+        for key in [
+            "VECLAYER_EMBEDDER",
+            "VECLAYER_OLLAMA_URL",
+            "VECLAYER_OLLAMA_MODEL",
+            "VECLAYER_OLLAMA_DIMENSION",
+        ] {
+            std::env::remove_var(key);
+        }
+
+        // Nothing set, no file → not explicit.
+        assert!(!embedder_explicitly_set(&None));
+
+        // A file embedder block alone pins it.
+        let file = FileEmbedderConfig {
+            embedder_type: "fastembed".to_string(),
+            model: None,
+            base_url: None,
+            dimension: None,
+        };
+        assert!(embedder_explicitly_set(&Some(file)));
+
+        // Each Ollama override env var pins it too — this is what suppresses the
+        // OpenAI-compat probe so it can't inject a conflicting model/dimension.
+        for key in [
+            "VECLAYER_OLLAMA_URL",
+            "VECLAYER_OLLAMA_MODEL",
+            "VECLAYER_OLLAMA_DIMENSION",
+        ] {
+            std::env::set_var(key, "x");
+            assert!(
+                embedder_explicitly_set(&None),
+                "{key} must count as an explicit embedder"
+            );
+            std::env::remove_var(key);
+        }
     }
 
     #[test]

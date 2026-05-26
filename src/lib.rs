@@ -82,6 +82,8 @@ pub(crate) mod macros;
 pub mod mcp;
 #[cfg(feature = "llm")]
 pub mod ollama_discover;
+#[cfg(feature = "llm")]
+pub mod openai_compat_discover;
 #[cfg(feature = "parser")]
 pub mod parser;
 pub mod perspective;
