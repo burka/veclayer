@@ -81,7 +81,12 @@ pub async fn search(data_dir: &Path, query_str: &str, options: &SearchOptions) -
 
     println!(
         "\n{} `veclayer focus <id>` to drill in.",
-        format!("{} result(s).", results.len()).if_supports_color(Stream::Stdout, |s| s.bold())
+        format!(
+            "{} result(s){}.",
+            results.len(),
+            cap_hint(results.len(), options.top_k)
+        )
+        .if_supports_color(Stream::Stdout, |s| s.bold())
     );
 
     Ok(())
@@ -322,9 +327,25 @@ pub async fn browse(data_dir: &Path, options: &SearchOptions) -> Result<()> {
 
     println!(
         "\n{} `veclayer focus <id>` to drill in.",
-        format!("{} entry(ies).", entries.len()).if_supports_color(Stream::Stdout, |s| s.bold())
+        format!(
+            "{} entry(ies){}.",
+            entries.len(),
+            cap_hint(entries.len(), options.top_k)
+        )
+        .if_supports_color(Stream::Stdout, |s| s.bold())
     );
     Ok(())
+}
+
+/// Return a cap hint string when `count == top_k` (results were likely truncated).
+/// Returns an empty string when no hint is needed. A zero `top_k` never hints —
+/// no results were requested, so none were truncated.
+fn cap_hint(count: usize, top_k: usize) -> &'static str {
+    if count > 0 && count == top_k {
+        " (more may be available — increase -k / top_k)"
+    } else {
+        ""
+    }
 }
 
 fn print_entry_line(index: usize, chunk: &crate::HierarchicalChunk) {
@@ -484,5 +505,43 @@ mod tests {
         // Should not panic even if fewer entries than top_k exist
         browse(dir.path(), &opts).await?;
         Ok(())
+    }
+
+    // ── Fix B: cap_hint helper ────────────────────────────────────────────────
+
+    #[test]
+    fn cap_hint_shown_when_count_equals_top_k() {
+        let hint = cap_hint(5, 5);
+        assert!(
+            hint.contains("more may be available"),
+            "expected hint, got: {hint:?}"
+        );
+    }
+
+    #[test]
+    fn cap_hint_absent_when_count_below_top_k() {
+        let hint = cap_hint(4, 5);
+        assert!(hint.is_empty(), "expected empty hint, got: {hint:?}");
+    }
+
+    #[test]
+    fn cap_hint_absent_when_count_is_zero() {
+        let hint = cap_hint(0, 5);
+        assert!(hint.is_empty(), "expected empty hint for empty results");
+    }
+
+    #[test]
+    fn cap_hint_absent_when_count_above_top_k() {
+        // Should not happen in practice, but must not hint either
+        // (> top_k means no truncation)
+        let hint = cap_hint(6, 5);
+        assert!(hint.is_empty(), "expected empty hint for over-limit count");
+    }
+
+    #[test]
+    fn cap_hint_absent_when_top_k_is_zero() {
+        // top_k == 0 means no results were requested; 0 == 0 must not hint.
+        let hint = cap_hint(0, 0);
+        assert!(hint.is_empty(), "zero top_k must never show the cap hint");
     }
 }

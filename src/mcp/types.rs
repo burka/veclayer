@@ -280,6 +280,22 @@ pub struct AccessProfileResponse {
     pub total: u32,
 }
 
+/// A relation to another chunk in API responses
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RelationResponse {
+    pub kind: String,
+    pub target_id: String,
+}
+
+impl From<&crate::chunk::ChunkRelation> for RelationResponse {
+    fn from(rel: &crate::chunk::ChunkRelation) -> Self {
+        Self {
+            kind: rel.kind.clone(),
+            target_id: rel.target_id.clone(),
+        }
+    }
+}
+
 /// A simplified chunk for API responses
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ChunkResponse {
@@ -299,6 +315,15 @@ pub struct ChunkResponse {
     pub access: AccessProfileResponse,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub embedding_pending: bool,
+    /// Outgoing relations (supersedes, summarizes, related_to, …) — the link graph.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub relations: Vec<RelationResponse>,
+    /// Impression hint — only present on impression entries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub impression_hint: Option<String>,
+    /// Impression strength [0.0, 1.0] — only present on impression entries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub impression_strength: Option<f32>,
 }
 
 impl From<&crate::HierarchicalChunk> for ChunkResponse {
@@ -323,6 +348,13 @@ impl From<&crate::HierarchicalChunk> for ChunkResponse {
                 total: chunk.access_profile.total,
             },
             embedding_pending: !chunk.has_embedding(),
+            relations: chunk.relations.iter().map(RelationResponse::from).collect(),
+            impression_hint: chunk.impression_hint.clone(),
+            impression_strength: if chunk.entry_type == crate::chunk::EntryType::Impression {
+                Some(chunk.impression_strength)
+            } else {
+                None
+            },
         }
     }
 }
@@ -499,5 +531,64 @@ mod tests {
         let input: StoreInput =
             serde_json::from_value(json!({"content": "x", "perspectives": "[bad json"})).unwrap();
         assert_eq!(input.perspectives, vec!["[bad json"]);
+    }
+
+    // ── ChunkResponse::from carries relations + impression fields ────────
+
+    use crate::chunk::{ChunkLevel, ChunkRelation, EntryType, HierarchicalChunk};
+
+    fn sample_chunk() -> HierarchicalChunk {
+        HierarchicalChunk::new(
+            "content".to_string(),
+            ChunkLevel::H2,
+            None,
+            "path".to_string(),
+            "[agent]".to_string(),
+        )
+    }
+
+    #[test]
+    fn response_carries_relations() {
+        let mut chunk = sample_chunk();
+        chunk.relations = vec![
+            ChunkRelation::new("supersedes", "old-id"),
+            ChunkRelation::new("related_to", "rel-id"),
+        ];
+        let resp = ChunkResponse::from(&chunk);
+        assert_eq!(resp.relations.len(), 2);
+        assert_eq!(resp.relations[0].kind, "supersedes");
+        assert_eq!(resp.relations[0].target_id, "old-id");
+        assert_eq!(resp.relations[1].kind, "related_to");
+    }
+
+    #[test]
+    fn response_omits_empty_relations_in_json() {
+        let resp = ChunkResponse::from(&sample_chunk());
+        assert!(resp.relations.is_empty());
+        let v = serde_json::to_value(&resp).unwrap();
+        assert!(
+            v.get("relations").is_none(),
+            "empty relations must be skipped in serialization"
+        );
+    }
+
+    #[test]
+    fn response_carries_impression_fields_for_impression_entry() {
+        let mut chunk = sample_chunk();
+        chunk.entry_type = EntryType::Impression;
+        chunk.impression_hint = Some("uncertain".to_string());
+        chunk.impression_strength = 0.4;
+        let resp = ChunkResponse::from(&chunk);
+        assert_eq!(resp.impression_hint.as_deref(), Some("uncertain"));
+        assert_eq!(resp.impression_strength, Some(0.4));
+    }
+
+    #[test]
+    fn response_omits_impression_strength_for_non_impression() {
+        // A raw entry still has impression_strength 1.0 on the chunk, but the
+        // response must not surface it (it is only meaningful for impressions).
+        let resp = ChunkResponse::from(&sample_chunk());
+        assert_eq!(resp.impression_strength, None);
+        assert_eq!(resp.impression_hint, None);
     }
 }

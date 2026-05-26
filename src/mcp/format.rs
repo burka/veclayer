@@ -10,8 +10,16 @@ use crate::chunk::short_id;
 
 const EMBEDDING_PENDING_LABEL: &str = "embedding pending";
 
+/// Default recall limit, mirroring [`super::types::default_limit`].
 /// Format recall results as readable markdown.
-pub fn format_recall(query: Option<&str>, results: &[SearchResultResponse]) -> String {
+///
+/// `requested_limit` is the caller's requested result count; the footer hints
+/// that more may be available only when the result set fills that limit exactly.
+pub fn format_recall(
+    query: Option<&str>,
+    results: &[SearchResultResponse],
+    requested_limit: usize,
+) -> String {
     if results.is_empty() {
         return match query {
             Some(q) => format!("No results for \"{}\".", q),
@@ -84,10 +92,17 @@ pub fn format_recall(query: Option<&str>, results: &[SearchResultResponse]) -> S
         }
     }
 
-    // Footer
+    // Footer — hint only when the result set fills the requested limit exactly
+    // (a smaller set means the store had nothing more to give).
+    let cap_hint = if results.len() >= requested_limit {
+        " (more may be available — increase `limit` / top_k)"
+    } else {
+        ""
+    };
     out.push_str(&format!(
-        "\n_{} result(s). Use `focus(id)` to drill into any entry._\n",
-        results.len()
+        "\n_{} result(s){}. Use `focus(id)` to drill into any entry._\n",
+        results.len(),
+        cap_hint
     ));
 
     out
@@ -124,12 +139,27 @@ pub fn format_focus(response: &FocusResponse) -> String {
     if node.embedding_pending {
         meta.push("embedding pending".to_string());
     }
+    if let Some(hint) = &node.impression_hint {
+        let strength = node
+            .impression_strength
+            .map(|s| format!(" {:.2}", s))
+            .unwrap_or_default();
+        meta.push(format!("impression: {}{}", hint, strength));
+    }
     out.push_str(&format!("> {}\n", meta.join(" · ")));
 
     // Full content
     out.push('\n');
     out.push_str(node.content.trim());
     out.push('\n');
+
+    // Relations — the outgoing link graph
+    if !node.relations.is_empty() {
+        out.push_str(&format!("\n### Relations ({})\n\n", node.relations.len()));
+        for rel in &node.relations {
+            out.push_str(&format!("- {} → `{}`\n", rel.kind, short_id(&rel.target_id)));
+        }
+    }
 
     // Children
     if !response.children.is_empty() {
@@ -408,6 +438,9 @@ mod tests {
                 total: 0,
             },
             embedding_pending: false,
+            relations: vec![],
+            impression_hint: None,
+            impression_strength: None,
         }
     }
 
@@ -421,12 +454,12 @@ mod tests {
             hierarchy_path: vec![],
             children: vec![],
         }];
-        format_recall(Some("q"), &results)
+        format_recall(Some("q"), &results, 5)
     }
 
     #[test]
     fn recall_empty() {
-        let out = format_recall(Some("test"), &[]);
+        let out = format_recall(Some("test"), &[], 5);
         assert_eq!(out, "No results for \"test\".");
     }
 
@@ -443,7 +476,7 @@ mod tests {
             hierarchy_path: vec![],
             children: vec![],
         }];
-        let out = format_recall(Some("architecture"), &results);
+        let out = format_recall(Some("architecture"), &results, 5);
         assert!(out.contains("### 1. Design (strong)"));
         assert!(out.contains("> `abc1234`")); // Metadata in blockquote
         assert!(out.contains("0.85")); // Raw score in metadata
@@ -461,7 +494,7 @@ mod tests {
             hierarchy_path: vec![],
             children: vec![child],
         }];
-        let out = format_recall(Some("query"), &results);
+        let out = format_recall(Some("query"), &results, 5);
         assert!(out.contains("**Children:**"));
         assert!(out.contains("Subsection"));
         assert!(out.contains("`child12`"));
@@ -489,6 +522,65 @@ mod tests {
         assert!(out.contains("### Children (1)"));
         assert!(out.contains("[0.92]"));
         assert!(out.contains("> `child45`")); // Child metadata in blockquote
+    }
+
+    #[test]
+    fn focus_renders_relations() {
+        let mut node = make_chunk("node123deadbeef", "Content", Some("Linked Entry"));
+        node.relations = vec![
+            RelationResponse {
+                kind: "supersedes".to_string(),
+                target_id: "old999deadbeef".to_string(),
+            },
+            RelationResponse {
+                kind: "related_to".to_string(),
+                target_id: "rel888deadbeef".to_string(),
+            },
+        ];
+        let response = FocusResponse {
+            node,
+            children: vec![],
+        };
+        let out = format_focus(&response);
+        assert!(out.contains("### Relations (2)"));
+        assert!(out.contains("- supersedes → `old999d`"));
+        assert!(out.contains("- related_to → `rel888d`"));
+    }
+
+    #[test]
+    fn focus_omits_relations_section_when_empty() {
+        let node = make_chunk("node123deadbeef", "Content", Some("No Links"));
+        let response = FocusResponse {
+            node,
+            children: vec![],
+        };
+        let out = format_focus(&response);
+        assert!(!out.contains("### Relations"));
+    }
+
+    #[test]
+    fn focus_renders_impression_hint_and_strength() {
+        let mut node = make_chunk("imp123deadbeef", "A hunch", Some("Impression"));
+        node.entry_type = "impression".to_string();
+        node.impression_hint = Some("uncertain".to_string());
+        node.impression_strength = Some(0.35);
+        let response = FocusResponse {
+            node,
+            children: vec![],
+        };
+        let out = format_focus(&response);
+        assert!(out.contains("impression: uncertain 0.35"));
+    }
+
+    #[test]
+    fn focus_omits_impression_when_absent() {
+        let node = make_chunk("node123deadbeef", "Content", Some("Raw Entry"));
+        let response = FocusResponse {
+            node,
+            children: vec![],
+        };
+        let out = format_focus(&response);
+        assert!(!out.contains("impression:"));
     }
 
     #[test]
@@ -535,7 +627,7 @@ mod tests {
             hierarchy_path: vec![ancestor, parent],
             children: vec![],
         }];
-        let out = format_recall(Some("q"), &results);
+        let out = format_recall(Some("q"), &results, 5);
         assert!(out.contains("> Root › Parent")); // Breadcrumb line
         assert!(out.contains("> `leaf000`")); // Metadata line follows
     }
@@ -556,7 +648,7 @@ mod tests {
             hierarchy_path: vec![],
             children: vec![],
         }];
-        let out = format_recall(Some("q"), &results);
+        let out = format_recall(Some("q"), &results, 5);
         assert!(out.contains("0.42"));
     }
 
@@ -616,7 +708,7 @@ mod tests {
 
     #[test]
     fn recall_empty_no_query_shows_no_entries_found() {
-        let out = format_recall(None, &[]);
+        let out = format_recall(None, &[], 5);
         assert_eq!(out, "No entries found.");
     }
 
@@ -662,7 +754,7 @@ mod tests {
                 children: vec![],
             },
         ];
-        let out = format_recall(Some("q"), &results);
+        let out = format_recall(Some("q"), &results, 5);
         assert!(out.contains("### 1. Entry A"));
         assert!(out.contains("### 2. Entry B"));
         assert!(out.contains("\n---\n"));
@@ -935,5 +1027,71 @@ mod tests {
         chunk.heading = None;
         let out = fmt_recall(chunk);
         assert!(out.contains("(untitled)"));
+    }
+
+    // ── Fix B: cap hint in MCP footer ────────────────────────────────────
+
+    /// Helper: build N identical-looking (but distinct-id) SearchResultResponse entries.
+    fn make_results(n: usize) -> Vec<SearchResultResponse> {
+        (0..n)
+            .map(|i| SearchResultResponse {
+                chunk: make_chunk(
+                    &format!("{:016x}", i),
+                    &format!("Content {i}"),
+                    Some(&format!("Entry {i}")),
+                ),
+                score: 0.5,
+                relevance: "strong".to_string(),
+                hierarchy_path: vec![],
+                children: vec![],
+            })
+            .collect()
+    }
+
+    #[test]
+    fn recall_footer_shows_cap_hint_when_result_set_fills_requested_limit() {
+        // Requested 5, got 5 → the store may have more → hint shown.
+        let results = make_results(5);
+        let out = format_recall(Some("q"), &results, 5);
+        assert!(
+            out.contains("more may be available"),
+            "expected cap hint in: {out}"
+        );
+    }
+
+    #[test]
+    fn recall_footer_omits_cap_hint_below_requested_limit() {
+        // Requested 5, got 4 → store had nothing more → no hint.
+        let results = make_results(4);
+        let out = format_recall(Some("q"), &results, 5);
+        assert!(
+            !out.contains("more may be available"),
+            "unexpected cap hint in: {out}"
+        );
+    }
+
+    #[test]
+    fn recall_footer_shows_cap_hint_when_higher_limit_filled() {
+        // Caller raised top_k to 10 and got 10 → hint shown.
+        let results = make_results(10);
+        let out = format_recall(Some("q"), &results, 10);
+        assert!(
+            out.contains("more may be available"),
+            "expected cap hint in: {out}"
+        );
+    }
+
+    #[test]
+    fn recall_footer_omits_cap_hint_when_higher_limit_not_filled() {
+        // Regression: caller raised top_k to 10 but only 8 matched. The old
+        // logic anchored the hint to a hardcoded default of 5 (8 >= 5) and
+        // wrongly claimed more may be available. Anchored to the real limit,
+        // 8 < 10 → no hint.
+        let results = make_results(8);
+        let out = format_recall(Some("q"), &results, 10);
+        assert!(
+            !out.contains("more may be available"),
+            "cap hint must not fire when result set is below the requested limit: {out}"
+        );
     }
 }

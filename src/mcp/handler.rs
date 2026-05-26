@@ -187,10 +187,11 @@ impl McpHandler {
             )]));
         }
         let query = input.query.clone();
+        let requested_limit = input.limit;
         let ctx = self.tool_context();
         match tools::execute_recall(&ctx, input, Some(self.push_mode)).await {
             Ok(results) => {
-                let text = format::format_recall(query.as_deref(), &results);
+                let text = format::format_recall(query.as_deref(), &results, requested_limit);
                 Ok(CallToolResult::success(vec![Content::text(text)]))
             }
             Err(e) => tool_error(e),
