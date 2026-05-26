@@ -2254,4 +2254,60 @@ mod tests {
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("read-only"), "got: {msg}");
     }
+
+    // --- open: error paths ---
+
+    /// Writing random bytes to `store.db` before calling `open` must cause
+    /// `open` to return `Err` with a non-empty message.  The file name is the
+    /// same literal used by the production code (`store.db`).
+    ///
+    /// SQLite detects the corruption either at `Connection::open_with_flags`
+    /// (header magic mismatch) or at the first `execute_batch` call (WAL
+    /// PRAGMA or schema migration).  Either way the result must be `Err`, not a
+    /// panic or a silent success.
+    #[tokio::test]
+    async fn open_corrupt_db_returns_error() {
+        let dir = TempDir::new().expect("tempdir");
+
+        // Plant garbage bytes at the exact path open() will use.
+        let db_path = dir.path().join("store.db");
+        std::fs::write(
+            &db_path,
+            b"THIS IS NOT A VALID SQLITE DATABASE FILE\xFF\xFE\x00",
+        )
+        .expect("write corrupt file");
+
+        let result = SqliteStore::open(dir.path(), 4, false).await;
+
+        assert!(result.is_err(), "opening a corrupt DB must return Err");
+        // Use .err().unwrap() to avoid the T: Debug bound on unwrap_err().
+        let msg = result.err().unwrap().to_string();
+        assert!(
+            !msg.is_empty(),
+            "error message must be non-empty on corrupt DB"
+        );
+    }
+
+    /// Opening in read-only mode when `store.db` does not yet exist must return
+    /// `Err`.  This exercises the `SQLITE_OPEN_READ_ONLY` flag path in `open`,
+    /// which differs from the corrupt-DB path: here the file is simply absent,
+    /// so SQLite refuses to create it.
+    #[tokio::test]
+    async fn open_readonly_nonexistent_db_returns_error() {
+        let dir = TempDir::new().expect("tempdir");
+        // Do NOT create store.db — the directory exists but the file does not.
+
+        let result = SqliteStore::open(dir.path(), 4, true).await;
+
+        assert!(
+            result.is_err(),
+            "opening a non-existent DB in read-only mode must return Err"
+        );
+        // Use .err().unwrap() to avoid the T: Debug bound on unwrap_err().
+        let msg = result.err().unwrap().to_string();
+        assert!(
+            !msg.is_empty(),
+            "error message must be non-empty when DB file is absent"
+        );
+    }
 }
