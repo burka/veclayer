@@ -55,14 +55,6 @@ pub enum Error {
     #[cfg(feature = "config")]
     #[error("git: {0}")]
     Git(#[from] crate::git::GitError),
-
-    #[cfg(feature = "sync")]
-    #[error("Sync error: {0}")]
-    Sync(String),
-
-    #[cfg(feature = "sync")]
-    #[error("Name resolution error: {0}")]
-    NameResolution(String),
 }
 
 impl Error {
@@ -105,16 +97,6 @@ impl Error {
     /// Returns `true` if this is an embedding-related error.
     pub fn is_embedding(&self) -> bool {
         matches!(self, Self::Embedding(_))
-    }
-
-    #[cfg(feature = "sync")]
-    pub fn sync(msg: impl Into<String>) -> Self {
-        Self::Sync(msg.into())
-    }
-
-    #[cfg(feature = "sync")]
-    pub fn name_resolution(msg: impl Into<String>) -> Self {
-        Self::NameResolution(msg.into())
     }
 }
 
@@ -184,21 +166,5 @@ mod tests {
         let display = format!("{}", err);
         assert!(display.contains("Parsing error"));
         assert!(display.contains("test message"));
-    }
-
-    #[cfg(feature = "sync")]
-    #[test]
-    fn test_error_sync() {
-        let err = Error::sync("transport failed");
-        assert!(matches!(err, Error::Sync(_)));
-        assert!(err.to_string().contains("transport failed"));
-    }
-
-    #[cfg(feature = "sync")]
-    #[test]
-    fn test_error_name_resolution() {
-        let err = Error::name_resolution("resolve failed");
-        assert!(matches!(err, Error::NameResolution(_)));
-        assert!(err.to_string().contains("resolve failed"));
     }
 }

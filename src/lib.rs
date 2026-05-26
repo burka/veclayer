@@ -31,7 +31,6 @@
 //! - `llm`: Enables LLM-powered summarization and clustering
 //! - `http`: Enables HTTP REST API, Streamable HTTP MCP transport, and OAuth; implies `auth` and `mcp`
 //! - `auth`: Enables cryptographic identity (Ed25519), JWT tokens, and keystore
-//! - `sync`: Enables cross-store synchronization
 //! - `full`: Enables `cli`, `store-sqlite`, `llm`, `http`, and `auth`
 //! - `full-local`: Enables `full` plus `embedding-local`
 //!
@@ -96,8 +95,6 @@ pub mod store;
 #[cfg(feature = "llm")]
 #[doc(hidden)]
 pub mod summarizer;
-#[cfg(feature = "sync")]
-pub mod sync;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 #[cfg(feature = "llm")]
@@ -153,5 +150,3 @@ pub use store::StoreBackend;
 pub use store::VectorStore;
 #[cfg(feature = "llm")]
 pub use summarizer::{OllamaSummarizer, Summarizer};
-#[cfg(feature = "sync")]
-pub use sync::{NameResolver, SyncBackend};
