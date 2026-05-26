@@ -157,7 +157,11 @@ pub fn format_focus(response: &FocusResponse) -> String {
     if !node.relations.is_empty() {
         out.push_str(&format!("\n### Relations ({})\n\n", node.relations.len()));
         for rel in &node.relations {
-            out.push_str(&format!("- {} → `{}`\n", rel.kind, short_id(&rel.target_id)));
+            out.push_str(&format!(
+                "- {} → `{}`\n",
+                rel.kind,
+                short_id(&rel.target_id)
+            ));
         }
     }
 

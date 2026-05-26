@@ -236,12 +236,11 @@ mod tests {
         format!(r#"{{"embeddings":[{}]}}"#, vecs.join(","))
     }
 
-    /// Spawn a task that accepts `expected_requests` connections, replies to each
-    /// with an Ollama-format response (canned per-chunk), and records the raw
-    /// request bodies.  Returns the shared request-log and an `await`-able handle.
+    /// Spawn a task that accepts one connection per entry in `chunk_sizes`,
+    /// replies to each with an Ollama-format response (canned per-chunk), and
+    /// records the raw request bodies.  Returns the shared request-log.
     fn serve_n_chunks(
         listener: TcpListener,
-        expected_requests: usize,
         // For each request index, how many embeddings to include in the response.
         chunk_sizes: Vec<usize>,
     ) -> Arc<Mutex<Vec<Vec<u8>>>> {
@@ -250,7 +249,7 @@ mod tests {
 
         tokio::spawn(async move {
             let mut offset = 0usize;
-            for idx in 0..expected_requests {
+            for &n_embeddings in &chunk_sizes {
                 let (mut stream, _) = listener.accept().await.unwrap();
 
                 // Read the entire HTTP request (headers + body).  A real server
@@ -260,7 +259,6 @@ mod tests {
                 buf.truncate(n);
                 log_clone.lock().unwrap().push(buf);
 
-                let n_embeddings = chunk_sizes[idx];
                 let body = ollama_response_json(n_embeddings, offset);
                 offset += n_embeddings;
 
@@ -315,7 +313,7 @@ mod tests {
     async fn exactly_max_batch_sends_one_request() {
         let texts: Vec<&str> = vec!["x"; MAX_BATCH];
         let (listener, base_url) = mock_listener().await;
-        let log = serve_n_chunks(listener, 1, vec![MAX_BATCH]);
+        let log = serve_n_chunks(listener, vec![MAX_BATCH]);
 
         let embedder = embedder_at(&base_url);
         let result = embedder.embed_async(&texts).await.unwrap();
@@ -335,7 +333,7 @@ mod tests {
         let texts: Vec<&str> = vec!["x"; n];
         let (listener, base_url) = mock_listener().await;
         // chunk 1: MAX_BATCH embeddings, chunk 2: 1 embedding
-        let log = serve_n_chunks(listener, 2, vec![MAX_BATCH, 1]);
+        let log = serve_n_chunks(listener, vec![MAX_BATCH, 1]);
 
         let embedder = embedder_at(&base_url);
         let result = embedder.embed_async(&texts).await.unwrap();
@@ -361,7 +359,7 @@ mod tests {
 
         let texts: Vec<&str> = vec!["t"; N];
         let (listener, base_url) = mock_listener().await;
-        let log = serve_n_chunks(listener, expected_requests, chunk_sizes.clone());
+        let log = serve_n_chunks(listener, chunk_sizes.clone());
 
         let embedder = embedder_at(&base_url);
         let result = embedder.embed_async(&texts).await.unwrap();

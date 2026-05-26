@@ -6,6 +6,10 @@
 //!
 //! The first invocation downloads the BGE-small ONNX model into the VecLayer
 //! cache dir (~90 MB). Subsequent runs reuse it.
+//!
+//! Requires the `embedding-local` feature (provides `FastEmbedder`); the whole
+//! file compiles to nothing without it.
+#![cfg(feature = "embedding-local")]
 
 use std::time::Instant;
 
