@@ -10,7 +10,7 @@ use tracing::warn;
 
 use crate::blob_store::BlobStore;
 use crate::store::StoreBackend;
-use crate::{Embedder, VectorStore};
+use crate::Embedder;
 
 const BATCH_SIZE: usize = 32;
 const POLL_INTERVAL_IDLE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -42,7 +42,7 @@ pub fn spawn(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            match process_batch(&store, &embedder, &blob_store).await {
+            match process_batch(store.as_ref(), &embedder, &blob_store).await {
                 Ok(0) => {
                     // No pending entries — sleep longer
                     tokio::time::sleep(POLL_INTERVAL_IDLE).await;
@@ -54,7 +54,9 @@ pub fn spawn(
                 }
                 Err(e) => {
                     warn!("Embedding worker error: {e}");
-                    tokio::time::sleep(POLL_INTERVAL_IDLE).await;
+                    // Retry on busy cadence — an error does not mean the queue
+                    // is empty; sleeping the idle interval would drain ~5x slower.
+                    tokio::time::sleep(POLL_INTERVAL_BUSY).await;
                 }
             }
         }
@@ -62,8 +64,11 @@ pub fn spawn(
 }
 
 /// Process one batch of pending entries. Returns the number processed.
+///
+/// Generic over any [`VectorStore`] so the iteration logic can be exercised in
+/// unit tests with a lightweight mock without spinning up a real database.
 async fn process_batch(
-    store: &Arc<StoreBackend>,
+    store: &impl crate::VectorStore,
     embedder: &Arc<dyn Embedder + Send + Sync>,
     blob_store: &Arc<BlobStore>,
 ) -> crate::Result<usize> {
@@ -99,10 +104,10 @@ async fn process_batch(
         .map(|(chunk, emb)| (chunk.id.clone(), emb.clone()))
         .collect();
 
-    if let Err(e) = store.batch_update_embeddings(updates).await {
+    store.batch_update_embeddings(updates).await.map_err(|e| {
         warn!("Batch embedding update failed: {e}");
-        return Ok(0);
-    }
+        e
+    })?;
 
     // Update blob store for each embedded entry
     let embedder_name = embedder.name();
@@ -124,6 +129,7 @@ async fn process_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::VectorStore as _;
 
     /// Helper to create pending chunks (embedding = None) for batch processing tests.
     fn make_pending_chunks(count: usize, prefix: &str) -> Vec<crate::HierarchicalChunk> {
@@ -236,7 +242,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (store, blob_store, embedder) = batch_harness_fixed(dir.path()).await;
 
-        let count = process_batch(&store, &embedder, &blob_store).await.unwrap();
+        let count = process_batch(store.as_ref(), &embedder, &blob_store)
+            .await
+            .unwrap();
         assert_eq!(count, 0);
     }
 
@@ -252,7 +260,9 @@ mod tests {
         chunk.embedding = None;
         store.insert_chunks(vec![chunk]).await.unwrap();
 
-        let count = process_batch(&store, &embedder, &blob_store).await.unwrap();
+        let count = process_batch(store.as_ref(), &embedder, &blob_store)
+            .await
+            .unwrap();
         assert_eq!(count, 1, "should have embedded 1 pending entry");
     }
 
@@ -269,7 +279,9 @@ mod tests {
         assert!(chunk.embedding.is_some());
         store.insert_chunks(vec![chunk]).await.unwrap();
 
-        let count = process_batch(&store, &embedder, &blob_store).await.unwrap();
+        let count = process_batch(store.as_ref(), &embedder, &blob_store)
+            .await
+            .unwrap();
         assert_eq!(count, 0, "no pending entries to embed");
     }
 
@@ -281,7 +293,9 @@ mod tests {
         let chunks = make_pending_chunks(BATCH_SIZE + 5, "pend");
         store.insert_chunks(chunks).await.unwrap();
 
-        let count = process_batch(&store, &embedder, &blob_store).await.unwrap();
+        let count = process_batch(store.as_ref(), &embedder, &blob_store)
+            .await
+            .unwrap();
         assert_eq!(count, BATCH_SIZE, "should process exactly {BATCH_SIZE}");
     }
 
@@ -316,12 +330,259 @@ mod tests {
         let chunks = make_pending_chunks(2, "mismatch");
         store.insert_chunks(chunks).await.unwrap();
 
-        let result = process_batch(&store, &embedder, &blob_store).await;
+        let result = process_batch(store.as_ref(), &embedder, &blob_store).await;
         assert!(result.is_err(), "should fail with count mismatch error");
         let err_str = result.unwrap_err().to_string();
         assert!(
             err_str.contains("mismatch"),
             "error should mention mismatch: {err_str}"
         );
+    }
+
+    // ── MockStore — lightweight VectorStore for write-failure tests ──────────
+
+    use std::sync::Mutex;
+
+    /// In-memory VectorStore whose `batch_update_embeddings` can be configured
+    /// to fail, letting us prove the bug: the old code returned `Ok(0)` (looks
+    /// like "queue empty"), the fixed code returns `Err`.
+    struct MockStore {
+        pending: Vec<crate::HierarchicalChunk>,
+        /// When `Some(msg)`, `batch_update_embeddings` returns `Err(Store(msg))`.
+        batch_update_error: Option<String>,
+        /// Records how many times `batch_update_embeddings` was called.
+        batch_update_calls: Mutex<usize>,
+    }
+
+    impl MockStore {
+        fn with_pending(chunks: Vec<crate::HierarchicalChunk>) -> Self {
+            Self {
+                pending: chunks,
+                batch_update_error: None,
+                batch_update_calls: Mutex::new(0),
+            }
+        }
+
+        fn with_pending_and_write_error(
+            chunks: Vec<crate::HierarchicalChunk>,
+            msg: impl Into<String>,
+        ) -> Self {
+            Self {
+                pending: chunks,
+                batch_update_error: Some(msg.into()),
+                batch_update_calls: Mutex::new(0),
+            }
+        }
+
+        fn batch_update_call_count(&self) -> usize {
+            *self.batch_update_calls.lock().unwrap()
+        }
+    }
+
+    impl crate::VectorStore for MockStore {
+        async fn insert_chunks(&self, _chunks: Vec<crate::HierarchicalChunk>) -> crate::Result<()> {
+            Ok(())
+        }
+
+        async fn search(
+            &self,
+            _query_embedding: &[f32],
+            _limit: usize,
+            _level_filter: Option<crate::ChunkLevel>,
+            _perspectives: &[&str],
+        ) -> crate::Result<Vec<crate::store::SearchResult>> {
+            Ok(vec![])
+        }
+
+        async fn get_children(
+            &self,
+            _parent_id: &str,
+        ) -> crate::Result<Vec<crate::HierarchicalChunk>> {
+            Ok(vec![])
+        }
+
+        async fn get_by_id(&self, _id: &str) -> crate::Result<Option<crate::HierarchicalChunk>> {
+            Ok(None)
+        }
+
+        async fn get_by_id_prefix(
+            &self,
+            _prefix: &str,
+        ) -> crate::Result<Option<crate::HierarchicalChunk>> {
+            Ok(None)
+        }
+
+        async fn get_by_source(
+            &self,
+            _source_file: &str,
+        ) -> crate::Result<Vec<crate::HierarchicalChunk>> {
+            Ok(vec![])
+        }
+
+        async fn delete_by_source(&self, _source_file: &str) -> crate::Result<usize> {
+            Ok(0)
+        }
+
+        async fn stats(&self) -> crate::Result<crate::store::StoreStats> {
+            Ok(crate::store::StoreStats::default())
+        }
+
+        async fn update_access_profiles(
+            &self,
+            _updates: Vec<(String, crate::AccessProfile)>,
+        ) -> crate::Result<()> {
+            Ok(())
+        }
+
+        async fn update_visibility(&self, _chunk_id: &str, _visibility: &str) -> crate::Result<()> {
+            Ok(())
+        }
+
+        async fn add_relation(
+            &self,
+            _chunk_id: &str,
+            _relation: crate::ChunkRelation,
+        ) -> crate::Result<()> {
+            Ok(())
+        }
+
+        async fn get_hot_chunks(
+            &self,
+            _limit: usize,
+        ) -> crate::Result<Vec<crate::HierarchicalChunk>> {
+            Ok(vec![])
+        }
+
+        async fn get_stale_chunks(
+            &self,
+            _stale_seconds: i64,
+            _limit: usize,
+        ) -> crate::Result<Vec<crate::HierarchicalChunk>> {
+            Ok(vec![])
+        }
+
+        async fn search_text(
+            &self,
+            _query: &str,
+            _perspectives: &[&str],
+            _since: Option<i64>,
+            _until: Option<i64>,
+            _limit: usize,
+        ) -> crate::Result<Vec<crate::HierarchicalChunk>> {
+            Ok(vec![])
+        }
+
+        async fn list_entries(
+            &self,
+            _perspectives: &[&str],
+            _since: Option<i64>,
+            _until: Option<i64>,
+            _limit: usize,
+        ) -> crate::Result<Vec<crate::HierarchicalChunk>> {
+            Ok(vec![])
+        }
+
+        async fn get_pending_embeddings(
+            &self,
+            limit: usize,
+        ) -> crate::Result<Vec<crate::HierarchicalChunk>> {
+            Ok(self.pending.iter().take(limit).cloned().collect())
+        }
+
+        async fn batch_update_embeddings(
+            &self,
+            _updates: Vec<(String, Vec<f32>)>,
+        ) -> crate::Result<()> {
+            *self.batch_update_calls.lock().unwrap() += 1;
+            match &self.batch_update_error {
+                Some(msg) => Err(crate::Error::store(msg.clone())),
+                None => Ok(()),
+            }
+        }
+
+        async fn count_pending_embeddings(&self) -> crate::Result<usize> {
+            Ok(self.pending.len())
+        }
+    }
+
+    // ── process_batch: write-failure error path ──────────────────────────────
+
+    /// THE BUG TEST: when `batch_update_embeddings` fails the old code returned
+    /// `Ok(0)`, which the worker loop mistook for "queue empty" and slept the
+    /// idle interval. The fix must return `Err` so the loop retries on the busy
+    /// cadence and the failure is observable.
+    #[tokio::test]
+    async fn process_batch_returns_err_when_batch_update_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = Arc::new(BlobStore::open(dir.path()).unwrap());
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+
+        let pending = make_pending_chunks(1, "wfail");
+        let store = MockStore::with_pending_and_write_error(pending, "simulated write failure");
+
+        let result = process_batch(&store, &embedder, &blob_store).await;
+
+        assert!(
+            result.is_err(),
+            "write failure must propagate as Err, not Ok(0) — \
+             old code masked the error and caused idle-interval retry"
+        );
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("simulated write failure"),
+            "error should carry the original message: {err_str}"
+        );
+        assert_eq!(
+            store.batch_update_call_count(),
+            1,
+            "batch_update_embeddings should have been called exactly once"
+        );
+    }
+
+    /// GREEN path: an empty queue still returns `Ok(0)` — the idle-sleep decision
+    /// for truly empty queues must not be broken by the error-propagation fix.
+    #[tokio::test]
+    async fn process_batch_returns_ok_zero_on_empty_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = Arc::new(BlobStore::open(dir.path()).unwrap());
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+
+        let store = MockStore::with_pending(vec![]);
+
+        let result = process_batch(&store, &embedder, &blob_store).await;
+
+        assert_eq!(
+            result.unwrap(),
+            0,
+            "empty queue must still return Ok(0) so the loop takes the idle path"
+        );
+        assert_eq!(
+            store.batch_update_call_count(),
+            0,
+            "batch_update_embeddings must not be called for an empty queue"
+        );
+    }
+
+    /// PARTIAL BATCH: a write failure after a partial set of embeddings are
+    /// computed must also surface as `Err`, not silently succeed with `Ok(0)`.
+    #[tokio::test]
+    async fn process_batch_returns_err_on_partial_batch_write_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = Arc::new(BlobStore::open(dir.path()).unwrap());
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+
+        // Use a partial batch (< BATCH_SIZE) to confirm the code path is not
+        // gated on batch fullness.
+        let pending = make_pending_chunks(3, "pfail");
+        let store =
+            MockStore::with_pending_and_write_error(pending, "disk full during partial batch");
+
+        let result = process_batch(&store, &embedder, &blob_store).await;
+
+        assert!(
+            result.is_err(),
+            "partial-batch write failure must propagate as Err"
+        );
+        assert_eq!(store.batch_update_call_count(), 1);
     }
 }
