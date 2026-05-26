@@ -10,8 +10,17 @@ readme = "README.md"
 authors = ["Florian Burka"]
 keywords = ["vector", "embedding", "memory", "llm", "rag"]
 categories = ["database", "command-line-utilities"]
-exclude = [".claude/", ".mcp.json", "opencode.json"]
+include = [
+  "src/**/*.rs",
+  "build.rs",
+  "Cargo.toml",
+  "README.md",
+  "LICENSE",
+]
 rust-version = "1.93"
+
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 default = ["full"]
