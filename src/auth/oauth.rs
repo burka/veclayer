@@ -820,6 +820,14 @@ async fn handle_device_code_grant(state: OAuthState, form: TokenRequest) -> Resp
         }
     };
 
+    // Validate client_id (required for public clients per RFC 6749 §4.1.3).
+    let form_client_id = match form.client_id.as_deref() {
+        Some(cid) => cid,
+        None => {
+            return token_error("invalid_request", "client_id is required");
+        }
+    };
+
     let now = unix_now();
 
     let (client_id, capability) = {
@@ -831,6 +839,12 @@ async fn handle_device_code_grant(state: OAuthState, form: TokenRequest) -> Resp
                 return token_error("invalid_grant", "unknown device_code");
             }
         };
+
+        // Reject a mismatched client_id first, before disclosing expiry/denial
+        // state — a wrong client must not learn the device code's status.
+        if form_client_id != entry.client_id {
+            return token_error("invalid_client", "client_id mismatch");
+        }
 
         if now > entry.expires_at {
             map.remove(device_code_str);
@@ -2855,6 +2869,171 @@ mod tests {
         assert!(
             html.contains("already been processed"),
             "a second device approval must be rejected, got: {html}"
+        );
+    }
+
+    // ── Device flow: client_id binding ───────────────────────────────────────
+
+    /// A different client (client B) that learns client A's device_code must
+    /// NOT be able to redeem it for a token.  This is the core security fix:
+    /// the polling request's client_id must match the client_id embedded in
+    /// the device-code entry.
+    #[tokio::test]
+    async fn test_device_token_wrong_client_id_rejected() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        // Register two distinct clients.
+        let client_a = register_client(&app, "https://app-a.example.com/cb").await;
+        let client_b = register_client(&app, "https://app-b.example.com/cb").await;
+
+        // Client A obtains a device code.
+        let resp = app
+            .clone()
+            .oneshot(post_form(
+                "/oauth/device/code",
+                &format!("client_id={client_a}&scope=read"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        let device_code = json["device_code"].as_str().unwrap().to_owned();
+        let user_code = json["user_code"].as_str().unwrap().to_owned();
+
+        // User approves.
+        let csrf = device_csrf_token(&app).await;
+        app.clone()
+            .oneshot(post_form(
+                "/oauth/device",
+                &format!("user_code={user_code}&scope=read&approved=true&csrf_token={csrf}"),
+            ))
+            .await
+            .unwrap();
+
+        // Client B tries to redeem client A's approved device_code — must be rejected.
+        let body = format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code={device_code}&client_id={client_b}"
+        );
+        let resp = app
+            .clone()
+            .oneshot(post_form("/oauth/token", &body))
+            .await
+            .expect("poll with wrong client");
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "wrong client_id must be rejected"
+        );
+        let json = body_json(resp).await;
+        assert_eq!(
+            json["error"], "invalid_client",
+            "expected invalid_client, got: {json}"
+        );
+    }
+
+    /// The correct client redeeming its own approved device_code must still succeed.
+    #[tokio::test]
+    async fn test_device_token_correct_client_id_succeeds() {
+        let (state, _dir) = make_state(false);
+        let signing_key = state.signing_key.clone();
+        let server_did = state.server_did.clone();
+        let app = oauth_router(state);
+
+        let client_id = register_client(&app, "https://app.example.com/cb").await;
+
+        let resp = app
+            .clone()
+            .oneshot(post_form(
+                "/oauth/device/code",
+                &format!("client_id={client_id}&scope=read"),
+            ))
+            .await
+            .unwrap();
+        let json = body_json(resp).await;
+        let device_code = json["device_code"].as_str().unwrap().to_owned();
+        let user_code = json["user_code"].as_str().unwrap().to_owned();
+
+        let csrf = device_csrf_token(&app).await;
+        app.clone()
+            .oneshot(post_form(
+                "/oauth/device",
+                &format!("user_code={user_code}&scope=read&approved=true&csrf_token={csrf}"),
+            ))
+            .await
+            .unwrap();
+
+        let body = format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code={device_code}&client_id={client_id}"
+        );
+        let resp = app
+            .oneshot(post_form("/oauth/token", &body))
+            .await
+            .expect("poll with correct client");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "correct client_id must succeed"
+        );
+        let json = body_json(resp).await;
+        let access_token = json["access_token"].as_str().expect("access_token");
+        assert!(!access_token.is_empty());
+        let claims = verify(
+            access_token,
+            &signing_key.verifying_key(),
+            Some(&server_did),
+        )
+        .expect("valid JWT");
+        assert_eq!(claims.cap, Capability::Read);
+    }
+
+    /// Polling without any client_id in the form must be rejected with
+    /// `invalid_request`, matching the auth-code and refresh-token paths.
+    #[tokio::test]
+    async fn test_device_token_missing_client_id_rejected() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let client_id = register_client(&app, "https://app.example.com/cb").await;
+
+        let resp = app
+            .clone()
+            .oneshot(post_form(
+                "/oauth/device/code",
+                &format!("client_id={client_id}&scope=read"),
+            ))
+            .await
+            .unwrap();
+        let json = body_json(resp).await;
+        let device_code = json["device_code"].as_str().unwrap().to_owned();
+        let user_code = json["user_code"].as_str().unwrap().to_owned();
+
+        let csrf = device_csrf_token(&app).await;
+        app.clone()
+            .oneshot(post_form(
+                "/oauth/device",
+                &format!("user_code={user_code}&scope=read&approved=true&csrf_token={csrf}"),
+            ))
+            .await
+            .unwrap();
+
+        // Poll without client_id — must be rejected.
+        let body = format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code={device_code}"
+        );
+        let resp = app
+            .oneshot(post_form("/oauth/token", &body))
+            .await
+            .expect("poll without client_id");
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "missing client_id must be rejected"
+        );
+        let json = body_json(resp).await;
+        assert_eq!(
+            json["error"], "invalid_request",
+            "expected invalid_request, got: {json}"
         );
     }
 
