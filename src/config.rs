@@ -182,7 +182,6 @@ struct FileAuthConfig {
 #[derive(Debug, Clone)]
 pub struct MatchOverride {
     pub path: Option<glob::Pattern>,
-    #[allow(dead_code)]
     pub git_remote: Option<regex::Regex>,
     pub project: Option<String>,
     pub data_dir: Option<String>,
