@@ -4,6 +4,7 @@
 //! the /v1/chat/completions endpoint.
 
 use super::{make_standard_http_client, LlmConfig, LlmProvider, Message};
+use crate::util::{read_capped_body, MAX_HTTP_BODY_BYTES};
 use reqwest::Client;
 
 pub struct OpenAiLlm {
@@ -51,9 +52,10 @@ impl LlmProvider for OpenAiLlm {
             return Err(crate::llm::http_error("OpenAI API", resp).await);
         }
 
-        let body: serde_json::Value = resp
-            .json()
+        let bytes = read_capped_body(resp, MAX_HTTP_BODY_BYTES)
             .await
+            .map_err(|e| crate::Error::llm(format!("OpenAI response read failed: {}", e)))?;
+        let body: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|e| crate::Error::llm(format!("OpenAI response parse failed: {}", e)))?;
 
         body["choices"][0]["message"]["content"]

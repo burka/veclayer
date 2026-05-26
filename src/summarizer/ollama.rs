@@ -1,5 +1,9 @@
+use std::time::Duration;
+
 use super::Summarizer;
-use crate::util::DEFAULT_OLLAMA_URL;
+use crate::util::{
+    build_hardened_client, read_capped_body, DEFAULT_OLLAMA_URL, MAX_HTTP_BODY_BYTES,
+};
 use crate::{Error, Result};
 
 /// Summarizer using Ollama for local LLM inference.
@@ -17,7 +21,8 @@ impl OllamaSummarizer {
         Self {
             model: "llama3.2".to_string(),
             base_url: DEFAULT_OLLAMA_URL.to_string(),
-            client: reqwest::Client::new(),
+            client: build_hardened_client(Duration::from_secs(10), Duration::from_secs(120))
+                .expect("reqwest client"),
         }
     }
 
@@ -93,18 +98,20 @@ impl Summarizer for OllamaSummarizer {
             .await
             .map_err(|e| Error::summarization(format!("Failed to connect to Ollama: {}", e)))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+        let status = response.status();
+        let bytes = read_capped_body(response, MAX_HTTP_BODY_BYTES)
+            .await
+            .map_err(|e| Error::summarization(format!("Failed to read Ollama response: {}", e)))?;
+
+        if !status.is_success() {
             return Err(Error::summarization(format!(
                 "Ollama request failed ({}): {}",
-                status, body
+                status,
+                String::from_utf8_lossy(&bytes)
             )));
         }
 
-        let ollama_response: OllamaResponse = response
-            .json()
-            .await
+        let ollama_response: OllamaResponse = serde_json::from_slice(&bytes)
             .map_err(|e| Error::summarization(format!("Failed to parse Ollama response: {}", e)))?;
 
         Ok(ollama_response.response.trim().to_string())

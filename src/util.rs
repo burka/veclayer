@@ -71,21 +71,68 @@ where
     }
 }
 
-/// Build a short-lived `reqwest` client for service-discovery probes.
+// ─── HTTP client hardening ────────────────────────────────────────────────────
+
+/// Maximum number of bytes accepted from any outbound HTTP response body.
 ///
-/// Shared by the Ollama and OpenAI-compatible discovery paths so both apply the
-/// same connect/overall timeout policy from a single place. Returns `None` if
-/// the client cannot be constructed (e.g. a TLS backend init failure).
+/// Prevents OOM when talking to configurable (and potentially hostile) endpoints.
+/// 16 MiB is generous for all embedding / LLM JSON payloads in practice.
 #[cfg(feature = "llm")]
-pub fn build_probe_client(
+pub const MAX_HTTP_BODY_BYTES: usize = 16 * 1024 * 1024;
+
+/// Build a hardened `reqwest` client: redirects disabled, with explicit timeouts.
+///
+/// **Redirect policy**: `none()` — any 3xx from a user-configured `base_url`
+/// must not silently pivot to a second endpoint (SSRF / pivot guard).
+///
+/// **Timeouts**: callers provide connect + overall timeout; there is no fallback
+/// default so every call site is forced to be explicit.
+///
+/// Returns `None` only when the TLS backend cannot be initialised (rare).
+#[cfg(feature = "llm")]
+pub fn build_hardened_client(
     connect_timeout: std::time::Duration,
     timeout: std::time::Duration,
 ) -> Option<reqwest::Client> {
     reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(connect_timeout)
         .timeout(timeout)
         .build()
         .ok()
+}
+
+/// Read a `reqwest::Response` body by streaming, aborting if `cap` bytes are
+/// exceeded before the body is fully consumed.
+///
+/// This is the safe alternative to `response.bytes()` (which buffers without
+/// limit) for all configurable / external endpoints.
+///
+/// The cap is checked **on streamed byte count**, not on `Content-Length` alone:
+/// a lying or absent header still triggers the limit.
+///
+/// Returns the accumulated bytes on success, or an `io::Error` with kind
+/// `InvalidData` when the cap is exceeded.
+#[cfg(feature = "llm")]
+pub async fn read_capped_body(
+    mut response: reqwest::Response,
+    cap: usize,
+) -> std::io::Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| std::io::Error::other(e.to_string()))?
+    {
+        if buf.len() + chunk.len() > cap {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("response body too large: would exceed {} byte cap", cap),
+            ));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
 }
 
 /// Truncate `s` to at most `max` bytes, replacing newlines with spaces.

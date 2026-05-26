@@ -1,6 +1,7 @@
 //! Ollama LLM provider using the /api/chat endpoint.
 
 use super::{make_standard_http_client, LlmConfig, LlmProvider, Message};
+use crate::util::{read_capped_body, MAX_HTTP_BODY_BYTES};
 use reqwest::Client;
 
 pub struct OllamaLlm {
@@ -44,9 +45,10 @@ impl LlmProvider for OllamaLlm {
             return Err(crate::llm::http_error("Ollama", resp).await);
         }
 
-        let body: serde_json::Value = resp
-            .json()
+        let bytes = read_capped_body(resp, MAX_HTTP_BODY_BYTES)
             .await
+            .map_err(|e| crate::Error::llm(format!("Ollama response read failed: {}", e)))?;
+        let body: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|e| crate::Error::llm(format!("Ollama response parse failed: {}", e)))?;
 
         body["message"]["content"]

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use tokio::runtime::Handle;
 
 use super::Embedder;
+use crate::util::{build_hardened_client, read_capped_body, MAX_HTTP_BODY_BYTES};
 use crate::{Error, Result};
 
 const FORMAT_UNKNOWN: u8 = 0;
@@ -55,6 +56,9 @@ struct OpenAiResponse {
 
 impl OllamaEmbedder {
     /// Low-level helper: POST a JSON body to `url` and return (status, bytes).
+    ///
+    /// Body is read via the shared capped reader; responses over
+    /// [`MAX_HTTP_BODY_BYTES`] are rejected before buffering completes.
     async fn http_post_json(
         &self,
         url: &str,
@@ -70,12 +74,11 @@ impl OllamaEmbedder {
             .map_err(|e| Error::embedding(format!("{err_prefix} HTTP request failed: {e}")))?;
 
         let status = response.status();
-        let bytes = response
-            .bytes()
+        let bytes = read_capped_body(response, MAX_HTTP_BODY_BYTES)
             .await
             .map_err(|e| Error::embedding(format!("{err_prefix} Failed to read response: {e}")))?;
 
-        Ok((status.as_u16(), bytes.into()))
+        Ok((status.as_u16(), bytes))
     }
 
     /// Create a new OllamaEmbedder.
@@ -84,13 +87,8 @@ impl OllamaEmbedder {
         base_url: impl Into<String>,
         dimension: usize,
     ) -> Result<Self> {
-        // TODO: extract a shared HTTP client builder (with consistent timeouts) used by
-        // embedder, src/llm/ollama.rs, and src/llm/openai.rs.
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(120))
-            .build()
-            .map_err(|e| Error::embedding(format!("Failed to build HTTP client: {}", e)))?;
+        let client = build_hardened_client(Duration::from_secs(10), Duration::from_secs(120))
+            .ok_or_else(|| Error::embedding("Failed to build HTTP client"))?;
         Ok(Self {
             client,
             model: model.into(),
@@ -489,6 +487,90 @@ mod tests {
         assert!(
             msg.contains("503") || msg.contains("API error"),
             "error should mention 503; got: {msg}"
+        );
+    }
+
+    // ── security: redirect rejection ──────────────────────────────────────────
+
+    /// A 301 redirect to a different host must NOT be followed; the client should
+    /// surface the redirect as an error (or return the 3xx status), never silently
+    /// follow it to a second endpoint.
+    #[tokio::test]
+    async fn redirect_301_is_not_followed() {
+        let (listener, base_url) = mock_listener().await;
+
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            // Reply with a 301 pointing to an evil pivot host.
+            let response = "HTTP/1.1 301 Moved Permanently\r\nLocation: http://10.0.0.1:9999/steal\r\nContent-Length: 0\r\n\r\n";
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let embedder = embedder_at(&base_url);
+        let result = embedder.embed_async(&["text"]).await;
+
+        // Must NOT succeed — the redirect must surface as an error, not be followed.
+        assert!(
+            result.is_err(),
+            "expected Err when server sends 301, got Ok (redirect was silently followed)"
+        );
+        let msg = result.unwrap_err().to_string();
+        // Error should mention 301 or redirect, NOT a parse error from the pivot host.
+        assert!(
+            msg.contains("301") || msg.contains("redirect") || msg.contains("HTTP error"),
+            "error should surface the 3xx, got: {msg}"
+        );
+    }
+
+    // ── security: body cap enforced ───────────────────────────────────────────
+
+    /// A response body larger than the cap must abort with an error rather than
+    /// buffering the whole payload.  We test this by sending a body that is
+    /// slightly over a small test-specific cap via `http_post_json_capped`.
+    #[tokio::test]
+    async fn oversized_body_returns_error() {
+        use crate::util::MAX_HTTP_BODY_BYTES;
+
+        let (listener, base_url) = mock_listener().await;
+
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            // Send a body that is 1 byte over the cap.
+            let body_size = MAX_HTTP_BODY_BYTES + 1;
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {body_size}\r\n\r\n"
+            );
+            stream.write_all(header.as_bytes()).await.unwrap();
+            // Stream the body in chunks to avoid allocating a huge buffer.
+            let chunk = vec![b'x'; 8192];
+            let mut written = 0usize;
+            while written < body_size {
+                let to_write = chunk.len().min(body_size - written);
+                if stream.write_all(&chunk[..to_write]).await.is_err() {
+                    break;
+                }
+                written += to_write;
+            }
+        });
+
+        let embedder = embedder_at(&base_url);
+        let result = embedder.embed_async(&["text"]).await;
+
+        assert!(
+            result.is_err(),
+            "expected Err when response body exceeds cap, got Ok"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("too large")
+                || msg.contains("cap")
+                || msg.contains("limit")
+                || msg.contains("body"),
+            "error should mention body size limit, got: {msg}"
         );
     }
 

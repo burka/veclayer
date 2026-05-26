@@ -192,9 +192,12 @@ pub(crate) async fn auth_token_with_passphrase(
 /// Requires the `llm` feature (which includes `reqwest`).
 #[cfg(feature = "llm")]
 pub async fn auth_login(data_dir: &Path, server_url: &str) -> Result<()> {
+    use std::time::Duration;
+
     use crate::crypto::device_flow::{
         run_device_flow, DeviceFlowConfig, HttpClient, PostFormFuture,
     };
+    use crate::util::{build_hardened_client, read_capped_body, MAX_HTTP_BODY_BYTES};
 
     struct ReqwestHttpClient {
         client: reqwest::Client,
@@ -223,7 +226,14 @@ pub async fn auth_login(data_dir: &Path, server_url: &str) -> Result<()> {
                         )
                     })?;
                 let status = resp.status().as_u16();
-                let body: serde_json::Value = resp.json().await.map_err(|e| {
+                let bytes = read_capped_body(resp, MAX_HTTP_BODY_BYTES)
+                    .await
+                    .map_err(|e| {
+                        crate::crypto::device_flow::DeviceFlowError::AuthorizationRequest(
+                            e.to_string(),
+                        )
+                    })?;
+                let body: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
                     crate::crypto::device_flow::DeviceFlowError::AuthorizationRequest(e.to_string())
                 })?;
                 Ok((status, body))
@@ -232,19 +242,24 @@ pub async fn auth_login(data_dir: &Path, server_url: &str) -> Result<()> {
     }
 
     let http = ReqwestHttpClient {
-        client: reqwest::Client::new(),
+        client: build_hardened_client(Duration::from_secs(10), Duration::from_secs(30))
+            .ok_or_else(|| {
+                crate::Error::InvalidOperation("failed to build HTTP client".to_string())
+            })?,
     };
 
     // Discover OAuth endpoints.
     let meta_url = format!("{server_url}/.well-known/oauth-authorization-server");
-    let meta: serde_json::Value = http
+    let meta_resp = http
         .client
         .get(&meta_url)
         .send()
         .await
-        .map_err(|e| crate::Error::InvalidOperation(format!("metadata fetch failed: {e}")))?
-        .json()
+        .map_err(|e| crate::Error::InvalidOperation(format!("metadata fetch failed: {e}")))?;
+    let meta_bytes = read_capped_body(meta_resp, MAX_HTTP_BODY_BYTES)
         .await
+        .map_err(|e| crate::Error::InvalidOperation(format!("metadata read failed: {e}")))?;
+    let meta: serde_json::Value = serde_json::from_slice(&meta_bytes)
         .map_err(|e| crate::Error::InvalidOperation(format!("metadata parse failed: {e}")))?;
 
     /// Extract a required string field from JSON, returning an error if missing.
@@ -259,7 +274,7 @@ pub async fn auth_login(data_dir: &Path, server_url: &str) -> Result<()> {
 
     // Dynamic client registration.
     let reg_url = format!("{server_url}/oauth/register");
-    let reg_resp: serde_json::Value = http
+    let reg_resp = http
         .client
         .post(&reg_url)
         .json(&serde_json::json!({
@@ -269,12 +284,15 @@ pub async fn auth_login(data_dir: &Path, server_url: &str) -> Result<()> {
         }))
         .send()
         .await
-        .map_err(|e| crate::Error::InvalidOperation(format!("client registration failed: {e}")))?
-        .json()
+        .map_err(|e| crate::Error::InvalidOperation(format!("client registration failed: {e}")))?;
+    let reg_bytes = read_capped_body(reg_resp, MAX_HTTP_BODY_BYTES)
         .await
         .map_err(|e| {
-            crate::Error::InvalidOperation(format!("registration response parse failed: {e}"))
+            crate::Error::InvalidOperation(format!("registration response read failed: {e}"))
         })?;
+    let reg_resp: serde_json::Value = serde_json::from_slice(&reg_bytes).map_err(|e| {
+        crate::Error::InvalidOperation(format!("registration response parse failed: {e}"))
+    })?;
 
     let client_id = get_str(&reg_resp, "client_id")?.to_string();
 

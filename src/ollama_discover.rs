@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::util::DEFAULT_OLLAMA_URL;
+use crate::util::{read_capped_body, DEFAULT_OLLAMA_URL, MAX_HTTP_BODY_BYTES};
 
 /// Preferred chat models, best first. Balances quality, speed, and resource usage.
 const CHAT_MODEL_PRIORITY: &[&str] = &[
@@ -206,7 +206,7 @@ pub fn ollama_base_url() -> String {
 
 /// Async inner of the probe — separated so it can be unit-tested directly.
 async fn probe(base_url: &str) -> Option<OllamaInfo> {
-    let client = crate::util::build_probe_client(PROBE_TIMEOUT, PROBE_TIMEOUT)?;
+    let client = crate::util::build_hardened_client(PROBE_TIMEOUT, PROBE_TIMEOUT)?;
 
     let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
     let response = client.get(&url).send().await.ok()?;
@@ -215,7 +215,8 @@ async fn probe(base_url: &str) -> Option<OllamaInfo> {
         return None;
     }
 
-    let tags: TagsResponse = response.json().await.ok()?;
+    let bytes = read_capped_body(response, MAX_HTTP_BODY_BYTES).await.ok()?;
+    let tags: TagsResponse = serde_json::from_slice::<TagsResponse>(&bytes).ok()?;
 
     let (embedding_models, chat_models): (Vec<String>, Vec<String>) = tags
         .models
@@ -448,6 +449,61 @@ mod tests {
         let json = r#"{"models":[]}"#;
         let tags: TagsResponse = serde_json::from_str(json).unwrap();
         assert!(tags.models.is_empty());
+    }
+
+    // --- probe: oversized body is rejected (cap enforcement) ---
+
+    /// Verify that `probe` returns `None` when the `/api/tags` response body
+    /// exceeds `MAX_HTTP_BODY_BYTES`.
+    ///
+    /// The mock server returns a *valid* `TagsResponse` JSON whose body is padded
+    /// to just over the cap with an ignored field.  The unbounded `.json()` path
+    /// would have buffered the whole body, successfully parsed the valid JSON, and
+    /// returned `Some` — making this test RED.  The capped reader hits the limit
+    /// before JSON parsing, causing `probe` to return `None` — making it GREEN.
+    #[tokio::test]
+    async fn probe_rejects_oversized_body() {
+        use std::net::SocketAddr;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // Bind a mock TCP server on an ephemeral port.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr: SocketAddr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                // Read the HTTP request (discard it).
+                let mut buf = vec![0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+
+                // Build a valid TagsResponse JSON body padded to just over the
+                // cap with a large ignored field.  The `models` field is valid so
+                // serde would succeed on the old unbounded path.
+                //
+                // {"models":[],"_pad":"xxx...xxx"}
+                //  ^13 chars^   ^8 chars^  ^padding^  ^1 char}
+                let prefix = b"{\"models\":[],\"_pad\":\"";
+                let suffix = b"\"}";
+                let pad_len = crate::util::MAX_HTTP_BODY_BYTES + 1 - prefix.len() - suffix.len();
+                let padding = vec![b'x'; pad_len];
+
+                let body_size = prefix.len() + pad_len + suffix.len();
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {body_size}\r\n\r\n"
+                );
+                let _ = stream.write_all(header.as_bytes()).await;
+                let _ = stream.write_all(prefix).await;
+                let _ = stream.write_all(&padding).await;
+                let _ = stream.write_all(suffix).await;
+            }
+        });
+
+        let base_url = format!("http://127.0.0.1:{}", addr.port());
+        let result = probe(&base_url).await;
+        assert!(
+            result.is_none(),
+            "probe must return None when the response body exceeds the cap"
+        );
     }
 
     // --- probe (integration, requires running Ollama) ---

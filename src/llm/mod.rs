@@ -12,19 +12,24 @@ pub use openai::OpenAiLlm;
 use reqwest::Client;
 use std::time::Duration;
 
-/// Build a reqwest `Client` with standard timeouts (10s connect, 120s overall).
+use crate::util::{build_hardened_client, read_capped_body, MAX_HTTP_BODY_BYTES};
+
+/// Build a hardened reqwest `Client` with standard timeouts (10s connect, 120s
+/// overall) and redirects disabled.
 pub fn make_standard_http_client() -> Client {
-    Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(120))
-        .build()
+    build_hardened_client(Duration::from_secs(10), Duration::from_secs(120))
         .expect("reqwest client")
 }
 
 /// Read the body from a non-success HTTP response and format it as an LLM error.
+///
+/// Uses the capped reader so a lying server cannot cause OOM via error responses.
 pub async fn http_error(service_name: &str, resp: reqwest::Response) -> crate::Error {
     let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
+    let body = read_capped_body(resp, MAX_HTTP_BODY_BYTES)
+        .await
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default();
     crate::Error::llm(format!("{service_name} returned {status}: {body}"))
 }
 

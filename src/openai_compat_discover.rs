@@ -16,6 +16,8 @@ use std::time::Duration;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
+use crate::util::{read_capped_body, MAX_HTTP_BODY_BYTES};
+
 /// Base URLs probed when no explicit endpoint is configured.
 /// vLLM serves OpenAI-compat on :8000; HuggingFace TEI on :8080.
 const DEFAULT_BASE_URLS: &[&str] = &["http://localhost:8000", "http://localhost:8080"];
@@ -139,7 +141,8 @@ async fn probe(client: &Client, base_url: &str) -> Option<OpenAiCompatInfo> {
     if !resp.status().is_success() {
         return None;
     }
-    let models: ModelsResponse = resp.json().await.ok()?;
+    let bytes = read_capped_body(resp, MAX_HTTP_BODY_BYTES).await.ok()?;
+    let models: ModelsResponse = serde_json::from_slice(&bytes).ok()?;
     let ids: Vec<String> = models.data.into_iter().map(|m| m.id).collect();
     let embed_model = pick_embed_model(&ids)?.to_string();
 
@@ -167,7 +170,8 @@ async fn probe_dimension(client: &Client, base_url: &str, model: &str) -> Option
         );
         return None;
     }
-    let parsed: EmbeddingsResponse = resp.json().await.ok()?;
+    let bytes = read_capped_body(resp, MAX_HTTP_BODY_BYTES).await.ok()?;
+    let parsed: EmbeddingsResponse = serde_json::from_slice(&bytes).ok()?;
     let dim = first_embedding_len(&parsed)?;
     (dim > 0).then_some(dim)
 }
@@ -182,7 +186,7 @@ pub fn detect() -> Option<OpenAiCompatInfo> {
 }
 
 async fn detect_async() -> Option<OpenAiCompatInfo> {
-    let client = crate::util::build_probe_client(PROBE_CONNECT_TIMEOUT, PROBE_TIMEOUT)?;
+    let client = crate::util::build_hardened_client(PROBE_CONNECT_TIMEOUT, PROBE_TIMEOUT)?;
 
     for base_url in candidate_base_urls() {
         if let Some(info) = probe(&client, &base_url).await {
