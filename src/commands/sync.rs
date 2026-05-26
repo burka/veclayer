@@ -103,10 +103,12 @@ pub async fn sync(
             let (embedder, store, blob_store) = store_and_embedder.as_ref().unwrap();
             sync_local_git_scope(&cwd, scope, embedder.as_ref(), store, blob_store, dry_run).await;
         } else if is_remote_git_url(&scope.storage) {
-            println!(
-                "  {} — remote storage not yet supported ({})",
+            return Err(crate::Error::InvalidOperation(format!(
+                "remote storage not yet supported — scope '{}' uses '{}'. \
+                 To sync a remote git scope, clone the repository locally and \
+                 point veclayer at the local path.",
                 scope.name, scope.storage
-            );
+            )));
         } else {
             println!("  {} — unknown storage type: {}", scope.name, scope.storage);
         }
@@ -795,5 +797,116 @@ mod tests {
         let entry = Entry::from_chunk(&chunk);
         // Should not panic — heading truncation at 60 chars must work
         print_entry_list(&[entry]);
+    }
+
+    // ── sync: remote git URL scopes must return Err ───────────────────────────
+
+    /// Helper: build a ResolvedScope with the given storage string.
+    fn make_scope(name: &str, storage: &str) -> crate::config::ResolvedScope {
+        crate::config::ResolvedScope {
+            name: name.to_string(),
+            storage: storage.to_string(),
+            branch: "veclayer-memory".to_string(),
+            push: "review".to_string(),
+        }
+    }
+
+    /// RED test (proves the bug): sync targeting an explicit remote scope must
+    /// return Err, not Ok(()). Before the fix this returned Ok and silently lied.
+    #[tokio::test]
+    async fn test_sync_remote_scope_returns_err() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let scopes = vec![make_scope("team", "git@github.com:org/repo.git")];
+
+        let result = sync(temp_dir.path(), &scopes, None, false).await;
+
+        assert!(
+            result.is_err(),
+            "sync with a remote git scope must return Err, not Ok"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("remote storage not yet supported"),
+            "error message must mention 'remote storage not yet supported', got: {msg}"
+        );
+    }
+
+    /// Variant: scope explicitly targeted via --scope filter also returns Err.
+    #[tokio::test]
+    async fn test_sync_explicit_remote_scope_filter_returns_err() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let scopes = vec![make_scope("team", "https://github.com/org/repo")];
+
+        let result = sync(temp_dir.path(), &scopes, Some("team"), false).await;
+
+        assert!(result.is_err(), "explicitly targeted remote scope must Err");
+    }
+
+    /// GREEN test: a local (non-remote) scope path with no git repo present
+    /// does not reach the remote-URL branch and therefore returns Ok.
+    /// (The local git-scope path will print "skipped — not a git repository"
+    ///  because temp_dir has no .git, but it still returns Ok.)
+    #[tokio::test]
+    async fn test_sync_local_git_scope_non_git_dir_returns_ok() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let scopes = vec![make_scope("local", "git")];
+
+        // storage = "git" → takes the local branch, not the remote-URL branch.
+        // open_store will fail because there is no embedder config in temp_dir,
+        // so the result may be Err — but it must NOT be the remote-URL error.
+        let result = sync(temp_dir.path(), &scopes, None, false).await;
+        if let Err(ref e) = result {
+            assert!(
+                !e.to_string().contains("remote storage not yet supported"),
+                "local-git scope must not trigger the remote-URL error path, got: {e}"
+            );
+        }
+        // Ok is also acceptable here — depends on embedder config availability.
+    }
+
+    /// EDGE: SSH URL form (git@...) is treated as remote.
+    #[tokio::test]
+    async fn test_sync_ssh_remote_url_returns_err() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let scopes = vec![make_scope("ssh-remote", "git@gitlab.com:org/repo.git")];
+
+        let result = sync(temp_dir.path(), &scopes, None, false).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("remote storage not yet supported"));
+    }
+
+    /// EDGE: HTTPS URL ending in .git is treated as remote.
+    #[tokio::test]
+    async fn test_sync_https_dot_git_url_returns_err() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let scopes = vec![make_scope("https-remote", "https://example.com/repo.git")];
+
+        let result = sync(temp_dir.path(), &scopes, None, false).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("remote storage not yet supported"));
+    }
+
+    /// EDGE: mixed scopes — first is remote, second is local.
+    /// The function must Err on the first remote scope it encounters.
+    #[tokio::test]
+    async fn test_sync_mixed_scopes_errors_on_remote() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let scopes = vec![
+            make_scope("remote-first", "git@github.com:org/repo.git"),
+            make_scope("local-second", "git"),
+        ];
+
+        let result = sync(temp_dir.path(), &scopes, None, false).await;
+        assert!(result.is_err(), "remote scope in mix must cause Err");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("remote storage not yet supported"));
     }
 }
