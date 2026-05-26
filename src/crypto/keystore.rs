@@ -65,6 +65,23 @@ pub fn keystore_path(data_dir: &Path) -> PathBuf {
     data_dir.join(KEYSTORE_FILENAME)
 }
 
+/// Enforce the passphrase requirement when auth is enabled.
+///
+/// Returns `Err(CryptoError::Keystore(...))` when `auth_required` is `true`
+/// and `passphrase` is empty, so startup fails fast instead of silently
+/// operating under an unencrypted identity key.
+///
+/// When `auth_required` is `false` an empty passphrase is accepted (backward-
+/// compatible open-mode behaviour).
+pub fn require_passphrase(auth_required: bool, passphrase: &str) -> Result<(), CryptoError> {
+    if auth_required && passphrase.is_empty() {
+        return Err(CryptoError::Keystore(
+            "auth is required but no passphrase was provided — set VECLAYER_PASSPHRASE".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 /// Returns `true` if a keystore file exists at the given path.
 pub fn exists(path: &Path) -> bool {
     path.exists()
@@ -345,5 +362,34 @@ mod tests {
             matches!(err, CryptoError::Keystore(_)),
             "expected Keystore error for unknown version, got: {err:?}"
         );
+    }
+
+    // ── require_passphrase tests ──────────────────────────────────────────────
+
+    /// (a) auth_required=true + empty passphrase → Err (the security invariant)
+    #[test]
+    fn test_require_passphrase_auth_required_empty_passphrase_is_error() {
+        let err = require_passphrase(true, "").unwrap_err();
+        match &err {
+            CryptoError::Keystore(msg) => {
+                assert!(
+                    msg.contains("VECLAYER_PASSPHRASE"),
+                    "error message must name the env var, got: {msg}"
+                );
+            }
+            other => panic!("expected Keystore error, got: {other:?}"),
+        }
+    }
+
+    /// (b) auth_required=true + non-empty passphrase → Ok
+    #[test]
+    fn test_require_passphrase_auth_required_valid_passphrase_is_ok() {
+        require_passphrase(true, "s3cr3t-p@ssphrase").unwrap();
+    }
+
+    /// (c) auth_required=false + empty passphrase → Ok (open-mode unaffected)
+    #[test]
+    fn test_require_passphrase_auth_not_required_empty_passphrase_is_ok() {
+        require_passphrase(false, "").unwrap();
     }
 }

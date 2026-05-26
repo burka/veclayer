@@ -271,19 +271,22 @@ impl McpHandler {
         }
     }
 
-    #[tool(description = "[Experimental] Generate a scoped share-token payload (UCAN preview).")]
+    #[tool(
+        description = "[Placeholder] Share-token generation (UCAN signing not yet implemented — returns an error)."
+    )]
     async fn share(
         &self,
-        Parameters(input): Parameters<ShareInput>,
+        Parameters(_input): Parameters<ShareInput>,
     ) -> Result<CallToolResult, McpError> {
         if !self.capability.permits(Capability::Write) {
             return Ok(CallToolResult::error(vec![Content::text(
                 "Insufficient permission: need write",
             )]));
         }
-        let token = tools::build_share_token(input);
-        let text = serde_json::to_string_pretty(&token).unwrap_or_default();
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        Ok(CallToolResult::error(vec![Content::text(
+            "share is not yet available: capability-token (UCAN) signing is not implemented. \
+             This tool is a placeholder for a future release.",
+        )]))
     }
 }
 
@@ -554,6 +557,74 @@ mod tests {
             result.is_error,
             Some(true),
             "read-only handler must block think (write operation)"
+        );
+    }
+
+    // ── share tool ───────────────────────────────────────────────────────────
+
+    /// `share` must reject callers that lack write permission with a
+    /// permission error, preserving the same gate as every other write tool.
+    #[tokio::test]
+    async fn share_requires_write_permission() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let handler = make_handler(dir.path(), Capability::Read, None, None).await;
+
+        let input = super::super::types::ShareInput {
+            tree: "projects:veclayer".to_string(),
+            can: vec![],
+            expires: None,
+        };
+
+        let result = handler
+            .share(Parameters(input))
+            .await
+            .expect("share must return Ok (tool-level error), not a protocol error");
+
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "read-only handler must return an error result for share"
+        );
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            text.contains("permission") || text.contains("Insufficient"),
+            "error must mention permission — got: {text}"
+        );
+    }
+
+    /// `share` must return a tool-level error even for write-capable callers,
+    /// because UCAN signing is not yet implemented.  It must NOT return a
+    /// token-shaped success.
+    #[tokio::test]
+    async fn share_returns_not_implemented_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let handler = make_handler(dir.path(), Capability::Write, None, None).await;
+
+        let input = super::super::types::ShareInput {
+            tree: "projects:veclayer".to_string(),
+            can: vec![],
+            expires: None,
+        };
+
+        let result = handler
+            .share(Parameters(input))
+            .await
+            .expect("share must return Ok (tool-level error), not a protocol error");
+
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "share must return is_error=true (not a success) until UCAN signing lands"
+        );
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            text.contains("not yet") || text.contains("not implemented"),
+            "error must explain the feature is not yet available — got: {text}"
+        );
+        // The response must NOT look like a token payload.
+        assert!(
+            !text.contains("veclayer-share-v1-preview"),
+            "response must not contain a token payload — got: {text}"
         );
     }
 

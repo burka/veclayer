@@ -215,7 +215,11 @@ async fn priming_returns_plain_text() {
 
 #[tokio::test]
 #[serial_test::serial]
-async fn share_returns_token() {
+async fn share_returns_not_implemented() {
+    // The default test server injects Admin capability, so the write-permission
+    // check passes and the request reaches the not-implemented guard. UCAN
+    // signing is not implemented, so the endpoint must fail loud (501) rather
+    // than return a token-shaped placeholder.
     let (base, _tmp, _state) = spawn_server().await;
     let client = reqwest::Client::new();
     let resp = client
@@ -224,7 +228,9 @@ async fn share_returns_token() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 501);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"].is_string());
 }
 
 #[tokio::test]

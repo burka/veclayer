@@ -1253,23 +1253,6 @@ async fn execute_reflect(
     Ok(report)
 }
 
-pub fn build_share_token(input: ShareInput) -> serde_json::Value {
-    let can = if input.can.is_empty() {
-        vec!["recall".to_string(), "focus".to_string()]
-    } else {
-        input.can
-    };
-
-    serde_json::json!({
-        "version": "veclayer-share-v1-preview",
-        "tree": input.tree,
-        "can": can,
-        "expires": input.expires,
-        "nonce": crate::chunk::content_hash(&format!("nonce-{}", crate::chunk::now_epoch_secs())),
-        "_note": "Preview token. UCAN signing not yet implemented."
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1335,31 +1318,6 @@ mod tests {
             push_mode: crate::git::branch_config::PushMode::Off,
         };
         (ctx, tmp)
-    }
-
-    #[test]
-    fn share_token_defaults_and_custom() {
-        let token = build_share_token(ShareInput {
-            tree: "projects:veclayer".to_string(),
-            can: vec![],
-            expires: None,
-        });
-        assert_eq!(token["tree"], "projects:veclayer");
-        assert_eq!(token["can"], serde_json::json!(["recall", "focus"]));
-        assert_eq!(token["version"], "veclayer-share-v1-preview");
-        assert!(token["_note"].as_str().unwrap().contains("Preview"));
-        assert!(token["nonce"].as_str().is_some_and(|s| !s.is_empty()));
-
-        let token2 = build_share_token(ShareInput {
-            tree: "people:florian".to_string(),
-            can: vec!["recall".into(), "focus".into(), "store".into()],
-            expires: Some("90d".to_string()),
-        });
-        assert_eq!(
-            token2["can"],
-            serde_json::json!(["recall", "focus", "store"])
-        );
-        assert_eq!(token2["expires"], "90d");
     }
 
     #[test]

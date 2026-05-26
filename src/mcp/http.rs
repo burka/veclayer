@@ -91,6 +91,13 @@ impl AppError {
             message: msg.into(),
         }
     }
+
+    fn not_implemented(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_IMPLEMENTED,
+            message: msg.into(),
+        }
+    }
 }
 
 impl IntoResponse for AppError {
@@ -390,9 +397,8 @@ fn build_auth_setup(config: &Config) -> Result<Option<AuthSetup>> {
     }
 
     let passphrase = std::env::var("VECLAYER_PASSPHRASE").unwrap_or_default();
-    if auth_required && passphrase.is_empty() {
-        tracing::warn!("VECLAYER_PASSPHRASE not set — keystore will use empty passphrase");
-    }
+    keystore::require_passphrase(auth_required, &passphrase)
+        .map_err(|e| crate::Error::Config(format!("Failed to start server: {e}")))?;
     let signing_key = keystore::load(&passphrase, &keystore_path)
         .map_err(|e| crate::Error::Config(format!("Failed to load identity: {e}")))?;
 
@@ -530,12 +536,15 @@ async fn api_think(
 
 async fn api_share(
     Extension(required_capability): Extension<Capability>,
-    Json(input): Json<ShareInput>,
+    Json(_input): Json<ShareInput>,
 ) -> StdResult<Json<serde_json::Value>, AppError> {
     if !required_capability.permits(Capability::Write) {
         return Err(insufficient(Capability::Write));
     }
-    Ok(Json(tools::build_share_token(input)))
+    Err(AppError::not_implemented(
+        "share is not yet available: capability-token (UCAN) signing is not implemented. \
+         This is a placeholder for a future release.",
+    ))
 }
 
 async fn api_stats(
@@ -833,7 +842,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_share_with_valid_body_returns_ok() {
+    async fn api_share_with_write_capability_returns_not_implemented() {
+        // The share endpoint is a UCAN placeholder; even a write-capable caller
+        // must receive an error (501 Not Implemented), never a fake-grant 200.
         let (state, _dir) = make_test_app_state().await;
         let app = build_app(state);
 
@@ -842,7 +853,27 @@ mod tests {
             "can": ["recall"]
         });
         let response = post_json(app, "/api/share", &body).await;
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn api_share_without_write_capability_returns_forbidden() {
+        // A caller without write permission must still be rejected with 403
+        // (the capability check must fire before the not-implemented guard).
+        // build_app wires in the admin (write) capability by default, so we
+        // call the handler directly to simulate a read-only caller.
+        let read_cap = Capability::Read;
+        let result = api_share(
+            Extension(read_cap),
+            Json(ShareInput {
+                tree: "projects:test".to_string(),
+                can: vec![],
+                expires: None,
+            }),
+        )
+        .await;
+        let err = result.unwrap_err();
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
