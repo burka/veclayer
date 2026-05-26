@@ -191,16 +191,12 @@ impl DocumentParser for MarkdownParser {
                     }
                 }
 
-                Event::SoftBreak | Event::HardBreak => {
-                    if !state.in_heading {
-                        state.current_text.push(' ');
-                    }
+                Event::SoftBreak | Event::HardBreak if !state.in_heading => {
+                    state.current_text.push(' ');
                 }
 
-                Event::End(TagEnd::Paragraph) => {
-                    if !state.in_heading {
-                        state.current_text.push('\n');
-                    }
+                Event::End(TagEnd::Paragraph) if !state.in_heading => {
+                    state.current_text.push('\n');
                 }
 
                 Event::End(TagEnd::CodeBlock) => {

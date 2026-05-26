@@ -310,7 +310,7 @@ fn build_cluster_info(
         }
     }
     let mut dominant: Vec<_> = persp_counts.into_iter().collect();
-    dominant.sort_by(|a, b| b.1.cmp(&a.1));
+    dominant.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     EmergentCluster {
         cluster_id,
@@ -380,7 +380,7 @@ fn discover_clusters(
         .map(|(cluster_id, members)| build_cluster_info(cluster_id, members, &embedded, weights))
         .collect();
 
-    clusters.sort_by(|a, b| b.member_count.cmp(&a.member_count));
+    clusters.sort_by_key(|b| std::cmp::Reverse(b.member_count));
     clusters
 }
 

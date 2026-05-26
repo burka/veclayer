@@ -236,7 +236,7 @@ impl LanceStore {
         // Cutoff = timestamp of the KEEP_VERSIONS-th most recent version, so prune
         // removes everything older than that.
         let mut sorted = versions;
-        sorted.sort_by(|a, b| b.version.cmp(&a.version));
+        sorted.sort_by_key(|b| std::cmp::Reverse(b.version));
         let total_versions = sorted.len();
         let older_than = if sorted.len() > KEEP_VERSIONS {
             let cutoff = sorted[KEEP_VERSIONS - 1].timestamp;
