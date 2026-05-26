@@ -15,6 +15,8 @@ use axum::{Json, Router};
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
 };
+use tower_governor::governor::GovernorConfigBuilder;
+use tower_governor::{GovernorError, GovernorLayer};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
@@ -146,7 +148,24 @@ fn insufficient(required: Capability) -> AppError {
 
 // ─── Router builder ───────────────────────────────────────────────────────────
 
-/// Build the application router.
+/// Returns `true` when the server should emit an open-bind security warning.
+///
+/// The footgun is binding to a non-loopback address while `auth_required` is
+/// `false` — any host on the network then has implicit Admin access.
+///
+/// Truth table:
+/// - loopback + open → `false` (safe: only local processes can reach it)
+/// - non-loopback + open → `true` (dangerous: network Admin access)
+/// - non-loopback + auth  → `false` (safe: tokens required)
+pub fn should_warn_open_bind(addr: std::net::SocketAddr, auth_required: bool) -> bool {
+    !auth_required && !addr.ip().is_loopback()
+}
+
+/// Build the application router (no rate limiting).
+///
+/// Use this variant in tests that use `.oneshot()` or plain `axum::serve()`,
+/// where `ConnectInfo<SocketAddr>` is unavailable.  The production server
+/// startup path (`run_http`) calls [`build_app_rate_limited`] instead.
 ///
 /// When `state.auth` is `Some`, OAuth endpoints and the auth middleware are
 /// wired in.  When it is `None` the server runs fully open (backward-compatible
@@ -159,12 +178,31 @@ fn insufficient(required: Capability) -> AppError {
 ///
 /// **Auth mode** (`auth = Some`): Bearer JWT tokens are required for all
 /// `/api/*` and `/mcp/*` routes.  `/health` and OAuth endpoints remain public.
-///
-/// # Rate limiting
-///
-/// No request throttling.  For multi-tenant or remote use, add
-/// `tower_governor` or a similar layer before deploying.
 pub fn build_app(state: AppState) -> Router {
+    build_router(state, None)
+}
+
+/// Build the application router with a per-IP rate limiter on public routes.
+///
+/// The `burst_size` controls the token-bucket burst capacity.  The steady-state
+/// replenish rate is fixed at one token per 500 ms (≈ 2 req/s).  After the
+/// burst is exhausted, excess requests receive `429 Too Many Requests`.
+///
+/// **The server MUST be started with
+/// `app.into_make_service_with_connect_info::<SocketAddr>()`** so that
+/// `tower_governor` can read the peer IP from the `ConnectInfo` extension.
+/// Using plain `into_make_service()` will cause every request to fail with
+/// `GovernorError::UnableToExtractKey`.
+pub fn build_app_rate_limited(state: AppState, burst_size: u32) -> Router {
+    build_router(state, Some(burst_size))
+}
+
+/// Internal router builder.
+///
+/// `rate_limit_burst = None` disables the per-IP rate limiter (safe for unit
+/// tests that use `.oneshot()` without `ConnectInfo`).  `Some(n)` enables it
+/// with the given burst capacity.
+fn build_router(state: AppState, rate_limit_burst: Option<u32>) -> Router {
     let cors = build_cors(state.auth.as_ref().and_then(|a| {
         let url = &a.oauth_state.server_url;
         if url.starts_with("http://localhost") || url.starts_with("http://127.0.0.1") {
@@ -214,6 +252,46 @@ pub fn build_app(state: AppState) -> Router {
         .route("/api/priming", get(api_priming))
         .nest_service("/mcp", mcp_service);
 
+    // ── Rate limiting ────────────────────────────────────────────────────────
+    //
+    // A per-client-IP token-bucket limiter is applied to the *unauthenticated
+    // credential surface*: /oauth/*, /.well-known/*, and /health.  The goal is
+    // to blunt registration floods, device-code polling loops, and token
+    // brute-force attempts on those endpoints.
+    //
+    // The data plane (/api/*, /mcp) is intentionally NOT throttled:
+    //   • In auth mode it sits behind the auth middleware — rate limiting there
+    //     would provide no extra security and would penalise legitimate agents.
+    //   • In no-auth (local) mode it is the primary hot path used by agents in
+    //     tight loops; throttling at ~2 req/s would break the core use case.
+    //     Remote exposure of the data plane in no-auth mode is a separate footgun
+    //     already mitigated by the open-bind startup warning.
+    //
+    // The server MUST be started with `into_make_service_with_connect_info::<SocketAddr>()`
+    // so tower_governor can read the peer IP from the ConnectInfo extension.
+    let governor_layer = rate_limit_burst.map(|burst| {
+        let config = GovernorConfigBuilder::default()
+            // Replenish one token every 500 ms (≈ 2 req/s steady-state).
+            .per_millisecond(500)
+            .burst_size(burst)
+            .finish()
+            .expect("valid governor config: burst_size and period must be > 0");
+        GovernorLayer::new(config).error_handler(|err| {
+            if matches!(err, GovernorError::UnableToExtractKey) {
+                // ConnectInfo<SocketAddr> is missing — the server was started
+                // without `into_make_service_with_connect_info`. Every request
+                // will fail until the server is restarted with the correct
+                // service factory.
+                tracing::error!(
+                    "rate-limiter: ConnectInfo<SocketAddr> missing — server must be \
+                     started with into_make_service_with_connect_info::<SocketAddr>(). \
+                     All requests will fail until this is fixed."
+                );
+            }
+            err.into()
+        })
+    });
+
     let base: Router<AppState> = Router::new().route("/health", get(|| async { "OK" }));
 
     let app: Router<AppState> = match state.auth.clone() {
@@ -229,15 +307,25 @@ pub fn build_app(state: AppState) -> Router {
 
             let oauth: Router<AppState> = oauth_router(auth_setup.oauth_state).with_state(());
 
-            Router::new()
-                .merge(oauth)
-                .merge(open_with_cap)
-                .merge(guarded)
+            // Apply the rate limiter to the public surface (OAuth + health).
+            let public = Router::new().merge(oauth).merge(open_with_cap);
+            let public = if let Some(layer) = governor_layer {
+                public.layer(layer)
+            } else {
+                public
+            };
+
+            Router::new().merge(public).merge(guarded)
         }
         None => {
             // No auth: inject Admin for all requests so handlers can read the
             // Capability extension uniformly.
-            let all_routes = base.merge(protected);
+            let public = if let Some(layer) = governor_layer {
+                base.layer(layer)
+            } else {
+                base
+            };
+            let all_routes = public.merge(protected);
             all_routes.layer(axum::middleware::from_fn(inject_admin_capability))
         }
     };
@@ -341,6 +429,10 @@ pub async fn run_http(config: Config) -> Result<()> {
         None
     };
 
+    let addr: std::net::SocketAddr = format!("{}:{}", config.host, config.port)
+        .parse()
+        .map_err(|e| crate::Error::config(format!("Invalid address: {}", e)))?;
+
     let state = AppState {
         store,
         embedder,
@@ -354,11 +446,9 @@ pub async fn run_http(config: Config) -> Result<()> {
         push_mode,
     };
 
-    let app = build_app(state);
-
-    let addr: std::net::SocketAddr = format!("{}:{}", config.host, config.port)
-        .parse()
-        .map_err(|e| crate::Error::config(format!("Invalid address: {}", e)))?;
+    // Production default: burst of 10 then 2 req/s (500 ms/token).
+    // Generous enough for all legitimate use but low enough to blunt floods.
+    let app = build_app_rate_limited(state, 10);
 
     info!("VecLayer HTTP server listening on {}", addr);
 
@@ -366,9 +456,25 @@ pub async fn run_http(config: Config) -> Result<()> {
         .await
         .map_err(crate::Error::Io)?;
 
-    axum::serve(listener, app)
-        .await
-        .map_err(|e| crate::Error::InvalidOperation(format!("Server error: {}", e)))?;
+    // Warn loudly when binding to a non-loopback address without authentication.
+    // Emitted after bind succeeds so a bind failure (e.g. port in use) does not
+    // produce a misleading "already exposed" warning before the process exits.
+    if should_warn_open_bind(addr, config.auth.auth_required) {
+        tracing::warn!(
+            bind_addr = %addr,
+            "SECURITY: server is bound to a non-loopback address ({addr}) with \
+             auth_required=false — any host that can reach this port has full \
+             Admin access. Set auth_required=true or restrict the bind address \
+             to 127.0.0.1 to silence this warning."
+        );
+    }
+
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .map_err(|e| crate::Error::InvalidOperation(format!("Server error: {}", e)))?;
 
     Ok(())
 }

@@ -333,7 +333,6 @@ mod auth {
             branch: None,
             auth: Some(AuthSetup {
                 auth_state,
-
                 oauth_state,
             }),
             git_store: None,
@@ -542,5 +541,162 @@ mod auth {
             .await
             .unwrap();
         assert_eq!(resp.status(), 200);
+    }
+}
+
+// ─── Rate-limit integration tests ────────────────────────────────────────────
+
+mod rate_limit {
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+    use tokio::net::TcpListener;
+    use veclayer::mcp::http::{build_app_rate_limited, AppState};
+    use veclayer::{BlobStore, StoreBackend};
+
+    /// Spin up a server with a deliberately tight rate limit for testing.
+    ///
+    /// `burst_size = 2` means only 2 requests are allowed immediately; after
+    /// that, one more is unlocked every 500 ms.  A tight loop of ≥ 3 will hit
+    /// 429 without any sleep.
+    ///
+    /// Returns `(base_url, _tmp)`.
+    async fn spawn_rate_limited_server() -> (String, TempDir) {
+        let tmp = TempDir::new().unwrap();
+
+        let embedder: Arc<dyn veclayer::Embedder + Send + Sync> = Arc::from(
+            veclayer::embedder::from_config(&veclayer::config::EmbedderConfig::default()).unwrap(),
+        );
+        let dim = embedder.dimension();
+        let store = Arc::new(StoreBackend::open(tmp.path(), dim, false).await.unwrap());
+        let blob_store = Arc::new(BlobStore::open(tmp.path()).unwrap());
+
+        let state = AppState {
+            store,
+            embedder,
+            embedder_config: veclayer::config::EmbedderConfig::default(),
+            blob_store,
+            data_dir: tmp.path().to_path_buf(),
+            project: None,
+            branch: None,
+            auth: None,
+            git_store: None,
+            push_mode: veclayer::git::branch_config::PushMode::Off,
+        };
+
+        // burst = 2 → requests 1 and 2 succeed; request 3 onward → 429.
+        let app = build_app_rate_limited(state, 2);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap()
+        });
+        (format!("http://127.0.0.1:{port}"), tmp)
+    }
+
+    /// Requests within the burst limit must succeed; the first request that
+    /// exhausts the burst must immediately receive 429.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn requests_within_burst_succeed() {
+        let (base, _tmp) = spawn_rate_limited_server().await;
+        let client = reqwest::Client::new();
+        // Burst is 2 — the first two must be 200.
+        for i in 0..2 {
+            let resp = client.get(format!("{base}/health")).send().await.unwrap();
+            assert_eq!(
+                resp.status(),
+                200,
+                "request {} within burst limit must not be rate-limited",
+                i + 1
+            );
+        }
+        // The very next request — still in the same tight loop — must be 429.
+        let resp = client.get(format!("{base}/health")).send().await.unwrap();
+        assert_eq!(
+            resp.status(),
+            429,
+            "first request after burst is exhausted must be rate-limited (429)"
+        );
+    }
+
+    /// Hammering the server past the burst limit must eventually yield 429.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn flood_triggers_429() {
+        let (base, _tmp) = spawn_rate_limited_server().await;
+        let client = reqwest::Client::new();
+        let mut got_429 = false;
+        // Send 20 requests in a tight loop — burst is 2, so we must hit 429 early.
+        for _ in 0..20 {
+            let resp = client.get(format!("{base}/health")).send().await.unwrap();
+            if resp.status() == 429 {
+                got_429 = true;
+                break;
+            }
+        }
+        assert!(
+            got_429,
+            "a tight flood must trigger HTTP 429 Too Many Requests"
+        );
+    }
+}
+
+// ─── Open-bind warning helper unit tests ─────────────────────────────────────
+
+mod open_bind_warning {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use veclayer::mcp::http::should_warn_open_bind;
+
+    #[test]
+    fn loopback_open_no_warning() {
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080);
+        assert!(
+            !should_warn_open_bind(addr, false),
+            "loopback + open-auth is safe — no warning"
+        );
+    }
+
+    #[test]
+    fn non_loopback_open_warns() {
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 8080);
+        assert!(
+            should_warn_open_bind(addr, false),
+            "non-loopback + open-auth is the footgun — must warn"
+        );
+    }
+
+    #[test]
+    fn non_loopback_auth_required_no_warning() {
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 8080);
+        assert!(
+            !should_warn_open_bind(addr, true),
+            "non-loopback + auth_required is safe — no warning"
+        );
+    }
+
+    #[test]
+    fn non_loopback_open_ipv6_warns() {
+        use std::net::Ipv6Addr;
+        let addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 8080);
+        assert!(
+            should_warn_open_bind(addr, false),
+            "IPv6 unspecified + open-auth must warn"
+        );
+    }
+
+    #[test]
+    fn loopback_ipv6_open_no_warning() {
+        use std::net::Ipv6Addr;
+        let addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 8080);
+        assert!(
+            !should_warn_open_bind(addr, false),
+            "IPv6 loopback + open-auth is safe — no warning"
+        );
     }
 }
