@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use linfa::traits::Fit;
 use linfa::DatasetBase;
 use linfa_clustering::KMeans;
@@ -19,6 +21,10 @@ pub struct SoftClusterer {
     min_membership: f32,
     /// Number of iterations for k-means
     max_iterations: usize,
+    /// Number of clusters chosen by the most recent `cluster()` call (0 before first call).
+    /// Read/written with `Relaxed`: `num_clusters()` is only meaningful after `cluster()`
+    /// returns on the same thread, so no cross-thread ordering guarantee is needed.
+    last_k: AtomicUsize,
 }
 
 impl SoftClusterer {
@@ -28,6 +34,7 @@ impl SoftClusterer {
             max_clusters: 10,
             min_membership: 0.1,
             max_iterations: 100,
+            last_k: AtomicUsize::new(0),
         }
     }
 
@@ -141,11 +148,13 @@ impl Default for SoftClusterer {
 impl Clusterer for SoftClusterer {
     fn cluster(&self, embeddings: &[Vec<f32>]) -> Result<Vec<ClusterAssignment>> {
         if embeddings.is_empty() {
+            self.last_k.store(0, Ordering::Relaxed);
             return Ok(Vec::new());
         }
 
         if embeddings.len() < 2 {
             // Single item - assign to its own cluster
+            self.last_k.store(1, Ordering::Relaxed);
             return Ok(vec![ClusterAssignment {
                 index: 0,
                 memberships: vec![ClusterMembership::new("cluster_0", 1.0)],
@@ -161,6 +170,7 @@ impl Clusterer for SoftClusterer {
 
         // Find optimal k
         let k = self.find_optimal_k(&data);
+        self.last_k.store(k, Ordering::Relaxed);
 
         // Fit final model
         let dataset = DatasetBase::from(data.clone());
@@ -211,7 +221,7 @@ impl Clusterer for SoftClusterer {
     }
 
     fn num_clusters(&self) -> usize {
-        0 // Would need to store state
+        self.last_k.load(Ordering::Relaxed)
     }
 }
 
@@ -386,6 +396,79 @@ mod tests {
         assert_eq!(clusterer.min_clusters, 2);
         assert_eq!(clusterer.max_clusters, 10);
         assert!((clusterer.min_membership - 0.1).abs() < 0.01);
+    }
+
+    // --- num_clusters() tests ---
+
+    #[test]
+    fn test_num_clusters_before_any_call_is_zero() {
+        let clusterer = SoftClusterer::new();
+        assert_eq!(clusterer.num_clusters(), 0);
+    }
+
+    #[test]
+    fn test_num_clusters_empty_input_is_zero() {
+        let clusterer = SoftClusterer::new();
+        let _ = clusterer.cluster(&[]).unwrap();
+        assert_eq!(clusterer.num_clusters(), 0);
+    }
+
+    #[test]
+    fn test_num_clusters_single_point_is_one() {
+        let clusterer = SoftClusterer::new();
+        let _ = clusterer.cluster(&[vec![1.0, 2.0, 3.0]]).unwrap();
+        assert_eq!(clusterer.num_clusters(), 1);
+    }
+
+    #[test]
+    fn test_num_clusters_two_clear_clusters() {
+        // Force k=2 by constraining the range.
+        let clusterer = SoftClusterer::new().with_cluster_range(2, 2);
+        let embeddings = vec![
+            vec![0.0, 0.0],
+            vec![0.1, 0.0],
+            vec![10.0, 10.0],
+            vec![10.1, 10.0],
+        ];
+        let _ = clusterer.cluster(&embeddings).unwrap();
+        assert_eq!(clusterer.num_clusters(), 2);
+    }
+
+    #[test]
+    fn test_num_clusters_all_identical_points() {
+        // All identical points — k-means should still run with min_clusters.
+        let clusterer = SoftClusterer::new().with_cluster_range(2, 2);
+        let embeddings = vec![
+            vec![1.0, 1.0],
+            vec![1.0, 1.0],
+            vec![1.0, 1.0],
+            vec![1.0, 1.0],
+        ];
+        let _ = clusterer.cluster(&embeddings).unwrap();
+        // k was fixed at 2 — num_clusters must reflect what cluster() used
+        assert_eq!(clusterer.num_clusters(), 2);
+    }
+
+    #[test]
+    fn test_num_clusters_reflects_last_call() {
+        let clusterer = SoftClusterer::new().with_cluster_range(2, 2);
+        // First call: multiple points → k=2
+        let multi = vec![
+            vec![0.0f32, 0.0],
+            vec![0.1, 0.0],
+            vec![10.0, 10.0],
+            vec![10.1, 10.0],
+        ];
+        let _ = clusterer.cluster(&multi).unwrap();
+        assert_eq!(clusterer.num_clusters(), 2);
+
+        // Second call: single point → k=1
+        let _ = clusterer.cluster(&[vec![5.0, 5.0]]).unwrap();
+        assert_eq!(clusterer.num_clusters(), 1);
+
+        // Third call: empty → 0
+        let _ = clusterer.cluster(&[]).unwrap();
+        assert_eq!(clusterer.num_clusters(), 0);
     }
 
     #[test]
