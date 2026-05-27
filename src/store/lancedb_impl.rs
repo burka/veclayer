@@ -577,6 +577,8 @@ impl LanceStore {
     }
 
     async fn ensure_table(&self) -> Result<()> {
+        let read_only = self.is_read_only();
+
         let tables = self
             .connection
             .table_names()
@@ -585,14 +587,24 @@ impl LanceStore {
             .map_err(|e| Error::store(format!("Failed to list tables: {}", e)))?;
 
         if !tables.contains(&TABLE_NAME.to_string()) {
+            // Bootstrapping an empty store is allowed even read-only: maintenance
+            // commands (reflect/compact) and cross-project reads open a possibly
+            // never-initialized path read-only and expect a graceful empty store,
+            // not an error. The read-only contract forbids mutating *existing*
+            // data (migrations below), not creating a fresh empty table.
             let schema = self.schema();
             self.connection
                 .create_empty_table(TABLE_NAME, schema)
                 .execute()
                 .await
                 .map_err(|e| Error::store(format!("Failed to create table: {}", e)))?;
-            let table = self.get_table().await?;
-            Self::stamp_version(&table, &self.schema()).await?;
+            // create_empty_table is the only write allowed read-only (so maintenance
+            // and cross-project reads see a graceful empty store). stamp_version
+            // writes manifest metadata and is cosmetic, so it stays read-write only.
+            if !read_only {
+                let table = self.get_table().await?;
+                Self::stamp_version(&table, &self.schema()).await?;
+            }
             return Ok(());
         }
 
@@ -615,7 +627,7 @@ impl LanceStore {
             .map(|f| f.name().as_str())
             .collect();
 
-        // 1. Columns we need but table doesn't have → add them
+        // 1. Columns we need but table doesn't have → add them (write) or error (read-only)
         let missing: Vec<(String, String)> = expected_schema
             .fields()
             .iter()
@@ -634,6 +646,14 @@ impl LanceStore {
 
         if !missing.is_empty() {
             let names: Vec<&str> = missing.iter().map(|(n, _)| n.as_str()).collect();
+            if read_only {
+                return Err(Error::store(format!(
+                    "cannot open store in read-only mode: the store has an older schema \
+                     and requires migration (missing columns: {:?}). \
+                     Open it read-write first to migrate.",
+                    names
+                )));
+            }
             tracing::info!("migrating store: adding columns {:?}", names);
             table
                 .add_columns(NewColumnTransform::SqlExpressions(missing), None)
@@ -641,34 +661,41 @@ impl LanceStore {
                 .map_err(|e| Error::store(format!("Schema migration failed: {}", e)))?;
         }
 
-        // 2. Migrate data from legacy columns into new columns before dropping
-        if current_fields.contains("is_summary") {
-            tracing::info!("migrating data: is_summary → entry_type");
-            table
-                .update()
-                .column("entry_type", "'summary'")
-                .only_if("is_summary = true AND entry_type = 'raw'")
-                .execute()
-                .await
-                .map_err(|e| Error::store(format!("Data migration is_summary failed: {}", e)))?;
-        }
+        // Read-only opens never migrate an existing store. A store where legacy
+        // `is_summary` still exists alongside `entry_type` is valid to read; the
+        // data migration and legacy-column cleanup happen on the next read-write open.
+        if !read_only {
+            // 2. Migrate data from legacy columns into new columns before dropping
+            if current_fields.contains("is_summary") {
+                tracing::info!("migrating data: is_summary → entry_type");
+                table
+                    .update()
+                    .column("entry_type", "'summary'")
+                    .only_if("is_summary = true AND entry_type = 'raw'")
+                    .execute()
+                    .await
+                    .map_err(|e| {
+                        Error::store(format!("Data migration is_summary failed: {}", e))
+                    })?;
+            }
 
-        // 3. Legacy columns still in table → drop them (safe after data migration)
-        let legacy_to_drop: Vec<&str> = current_fields
-            .iter()
-            .filter(|f| LEGACY_COLUMNS.contains(f))
-            .copied()
-            .collect();
+            // 3. Legacy columns still in table → drop them (safe after data migration)
+            let legacy_to_drop: Vec<&str> = current_fields
+                .iter()
+                .filter(|f| LEGACY_COLUMNS.contains(f))
+                .copied()
+                .collect();
 
-        if !legacy_to_drop.is_empty() {
-            tracing::info!(
-                "migrating store: dropping legacy columns {:?}",
-                legacy_to_drop
-            );
-            table
-                .drop_columns(&legacy_to_drop)
-                .await
-                .map_err(|e| Error::store(format!("Legacy column removal failed: {}", e)))?;
+            if !legacy_to_drop.is_empty() {
+                tracing::info!(
+                    "migrating store: dropping legacy columns {:?}",
+                    legacy_to_drop
+                );
+                table
+                    .drop_columns(&legacy_to_drop)
+                    .await
+                    .map_err(|e| Error::store(format!("Legacy column removal failed: {}", e)))?;
+            }
         }
 
         // 4. Columns present in both but with different types → incompatible
@@ -708,8 +735,10 @@ impl LanceStore {
             )));
         }
 
-        // 6. Stamp current version
-        Self::stamp_version(&table, &expected_schema).await?;
+        // 6. Stamp current version (write — skip when read-only)
+        if !read_only {
+            Self::stamp_version(&table, &expected_schema).await?;
+        }
 
         Ok(())
     }
@@ -4539,6 +4568,80 @@ mod tests {
             retrieved.end_offset, CHUNK_BYTE_OFFSET_NOT_STORED,
             "end_offset must be {} after LanceDB round-trip",
             CHUNK_BYTE_OFFSET_NOT_STORED
+        );
+    }
+
+    // ── ensure_table read-only contract tests ────────────────────────────────
+
+    /// A read-only open of a FRESH (never-initialized) directory must succeed
+    /// and yield a readable, empty store. Maintenance commands (reflect/compact)
+    /// and cross-project reads rely on this graceful-empty bootstrap.
+    #[tokio::test]
+    async fn test_read_only_open_fresh_dir_yields_empty_store() {
+        let dir = TempDir::new().unwrap();
+        let ro = LanceStore::open(dir.path(), 384, true)
+            .await
+            .unwrap_or_else(|e| panic!("read-only open of fresh dir must succeed, got: {e}"));
+        let stats = ro.stats().await.expect("stats on empty store must work");
+        assert_eq!(stats.total_chunks, 0, "fresh store must be empty");
+
+        // The read-only bootstrap creates the empty table but must skip the
+        // cosmetic stamp_version write, so it leaves strictly fewer LanceDB
+        // versions than a read-write bootstrap (which additionally stamps schema
+        // metadata). Comparing the two avoids coupling to internal version counts.
+        let (_t, ro_versions) = ro.open_table_and_versions().await.unwrap();
+        let rw_dir = TempDir::new().unwrap();
+        let rw = LanceStore::open(rw_dir.path(), 384, false).await.unwrap();
+        let (_t2, rw_versions) = rw.open_table_and_versions().await.unwrap();
+        assert!(
+            ro_versions.len() < rw_versions.len(),
+            "read-only bootstrap must skip stamp_version (ro={}, rw={})",
+            ro_versions.len(),
+            rw_versions.len()
+        );
+    }
+
+    /// A read-only open of an ALREADY-SEEDED, current-schema store must succeed,
+    /// be readable, and run NO migration: the LanceDB version count observed
+    /// through the read-only handle itself must equal the pre-open count.
+    #[tokio::test]
+    async fn test_read_only_open_seeded_store_does_not_migrate() {
+        let dir = TempDir::new().unwrap();
+
+        // Seed one row via a read-write handle and capture the version count.
+        let rw = LanceStore::open(dir.path(), 384, false).await.unwrap();
+        rw.insert_chunks(vec![create_test_chunk(
+            "ro-immutable-seed",
+            "seeded",
+            ChunkLevel::H1,
+        )])
+        .await
+        .unwrap();
+        let (_t, versions_before) = rw.open_table_and_versions().await.unwrap();
+        let count_before = versions_before.len();
+        drop(rw);
+
+        // Read-only open must succeed and read back the seeded row.
+        let ro = LanceStore::open(dir.path(), 384, true)
+            .await
+            .unwrap_or_else(|e| panic!("read-only open of seeded store must succeed, got: {e}"));
+        let chunk = ro
+            .get_by_id("ro-immutable-seed")
+            .await
+            .expect("get_by_id must not error")
+            .expect("seeded chunk must be present");
+        assert_eq!(chunk.content, "seeded");
+
+        // Measure the version count through the read-only handle itself — a
+        // read that cannot itself write — so the assertion is independent of any
+        // later read-write reopen.
+        let (_t2, versions_after) = ro.open_table_and_versions().await.unwrap();
+        assert_eq!(
+            versions_after.len(),
+            count_before,
+            "read-only open must not create new LanceDB versions (was {}, now {})",
+            count_before,
+            versions_after.len()
         );
     }
 }
