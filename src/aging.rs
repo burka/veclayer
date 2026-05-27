@@ -228,6 +228,12 @@ mod tests {
     }
 
     #[test]
+    fn test_aging_config_save_returns_err_when_parent_dir_missing() {
+        let result = AgingConfig::default().save(Path::new("/nonexistent/dir"));
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_stale_seconds_one_day() {
         let config = AgingConfig {
             degrade_after_days: 1,
