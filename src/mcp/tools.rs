@@ -308,10 +308,7 @@ async fn store_single_entry(
 
     let (level, path) = if let Some(pid) = parent_id {
         if let Ok(Some(parent)) = store.get_by_id_prefix(pid).await {
-            (
-                crate::chunk::ChunkLevel(parent.level.0 + 1),
-                format!("{}/agent", parent.path),
-            )
+            (parent.level.child(), format!("{}/agent", parent.path))
         } else {
             (crate::chunk::ChunkLevel(7), input.source_file.clone())
         }
@@ -3421,6 +3418,55 @@ mod tests {
         assert!(
             result.contains("store()"),
             "expected store() instruction, got: {result}"
+        );
+    }
+
+    // ── ChunkLevel overflow guard ─────────────────────────────────────────
+
+    /// A parent at level 255 must produce a child at level 255 (saturated), not 0 (wrapped).
+    ///
+    /// This is a regression test for the u8 overflow bug where `parent.level.0 + 1`
+    /// would silently wrap to 0 in release builds and panic in debug builds when the
+    /// parent level was 255.
+    #[tokio::test]
+    async fn store_parent_at_level_255_child_level_saturates_not_wraps() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
+
+        // Insert a parent chunk with level = 255 directly, bypassing normal level assignment.
+        let mut parent = make_test_chunk("deadbeef01234567", "parent at max level");
+        parent.level = crate::chunk::ChunkLevel(255);
+        store.insert_chunks(vec![parent]).await.unwrap();
+
+        // Ask execute_store to create a child of this max-level parent.
+        let input = StoreInput {
+            content: "child of max-level parent".to_string(),
+            parent_id: Some("deadbeef".to_string()), // prefix match
+            source_file: "[agent]".to_string(),
+            heading: None,
+            visibility: "normal".to_string(),
+            perspectives: vec![],
+            relations: vec![],
+            entry_type: None,
+            items: vec![],
+            impression_hint: None,
+            impression_strength: None,
+            scope: "personal".to_string(),
+        };
+        execute_store(&test_ctx(&store, &embedder, &blob_store, dir.path()), input)
+            .await
+            .unwrap();
+
+        // The child must be stored with level 255, not 0.
+        let entries = store.list_entries(&[], None, None, 10).await.unwrap();
+        let child = entries
+            .iter()
+            .find(|e| e.content == "child of max-level parent")
+            .expect("child entry not found in store");
+        assert_eq!(
+            child.level.0, 255,
+            "child of a level-255 parent must saturate at 255, not wrap to {}",
+            child.level.0
         );
     }
 }

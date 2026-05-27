@@ -248,6 +248,14 @@ impl ChunkLevel {
     pub fn depth(&self) -> u8 {
         self.0
     }
+
+    /// The level one step deeper in the hierarchy.
+    ///
+    /// Saturates at [`u8::MAX`] so a maximally-deep parent yields a child at the
+    /// same level rather than wrapping to 0 (silent in release, panic in debug).
+    pub fn child(&self) -> Self {
+        Self(self.0.saturating_add(1))
+    }
 }
 
 impl std::fmt::Display for ChunkLevel {
@@ -687,6 +695,20 @@ mod tests {
     fn test_chunk_level_depth() {
         assert_eq!(ChunkLevel::H1.depth(), 1);
         assert_eq!(ChunkLevel::CONTENT.depth(), 7);
+    }
+
+    #[test]
+    fn test_chunk_level_child_increments() {
+        assert_eq!(ChunkLevel::H1.child(), ChunkLevel::H2);
+        assert_eq!(ChunkLevel(7).child(), ChunkLevel(8));
+    }
+
+    #[test]
+    fn test_chunk_level_child_saturates_at_max() {
+        // A maximally-deep parent must yield a child at the same level rather
+        // than wrapping to 0 (the u8-overflow regression guarded here).
+        assert_eq!(ChunkLevel(255).child(), ChunkLevel(255));
+        assert_eq!(ChunkLevel(254).child(), ChunkLevel(255));
     }
 
     #[test]

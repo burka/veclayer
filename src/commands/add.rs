@@ -193,7 +193,7 @@ async fn add_text(
     let (level, path, resolved_parent_id) = if let Some(ref pid) = options.parent_id {
         let parent = resolve_entry(&store, pid).await?;
         (
-            crate::chunk::ChunkLevel(parent.level.0 + 1),
+            parent.level.child(),
             format!("{}/agent", parent.path),
             Some(parent.id),
         )
