@@ -13,7 +13,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{Form, Query, State};
-use axum::http::StatusCode;
+use axum::http::header::{CACHE_CONTROL, PRAGMA};
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -147,6 +148,11 @@ const MAX_DEVICE_CSRF_TOKENS: usize = 1024;
 /// that loops the device-code endpoint.
 const MAX_DEVICE_CODES: usize = 1024;
 
+/// Maximum byte length accepted for a user_code submission on the device
+/// approval page.  A real user code is 9 characters (XXXX-XXXX); this limit
+/// prevents large allocations in `normalize_user_code` and O(n) map scans.
+const MAX_USER_CODE_LENGTH: usize = 64;
+
 // ─── Consent CSRF tracking ────────────────────────────────────────────────────
 
 /// Maximum length for the OAuth `state` parameter (RFC 6749 does not mandate a
@@ -265,6 +271,12 @@ pub struct RegisterRequest {
 /// Maximum number of registered clients before registration is rejected.
 const MAX_REGISTERED_CLIENTS: usize = 100;
 
+/// Maximum number of redirect URIs allowed per client registration.
+///
+/// Prevents a single registration from submitting thousands of 2 KiB URIs and
+/// growing oauth_store.json unboundedly (DoS).
+const MAX_REDIRECT_URIS_PER_CLIENT: usize = 10;
+
 /// Maximum length for client names and redirect URIs.
 const MAX_STRING_LENGTH: usize = 2048;
 
@@ -297,6 +309,20 @@ async fn register_handler(
             Json(serde_json::json!({
                 "error": "invalid_client_metadata",
                 "error_description": "redirect_uris must not be empty"
+            })),
+        )
+            .into_response();
+    }
+
+    if body.redirect_uris.len() > MAX_REDIRECT_URIS_PER_CLIENT {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_client_metadata",
+                "error_description": format!(
+                    "too many redirect_uris; maximum allowed is {}",
+                    MAX_REDIRECT_URIS_PER_CLIENT
+                )
             })),
         )
             .into_response();
@@ -743,14 +769,7 @@ async fn token_handler(
         }
         other => {
             warn!("Token request with unsupported grant_type: {other}");
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "unsupported_grant_type",
-                    "error_description": "unsupported grant_type"
-                })),
-            )
-                .into_response()
+            token_error("unsupported_grant_type", "unsupported grant_type")
         }
     }
 }
@@ -975,7 +994,7 @@ fn mint_token_response(
             .into_response();
     }
 
-    (
+    let mut resp = (
         StatusCode::OK,
         Json(serde_json::json!({
             "access_token": access_token,
@@ -985,7 +1004,14 @@ fn mint_token_response(
             "scope": capability.to_string(),
         })),
     )
-        .into_response()
+        .into_response();
+
+    // RFC 6749 §5.1 — token responses MUST NOT be cached.
+    let headers = resp.headers_mut();
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
+
+    resp
 }
 
 // ─── Device Authorization (RFC 8628) ─────────────────────────────────────────
@@ -1124,6 +1150,16 @@ async fn device_approve_handler(
         return Html(error_page(
             "Invalid or expired request. Reload the device authorization page and try again.",
         ));
+    }
+
+    // Reject oversized user_code before any allocation-heavy normalization or
+    // O(n) map scan.  Real codes are at most 9 bytes (XXXX-XXXX).
+    if form.user_code.len() > MAX_USER_CODE_LENGTH {
+        warn!(
+            "Device approval rejected: user_code too long ({} bytes)",
+            form.user_code.len()
+        );
+        return Html(error_page("Invalid device code"));
     }
 
     // Normalize user_code: strip dashes, uppercase.
@@ -1328,14 +1364,22 @@ fn redirect_with_error(
 
 fn token_error(error_type: &str, description: &str) -> Response {
     warn!("Token error: {error_type}: {description}");
-    (
+    let mut resp = (
         StatusCode::BAD_REQUEST,
         Json(serde_json::json!({
             "error": error_type,
             "error_description": description,
         })),
     )
-        .into_response()
+        .into_response();
+
+    // RFC 6749 §5.2 — error responses from the token endpoint also MUST NOT be
+    // cached, as they may contain sensitive error details.
+    let headers = resp.headers_mut();
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
+
+    resp
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
@@ -3918,6 +3962,249 @@ mod tests {
         assert!(
             !desc.contains(injected),
             "error_description must not reflect caller input {injected:?}, got: {desc:?}"
+        );
+    }
+
+    // ── Fix 1: redirect_uri count cap ─────────────────────────────────────────
+
+    /// Registering with more than MAX_REDIRECT_URIS_PER_CLIENT URIs is rejected
+    /// with 400 invalid_client_metadata (DoS guard).
+    #[tokio::test]
+    async fn test_register_too_many_redirect_uris_rejected() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        // Build a list of 11 valid redirect URIs (one over the limit of 10).
+        let uris: Vec<String> = (0..=MAX_REDIRECT_URIS_PER_CLIENT)
+            .map(|i| format!("https://example.com/cb{i}"))
+            .collect();
+
+        let resp = app
+            .oneshot(post_json(
+                "/oauth/register",
+                serde_json::json!({
+                    "client_name": "Too Many URIs",
+                    "redirect_uris": uris,
+                }),
+            ))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(
+            json["error"], "invalid_client_metadata",
+            "expected invalid_client_metadata, got: {json}"
+        );
+        assert!(
+            json["error_description"]
+                .as_str()
+                .unwrap_or("")
+                .contains("redirect_uri"),
+            "error_description must mention redirect_uri, got: {json}"
+        );
+    }
+
+    /// Registering with exactly MAX_REDIRECT_URIS_PER_CLIENT URIs (the boundary)
+    /// must succeed with 201 Created.
+    #[tokio::test]
+    async fn test_register_exactly_max_redirect_uris_accepted() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let uris: Vec<String> = (0..MAX_REDIRECT_URIS_PER_CLIENT)
+            .map(|i| format!("https://example.com/cb{i}"))
+            .collect();
+
+        let resp = app
+            .oneshot(post_json(
+                "/oauth/register",
+                serde_json::json!({
+                    "client_name": "Max URIs Client",
+                    "redirect_uris": uris,
+                }),
+            ))
+            .await
+            .expect("request");
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::CREATED,
+            "exactly MAX_REDIRECT_URIS_PER_CLIENT URIs must be accepted"
+        );
+        let json = body_json(resp).await;
+        assert!(!json["client_id"].as_str().unwrap_or("").is_empty());
+    }
+
+    // ── Fix 2: device user_code length cap ───────────────────────────────────
+
+    /// A device approval POST with a huge user_code (after a valid CSRF token)
+    /// must be rejected with an error page — no large allocations or O(n) scan.
+    #[tokio::test]
+    async fn test_device_approve_oversized_user_code_rejected() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        // Obtain a genuine CSRF token via GET /oauth/device so CSRF validation passes.
+        let csrf = device_csrf_token(&app).await;
+
+        // Submit a user_code that is far beyond MAX_USER_CODE_LENGTH.
+        let huge_code = "A".repeat(10_000);
+        let body = format!("user_code={huge_code}&approved=true&csrf_token={csrf}");
+        let resp = app
+            .oneshot(post_form("/oauth/device", &body))
+            .await
+            .expect("request");
+
+        // Handler returns an error page (HTML, status 200 like the other error
+        // pages in device_approve_handler).
+        assert_eq!(resp.status(), StatusCode::OK);
+        let html = String::from_utf8(body_vec(resp).await).unwrap();
+        assert!(
+            html.contains("Error") || html.contains("Invalid"),
+            "oversized user_code must yield an error page, got: {html}"
+        );
+        // Must NOT produce a success page.
+        assert!(
+            !html.contains("Authorized"),
+            "oversized user_code must not approve the device, got: {html}"
+        );
+    }
+
+    /// A normal-length user_code still goes through the full approval flow.
+    /// (Reuses the existing device_approve path — exercises the green case.)
+    #[tokio::test]
+    async fn test_device_approve_normal_length_user_code_accepted() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let client_id = register_client(&app, "https://app.example.com/cb").await;
+
+        // Request a device code so a real user_code exists in the map.
+        let resp = app
+            .clone()
+            .oneshot(post_form(
+                "/oauth/device/code",
+                &format!("client_id={client_id}&scope=read"),
+            ))
+            .await
+            .unwrap();
+        let user_code = body_json(resp).await["user_code"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // Approve with the real (9-char) user_code — must succeed.
+        let csrf = device_csrf_token(&app).await;
+        let body = format!("user_code={user_code}&scope=read&approved=true&csrf_token={csrf}");
+        let resp = app
+            .oneshot(post_form("/oauth/device", &body))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let html = String::from_utf8(body_vec(resp).await).unwrap();
+        assert!(
+            html.contains("Authorized"),
+            "normal-length user_code must be approved, got: {html}"
+        );
+    }
+
+    // ── Fix 3: Cache-Control / Pragma on token responses ─────────────────────
+
+    /// Successful token responses must carry Cache-Control: no-store and
+    /// Pragma: no-cache (RFC 6749 §5.1).
+    #[tokio::test]
+    async fn test_token_success_response_has_no_store_headers() {
+        let (state, _dir) = make_state(true);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (verifier, challenge) = pkce_pair();
+
+        let authorize_uri = format!(
+            "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&code_challenge_method=S256"
+        );
+        let resp = app.clone().oneshot(get_req(&authorize_uri)).await.unwrap();
+        let location = resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let code = location
+            .split("code=")
+            .nth(1)
+            .unwrap()
+            .split('&')
+            .next()
+            .unwrap()
+            .to_owned();
+
+        let body = format!("grant_type=authorization_code&code={code}&code_verifier={verifier}&client_id={client_id}&redirect_uri={redirect_uri}");
+        let resp = app
+            .oneshot(post_form("/oauth/token", &body))
+            .await
+            .expect("token");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let cc = resp
+            .headers()
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(
+            cc, "no-store",
+            "token success must have Cache-Control: no-store, got: {cc:?}"
+        );
+
+        let pragma = resp
+            .headers()
+            .get("pragma")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(
+            pragma, "no-cache",
+            "token success must have Pragma: no-cache, got: {pragma:?}"
+        );
+    }
+
+    /// Error token responses must also carry Cache-Control: no-store and
+    /// Pragma: no-cache (RFC 6749 §5.2).
+    #[tokio::test]
+    async fn test_token_error_response_has_no_store_headers() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        // Trigger a predictable token error: unsupported grant_type.
+        let resp = app
+            .oneshot(post_form("/oauth/token", "grant_type=implicit"))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let cc = resp
+            .headers()
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(
+            cc, "no-store",
+            "token error must have Cache-Control: no-store, got: {cc:?}"
+        );
+
+        let pragma = resp
+            .headers()
+            .get("pragma")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(
+            pragma, "no-cache",
+            "token error must have Pragma: no-cache, got: {pragma:?}"
         );
     }
 }
