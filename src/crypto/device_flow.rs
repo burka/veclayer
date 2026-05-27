@@ -221,6 +221,23 @@ pub async fn run_device_flow(
     http: &dyn HttpClient,
     on_user_prompt: impl Fn(&DeviceAuthorizationResponse),
 ) -> Result<TokenResponse, DeviceFlowError> {
+    run_device_flow_with_sleeper(config, http, on_user_prompt, |d| tokio::time::sleep(d)).await
+}
+
+/// Inner implementation that accepts an injectable sleep function.
+///
+/// Separated so tests can pass a no-op sleeper and exercise the polling
+/// loop instantly, without requiring `tokio`'s `test-util` feature.
+async fn run_device_flow_with_sleeper<S, Fut>(
+    config: &DeviceFlowConfig,
+    http: &dyn HttpClient,
+    on_user_prompt: impl Fn(&DeviceAuthorizationResponse),
+    sleep: S,
+) -> Result<TokenResponse, DeviceFlowError>
+where
+    S: Fn(Duration) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
     let auth = request_device_authorization(config, http).await?;
     on_user_prompt(&auth);
 
@@ -229,7 +246,7 @@ pub async fn run_device_flow(
 
     loop {
         let interval_secs = base_interval + slow_down_offset;
-        tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+        sleep(Duration::from_secs(interval_secs)).await;
 
         match poll_for_token(config, &auth.device_code, http).await {
             Ok(Some(token)) => return Ok(token),
@@ -455,6 +472,46 @@ mod tests {
         assert_eq!(err, expected);
     }
 
+    /// Device-authorization response JSON used by run_device_flow_with_sleeper tests.
+    fn device_auth_response() -> (u16, serde_json::Value) {
+        (
+            200,
+            serde_json::json!({
+                "device_code": "test_device_code",
+                "user_code": "TEST-1234",
+                "verification_uri": "https://example.com/activate",
+                "expires_in": 300,
+                "interval": 5
+            }),
+        )
+    }
+
+    /// A no-op sleep function for use with run_device_flow_with_sleeper.
+    ///
+    /// Records each requested duration into a shared vec for assertion.
+    struct RecordingSleeper {
+        durations: std::sync::Arc<std::sync::Mutex<Vec<Duration>>>,
+    }
+
+    impl RecordingSleeper {
+        fn new() -> (Self, std::sync::Arc<std::sync::Mutex<Vec<Duration>>>) {
+            let durations = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            (
+                Self {
+                    durations: std::sync::Arc::clone(&durations),
+                },
+                durations,
+            )
+        }
+
+        fn into_fn(self) -> impl Fn(Duration) -> std::future::Ready<()> {
+            move |d| {
+                self.durations.lock().unwrap().push(d);
+                std::future::ready(())
+            }
+        }
+    }
+
     #[test]
     fn test_request_device_authorization_success() {
         let http = MockHttpClient::new(vec![(
@@ -545,5 +602,153 @@ mod tests {
     fn test_poll_for_token_access_denied() {
         let http = MockHttpClient::new(vec![(200, serde_json::json!({"error": "access_denied"}))]);
         poll_err(http, DeviceFlowError::AccessDenied);
+    }
+
+    // ── run_device_flow_with_sleeper loop tests ────────────────────────────────
+    //
+    // These tests exercise the polling loop in run_device_flow_with_sleeper
+    // directly, injecting a no-op sleeper so the loop runs without any real
+    // wall-clock delay.  `tokio::time::pause()` / `start_paused = true` both
+    // require the `test-util` feature which is NOT enabled in this workspace's
+    // Cargo.toml (tokio features = ["full"]; test-util is absent from "full" in
+    // tokio ≥1.14).  Injecting the sleeper is the safe alternative.
+
+    /// happy path: one authorization_pending, then token — returns Ok(TokenResponse).
+    #[tokio::test]
+    async fn test_run_device_flow_pending_then_success() {
+        let http = MockHttpClient::new(vec![
+            // call 1: request_device_authorization
+            device_auth_response(),
+            // call 2: poll → still pending
+            (200, serde_json::json!({"error": "authorization_pending"})),
+            // call 3: poll → token granted
+            (
+                200,
+                serde_json::json!({
+                    "access_token": "secret_token",
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                    "scope": "read write"
+                }),
+            ),
+        ]);
+
+        let (sleeper, _durations) = RecordingSleeper::new();
+        let config = test_config("test-client");
+
+        let token = run_device_flow_with_sleeper(&config, &http, |_| {}, sleeper.into_fn())
+            .await
+            .expect("flow should succeed");
+
+        assert_eq!(token.access_token, "secret_token");
+        assert_eq!(token.token_type, "Bearer");
+        assert_eq!(token.expires_in, Some(3600));
+        assert_eq!(token.scope.as_deref(), Some("read write"));
+    }
+
+    /// slow_down accumulates: pending → slow_down → pending → token.
+    ///
+    /// The sleep durations should reflect the growing offset:
+    ///   sleep 1 (before pending):     base=5, offset=0  → 5 s
+    ///   sleep 2 (before slow_down):   base=5, offset=0  → 5 s  (offset bumped to 5 after)
+    ///   sleep 3 (before pending):     base=5, offset=5  → 10 s
+    ///   sleep 4 (before token):       base=5, offset=5  → 10 s
+    #[tokio::test]
+    async fn test_run_device_flow_slow_down_accumulates_then_succeeds() {
+        let http = MockHttpClient::new(vec![
+            // call 1: request_device_authorization
+            device_auth_response(),
+            // call 2: poll → still pending
+            (200, serde_json::json!({"error": "authorization_pending"})),
+            // call 3: poll → slow_down (offset bumped +5)
+            (200, serde_json::json!({"error": "slow_down"})),
+            // call 4: poll → still pending (interval now 10 s)
+            (200, serde_json::json!({"error": "authorization_pending"})),
+            // call 5: poll → token granted
+            (
+                200,
+                serde_json::json!({
+                    "access_token": "slow_token",
+                    "token_type": "Bearer"
+                }),
+            ),
+        ]);
+
+        let (sleeper, durations) = RecordingSleeper::new();
+        let config = test_config("test-client");
+
+        let token = run_device_flow_with_sleeper(&config, &http, |_| {}, sleeper.into_fn())
+            .await
+            .expect("flow should succeed after back-off");
+
+        assert_eq!(token.access_token, "slow_token");
+
+        // Verify that the sleeper was called with the correct durations,
+        // proving slow_down_offset accumulated correctly.
+        let recorded = durations.lock().unwrap();
+        assert_eq!(
+            recorded.len(),
+            4,
+            "expected 4 sleep calls, got {}",
+            recorded.len()
+        );
+        // First two sleeps: base interval (5 s), offset still 0.
+        assert_eq!(
+            recorded[0],
+            Duration::from_secs(5),
+            "sleep[0] should be base 5 s"
+        );
+        assert_eq!(
+            recorded[1],
+            Duration::from_secs(5),
+            "sleep[1] precedes the slow_down response, so offset is still 0 → 5 s"
+        );
+        // After slow_down response, offset becomes 5; next two sleeps are 10 s.
+        assert_eq!(
+            recorded[2],
+            Duration::from_secs(10),
+            "sleep[2] should be 10 s after slow_down"
+        );
+        assert_eq!(
+            recorded[3],
+            Duration::from_secs(10),
+            "sleep[3] should remain 10 s"
+        );
+    }
+
+    /// terminal expired_token → Err(DeviceFlowError::ExpiredCode).
+    #[tokio::test]
+    async fn test_run_device_flow_expired_token() {
+        let http = MockHttpClient::new(vec![
+            device_auth_response(),
+            (200, serde_json::json!({"error": "expired_token"})),
+        ]);
+
+        let (sleeper, _) = RecordingSleeper::new();
+        let config = test_config("test-client");
+
+        let err = run_device_flow_with_sleeper(&config, &http, |_| {}, sleeper.into_fn())
+            .await
+            .expect_err("flow should fail with ExpiredCode");
+
+        assert_eq!(err, DeviceFlowError::ExpiredCode);
+    }
+
+    /// terminal access_denied → Err(DeviceFlowError::AccessDenied).
+    #[tokio::test]
+    async fn test_run_device_flow_access_denied() {
+        let http = MockHttpClient::new(vec![
+            device_auth_response(),
+            (200, serde_json::json!({"error": "access_denied"})),
+        ]);
+
+        let (sleeper, _) = RecordingSleeper::new();
+        let config = test_config("test-client");
+
+        let err = run_device_flow_with_sleeper(&config, &http, |_| {}, sleeper.into_fn())
+            .await
+            .expect_err("flow should fail with AccessDenied");
+
+        assert_eq!(err, DeviceFlowError::AccessDenied);
     }
 }
