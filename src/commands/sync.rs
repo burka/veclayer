@@ -34,17 +34,24 @@ async fn open_stores(data_dir: &Path) -> crate::Result<(MemoryStore, crate::stor
     Ok((git_store, store))
 }
 
-/// Print help for when no scopes are configured, or a named scope was not found.
-fn print_no_scopes_help(all_scopes: &[ResolvedScope], filter_name: &str) {
-    eprintln!("No scopes configured. Add scopes to your config:");
-    eprintln!("  veclayer init --share    # enable git memory for this project");
+/// Build an error message for when no scopes are configured, or a named scope was not found.
+fn no_scopes_error(all_scopes: &[ResolvedScope], filter_name: &str) -> crate::Error {
     if !filter_name.is_empty() && !all_scopes.is_empty() {
         let available: Vec<&str> = all_scopes.iter().map(|s| s.name.as_str()).collect();
-        eprintln!(
+        crate::Error::InvalidOperation(format!(
             "Scope '{}' not found. Available scopes: {}",
             filter_name,
             available.join(", ")
-        );
+        ))
+    } else {
+        // The `init --share` hint only belongs here: it applies when no scopes exist
+        // at all. On the scope-not-found branch above, scopes already exist, so
+        // suggesting `init` would be misleading — list the available names instead.
+        crate::Error::InvalidOperation(
+            "No scopes configured. Add scopes to your config:\n  \
+             veclayer init --share    # enable git memory for this project"
+                .into(),
+        )
     }
 }
 
@@ -70,15 +77,13 @@ pub async fn sync(
             let matched: Vec<&ResolvedScope> =
                 all_scopes.iter().filter(|s| s.name == name).collect();
             if matched.is_empty() {
-                print_no_scopes_help(all_scopes, name);
-                return Ok(());
+                return Err(no_scopes_error(all_scopes, name));
             }
             matched
         }
         None => {
             if all_scopes.is_empty() {
-                print_no_scopes_help(all_scopes, "");
-                return Ok(());
+                return Err(no_scopes_error(all_scopes, ""));
             }
             all_scopes.iter().collect()
         }
@@ -720,30 +725,48 @@ mod tests {
 
     // ── sync: no scopes configured ────────────────────────────────────────────
 
+    /// ERROR: no scopes configured — must return Err with a non-zero exit (via `?`).
     #[tokio::test]
-    async fn test_sync_no_scopes_returns_ok() {
+    async fn test_sync_no_scopes_returns_err() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let result = sync(temp_dir.path(), &[], None, false).await;
-        assert!(result.is_ok());
+        assert!(result.is_err(), "no scopes must return Err, not Ok");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("No scopes configured"),
+            "error must mention 'No scopes configured', got: {msg}"
+        );
     }
 
+    /// ERROR: dry-run with no scopes also returns Err — consistent regardless of dry_run flag.
     #[tokio::test]
-    async fn test_sync_no_scopes_dry_run_returns_ok() {
+    async fn test_sync_no_scopes_dry_run_returns_err() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let result = sync(temp_dir.path(), &[], None, true).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_err(),
+            "no scopes (dry-run) must return Err, not Ok"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("No scopes configured"), "got: {msg}");
     }
 
+    /// ERROR: --scope filter names a scope that doesn't exist (empty scope list).
     #[tokio::test]
-    async fn test_sync_scope_filter_not_found_in_empty_scopes_returns_ok() {
+    async fn test_sync_scope_filter_not_found_in_empty_scopes_returns_err() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        // Filter for a named scope when no scopes exist — should return Ok (advisory stderr)
         let result = sync(temp_dir.path(), &[], Some("my-scope"), false).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_err(),
+            "unknown scope in empty list must return Err, not Ok"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("No scopes configured"), "got: {msg}");
     }
 
+    /// ERROR: --scope filter names a scope not in the non-empty scope list.
     #[tokio::test]
-    async fn test_sync_scope_filter_not_found_in_existing_scopes_returns_ok() {
+    async fn test_sync_scope_filter_not_found_in_existing_scopes_returns_err() {
         use crate::config::ResolvedScope;
         let temp_dir = tempfile::TempDir::new().unwrap();
         let scopes = vec![ResolvedScope {
@@ -752,9 +775,21 @@ mod tests {
             branch: "veclayer-memory".to_string(),
             push: "review".to_string(),
         }];
-        // Filter for a scope that doesn't exist in the list
+        // Filter for a scope that doesn't exist — must Err and name the missing scope.
         let result = sync(temp_dir.path(), &scopes, Some("nonexistent"), false).await;
-        assert!(result.is_ok());
+        assert!(
+            result.is_err(),
+            "unknown scope in non-empty list must return Err, not Ok"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("nonexistent"),
+            "error must name the missing scope, got: {msg}"
+        );
+        assert!(
+            msg.contains("team"),
+            "error must list available scopes, got: {msg}"
+        );
     }
 
     // ── print_entry_list: smoke test ──────────────────────────────────────────
