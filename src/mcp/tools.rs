@@ -308,23 +308,20 @@ async fn store_single_entry(
 
     // Determine the hierarchy level and path for the new chunk.
     //
-    // When a `parent_id` is supplied but the lookup finds no matching node (the
-    // parent was never stored, was deleted, or the prefix is wrong), we fall back
-    // **silently** to `ChunkLevel::CONTENT` (level 7) and use `source_file` as
-    // the path — the same values that would be used for a root-level entry
-    // submitted without any `parent_id`.
-    //
-    // **Contract**: this fallback is intentional and documented.  A hard error
-    // would break callers that store children of ephemeral or already-evicted
-    // parents; the entry is still persisted at content level so no data is lost.
-    // The `parent_id` field in the stored chunk still carries the raw string the
-    // caller provided, so the relationship can be reconstructed later if needed.
-    // See the pinning test `store_nonexistent_parent_id_falls_back_to_content_level`.
+    // - `parent_id` absent → root placement at level 1.
+    // - `parent_id` present and resolved → child of that node.
+    // - `parent_id` present but matches no node → `not_found` error naming the bad id.
+    // - `parent_id` present but matches several (ambiguous prefix) → the store's
+    //   `config` error propagates via `?`.
+    // Silently re-rooting any of these would misplace the entry and mask the caller's mistake.
     let (level, path) = if let Some(pid) = parent_id {
-        if let Ok(Some(parent)) = store.get_by_id_prefix(pid).await {
-            (parent.level.child(), format!("{}/agent", parent.path))
-        } else {
-            (crate::chunk::ChunkLevel::CONTENT, input.source_file.clone())
+        match store.get_by_id_prefix(pid).await? {
+            Some(parent) => (parent.level.child(), format!("{}/agent", parent.path)),
+            None => {
+                return Err(crate::Error::not_found(format!(
+                    "parent_id '{pid}' not found"
+                )));
+            }
         }
     } else {
         (crate::chunk::ChunkLevel(1), input.source_file.clone())
@@ -3500,22 +3497,19 @@ mod tests {
         );
     }
 
-    // ── Parent-ID fallback contract ───────────────────────────────────────
+    // ── Parent-ID resolution contract ────────────────────────────────────
 
-    /// When `parent_id` points to a node that does not exist in the store the
-    /// entry must still be persisted, at `ChunkLevel::CONTENT` (level 7).
-    ///
-    /// This pins the documented fallback contract so that any future change
-    /// (e.g. returning an error instead) is a conscious, visible decision.
+    /// ERROR: a `parent_id` that does not resolve must return an explicit error
+    /// naming the offending id, not silently re-root the entry.
     #[tokio::test]
-    async fn store_nonexistent_parent_id_falls_back_to_content_level() {
+    async fn store_unknown_parent_id_returns_error_naming_bad_id() {
         let (store, blob_store, dir) = make_test_store_with_dir().await;
         let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
 
-        // Deliberately reference a parent that was never inserted.
+        // Use a well-formed hex id that was never inserted.
         let input = StoreInput {
             content: "orphan entry".to_string(),
-            parent_id: Some("does-not-exist-anywhere".to_string()),
+            parent_id: Some("deadbeef00000000".to_string()),
             source_file: "[agent]".to_string(),
             heading: None,
             visibility: "normal".to_string(),
@@ -3528,21 +3522,114 @@ mod tests {
             scope: "personal".to_string(),
         };
 
-        // Must succeed — no error even though the parent is absent.
+        let result =
+            execute_store(&test_ctx(&store, &embedder, &blob_store, dir.path()), input).await;
+
+        assert!(
+            result.is_err(),
+            "an unknown parent_id must return an error, not silently succeed"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("deadbeef00000000"),
+            "error message must name the bad parent_id, got: {err}"
+        );
+        assert!(
+            err.contains("not found"),
+            "error message must say 'not found', got: {err}"
+        );
+
+        // Nothing must have been persisted.
+        let entries = store.list_entries(&[], None, None, 10).await.unwrap();
+        assert!(
+            entries.is_empty(),
+            "no entry must be stored when parent_id is unknown, found {} entries",
+            entries.len()
+        );
+    }
+
+    /// GREEN: a `parent_id` that resolves to an existing node places the child
+    /// under that node (level = parent.level + 1, path contains parent path).
+    #[tokio::test]
+    async fn store_valid_parent_id_places_child_under_parent() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
+
+        // Insert a parent at level 1.
+        let mut parent = make_test_chunk("aabbccdd11223344", "parent node");
+        parent.level = crate::chunk::ChunkLevel(1);
+        parent.path = "some/path".to_string();
+        store.insert_chunks(vec![parent]).await.unwrap();
+
+        let input = StoreInput {
+            content: "child node".to_string(),
+            parent_id: Some("aabbccdd".to_string()), // prefix match
+            source_file: "[agent]".to_string(),
+            heading: None,
+            visibility: "normal".to_string(),
+            perspectives: vec![],
+            relations: vec![],
+            entry_type: None,
+            items: vec![],
+            impression_hint: None,
+            impression_strength: None,
+            scope: "personal".to_string(),
+        };
+
         execute_store(&test_ctx(&store, &embedder, &blob_store, dir.path()), input)
             .await
-            .expect("store with a non-existent parent_id must not fail");
+            .expect("store with a valid parent_id must succeed");
 
-        // The entry must be persisted at the documented fallback level.
+        let entries = store.list_entries(&[], None, None, 10).await.unwrap();
+        let child = entries
+            .iter()
+            .find(|e| e.content == "child node")
+            .expect("child entry not found in store");
+        assert_eq!(
+            child.level.0, 2,
+            "child of a level-1 parent must be level 2, got {}",
+            child.level.0
+        );
+        assert!(
+            child.path.starts_with("some/path"),
+            "child path must be rooted under parent path, got: {}",
+            child.path
+        );
+    }
+
+    /// EDGE: absent `parent_id` (None) uses root placement (level 1), no error.
+    #[tokio::test]
+    async fn store_absent_parent_id_places_at_root() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
+
+        let input = StoreInput {
+            content: "root level entry".to_string(),
+            parent_id: None,
+            source_file: "[agent]".to_string(),
+            heading: None,
+            visibility: "normal".to_string(),
+            perspectives: vec![],
+            relations: vec![],
+            entry_type: None,
+            items: vec![],
+            impression_hint: None,
+            impression_strength: None,
+            scope: "personal".to_string(),
+        };
+
+        execute_store(&test_ctx(&store, &embedder, &blob_store, dir.path()), input)
+            .await
+            .expect("store without parent_id must succeed");
+
         let entries = store.list_entries(&[], None, None, 10).await.unwrap();
         let stored = entries
             .iter()
-            .find(|e| e.content == "orphan entry")
-            .expect("entry was not stored despite non-existent parent");
+            .find(|e| e.content == "root level entry")
+            .expect("entry not found in store");
         assert_eq!(
-            stored.level,
-            crate::chunk::ChunkLevel::CONTENT,
-            "non-existent parent must fall back to CONTENT level (7), got level {}",
+            stored.level.0, 1,
+            "absent parent_id must place entry at level 1, got {}",
             stored.level.0
         );
     }
