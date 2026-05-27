@@ -161,10 +161,10 @@ impl SearchConfig {
     /// Formula: `vector * (1 - alpha) + relevancy_signal * alpha`
     /// where `relevancy_signal = recency * (1 - sw) + salience * sw`
     ///
-    /// Returns pure vector score when alpha is 0.
+    /// Returns a value clamped to `[0, 1]` on all paths, including when alpha is 0.
     /// Entries below min_salience are excluded from salience boosting but not filtered.
     pub fn blend_score(&self, vector_score: f32, chunk: &HierarchicalChunk) -> f32 {
-        if self.recency_alpha > 0.0 {
+        let blended = if self.recency_alpha > 0.0 {
             let recency = chunk.access_profile.relevancy_score(self.recency_window);
 
             let relevancy_signal = if self.salience_weight > 0.0 {
@@ -195,14 +195,14 @@ impl SearchConfig {
             };
             let relevancy_signal = relevancy_signal + creation_boost;
 
-            // The salience bonus and creation boost can push the blended signal
-            // past 1.0; clamp to the documented normalized [0, 1] score range.
-            let blended =
-                vector_score * (1.0 - self.recency_alpha) + relevancy_signal * self.recency_alpha;
-            blended.clamp(0.0, 1.0)
+            vector_score * (1.0 - self.recency_alpha) + relevancy_signal * self.recency_alpha
         } else {
             vector_score
-        }
+        };
+
+        // The salience bonus and creation boost can push the blended signal past 1.0;
+        // clamp to the documented normalized [0, 1] score range on every path.
+        blended.clamp(0.0, 1.0)
     }
 }
 
@@ -1886,9 +1886,9 @@ mod tests {
             ..Default::default()
         };
         let chunk = blend_test_chunk();
-        // Scores should be handled, even if negative (cosine similarity is always non-negative)
+        // blend_score always clamps to [0, 1]; a negative input is clamped to 0.0
         let score = config.blend_score(-0.1, &chunk);
-        assert_eq!(score, -0.1, "Negative scores should pass through unchanged");
+        assert_eq!(score, 0.0, "Negative scores must be clamped to 0.0");
     }
 
     #[test]
@@ -1899,8 +1899,88 @@ mod tests {
             ..Default::default()
         };
         let chunk = blend_test_chunk();
+        // blend_score always clamps to [0, 1]; a score > 1.0 is clamped to 1.0
         let score = config.blend_score(1.5, &chunk);
-        assert_eq!(score, 1.5, "Scores > 1.0 should pass through unchanged");
+        assert_eq!(score, 1.0, "Scores > 1.0 must be clamped to 1.0");
+    }
+
+    // --- blend_score clamp regression tests ---
+
+    /// GREEN: alpha > 0 with in-range inputs produces the expected blended value,
+    /// which must itself be within [0, 1].
+    #[test]
+    fn test_blend_score_alpha_positive_inrange_is_clamped() {
+        let config = SearchConfig {
+            recency_alpha: 0.5,
+            recency_window: None,
+            salience_weight: 0.0, // pure recency for a deterministic relevancy=0.0 result
+            ..Default::default()
+        };
+        let chunk = blend_test_chunk(); // no accesses → relevancy_score = 0.0
+                                        // Expected: 0.6 * 0.5 + 0.0 * 0.5 = 0.3
+        let score = config.blend_score(0.6, &chunk);
+        assert!(
+            (score - 0.3).abs() < 0.01,
+            "Expected blended score ~0.3, got {score}"
+        );
+        assert!(
+            (0.0..=1.0).contains(&score),
+            "score {score} must be in [0, 1]"
+        );
+    }
+
+    /// EDGE: alpha == 0 with an out-of-range base score must return a clamped value.
+    /// This is the regression test for the bug: the early-return branch bypassed the
+    /// clamp, allowing values outside [0, 1] to escape.
+    #[test]
+    fn test_blend_score_alpha_zero_out_of_range_is_clamped() {
+        let config = SearchConfig {
+            recency_alpha: 0.0,
+            ..Default::default()
+        };
+        let chunk = blend_test_chunk();
+
+        // Score above the valid range must be clamped to 1.0.
+        let high = config.blend_score(1.2, &chunk);
+        assert_eq!(
+            high, 1.0,
+            "alpha==0 with vector_score 1.2 must be clamped to 1.0, got {high}"
+        );
+
+        // Score below the valid range must be clamped to 0.0.
+        let low = config.blend_score(-0.3, &chunk);
+        assert_eq!(
+            low, 0.0,
+            "alpha==0 with vector_score -0.3 must be clamped to 0.0, got {low}"
+        );
+    }
+
+    /// BOUNDARY: alpha == 1.0 gives full recency weight; the result must be in [0, 1].
+    /// With no accesses and salience_weight==0 the relevancy signal is 0.0, so the
+    /// blended score must be exactly 0.0 regardless of vector_score.
+    #[test]
+    fn test_blend_score_alpha_one_is_clamped() {
+        let config = SearchConfig {
+            recency_alpha: 1.0,
+            recency_window: None,
+            salience_weight: 0.0,
+            ..Default::default()
+        };
+        let chunk = blend_test_chunk(); // no accesses → relevancy_score = 0.0
+                                        // Expected: vector * 0.0 + 0.0 * 1.0 = 0.0, clamped → 0.0
+        let score = config.blend_score(0.8, &chunk);
+        assert_eq!(score, 0.0, "alpha==1.0 with no accesses must return 0.0");
+        assert!(
+            (0.0..=1.0).contains(&score),
+            "score {score} must be in [0, 1]"
+        );
+
+        // Also verify with a pathological vector_score that would escape without clamping.
+        let score_high = config.blend_score(1.5, &chunk);
+        assert_eq!(
+            score_high, 0.0,
+            "alpha==1.0 ignores vector_score entirely; result is clamped 0.0"
+        );
     }
 
     #[test]
