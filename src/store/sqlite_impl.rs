@@ -2244,6 +2244,64 @@ mod tests {
             .expect("correct dimension batch update should succeed");
     }
 
+    #[tokio::test]
+    async fn insert_empty_embedding_returns_error() {
+        // An empty vec has length 0, which != dimension 4 — must be rejected.
+        let (store, _dir) = create_test_store().await;
+        let chunk = make_chunk_with_embedding("empty emb", "empty.md", vec![]);
+        let result = store.insert_chunks(vec![chunk]).await;
+        assert!(result.is_err(), "empty embedding must be rejected");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("dimension mismatch"),
+            "error must mention 'dimension mismatch', got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn insert_wrong_dimension_leaves_store_unchanged() {
+        let (store, _dir) = create_test_store().await;
+
+        let good = make_chunk_with_embedding("good", "stable.md", vec![1.0, 0.0, 0.0, 0.0]);
+        store.insert_chunks(vec![good]).await.expect("insert good");
+
+        let bad = make_chunk_with_embedding("bad dim", "stable.md", vec![0.1, 0.2, 0.3]);
+        let result = store.insert_chunks(vec![bad]).await;
+        assert!(result.is_err(), "wrong-dimension insert must error");
+
+        let s = store.stats().await.expect("stats");
+        assert_eq!(
+            s.total_chunks, 1,
+            "store must still contain only the original chunk"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_update_embeddings_wrong_dimension_leaves_store_unchanged() {
+        let (store, _dir) = create_test_store().await;
+
+        let chunk = make_chunk("pending for update", "bue.md");
+        let id = chunk.id.clone();
+        store.insert_chunks(vec![chunk]).await.expect("insert");
+
+        let before_count = store
+            .count_pending_embeddings()
+            .await
+            .expect("count before");
+        assert_eq!(before_count, 1);
+
+        let result = store
+            .batch_update_embeddings(vec![(id, vec![0.1, 0.2])])
+            .await;
+        assert!(result.is_err(), "wrong-dimension update must error");
+
+        let after_count = store.count_pending_embeddings().await.expect("count after");
+        assert_eq!(
+            after_count, 1,
+            "chunk must still be pending after rejected update"
+        );
+    }
+
     // --- read_only enforcement ---
 
     /// Open an existing DB in read-only mode. The DB must already be populated
@@ -2372,6 +2430,26 @@ mod tests {
         );
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("read-only"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn read_only_store_insert_rejected_leaves_contents_unchanged() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = create_read_only_store(&dir).await;
+
+        let before = store.stats().await.expect("stats before");
+        assert_eq!(before.total_chunks, 1, "seed chunk must be present");
+
+        let result = store
+            .insert_chunks(vec![make_chunk("blocked", "ro.md")])
+            .await;
+        assert!(result.is_err(), "insert must be rejected");
+
+        let after = store.stats().await.expect("stats after");
+        assert_eq!(
+            after.total_chunks, 1,
+            "store contents must be unchanged after rejected write"
+        );
     }
 
     // --- open: error paths ---
