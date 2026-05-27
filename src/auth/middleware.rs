@@ -379,6 +379,105 @@ mod tests {
         }
     }
 
+    // ── require_admin tests ───────────────────────────────────────────────────
+
+    /// A `Write`-capability token must be rejected (403) by an admin-guarded route.
+    /// This pins the security invariant: Write does NOT imply Admin.
+    #[tokio::test]
+    async fn test_require_admin_rejects_write_capability() {
+        let key = generate_key();
+        let t = now();
+        let jwt = mint_token(&key, Capability::Write, t, t + 3600);
+        let app = build_app_with_guard(auth_state(&key, true), |req, next| {
+            Box::pin(require_admin(req, next))
+        });
+
+        let (status, body) = send(app, Some(&jwt)).await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(
+            body.contains("need admin"),
+            "body should say 'need admin', got: {body:?}"
+        );
+        assert!(
+            body.contains("have write"),
+            "body should say 'have write', got: {body:?}"
+        );
+    }
+
+    /// A `Read`-capability token must also be rejected (403) by an admin-guarded route.
+    #[tokio::test]
+    async fn test_require_admin_rejects_read_capability() {
+        let key = generate_key();
+        let t = now();
+        let jwt = mint_token(&key, Capability::Read, t, t + 3600);
+        let app = build_app_with_guard(auth_state(&key, true), |req, next| {
+            Box::pin(require_admin(req, next))
+        });
+
+        let (status, body) = send(app, Some(&jwt)).await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(
+            body.contains("need admin"),
+            "body should say 'need admin', got: {body:?}"
+        );
+        assert!(
+            body.contains("have read"),
+            "body should say 'have read', got: {body:?}"
+        );
+    }
+
+    /// An `Admin`-capability token must pass an admin-guarded route (200 OK).
+    #[tokio::test]
+    async fn test_require_admin_allows_admin_capability() {
+        let key = generate_key();
+        let t = now();
+        let jwt = mint_token(&key, Capability::Admin, t, t + 3600);
+        let app = build_app_with_guard(auth_state(&key, true), |req, next| {
+            Box::pin(require_admin(req, next))
+        });
+
+        let (status, body) = send(app, Some(&jwt)).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "admin");
+    }
+
+    // ── enforce_capability None-branch test ───────────────────────────────────
+
+    /// When no `Capability` extension is present (i.e. `auth_middleware` was not
+    /// wired up), `enforce_capability` must return 500 with the sentinel message.
+    /// This ensures the server fails loudly rather than silently permitting access.
+    #[tokio::test]
+    async fn test_enforce_capability_returns_500_when_no_capability_extension() {
+        // Deliberately omit auth_middleware so no Capability is injected.
+        let app = Router::new().route(
+            "/",
+            get(cap_handler_fn).layer(middleware::from_fn(|req, next| {
+                Box::pin(require_admin(req, next))
+            })),
+        );
+
+        let request = Request::builder()
+            .uri("/")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let body_bytes = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&body_bytes);
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            body.contains("No capability in request extensions"),
+            "body should contain the sentinel message, got: {body:?}"
+        );
+    }
+
     #[tokio::test]
     async fn test_claims_injected_into_extensions() {
         let key = generate_key();
