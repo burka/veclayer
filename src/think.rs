@@ -361,7 +361,9 @@ async fn write_think_results(
 
     // Compact: apply aging
     let aging_config = crate::aging::AgingConfig::load(data_dir);
-    let _ = crate::aging::apply_aging(store, &aging_config).await;
+    if let Err(e) = crate::aging::apply_aging(store, &aging_config).await {
+        tracing::warn!("think: aging cycle failed: {}", e);
+    }
 
     Ok(ThinkResult {
         narrative_id,

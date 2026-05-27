@@ -467,7 +467,9 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
         }
 
         if !access_updates.is_empty() {
-            let _ = self.store.update_access_profiles(access_updates).await;
+            if let Err(e) = self.store.update_access_profiles(access_updates).await {
+                tracing::warn!("search: failed to update access profiles: {}", e);
+            }
         }
 
         Ok(hierarchical_results)

@@ -249,7 +249,9 @@ impl<E: Embedder> VecLayer<E> {
                 (r.chunk.id.clone(), ap)
             })
             .collect();
-        let _ = self.store.update_access_profiles(ids).await;
+        if let Err(e) = self.store.update_access_profiles(ids).await {
+            tracing::warn!("recall: failed to update access profiles: {}", e);
+        }
 
         Ok(results)
     }
@@ -291,10 +293,13 @@ impl<E: Embedder> VecLayer<E> {
         // Track access
         let mut entry_updated = entry.clone();
         entry_updated.access_profile.record_access();
-        let _ = self
+        if let Err(e) = self
             .store
             .update_access_profiles(vec![(entry.id.clone(), entry_updated.access_profile)])
-            .await;
+            .await
+        {
+            tracing::warn!("focus: failed to update access profiles: {}", e);
+        }
 
         Ok(Some(FocusResult {
             entry,
