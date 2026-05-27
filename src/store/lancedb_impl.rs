@@ -23,6 +23,12 @@ pub(crate) const TABLE_NAME: &str = "chunks";
 /// Auto-compaction threshold: prune old versions when version count exceeds this.
 const MAX_VERSIONS: usize = 50;
 
+/// Byte offset into the source document at which this chunk starts.
+/// `start_offset` and `end_offset` are not persisted in LanceDB; they are
+/// populated only during the initial parsing pass and are set to zero when
+/// a chunk is reconstructed from the LanceDB store.
+const CHUNK_BYTE_OFFSET_NOT_STORED: usize = 0;
+
 const EMBEDDING_EMBEDDED_FILTER: &str = "embedding_status = 'embedded'";
 const EMBEDDING_PENDING_FILTER: &str = "embedding_status = 'pending'";
 const EMBEDDING_EMBEDDED_SQL: &str = "'embedded'";
@@ -115,6 +121,46 @@ fn like_escape_pattern(s: &str) -> String {
 
 fn eq_filter(column: &str, value: &str) -> String {
     format!("{} = '{}'", column, sql_escape(value))
+}
+
+/// Format a Unix epoch timestamp as a decimal integer literal for safe
+/// inclusion in a LanceDB/DataFusion filter predicate.
+///
+/// # Injection safety
+///
+/// `i64` can only produce the characters `[-0-9]`. The returned string
+/// is always a bare decimal (or negative decimal) integer with no quotes,
+/// parentheses, or SQL keywords — it cannot alter the predicate structure
+/// even if the call site were ever refactored to accept a wider type.
+///
+/// Example output: `"1716816000"`, `"-3600"`, `"0"`.
+fn timestamp_filter_value(ts: i64) -> String {
+    let s = ts.to_string();
+    debug_assert!(
+        s.bytes().all(|b| b.is_ascii_digit() || b == b'-'),
+        "timestamp filter literal must contain only [-0-9], got {s:?}"
+    );
+    s
+}
+
+/// Append `created_at` range predicates for the optional `since`/`until` bounds.
+///
+/// `i64::MIN` / `i64::MAX` are treated as unbounded and emit no predicate: they
+/// impose no real constraint, and `i64::MIN` in particular cannot be embedded as
+/// a DataFusion `Int64` literal — its magnitude (`9223372036854775808`) exceeds
+/// `i64::MAX`, so the SQL parser promotes it to `Float64` and then fails the
+/// `Int64` conversion. Omitting the no-op bound keeps every `i64` input safe.
+fn push_timestamp_filters(filters: &mut Vec<String>, since: Option<i64>, until: Option<i64>) {
+    if let Some(s) = since {
+        if s > i64::MIN {
+            filters.push(format!("created_at >= {}", timestamp_filter_value(s)));
+        }
+    }
+    if let Some(u) = until {
+        if u < i64::MAX {
+            filters.push(format!("created_at <= {}", timestamp_filter_value(u)));
+        }
+    }
 }
 
 fn is_commit_conflict(e: &lancedb::Error) -> bool {
@@ -1058,8 +1104,8 @@ impl LanceStore {
                 } else {
                     Some(headings.value(i).to_string())
                 },
-                start_offset: 0,
-                end_offset: 0,
+                start_offset: CHUNK_BYTE_OFFSET_NOT_STORED,
+                end_offset: CHUNK_BYTE_OFFSET_NOT_STORED,
                 cluster_memberships,
                 entry_type,
                 summarizes,
@@ -1540,12 +1586,7 @@ impl VectorStore for LanceStore {
                 .collect();
             filters.push(format!("({})", clauses.join(" OR ")));
         }
-        if let Some(s) = since {
-            filters.push(format!("created_at >= {}", s));
-        }
-        if let Some(u) = until {
-            filters.push(format!("created_at <= {}", u));
-        }
+        push_timestamp_filters(&mut filters, since, until);
 
         let mut q = table.query();
         if !filters.is_empty() {
@@ -1594,12 +1635,7 @@ impl VectorStore for LanceStore {
                 .collect();
             filters.push(format!("({})", clauses.join(" OR ")));
         }
-        if let Some(s) = since {
-            filters.push(format!("created_at >= {}", s));
-        }
-        if let Some(u) = until {
-            filters.push(format!("created_at <= {}", u));
-        }
+        push_timestamp_filters(&mut filters, since, until);
 
         let mut query = table.query();
         if !filters.is_empty() {
@@ -1660,6 +1696,10 @@ impl VectorStore for LanceStore {
     ///   add-before-delete swap unsafe (duplicate rows) and a proper atomic
     ///   replace requires a LanceDB-level merge operation.  That rework is
     ///   tracked separately.
+    /// * The delete-succeeds/add-fails data-loss path is not unit-tested:
+    ///   injecting a post-delete failure would require a fault hook the
+    ///   LanceDB API does not expose. The pinning tests cover the reachable
+    ///   behaviors (partial/unknown-id skips return `Ok`).
     ///
     /// # Unknown IDs are silently skipped
     ///
@@ -3961,6 +4001,408 @@ mod tests {
         assert!(
             ghost.is_none(),
             "ghost id must not have been inserted into the store"
+        );
+    }
+
+    // ── timestamp_filter_value unit tests ─────────────────────────────────────
+
+    /// Positive timestamps produce a plain decimal string with no SQL-special chars.
+    #[test]
+    fn test_timestamp_filter_value_positive() {
+        assert_eq!(timestamp_filter_value(0), "0");
+        assert_eq!(timestamp_filter_value(1), "1");
+        assert_eq!(timestamp_filter_value(1_716_816_000), "1716816000");
+        assert_eq!(timestamp_filter_value(i64::MAX), i64::MAX.to_string());
+    }
+
+    /// Negative timestamps (pre-epoch or timezone offsets) produce a leading minus
+    /// and nothing else — no quotes, operators, or keywords.
+    #[test]
+    fn test_timestamp_filter_value_negative() {
+        assert_eq!(timestamp_filter_value(-1), "-1");
+        assert_eq!(timestamp_filter_value(-3600), "-3600");
+        assert_eq!(timestamp_filter_value(i64::MIN), i64::MIN.to_string());
+    }
+
+    /// The output contains only characters from `[-0-9]` — impossible to break
+    /// out of a numeric position in a filter predicate regardless of value.
+    #[test]
+    fn test_timestamp_filter_value_only_numeric_chars() {
+        for ts in [i64::MIN, -1, 0, 1, i64::MAX] {
+            let s = timestamp_filter_value(ts);
+            assert!(
+                s.chars().all(|c| c.is_ascii_digit() || c == '-'),
+                "timestamp_filter_value({ts}) = {s:?} contains non-numeric chars"
+            );
+            // No SQL keywords or metacharacters.
+            assert!(!s.contains('\''), "must not contain single quote");
+            assert!(!s.contains(' '), "must not contain space");
+            assert!(!s.contains(';'), "must not contain semicolon");
+        }
+    }
+
+    // ── search_text tests ─────────────────────────────────────────────────────
+
+    /// Empty query string returns all chunks (no word filters applied).
+    #[tokio::test]
+    async fn test_search_text_empty_query_returns_all() {
+        let (store, _temp) = create_test_store().await;
+
+        let chunk1 = create_test_chunk("st-all-1", "Alpha content", ChunkLevel::H1);
+        let chunk2 = create_test_chunk("st-all-2", "Beta content", ChunkLevel::H1);
+        store.insert_chunks(vec![chunk1, chunk2]).await.unwrap();
+
+        let results = store.search_text("", &[], None, None, 10).await.unwrap();
+        let ids: Vec<&str> = results.iter().map(|c| c.id.as_str()).collect();
+        assert!(
+            ids.contains(&"st-all-1") && ids.contains(&"st-all-2"),
+            "empty query must return all inserted chunks, got {ids:?}"
+        );
+    }
+
+    /// Query with no matching content returns an empty vec, not an error.
+    #[tokio::test]
+    async fn test_search_text_no_matches_returns_empty() {
+        let (store, _temp) = create_test_store().await;
+
+        let chunk = create_test_chunk("st-nm-1", "Only this content", ChunkLevel::H1);
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let results = store
+            .search_text("xyzzy_not_present", &[], None, None, 10)
+            .await
+            .unwrap();
+        assert!(
+            results.is_empty(),
+            "non-matching query must return empty results"
+        );
+    }
+
+    /// k larger than the table size returns all matching rows, not an error.
+    #[tokio::test]
+    async fn test_search_text_k_larger_than_table_returns_all() {
+        let (store, _temp) = create_test_store().await;
+
+        let chunk1 = create_test_chunk("st-big-1", "Rust programming", ChunkLevel::H1);
+        let chunk2 = create_test_chunk("st-big-2", "Rust memory safety", ChunkLevel::H1);
+        store.insert_chunks(vec![chunk1, chunk2]).await.unwrap();
+
+        // Limit of 9999 — much larger than the 2 rows in the table.
+        let results = store
+            .search_text("Rust", &[], None, None, 9999)
+            .await
+            .unwrap();
+        assert_eq!(
+            results.len(),
+            2,
+            "limit larger than table size must return all matching rows"
+        );
+    }
+
+    /// `search_text` respects the `limit` parameter.
+    #[tokio::test]
+    async fn test_search_text_limit_is_respected() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk1 = create_test_chunk("st-lim-1", "common word alpha", ChunkLevel::H1);
+        chunk1.access_profile.created_at = 3000;
+        let mut chunk2 = create_test_chunk("st-lim-2", "common word beta", ChunkLevel::H1);
+        chunk2.access_profile.created_at = 2000;
+        let mut chunk3 = create_test_chunk("st-lim-3", "common word gamma", ChunkLevel::H1);
+        chunk3.access_profile.created_at = 1000;
+
+        store
+            .insert_chunks(vec![chunk1, chunk2, chunk3])
+            .await
+            .unwrap();
+
+        let results = store
+            .search_text("common", &[], None, None, 2)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2, "limit=2 must return at most 2 results");
+    }
+
+    /// Results are sorted newest-first (descending `created_at`).
+    #[tokio::test]
+    async fn test_search_text_ordering_newest_first() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk_old = create_test_chunk("st-ord-old", "searchable content", ChunkLevel::H1);
+        chunk_old.access_profile.created_at = 1000;
+
+        let mut chunk_mid = create_test_chunk("st-ord-mid", "searchable content", ChunkLevel::H1);
+        chunk_mid.access_profile.created_at = 2000;
+
+        let mut chunk_new = create_test_chunk("st-ord-new", "searchable content", ChunkLevel::H1);
+        chunk_new.access_profile.created_at = 3000;
+
+        store
+            .insert_chunks(vec![chunk_old, chunk_mid, chunk_new])
+            .await
+            .unwrap();
+
+        let results = store
+            .search_text("searchable", &[], None, None, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(
+            results[0].id, "st-ord-new",
+            "first result must be the newest chunk"
+        );
+        assert_eq!(
+            results[1].id, "st-ord-mid",
+            "second result must be the middle chunk"
+        );
+        assert_eq!(
+            results[2].id, "st-ord-old",
+            "third result must be the oldest chunk"
+        );
+    }
+
+    /// `since` filter excludes chunks created before the boundary.
+    #[tokio::test]
+    async fn test_search_text_since_filter() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut before = create_test_chunk("st-since-before", "needle content", ChunkLevel::H1);
+        before.access_profile.created_at = 999;
+
+        let mut at_boundary = create_test_chunk("st-since-at", "needle content", ChunkLevel::H1);
+        at_boundary.access_profile.created_at = 1000;
+
+        let mut after = create_test_chunk("st-since-after", "needle content", ChunkLevel::H1);
+        after.access_profile.created_at = 1001;
+
+        store
+            .insert_chunks(vec![before, at_boundary, after])
+            .await
+            .unwrap();
+
+        // since=1000: rows with created_at >= 1000 are included.
+        let results = store
+            .search_text("needle", &[], Some(1000), None, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            results.len(),
+            2,
+            "since=1000 must return rows at and after boundary"
+        );
+        let ids: Vec<&str> = results.iter().map(|c| c.id.as_str()).collect();
+        assert!(
+            ids.contains(&"st-since-at"),
+            "boundary row must be included"
+        );
+        assert!(
+            ids.contains(&"st-since-after"),
+            "after row must be included"
+        );
+        assert!(
+            !ids.contains(&"st-since-before"),
+            "before row must be excluded"
+        );
+    }
+
+    /// `until` filter excludes chunks created after the boundary.
+    #[tokio::test]
+    async fn test_search_text_until_filter() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut before = create_test_chunk("st-until-before", "marker content", ChunkLevel::H1);
+        before.access_profile.created_at = 999;
+
+        let mut at_boundary = create_test_chunk("st-until-at", "marker content", ChunkLevel::H1);
+        at_boundary.access_profile.created_at = 1000;
+
+        let mut after = create_test_chunk("st-until-after", "marker content", ChunkLevel::H1);
+        after.access_profile.created_at = 1001;
+
+        store
+            .insert_chunks(vec![before, at_boundary, after])
+            .await
+            .unwrap();
+
+        // until=1000: rows with created_at <= 1000 are included.
+        let results = store
+            .search_text("marker", &[], None, Some(1000), 10)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            results.len(),
+            2,
+            "until=1000 must return rows at and before boundary"
+        );
+        let ids: Vec<&str> = results.iter().map(|c| c.id.as_str()).collect();
+        assert!(
+            ids.contains(&"st-until-before"),
+            "before row must be included"
+        );
+        assert!(
+            ids.contains(&"st-until-at"),
+            "boundary row must be included"
+        );
+        assert!(
+            !ids.contains(&"st-until-after"),
+            "after row must be excluded"
+        );
+    }
+
+    /// Boundary timestamps at i64::MIN and i64::MAX do not panic or cause a
+    /// filter-injection — they emit as plain decimal integers and execute safely.
+    #[tokio::test]
+    async fn test_search_text_extreme_timestamps_do_not_panic() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk = create_test_chunk("st-ext-1", "extreme content", ChunkLevel::H1);
+        chunk.access_profile.created_at = 5000;
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        // i64::MIN as `since` — everything has created_at >= i64::MIN, so all rows returned.
+        let results_min = store
+            .search_text("extreme", &[], Some(i64::MIN), None, 10)
+            .await;
+        assert!(
+            results_min.is_ok(),
+            "since=i64::MIN must not error: {:?}",
+            results_min
+        );
+        assert_eq!(results_min.unwrap().len(), 1);
+
+        // i64::MAX as `until` — everything has created_at <= i64::MAX, so all rows returned.
+        let results_max = store
+            .search_text("extreme", &[], None, Some(i64::MAX), 10)
+            .await;
+        assert!(
+            results_max.is_ok(),
+            "until=i64::MAX must not error: {:?}",
+            results_max
+        );
+        assert_eq!(results_max.unwrap().len(), 1);
+    }
+
+    // ── batch_update_embeddings atomicity / partial-failure tests ─────────────
+
+    /// Partial-failure semantics (documented): when batch_update_embeddings is
+    /// called with a mix of known and unknown IDs, the known IDs are updated and
+    /// the call returns Ok. The unknown IDs are silently skipped (logged WARN).
+    ///
+    /// This test pins the documented behavior: partial success is not an error;
+    /// the rows that were found are correctly updated and no spurious rows appear.
+    #[tokio::test]
+    async fn test_batch_update_embeddings_partial_success_is_ok() {
+        let (store, _temp) = create_test_store().await;
+
+        let mut chunk_a = create_test_chunk("bue-a", "chunk a", ChunkLevel::H1);
+        chunk_a.embedding = None;
+        let mut chunk_b = create_test_chunk("bue-b", "chunk b", ChunkLevel::H1);
+        chunk_b.embedding = None;
+
+        store.insert_chunks(vec![chunk_a, chunk_b]).await.unwrap();
+
+        // Mix: two real IDs + one ghost. The ghost is silently skipped.
+        let result = store
+            .batch_update_embeddings(vec![
+                ("bue-a".to_string(), vec![0.1f32; 384]),
+                ("bue-ghost".to_string(), vec![0.5f32; 384]),
+                ("bue-b".to_string(), vec![0.2f32; 384]),
+            ])
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "mixed known/unknown IDs must return Ok: {:?}",
+            result
+        );
+
+        // Both real chunks must have been updated and be searchable.
+        let retrieved_a = store.get_by_id("bue-a").await.unwrap().unwrap();
+        assert!(
+            retrieved_a.embedding.is_some(),
+            "bue-a must have an embedding after update"
+        );
+
+        let retrieved_b = store.get_by_id("bue-b").await.unwrap().unwrap();
+        assert!(
+            retrieved_b.embedding.is_some(),
+            "bue-b must have an embedding after update"
+        );
+
+        // The ghost must not have been inserted.
+        assert!(
+            store.get_by_id("bue-ghost").await.unwrap().is_none(),
+            "ghost ID must not have been inserted"
+        );
+    }
+
+    /// All-unknown batch returns Ok with a no-op: nothing is deleted or inserted.
+    #[tokio::test]
+    async fn test_batch_update_embeddings_all_unknown_is_noop() {
+        let (store, _temp) = create_test_store().await;
+
+        let chunk = create_test_chunk("bue-noop-1", "untouched", ChunkLevel::H1);
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let result = store
+            .batch_update_embeddings(vec![
+                ("ghost-x".to_string(), vec![0.1f32; 384]),
+                ("ghost-y".to_string(), vec![0.2f32; 384]),
+            ])
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "all-unknown batch must return Ok: {:?}",
+            result
+        );
+
+        // The existing chunk must still be present and unmodified.
+        let still_there = store.get_by_id("bue-noop-1").await.unwrap();
+        assert!(
+            still_there.is_some(),
+            "existing chunk must not be affected by all-unknown batch"
+        );
+    }
+
+    // ── start_offset / end_offset const tests ─────────────────────────────────
+
+    /// Chunks reconstructed from LanceDB always have start_offset == end_offset == 0,
+    /// because byte offsets are not persisted in the store.
+    /// This test pins the value of CHUNK_BYTE_OFFSET_NOT_STORED and confirms
+    /// that round-tripped chunks carry the documented zero default.
+    #[test]
+    fn test_chunk_byte_offset_not_stored_is_zero() {
+        assert_eq!(
+            CHUNK_BYTE_OFFSET_NOT_STORED, 0,
+            "CHUNK_BYTE_OFFSET_NOT_STORED must be 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_round_tripped_chunk_has_zero_byte_offsets() {
+        let (store, _temp) = create_test_store().await;
+
+        // Insert a chunk that was created with non-zero offsets during parsing.
+        let mut chunk = create_test_chunk("offsets-1", "Offset test content", ChunkLevel::H1);
+        chunk.start_offset = 42;
+        chunk.end_offset = 99;
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        // When read back from LanceDB the offsets must be zeroed (not persisted).
+        let retrieved = store.get_by_id("offsets-1").await.unwrap().unwrap();
+        assert_eq!(
+            retrieved.start_offset, CHUNK_BYTE_OFFSET_NOT_STORED,
+            "start_offset must be {} after LanceDB round-trip",
+            CHUNK_BYTE_OFFSET_NOT_STORED
+        );
+        assert_eq!(
+            retrieved.end_offset, CHUNK_BYTE_OFFSET_NOT_STORED,
+            "end_offset must be {} after LanceDB round-trip",
+            CHUNK_BYTE_OFFSET_NOT_STORED
         );
     }
 }
