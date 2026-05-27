@@ -13,9 +13,12 @@ mod time {
     pub const SECS_PER_DAY: i64 = 86_400;
     pub const SECS_PER_WEEK: i64 = 604_800;
     pub const SECS_PER_MONTH: i64 = 2_592_000;
+    #[cfg(test)]
     pub const SECS_PER_YEAR: i64 = 31_536_000;
 }
-use time::{SECS_PER_DAY, SECS_PER_HOUR, SECS_PER_MONTH, SECS_PER_WEEK, SECS_PER_YEAR};
+#[cfg(test)]
+use time::SECS_PER_YEAR;
+use time::{SECS_PER_DAY, SECS_PER_HOUR, SECS_PER_MONTH, SECS_PER_WEEK};
 
 /// RRD-style access tracking with fixed time-window buckets.
 ///
@@ -177,14 +180,10 @@ impl AccessProfile {
             return;
         }
 
-        if elapsed >= SECS_PER_YEAR {
-            self.year = 0;
-            self.month = 0;
-            self.week = 0;
-            self.day = 0;
-            self.hour = 0;
-            self.last_rolled = now;
-        } else if elapsed >= SECS_PER_MONTH {
+        // Also handles year+ elapsed: there is no decaying bucket coarser than
+        // `year`, so everything finer accumulates into it (the year-zeroing
+        // branch was removed — it dropped data).
+        if elapsed >= SECS_PER_MONTH {
             self.year = self
                 .year
                 .saturating_add(self.month)
@@ -337,7 +336,39 @@ mod tests {
     }
 
     #[test]
+    fn test_roll_up_year_preserves_accumulated_count() {
+        // RED→GREEN: year bucket must accumulate finer buckets, not be zeroed.
+        // Profile: year=10, hour=5, total=15; all other finer buckets zero.
+        let base = 1_000_000;
+        let mut profile = AccessProfile::with_created_at(base);
+        profile.year = 10;
+        profile.hour = 5;
+        profile.total = 15;
+
+        let now = base + SECS_PER_YEAR + 1;
+        profile.roll_up(now);
+
+        // year must accumulate hour (and all finer buckets: day/week/month are 0)
+        assert_eq!(
+            profile.year, 15,
+            "year must absorb finer buckets, not be zeroed"
+        );
+        assert_eq!(profile.hour, 0);
+        assert_eq!(profile.day, 0);
+        assert_eq!(profile.week, 0);
+        assert_eq!(profile.month, 0);
+        assert_eq!(profile.total, 15, "total must never be touched by roll_up");
+
+        // Idempotency: a second roll_up with the same `now` leaves everything unchanged.
+        let snapshot = profile.clone();
+        profile.roll_up(now);
+        assert_eq!(profile, snapshot, "roll_up must be idempotent");
+    }
+
+    #[test]
     fn test_roll_up_beyond_year() {
+        // Record two accesses, then trigger a year-level roll-up.
+        // The two old accesses must be preserved in `year`; the new one lands in `hour`.
         let base = 1_000_000;
         let mut profile = AccessProfile::with_created_at(base);
         profile.record_access_at(base + 10);
@@ -348,8 +379,14 @@ mod tests {
         assert_eq!(profile.day, 0);
         assert_eq!(profile.week, 0);
         assert_eq!(profile.month, 0);
-        assert_eq!(profile.year, 0);
+        assert_eq!(profile.year, 2, "the 2 prior accesses must roll into year");
         assert_eq!(profile.total, 3);
+
+        // Idempotency: second roll_up at the same timestamp changes nothing.
+        let now = base + SECS_PER_YEAR + 100;
+        let snapshot = profile.clone();
+        profile.roll_up(now);
+        assert_eq!(profile, snapshot, "roll_up must be idempotent");
     }
 
     #[test]
