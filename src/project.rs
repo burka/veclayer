@@ -135,18 +135,17 @@ fn discover_local_project(start_dir: &Path) -> Option<(PathBuf, crate::config::P
 
 /// Resolve the data directory for a project.
 ///
-/// For git-remote and config-match sources, auto-creates `~/.veclayer/projects/<project>/`.
-/// For local-config, returns the `.veclayer/` directory.
-/// For env-var, uses `~/.veclayer/projects/<project>/`.
+/// For git-remote, config-match, and openclaw-agent sources, auto-creates
+/// `~/.veclayer/projects/<project>/`.  For env-var, uses `VECLAYER_DATA_DIR`
+/// if set, otherwise `~/.veclayer/projects/<project>/`.
+///
+/// `LocalConfig` is handled by the caller directly (data_dir comes from the
+/// walk-up result) so it is not a valid argument here.
 fn resolve_project_data_dir(project: &str, source: ProjectSource) -> Option<PathBuf> {
     let base_dirs = directories::BaseDirs::new()?;
     let veclayer_home = base_dirs.home_dir().join(".veclayer");
 
     let data_dir = match source {
-        ProjectSource::LocalConfig => {
-            // Local .veclayer/ — don't auto-create, just return it
-            return None;
-        }
         ProjectSource::GitRemote | ProjectSource::ConfigMatch | ProjectSource::OpenClawAgent => {
             // Auto-create per-remote store: ~/.veclayer/projects/<remote>/
             let projects_dir = veclayer_home.join("projects").join(project);
@@ -168,6 +167,12 @@ fn resolve_project_data_dir(project: &str, source: ProjectSource) -> Option<Path
             }
         }
         ProjectSource::None => return None,
+        // LocalConfig data_dir comes directly from the walk-up result in
+        // detect_project and is never routed through this function.
+        ProjectSource::LocalConfig => unreachable!(
+            "LocalConfig data_dir is provided by discover_local_project, \
+             not resolved here"
+        ),
     };
 
     Some(data_dir)
@@ -191,10 +196,38 @@ pub fn is_global_project(project: Option<&str>) -> bool {
 mod tests {
     use super::*;
 
+    // ── helpers ───────────────────────────────────────────────────────────────
+
+    /// Clear every env variable that influences project detection so tests
+    /// don't leak state into one another.
+    fn clear_project_env() {
+        std::env::remove_var("VECLAYER_PROJECT");
+        std::env::remove_var("VECLAYER_AGENT_ID");
+        std::env::remove_var("VECLAYER_DATA_DIR");
+    }
+
+    /// Create a temp directory that contains a `.veclayer/` sub-directory and
+    /// optionally a `config.toml` inside it.  Returns the `TempDir` guard
+    /// (caller must keep it alive) and the path to the temp dir.
+    #[cfg(feature = "config")]
+    fn make_local_veclayer_dir(
+        config_toml: Option<&str>,
+    ) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let veclayer_dir = dir.path().join(".veclayer");
+        std::fs::create_dir_all(&veclayer_dir).unwrap();
+        if let Some(toml) = config_toml {
+            std::fs::write(veclayer_dir.join("config.toml"), toml).unwrap();
+        }
+        let root = dir.path().to_path_buf();
+        (dir, root)
+    }
+
+    // ── existing tests (must remain passing) ─────────────────────────────────
+
     #[test]
     fn test_no_project_when_not_in_git_repo() {
-        // Ensure VECLAYER_PROJECT is not set to avoid interference from other tests
-        std::env::remove_var("VECLAYER_PROJECT");
+        clear_project_env();
         // Use /var/tmp which is unlikely to match any config rules
         let result = detect_project(Path::new("/var/tmp"));
         assert_eq!(result.project, None);
@@ -203,7 +236,7 @@ mod tests {
 
     #[test]
     fn test_env_var_overrides_git_remote() {
-        // Set env var temporarily
+        clear_project_env();
         std::env::set_var("VECLAYER_PROJECT", "env-project");
         let result = detect_project(Path::new("/tmp"));
         std::env::remove_var("VECLAYER_PROJECT");
@@ -217,5 +250,161 @@ mod tests {
         assert!(is_global_project(Some("global")));
         assert!(!is_global_project(Some("my-project")));
         assert!(!is_global_project(None));
+    }
+
+    // ── local-dir resolution ──────────────────────────────────────────────────
+
+    /// When a `.veclayer/config.toml` with an explicit `project` field exists
+    /// in the start_dir, detect_project must return LocalConfig with that name
+    /// and the data_dir pointing at the `.veclayer/` directory itself.
+    #[cfg(feature = "config")]
+    #[test]
+    fn test_local_dir_resolution_explicit_project_name() {
+        clear_project_env();
+        let (_guard, root) = make_local_veclayer_dir(Some(r#"project = "myapp""#));
+
+        let result = detect_project(&root);
+
+        assert_eq!(result.project.as_deref(), Some("myapp"));
+        assert_eq!(result.source, ProjectSource::LocalConfig);
+        // data_dir must be the .veclayer/ sub-directory that was found
+        assert_eq!(result.data_dir, Some(root.join(".veclayer")));
+    }
+
+    /// When a `.veclayer/` directory exists but has no `config.toml`, the
+    /// project name falls back to None (no git remote in the temp dir) and
+    /// detection continues to the next method — ending in ProjectSource::None
+    /// since there is no git remote and no other signals.
+    #[cfg(feature = "config")]
+    #[test]
+    fn test_local_dir_no_config_toml_no_git_remote_falls_through() {
+        clear_project_env();
+        let (_guard, root) = make_local_veclayer_dir(None);
+
+        let result = detect_project(&root);
+
+        // No project name can be inferred without a git remote or explicit config.
+        assert_eq!(result.project, None);
+        assert_eq!(result.source, ProjectSource::None);
+    }
+
+    /// Walk-up: start from a sub-directory; the `.veclayer/` directory is in
+    /// the parent.  Detection must still find it and report LocalConfig.
+    #[cfg(feature = "config")]
+    #[test]
+    fn test_local_dir_resolution_walk_up_from_subdirectory() {
+        clear_project_env();
+        let (_guard, root) = make_local_veclayer_dir(Some(r#"project = "walkup""#));
+
+        // Create a deeply nested sub-directory — no .veclayer/ here.
+        let sub = root.join("a").join("b").join("c");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let result = detect_project(&sub);
+
+        assert_eq!(result.project.as_deref(), Some("walkup"));
+        assert_eq!(result.source, ProjectSource::LocalConfig);
+        assert_eq!(result.data_dir, Some(root.join(".veclayer")));
+    }
+
+    // ── fallback precedence ───────────────────────────────────────────────────
+
+    /// ENV var (priority 1) must win over a local `.veclayer/config.toml`
+    /// (priority 4).
+    #[cfg(feature = "config")]
+    #[test]
+    fn test_env_var_wins_over_local_config() {
+        clear_project_env();
+        let (_guard, root) = make_local_veclayer_dir(Some(r#"project = "local-project""#));
+
+        std::env::set_var("VECLAYER_PROJECT", "env-wins");
+        let result = detect_project(&root);
+        std::env::remove_var("VECLAYER_PROJECT");
+
+        assert_eq!(result.project.as_deref(), Some("env-wins"));
+        assert_eq!(result.source, ProjectSource::EnvVar);
+    }
+
+    /// OpenClaw agent ID (priority 3) must win over a local `.veclayer/`
+    /// directory (priority 4) when no git remote is present.
+    #[cfg(feature = "config")]
+    #[test]
+    fn test_openclaw_agent_wins_over_local_config() {
+        clear_project_env();
+        let (_guard, root) = make_local_veclayer_dir(Some(r#"project = "local-project""#));
+
+        std::env::set_var("VECLAYER_AGENT_ID", "agent_abc123");
+        let result = detect_project(&root);
+        std::env::remove_var("VECLAYER_AGENT_ID");
+
+        assert_eq!(result.project.as_deref(), Some("agent_abc123"));
+        assert_eq!(result.source, ProjectSource::OpenClawAgent);
+    }
+
+    // ── error / missing cases ─────────────────────────────────────────────────
+
+    /// An empty `VECLAYER_PROJECT` env var must be treated as unset, so
+    /// detection falls through to the next method.
+    #[test]
+    fn test_empty_env_var_is_ignored() {
+        clear_project_env();
+        std::env::set_var("VECLAYER_PROJECT", "");
+
+        let result = detect_project(Path::new("/var/tmp"));
+        std::env::remove_var("VECLAYER_PROJECT");
+
+        // The empty var must not produce EnvVar source.
+        assert_ne!(result.source, ProjectSource::EnvVar);
+    }
+
+    /// An `VECLAYER_AGENT_ID` that does not begin with `agent_` must be
+    /// ignored — only the canonical OpenClaw format is accepted.
+    #[test]
+    fn test_openclaw_agent_id_without_prefix_is_ignored() {
+        clear_project_env();
+
+        std::env::set_var("VECLAYER_AGENT_ID", "session_xyz");
+        let result = detect_project(Path::new("/var/tmp"));
+        std::env::remove_var("VECLAYER_AGENT_ID");
+
+        assert_ne!(result.source, ProjectSource::OpenClawAgent);
+    }
+
+    /// An empty `VECLAYER_AGENT_ID` env var must be treated as unset.
+    #[test]
+    fn test_empty_openclaw_agent_id_is_ignored() {
+        clear_project_env();
+
+        std::env::set_var("VECLAYER_AGENT_ID", "");
+        let result = detect_project(Path::new("/var/tmp"));
+        std::env::remove_var("VECLAYER_AGENT_ID");
+
+        assert_ne!(result.source, ProjectSource::OpenClawAgent);
+    }
+
+    // ── resolve_project_data_dir ──────────────────────────────────────────────
+
+    /// ProjectSource::None must always yield None from resolve_project_data_dir.
+    #[test]
+    fn test_resolve_data_dir_none_source_returns_none() {
+        clear_project_env();
+        let result = resolve_project_data_dir("anything", ProjectSource::None);
+        assert!(result.is_none());
+    }
+
+    /// When VECLAYER_DATA_DIR is set, EnvVar source must return that path
+    /// exactly, without creating any directories.
+    #[test]
+    fn test_resolve_data_dir_env_var_respects_explicit_data_dir() {
+        clear_project_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let explicit = tmp.path().join("explicit");
+        std::fs::create_dir_all(&explicit).unwrap();
+
+        std::env::set_var("VECLAYER_DATA_DIR", &explicit);
+        let result = resolve_project_data_dir("ignored", ProjectSource::EnvVar);
+        std::env::remove_var("VECLAYER_DATA_DIR");
+
+        assert_eq!(result, Some(explicit));
     }
 }
