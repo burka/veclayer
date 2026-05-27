@@ -40,8 +40,6 @@ pub enum GitError {
     BranchNotFound(String),
     /// Authentication failed (SSH key, credential helper, etc.).
     AuthFailed(String),
-    /// Rebase produced merge conflicts.
-    ConflictOnRebase(Vec<String>),
     /// Remote has diverged and fast-forward is not possible.
     RemoteDiverged,
     /// Worktree operation failed.
@@ -65,9 +63,6 @@ impl fmt::Display for GitError {
             Self::NotARepo => write!(f, "not inside a git repository"),
             Self::BranchNotFound(b) => write!(f, "branch '{b}' not found"),
             Self::AuthFailed(msg) => write!(f, "git authentication failed: {msg}"),
-            Self::ConflictOnRebase(files) => {
-                write!(f, "rebase conflicts in: {}", files.join(", "))
-            }
             Self::RemoteDiverged => write!(f, "remote has diverged; pull required before push"),
             Self::WorktreeError(msg) => write!(f, "worktree error: {msg}"),
             Self::CommandFailed {

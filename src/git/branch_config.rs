@@ -18,8 +18,6 @@ use super::{GitError, DEFAULT_BRANCH};
 pub enum PushMode {
     /// Push automatically after every commit.
     Always,
-    /// Accumulate commits, open pull request for review (future).
-    PullRequest,
     /// Auto-stage to local branch, wait for explicit `sync --push`.
     #[default]
     Review,
@@ -33,7 +31,6 @@ impl Serialize for PushMode {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             PushMode::Always => serializer.serialize_str("always"),
-            PushMode::PullRequest => serializer.serialize_str("pull-request"),
             PushMode::Review => serializer.serialize_str("review"),
             PushMode::Manual => serializer.serialize_str("manual"),
             PushMode::Off => serializer.serialize_str("off"),
@@ -50,12 +47,15 @@ impl<'de> Deserialize<'de> for PushMode {
                 tracing::warn!("push_mode 'auto' is deprecated, use 'always' instead");
                 Ok(PushMode::Always)
             }
-            "pull-request" => Ok(PushMode::PullRequest),
+            "pull-request" => {
+                tracing::warn!("push_mode 'pull-request' is not implemented; treating as 'review'");
+                Ok(PushMode::Review)
+            }
             "review" => Ok(PushMode::Review),
             "manual" => Ok(PushMode::Manual),
             "off" => Ok(PushMode::Off),
             other => Err(serde::de::Error::custom(format!(
-                "unknown push mode '{other}'. Valid: always, pull-request, review, manual, off"
+                "unknown push mode '{other}'. Valid: always, review, manual, off"
             ))),
         }
     }
@@ -64,10 +64,7 @@ impl<'de> Deserialize<'de> for PushMode {
 impl PushMode {
     /// Whether this mode auto-stages entries to the local git branch.
     pub fn auto_stages(&self) -> bool {
-        matches!(
-            self,
-            PushMode::Always | PushMode::Review | PushMode::PullRequest
-        )
+        matches!(self, PushMode::Always | PushMode::Review)
     }
 
     /// Whether this mode pushes to remote immediately after staging.
@@ -85,7 +82,6 @@ impl std::fmt::Display for PushMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PushMode::Always => write!(f, "always"),
-            PushMode::PullRequest => write!(f, "pull-request"),
             PushMode::Review => write!(f, "review"),
             PushMode::Manual => write!(f, "manual"),
             PushMode::Off => write!(f, "off"),
@@ -372,8 +368,8 @@ playbook = "Team-specific patterns and conventions"
     fn test_push_mode_variants() {
         let cases = [
             (r#"push_mode = "always""#, PushMode::Always),
-            (r#"push_mode = "auto""#, PushMode::Always), // backward compat
-            (r#"push_mode = "pull-request""#, PushMode::PullRequest),
+            (r#"push_mode = "auto""#, PushMode::Always), // deprecated alias
+            (r#"push_mode = "pull-request""#, PushMode::Review), // unimplemented alias → review
             (r#"push_mode = "review""#, PushMode::Review),
             (r#"push_mode = "manual""#, PushMode::Manual),
             (r#"push_mode = "off""#, PushMode::Off),
@@ -401,10 +397,6 @@ playbook = "Team-specific patterns and conventions"
         assert!(!PushMode::Review.auto_pushes());
         assert!(PushMode::Review.uses_git());
 
-        assert!(PushMode::PullRequest.auto_stages());
-        assert!(!PushMode::PullRequest.auto_pushes());
-        assert!(PushMode::PullRequest.uses_git());
-
         assert!(!PushMode::Manual.auto_stages());
         assert!(!PushMode::Manual.auto_pushes());
         assert!(PushMode::Manual.uses_git());
@@ -417,9 +409,21 @@ playbook = "Team-specific patterns and conventions"
     #[test]
     fn test_push_mode_display() {
         assert_eq!(PushMode::Always.to_string(), "always");
-        assert_eq!(PushMode::PullRequest.to_string(), "pull-request");
         assert_eq!(PushMode::Review.to_string(), "review");
         assert_eq!(PushMode::Manual.to_string(), "manual");
         assert_eq!(PushMode::Off.to_string(), "off");
+    }
+
+    #[test]
+    fn pull_request_config_value_maps_to_review() {
+        let toml =
+            "[memory]\n[memory.sync]\npush_mode = \"pull-request\"\nbranch = \"veclayer-memory\"\n";
+        let config = parse(toml.as_bytes())
+            .expect("'pull-request' should parse without error as a compat alias");
+        assert_eq!(
+            config.memory.sync.push_mode,
+            PushMode::Review,
+            "'pull-request' must be treated as 'review'"
+        );
     }
 }

@@ -132,7 +132,7 @@ impl McpHandler {
                      Entries with scope 'project' are automatically shared via git. \
                      Supports relations, entry_type, and batch mode via items array."
                 ),
-                PushMode::Review | PushMode::PullRequest => format!(
+                PushMode::Review => format!(
                     "Persist a new memory in the '{proj}' project{branch_info}. \
                      Entries with scope 'project' are staged for team sharing — \
                      the user reviews and pushes them. Ask the user when ready to push. \

@@ -39,7 +39,7 @@ pub struct ScopeConfig {
     pub storage: String,
     /// Git branch name (default: "veclayer-memory").
     pub branch: Option<String>,
-    /// Push mode: "always", "pull-request", "review", "manual", or "off".
+    /// Push mode: "always", "review", "manual", or "off".
     pub push: Option<String>,
 }
 
@@ -1046,7 +1046,10 @@ pub fn parse_push_mode(s: &str) -> crate::git::branch_config::PushMode {
             tracing::warn!("push mode 'auto' is deprecated, use 'always' instead");
             PushMode::Always
         }
-        "pull-request" => PushMode::PullRequest,
+        "pull-request" => {
+            tracing::warn!("push mode 'pull-request' is not implemented; treating as 'review'");
+            PushMode::Review
+        }
         "review" => PushMode::Review,
         "manual" => PushMode::Manual,
         "off" => PushMode::Off,
@@ -1138,7 +1141,7 @@ pub struct ProjectConfig {
     /// Storage backend override for this project ("git", a git URL, or a local path).
     pub storage: Option<String>,
 
-    /// Push mode override for this project ("always", "pull-request", "review", "manual", or "off").
+    /// Push mode override for this project ("always", "review", "manual", or "off").
     pub push: Option<String>,
 
     /// Named scopes to activate for this project.
