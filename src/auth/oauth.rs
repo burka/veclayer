@@ -72,19 +72,21 @@ pub fn is_localhost(server_url: &str) -> bool {
         authority
     };
 
-    host == "localhost" || host == "::1" || host.starts_with("127.")
+    is_loopback_host(host)
 }
 
 /// Validate a redirect URI for OAuth client registration.
 ///
 /// Allowed:
-/// - `https://` (any host)
-/// - `http://localhost` or `http://127.x.x.x`
+/// - `https://` (any host, no embedded credentials or fragment)
+/// - `http://localhost` or `http://127.x.x.x` (no embedded credentials or fragment)
 /// - Custom app schemes (e.g. `myapp://`)
 ///
 /// Rejected:
 /// - `javascript:`, `data:`, `file:`
 /// - `http://` with a non-localhost host
+/// - Any URI containing embedded userinfo (`user:pass@` or `user@`)
+/// - Any URI containing a fragment component (`#`)
 #[must_use]
 pub fn validate_redirect_uri(uri: &str) -> bool {
     let lower = uri.to_lowercase();
@@ -95,26 +97,72 @@ pub fn validate_redirect_uri(uri: &str) -> bool {
         return false;
     }
 
-    // HTTPS is always allowed.
+    // Reject fragment components: OAuth 2.0 (RFC 6749 §3.1.2) prohibits
+    // fragments in redirect URIs.  A fragment in a registered URI cannot be
+    // matched exactly and can interfere with the authorization response.
+    if uri.contains('#') {
+        return false;
+    }
+
+    // Reject embedded userinfo (credentials) in the authority component.
+    // `https://user:pass@evil.com/steal` would otherwise pass the https check
+    // and could be used for credential-harvesting open redirects.
+    //
+    // Strategy: check for `@` between `://` and the first `/` (the authority).
+    if let Some(after_scheme) = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+    {
+        let authority = after_scheme.split('/').next().unwrap_or(after_scheme);
+        if authority.contains('@') {
+            return false;
+        }
+    }
+
+    // HTTPS is allowed for any host (after the above checks).
     if lower.starts_with("https://") {
         return true;
     }
 
-    // HTTP is only allowed for loopback addresses.
+    // HTTP is only allowed for loopback addresses (IPv4 127.0.0.0/8, IPv6
+    // `[::1]`, or `localhost`) per RFC 8252 §8.3.
     if let Some(rest) = lower.strip_prefix("http://") {
-        let host = rest
-            .split('/')
-            .next()
-            .unwrap_or(rest)
-            .split(':')
-            .next()
-            .unwrap_or(rest);
-        return host == "localhost" || host.starts_with("127.");
+        let authority = rest.split('/').next().unwrap_or(rest);
+        return is_loopback_host(authority_host(authority));
     }
 
     // Everything else (custom app schemes like `myapp://`) is allowed,
     // provided it is not one of the rejected schemes above.
     uri.contains("://")
+}
+
+/// Extract the bare host from an HTTP authority, dropping any `:port` suffix
+/// and unwrapping an IPv6 literal: `[::1]:8080` → `::1`, `127.0.0.1:80` →
+/// `127.0.0.1`, `localhost` → `localhost`.
+fn authority_host(authority: &str) -> &str {
+    if let Some(after_bracket) = authority.strip_prefix('[') {
+        // IPv6 literal: the host is everything up to the closing bracket.
+        after_bracket.split(']').next().unwrap_or(after_bracket)
+    } else {
+        // Hostname or IPv4: strip an optional `:port` suffix.
+        authority.split(':').next().unwrap_or(authority)
+    }
+}
+
+/// Returns `true` when `host` is a loopback host: the literal `localhost`, or
+/// any address in IPv4 `127.0.0.0/8` or IPv6 `::1`.
+///
+/// Parses the host as an `IpAddr` so the 127-octet check is exact: a substring
+/// match like `starts_with("127.")` would wrongly accept `127.0.0.1.evil.com`,
+/// a remote host an attacker could register to receive auth codes over plain
+/// HTTP. A non-numeric host that is not `localhost` fails to parse and is
+/// rejected.
+fn is_loopback_host(host: &str) -> bool {
+    if host == "localhost" {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
 }
 
 // ─── Shared state ─────────────────────────────────────────────────────────────
@@ -854,11 +902,28 @@ async fn handle_refresh_token_grant(state: OAuthState, form: TokenRequest) -> Re
             return token_error("invalid_request", "refresh_token is required");
         }
     };
+    // client_id is required for public clients (RFC 6749 §4.1.3).
+    let form_cid = match form.client_id.as_deref() {
+        Some(cid) => cid,
+        None => {
+            return token_error("invalid_request", "client_id is required");
+        }
+    };
 
-    // Validate and revoke atomically to prevent TOCTOU: a concurrent request
-    // cannot redeem the same token between the two operations.
+    // Verify the client binding BEFORE revoking, then revoke — all under one
+    // lock so check-then-revoke stays atomic (no TOCTOU). A wrong/malicious
+    // client_id is rejected without burning the legitimate owner's still-valid
+    // token (denial-of-service vector).
     let (client_id, did, capability) = {
         let mut store = state.token_store.lock().unwrap_or_else(|e| e.into_inner());
+        match store.refresh_token_client_id(refresh) {
+            Ok(bound_cid) if bound_cid.as_str() == form_cid => {}
+            Ok(_) => return token_error("invalid_client", "client_id mismatch"),
+            Err(e) => {
+                warn!("Refresh token exchange failed: {e}");
+                return token_error("invalid_grant", "invalid refresh token");
+            }
+        }
         match store.validate_and_revoke_refresh(refresh) {
             Ok(record) => record,
             Err(e) => {
@@ -867,19 +932,6 @@ async fn handle_refresh_token_grant(state: OAuthState, form: TokenRequest) -> Re
             }
         }
     };
-
-    // Validate client_id (required for public clients per RFC 6749 §4.1.3).
-    // Note: revocation already happened — a mismatched client_id still rejects
-    // the request, and the caller cannot retry since the token is already revoked.
-    let form_cid = match form.client_id.as_deref() {
-        Some(cid) => cid,
-        None => {
-            return token_error("invalid_request", "client_id is required");
-        }
-    };
-    if form_cid != client_id {
-        return token_error("invalid_client", "client_id mismatch");
-    }
 
     mint_token_response(&state, &client_id, &did, capability)
 }
@@ -1135,7 +1187,14 @@ async fn device_page_handler(
 #[derive(Debug, Deserialize)]
 pub struct DeviceApproveForm {
     pub user_code: String,
-    pub scope: Option<String>,
+    // NOTE: no `scope` field here by design.
+    //
+    // The authoritative requested scope is stored server-side in
+    // `PendingDeviceAuth.scope` when the device calls `/oauth/device/code`.
+    // Accepting a user-supplied scope in the approval form would allow
+    // a malicious page or user to escalate beyond what the device requested
+    // (e.g. submitting `scope=admin` for a device that only asked for `scope=read`).
+    // Any `scope` key in the POST body is silently ignored by serde.
     pub approved: Option<String>,
     pub csrf_token: Option<String>,
 }
@@ -1178,15 +1237,6 @@ async fn device_approve_handler(
     // Normalize user_code: strip dashes, uppercase.
     let normalized = normalize_user_code(&form.user_code);
 
-    let scope_str = form.scope.as_deref().unwrap_or("read");
-    let capability = match scope_str.parse::<Capability>() {
-        Ok(cap) => cap,
-        Err(_) => {
-            warn!("Device approval rejected: unknown scope {scope_str:?}");
-            return Html(error_page("Unknown scope"));
-        }
-    };
-
     let mut map = state.device_codes.lock().unwrap_or_else(|e| e.into_inner());
 
     // Find the matching entry by user_code.
@@ -1203,10 +1253,14 @@ async fn device_approve_handler(
         }
         Some(entry) => {
             if form.approved.as_deref() == Some("true") {
-                entry.approved = Some(capability);
+                // Use the server-side stored scope, not any form-supplied value.
+                // This prevents a malicious approval POST from escalating beyond
+                // the scope the device originally requested.
+                let granted_scope = entry.scope;
+                entry.approved = Some(granted_scope);
                 info!(
-                    "Device authorization approved for user code {}",
-                    form.user_code
+                    "Device authorization approved for user code {} with scope {:?}",
+                    form.user_code, granted_scope
                 );
                 Html(device_success_page())
             } else {
@@ -1300,19 +1354,18 @@ fn device_verification_page(prefill_code: &str, csrf_token: &str) -> String {
     let prefill_code = html_escape(prefill_code);
     // CSRF token is URL-safe alphanumeric; escape defensively regardless.
     let csrf_token = html_escape(csrf_token);
+    // The scope dropdown was removed: the granted scope is always the scope the
+    // device originally requested (stored server-side in PendingDeviceAuth.scope).
+    // Presenting a writable dropdown would mislead users into thinking they can
+    // restrict or expand the grant, when in fact any submitted value is ignored.
     let body = format!(
         r#"<h1>Authorize Device</h1>
     <p>Enter the code shown on your device to grant it access.</p>
+    <p class="scope-note">The access level granted will be exactly what the device requested.</p>
     <form method="POST" action="/oauth/device">
       <input type="hidden" name="csrf_token" value="{csrf_token}">
       <label for="user_code">Device Code</label>
       <input type="text" id="user_code" name="user_code" value="{prefill_code}" placeholder="ABCD-EFGH" required>
-      <label for="scope">Access Level</label>
-      <select id="scope" name="scope">
-        <option value="read">read</option>
-        <option value="write">write</option>
-        <option value="admin">admin</option>
-      </select>
       <div class="buttons">
         <button type="submit" name="approved" value="true" class="approve">Approve</button>
         <button type="submit" name="approved" value="false" class="deny">Deny</button>
@@ -1320,7 +1373,8 @@ fn device_verification_page(prefill_code: &str, csrf_token: &str) -> String {
     </form>"#
     );
     let extra_css = "label { display: block; margin-bottom: .3rem; font-weight: bold; } \
-        input[type=text], select { width: 100%; box-sizing: border-box; padding: .6rem; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem; margin-bottom: 1rem; } \
+        input[type=text] { width: 100%; box-sizing: border-box; padding: .6rem; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem; margin-bottom: 1rem; } \
+        .scope-note { color: #555; font-size: .9rem; margin-bottom: 1rem; } \
         .buttons { margin-top: .5rem; }";
     page_shell("Device Authorization", extra_css, &body)
 }
@@ -2889,6 +2943,88 @@ mod tests {
         assert_eq!(json["error"], "invalid_client");
     }
 
+    /// Regression test for refresh-token denial-of-service: a wrong-client
+    /// refresh request must NOT invalidate the token so the legitimate client
+    /// can still use it.
+    ///
+    /// `handle_refresh_token_grant` verifies the submitted `client_id` against
+    /// the token's bound client (via `refresh_token_client_id`) BEFORE revoking,
+    /// all under one lock. A wrong-client attempt is rejected with
+    /// `invalid_client` without burning the legitimate owner's still-valid token.
+    #[tokio::test]
+    async fn test_refresh_wrong_client_does_not_burn_token() {
+        let (state, _dir) = make_state(true);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (verifier, challenge) = pkce_pair();
+
+        // Step 1: Obtain a refresh token via the normal authorization flow.
+        let authorize_uri = format!(
+            "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&code_challenge_method=S256"
+        );
+        let resp = app.clone().oneshot(get_req(&authorize_uri)).await.unwrap();
+        let location = resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let code = location
+            .split("code=")
+            .nth(1)
+            .unwrap()
+            .split('&')
+            .next()
+            .unwrap()
+            .to_owned();
+
+        let body = format!("grant_type=authorization_code&code={code}&code_verifier={verifier}&client_id={client_id}&redirect_uri={redirect_uri}");
+        let resp = app
+            .clone()
+            .oneshot(post_form("/oauth/token", &body))
+            .await
+            .unwrap();
+        let json = body_json(resp).await;
+        let refresh_token = json["refresh_token"].as_str().unwrap().to_owned();
+
+        // Step 2: An attacker submits the token with a wrong client_id.
+        // Expected: rejected with invalid_client; token is NOT burned.
+        let body = format!(
+            "grant_type=refresh_token&refresh_token={refresh_token}&client_id=attacker-client"
+        );
+        let resp = app
+            .clone()
+            .oneshot(post_form("/oauth/token", &body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(
+            json["error"], "invalid_client",
+            "wrong client must be rejected"
+        );
+
+        // Step 3: The legitimate client must still be able to use the token.
+        // This is what FAILS with the current implementation (the token was
+        // already revoked in step 2).
+        let body =
+            format!("grant_type=refresh_token&refresh_token={refresh_token}&client_id={client_id}");
+        let resp = app.oneshot(post_form("/oauth/token", &body)).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "legitimate client must still be able to refresh after a wrong-client attempt"
+        );
+        let json = body_json(resp).await;
+        assert!(
+            json["access_token"].is_string(),
+            "expected a new access token for the legitimate client"
+        );
+    }
+
     // ── Device flow: error paths ──────────────────────────────────────────────
 
     #[tokio::test]
@@ -3145,16 +3281,23 @@ mod tests {
         );
     }
 
-    /// A device approval whose `scope` field cannot be parsed must be rejected
-    /// with the error page — not silently approved with a default capability.
-    /// Discriminating: the old `unwrap_or(Capability::Read)` approved the device
-    /// (success page) and a subsequent poll would mint a token.
+    /// Scope escalation fix: a device that requested `scope=read` receives a
+    /// READ token even when the approval POST submits `scope=admin`.  The
+    /// server-side stored scope (`PendingDeviceAuth.scope`) is authoritative;
+    /// the form-supplied scope field is silently ignored.
+    ///
+    /// Discriminating: before the fix, submitting `scope=admin` in the approval
+    /// form would cause `entry.approved = Some(Capability::Admin)`, minting an
+    /// admin token for a device that only asked for read.
     #[tokio::test]
-    async fn test_device_approve_unknown_scope_rejected() {
+    async fn test_device_approve_scope_escalation_blocked() {
         let (state, _dir) = make_state(false);
+        let signing_key = state.signing_key.clone();
+        let server_did = state.server_did.clone();
         let app = oauth_router(state);
         let client_id = register_client(&app, "https://app.example.com/cb").await;
 
+        // Device requests read scope.
         let resp = app
             .clone()
             .oneshot(post_form(
@@ -3163,33 +3306,101 @@ mod tests {
             ))
             .await
             .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
         let json = body_json(resp).await;
         let device_code = json["device_code"].as_str().unwrap().to_owned();
         let user_code = json["user_code"].as_str().unwrap().to_owned();
 
-        // Approve with an unparseable scope.
+        // Approve with scope=admin in the form body — escalation attempt.
+        // The server must ignore this field and grant only read (entry.scope).
         let csrf = device_csrf_token(&app).await;
         let resp = app
             .clone()
             .oneshot(post_form(
                 "/oauth/device",
-                &format!("user_code={user_code}&scope=garbage&approved=true&csrf_token={csrf}"),
+                &format!("user_code={user_code}&scope=admin&approved=true&csrf_token={csrf}"),
             ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let html = String::from_utf8(body_vec(resp).await).unwrap();
         assert!(
-            html.contains("Unknown scope"),
-            "unparseable scope must be rejected, got: {html}"
-        );
-        assert!(
-            !html.contains("Authorized"),
-            "device must NOT be approved on a bad scope, got: {html}"
+            html.contains("Authorized"),
+            "approval must succeed (scope field is ignored), got: {html}"
         );
 
-        // The entry must still be pending: polling yields authorization_pending,
-        // never a token.
+        // Poll — must get a token with READ capability, not admin.
+        let poll_body = format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code={device_code}&client_id={client_id}"
+        );
+        let resp = app
+            .clone()
+            .oneshot(post_form("/oauth/token", &poll_body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        let access_token = json["access_token"].as_str().expect("access_token");
+        assert!(!access_token.is_empty());
+
+        // Verify the JWT was minted with Read, not Admin.
+        let claims = verify(
+            access_token,
+            &signing_key.verifying_key(),
+            Some(&server_did),
+        )
+        .expect("valid JWT");
+        assert_eq!(
+            claims.cap,
+            Capability::Read,
+            "escalation blocked: token must have Read capability, got: {:?}",
+            claims.cap
+        );
+    }
+
+    /// A device that requested `scope=write` must receive a WRITE token after
+    /// approval, even if the form does not include a scope field.
+    /// Confirms that the server-stored scope (not the form field) is authoritative.
+    #[tokio::test]
+    async fn test_device_approve_write_scope_granted_from_entry() {
+        let (state, _dir) = make_state(false);
+        let signing_key = state.signing_key.clone();
+        let server_did = state.server_did.clone();
+        let app = oauth_router(state);
+        let client_id = register_client(&app, "https://app.example.com/cb").await;
+
+        // Device requests write scope.
+        let resp = app
+            .clone()
+            .oneshot(post_form(
+                "/oauth/device/code",
+                &format!("client_id={client_id}&scope=write"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        let device_code = json["device_code"].as_str().unwrap().to_owned();
+        let user_code = json["user_code"].as_str().unwrap().to_owned();
+
+        // Approve without any scope field — entry.scope (write) is used.
+        let csrf = device_csrf_token(&app).await;
+        let resp = app
+            .clone()
+            .oneshot(post_form(
+                "/oauth/device",
+                &format!("user_code={user_code}&approved=true&csrf_token={csrf}"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let html = String::from_utf8(body_vec(resp).await).unwrap();
+        assert!(
+            html.contains("Authorized"),
+            "approval must succeed, got: {html}"
+        );
+
+        // Poll — must get a token with WRITE capability.
         let poll_body = format!(
             "grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code={device_code}&client_id={client_id}"
         );
@@ -3197,16 +3408,28 @@ mod tests {
             .oneshot(post_form("/oauth/token", &poll_body))
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(resp.status(), StatusCode::OK);
         let json = body_json(resp).await;
-        assert_eq!(json["error"], "authorization_pending");
+        let access_token = json["access_token"].as_str().expect("access_token");
+        let claims = verify(
+            access_token,
+            &signing_key.verifying_key(),
+            Some(&server_did),
+        )
+        .expect("valid JWT");
+        assert_eq!(
+            claims.cap,
+            Capability::Write,
+            "device requesting write must get write token, got: {:?}",
+            claims.cap
+        );
     }
 
-    /// A device approval POST that omits the `scope` field entirely must default
-    /// to `read` and succeed — the error branch added by the unknown-scope fix
-    /// must not swallow the legitimate absent-scope case (`unwrap_or("read")`).
+    /// A device approval POST that omits the `scope` field entirely must succeed —
+    /// the granted scope comes from `entry.scope` (server-side), not from the
+    /// form, so an absent form field has no effect.
     #[tokio::test]
-    async fn test_device_approve_missing_scope_defaults_to_read() {
+    async fn test_device_approve_missing_scope_field_succeeds() {
         let (state, _dir) = make_state(false);
         let app = oauth_router(state);
         let client_id = register_client(&app, "https://app.example.com/cb").await;
@@ -3237,7 +3460,7 @@ mod tests {
         let html = String::from_utf8(body_vec(resp).await).unwrap();
         assert!(
             html.contains("Authorized"),
-            "absent scope must default to read and approve, got: {html}"
+            "absent form scope field must not block approval, got: {html}"
         );
     }
 
@@ -3575,6 +3798,35 @@ mod tests {
         assert!(validate_redirect_uri("http://localhost:3000/cb"));
         assert!(validate_redirect_uri("http://127.0.0.1/callback"));
         assert!(validate_redirect_uri("http://127.0.0.1:9000/cb"));
+        // Any 127.0.0.0/8 address is loopback, not just 127.0.0.1.
+        assert!(validate_redirect_uri("http://127.255.255.254/cb"));
+    }
+
+    /// IPv6 loopback `[::1]` must be accepted for http (RFC 8252 §8.3),
+    /// matching the https behaviour — with and without a port.
+    #[test]
+    fn test_validate_redirect_uri_accepts_http_ipv6_loopback() {
+        assert!(validate_redirect_uri("http://[::1]/callback"));
+        assert!(validate_redirect_uri("http://[::1]:8080/cb"));
+        // https loopback was already accepted; assert it stays consistent.
+        assert!(validate_redirect_uri("https://[::1]/cb"));
+    }
+
+    /// A non-loopback IPv6 literal over http must be rejected.
+    #[test]
+    fn test_validate_redirect_uri_rejects_http_ipv6_non_loopback() {
+        assert!(!validate_redirect_uri("http://[2001:db8::1]/cb"));
+        assert!(!validate_redirect_uri("http://[fe80::1]:9000/cb"));
+    }
+
+    #[test]
+    fn test_authority_host_extraction() {
+        assert_eq!(authority_host("localhost"), "localhost");
+        assert_eq!(authority_host("localhost:3000"), "localhost");
+        assert_eq!(authority_host("127.0.0.1:9000"), "127.0.0.1");
+        assert_eq!(authority_host("[::1]"), "::1");
+        assert_eq!(authority_host("[::1]:8080"), "::1");
+        assert_eq!(authority_host("[2001:db8::1]:443"), "2001:db8::1");
     }
 
     #[test]
@@ -3602,6 +3854,111 @@ mod tests {
         assert!(!validate_redirect_uri("http://example.com/callback"));
         assert!(!validate_redirect_uri("http://192.168.1.100/cb"));
         assert!(!validate_redirect_uri("http://0.0.0.0/cb"));
+    }
+
+    /// A host that merely *starts with* `127.` but is a real DNS name must be
+    /// rejected: `http://127.0.0.1.evil.com/cb` resolves to an attacker host,
+    /// so accepting it would leak auth codes over plain HTTP to a remote party.
+    #[test]
+    fn test_validate_redirect_uri_rejects_loopback_lookalike_host() {
+        assert!(!validate_redirect_uri("http://127.0.0.1.evil.com/cb"));
+        assert!(!validate_redirect_uri("http://localhost.evil.com/cb"));
+        assert!(!validate_redirect_uri("http://127.0.0.1evil.com/cb"));
+        // Empty authority (`http:///path`) has no host and must be rejected.
+        assert!(!validate_redirect_uri("http:///path"));
+    }
+
+    /// The same loopback-lookalike guard applies to `is_localhost`.
+    #[test]
+    fn test_is_localhost_rejects_loopback_lookalike_host() {
+        assert!(!is_localhost("http://127.0.0.1.evil.com"));
+        assert!(!is_localhost("http://localhost.evil.com"));
+        assert!(!is_localhost("127.0.0.1.evil.com"));
+    }
+
+    /// Embedded userinfo (credentials) in https:// URIs must be rejected.
+    /// `https://user:pass@evil.com/steal` could be used for credential-harvesting
+    /// open redirects if registered as a redirect URI.
+    #[test]
+    fn test_validate_redirect_uri_rejects_embedded_credentials() {
+        // user:pass@ form
+        assert!(!validate_redirect_uri("https://user:pass@evil.com/steal"));
+        // user@ form (no password)
+        assert!(!validate_redirect_uri("https://user@evil.com/cb"));
+        // Credentials in http://localhost URI
+        assert!(!validate_redirect_uri("http://user:pass@localhost/cb"));
+        // Uppercase scheme — lower-cased before check
+        assert!(!validate_redirect_uri("HTTPS://user@example.com/cb"));
+    }
+
+    /// Fragment components (#) in redirect URIs must be rejected per RFC 6749 §3.1.2.
+    /// Fragments cannot be meaningfully matched during authorize-time validation.
+    #[test]
+    fn test_validate_redirect_uri_rejects_fragment() {
+        assert!(!validate_redirect_uri("https://example.com/cb#fragment"));
+        assert!(!validate_redirect_uri("https://example.com/cb#"));
+        assert!(!validate_redirect_uri("http://localhost/cb#anchor"));
+        assert!(!validate_redirect_uri("myapp://oauth/cb#frag"));
+    }
+
+    /// Verify that clean https:// URIs without credentials or fragments are still accepted.
+    #[test]
+    fn test_validate_redirect_uri_clean_https_still_accepted() {
+        assert!(validate_redirect_uri("https://example.com/callback"));
+        assert!(validate_redirect_uri(
+            "https://app.myservice.io/oauth/cb?query=param"
+        ));
+        assert!(validate_redirect_uri("https://localhost/cb")); // https localhost is fine
+    }
+
+    /// Registration must reject a URI with embedded credentials via the HTTP endpoint.
+    #[tokio::test]
+    async fn test_register_rejects_redirect_uri_with_embedded_credentials() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let resp = app
+            .oneshot(post_json(
+                "/oauth/register",
+                serde_json::json!({
+                    "client_name": "Phishing Client",
+                    "redirect_uris": ["https://user:pass@evil.com/steal"]
+                }),
+            ))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(
+            json["error"], "invalid_redirect_uri",
+            "embedded credentials in redirect_uri must be rejected, got: {json}"
+        );
+    }
+
+    /// Registration must reject a URI containing a fragment component.
+    #[tokio::test]
+    async fn test_register_rejects_redirect_uri_with_fragment() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let resp = app
+            .oneshot(post_json(
+                "/oauth/register",
+                serde_json::json!({
+                    "client_name": "Fragment Client",
+                    "redirect_uris": ["https://example.com/cb#fragment"]
+                }),
+            ))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(
+            json["error"], "invalid_redirect_uri",
+            "fragment in redirect_uri must be rejected, got: {json}"
+        );
     }
 
     // ── auto_approve production guard ─────────────────────────────────────────

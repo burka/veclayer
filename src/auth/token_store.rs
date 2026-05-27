@@ -200,7 +200,11 @@ impl TokenStore {
         let record = self
             .codes
             .get_mut(code)
-            .ok_or_else(|| Error::not_found(format!("authorization code not found: {code}")))?;
+            // Do NOT include the raw code in this message — authorization codes
+            // are short-lived secrets and must not appear in logs or error
+            // responses.  "not found / expired" is intentionally generic so
+            // callers cannot distinguish the two cases (oracle-attack hardening).
+            .ok_or_else(|| Error::not_found("authorization code not found / expired"))?;
 
         if record.used {
             return Err(Error::InvalidOperation(
@@ -291,6 +295,28 @@ impl TokenStore {
             record.revoked = true;
         }
         let _ = self.save();
+    }
+
+    /// Return the `client_id` bound to a refresh token after validating it is
+    /// neither revoked nor expired — WITHOUT revoking it.
+    ///
+    /// Lets a caller verify the requesting client matches the token's bound
+    /// client *before* committing to revocation, so a wrong/malicious client
+    /// cannot burn a victim's still-valid token (denial of service). Call while
+    /// holding the store lock, immediately before [`validate_and_revoke_refresh`],
+    /// so the check-then-revoke sequence stays atomic.
+    ///
+    /// Errors:
+    /// - `NotFound` — unknown token hash
+    /// - `InvalidOperation` — token revoked or expired
+    pub fn refresh_token_client_id(&self, token: &str) -> Result<String> {
+        let hash = sha256_hex(token);
+        let record = self
+            .refresh_tokens
+            .get(&hash)
+            .ok_or_else(|| Error::not_found("refresh token not found"))?;
+        Self::check_refresh_record(record)?;
+        Ok(record.client_id.clone())
     }
 
     /// Validate and atomically revoke a refresh token in a single call.
@@ -609,6 +635,71 @@ mod tests {
         assert!(
             err.to_string().contains("authorization code not found"),
             "expected 'authorization code not found' error, got: {err}"
+        );
+    }
+
+    // ─── Security: authorization code must not appear in error messages ───────
+
+    /// A lookup miss must NOT embed the raw authorization code in the error
+    /// message.  Authorization codes are short-lived secrets; leaking them into
+    /// log aggregation pipelines via error messages is a security finding.
+    #[test]
+    fn test_consume_code_miss_does_not_leak_raw_code() {
+        let (_dir, mut store) = tmp_store();
+
+        let raw_code = "super-secret-auth-code-value-12345";
+        // 43-char verifier so the length guard does not fire before the miss.
+        let verifier = "A".repeat(43);
+
+        let err = store.consume_code(raw_code, &verifier).unwrap_err();
+        let msg = err.to_string();
+
+        // The error must not contain the raw secret.
+        assert!(
+            !msg.contains(raw_code),
+            "raw authorization code must NOT appear in error message, got: {msg}"
+        );
+        // But it must still be recognisably an "auth code not found" error.
+        assert!(
+            msg.contains("authorization code not found"),
+            "expected 'authorization code not found' in error, got: {msg}"
+        );
+    }
+
+    /// A valid code lookup (happy path) still resolves correctly after the
+    /// redaction change — i.e., the fix does not break the success branch.
+    #[test]
+    fn test_consume_code_hit_resolves_correctly() {
+        let (_dir, mut store, verifier, code) = code_test_harness();
+
+        let consumed = store.consume_code(&code, &verifier).expect("consume");
+        assert_eq!(consumed.did, "did:key:zAlice");
+        assert!(consumed.used, "consumed code must be marked used");
+    }
+
+    /// An expired code must NOT embed the raw code in its error path.
+    /// (The expiry guard fires AFTER the lookup, so the same `record` reference
+    /// is used — the code value is available in scope at that point but must
+    /// not be forwarded into any error message.)
+    #[test]
+    fn test_consume_code_expired_does_not_leak_raw_code() {
+        let (_dir, mut store, verifier, code) = code_test_harness();
+
+        // Force-expire the code.
+        store.codes.get_mut(&code).unwrap().expires_at = 0;
+
+        let err = store.consume_code(&code, &verifier).unwrap_err();
+        let msg = err.to_string();
+
+        // The error must not contain the raw auth code value.
+        assert!(
+            !msg.contains(&code),
+            "raw authorization code must NOT appear in expiry error, got: {msg}"
+        );
+        // Must still be recognisably an expiry error.
+        assert!(
+            msg.contains("expired"),
+            "expected 'expired' in error message, got: {msg}"
         );
     }
 

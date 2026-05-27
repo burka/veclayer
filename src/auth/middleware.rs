@@ -33,7 +33,7 @@ pub struct AuthState {
 /// |-------------------------------------|---------------------------|
 /// | Valid token                         | request forwarded         |
 /// | Invalid / expired token             | 401 Unauthorized          |
-/// | No token, `auth_required = false`   | forwarded with Admin cap  |
+/// | No token, `auth_required = false`   | forwarded with Write cap  |
 /// | No token, `auth_required = true`    | 401 with WWW-Authenticate |
 ///
 /// Wire it up with:
@@ -49,7 +49,12 @@ pub async fn auth_middleware(
 
     match token {
         Some(token_str) => {
-            match token::verify(token_str, &auth.verifying_key, Some(&auth.server_did)) {
+            match token::verify_with_issuer(
+                token_str,
+                &auth.verifying_key,
+                Some(&auth.server_did),
+                Some(&auth.server_did),
+            ) {
                 Ok(claims) => {
                     request.extensions_mut().insert(claims.cap);
                     request.extensions_mut().insert(claims);
@@ -62,7 +67,15 @@ pub async fn auth_middleware(
             }
         }
         None if !auth.auth_required => {
-            request.extensions_mut().insert(Capability::Admin);
+            // Open (no-auth) mode is the local trust mode: the operator has
+            // explicitly disabled authentication, so anonymous callers get the
+            // full data plane (Write permits store/think and, transitively,
+            // recall/focus). We deliberately stop short of Admin: disabling
+            // auth removes the authentication gate, not the authorisation
+            // floor, so a future Admin-only route stays closed to a server
+            // that is unintentionally exposed. Remote exposure in this mode is
+            // surfaced by the open-bind startup warning.
+            request.extensions_mut().insert(Capability::Write);
             next.run(request).await
         }
         None => {
@@ -106,9 +119,9 @@ pub async fn require_admin(request: Request, next: Next) -> Response {
 async fn enforce_capability(request: Request, next: Next, required: Capability) -> Response {
     match request.extensions().get::<Capability>() {
         Some(cap) if cap.permits(required) => next.run(request).await,
-        Some(cap) => (
+        Some(_cap) => (
             StatusCode::FORBIDDEN,
-            format!("Insufficient capability: need {required}, have {cap}"),
+            format!("Insufficient capability: need {required}"),
         )
             .into_response(),
         None => (
@@ -276,8 +289,11 @@ mod tests {
 
         let (status, body) = send(app, None).await;
 
+        // Anonymous callers under auth_required=false get Write (full data
+        // plane in local trust mode), NOT Admin. Disabling auth removes the
+        // authentication gate, not the authorisation floor.
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, "admin");
+        assert_eq!(body, "write");
     }
 
     #[tokio::test]
@@ -344,11 +360,13 @@ mod tests {
     #[tokio::test]
     async fn test_capability_enforcement_read_token_blocks_write_route() {
         let key = generate_key();
+        // "have read" must NOT appear — the 403 body must not disclose the
+        // caller's actual capability (capability disclosure fix).
         check_require_write(
             &key,
             Capability::Read,
             StatusCode::FORBIDDEN,
-            &["need write", "have read"],
+            &["need write"],
         )
         .await;
     }
@@ -399,9 +417,11 @@ mod tests {
             body.contains("need admin"),
             "body should say 'need admin', got: {body:?}"
         );
+        // "have write" must NOT appear — the 403 body must not disclose the
+        // caller's actual capability (capability disclosure fix).
         assert!(
-            body.contains("have write"),
-            "body should say 'have write', got: {body:?}"
+            !body.contains("have write"),
+            "body must not leak 'have write', got: {body:?}"
         );
     }
 
@@ -422,9 +442,11 @@ mod tests {
             body.contains("need admin"),
             "body should say 'need admin', got: {body:?}"
         );
+        // "have read" must NOT appear — the 403 body must not disclose the
+        // caller's actual capability (capability disclosure fix).
         assert!(
-            body.contains("have read"),
-            "body should say 'have read', got: {body:?}"
+            !body.contains("have read"),
+            "body must not leak 'have read', got: {body:?}"
         );
     }
 
@@ -475,6 +497,128 @@ mod tests {
         assert!(
             body.contains("No capability in request extensions"),
             "body should contain the sentinel message, got: {body:?}"
+        );
+    }
+
+    // ── Issuer enforcement tests ──────────────────────────────────────────────
+
+    /// A token whose `iss` is a foreign DID (not the server's own DID) must be
+    /// rejected with 401.  Prevents tokens minted by a different server from
+    /// being accepted even when the signature is otherwise valid.
+    #[tokio::test]
+    async fn test_foreign_issuer_token_rejected() {
+        let key = generate_key();
+        let t = now();
+
+        // Mint a token with a foreign issuer DID instead of SERVER_DID.
+        let foreign_iss = "did:key:zForeignServer";
+        let claims = Claims::new(
+            foreign_iss.to_owned(), // iss = foreign — should be rejected
+            CLIENT_DID.to_owned(),
+            SERVER_DID.to_owned(), // aud still correct
+            Capability::Admin,
+            t,
+            t + 3600,
+        );
+        let jwt = token::mint(&key, &claims).expect("mint");
+        let app = build_app(auth_state(&key, true));
+
+        let (status, body) = send(app, Some(&jwt)).await;
+
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "foreign iss must be rejected"
+        );
+        assert!(body.contains("invalid_token"), "body: {body:?}");
+    }
+
+    /// Under auth_required=false with no token, the anonymous caller receives
+    /// Capability::Write — the full data plane (store/think) in local trust
+    /// mode — and so reaches a write-guarded route.
+    #[tokio::test]
+    async fn test_anon_open_mode_grants_write() {
+        let key = generate_key();
+        let app = build_app_with_guard(auth_state(&key, false), |req, next| {
+            Box::pin(require_write(req, next))
+        });
+
+        // No token presented; auth is disabled.
+        let (status, _body) = send(app, None).await;
+
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "anon open-mode must reach write route"
+        );
+    }
+
+    /// Open mode grants Write, not Admin: an Admin-guarded route must still
+    /// deny the anonymous caller (403). This locks in the authorisation floor
+    /// so a future Admin-only route is not silently exposed in no-auth mode.
+    #[tokio::test]
+    async fn test_anon_open_mode_denied_admin_route() {
+        let key = generate_key();
+        let app = build_app_with_guard(auth_state(&key, false), |req, next| {
+            Box::pin(require_admin(req, next))
+        });
+
+        let (status, _body) = send(app, None).await;
+
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "anon open-mode must not reach admin route"
+        );
+    }
+
+    /// Under auth_required=false with no token, the anonymous caller can
+    /// reach a read-only route (Write permits Read).
+    #[tokio::test]
+    async fn test_anon_open_mode_permits_read_route() {
+        let key = generate_key();
+        let app = build_app_with_guard(auth_state(&key, false), |req, next| {
+            Box::pin(require_read(req, next))
+        });
+
+        let (status, body) = send(app, None).await;
+
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "anon open-mode must reach read route"
+        );
+        // The granted capability is Write (which permits Read).
+        assert_eq!(body, "write");
+    }
+
+    // ── Capability non-disclosure tests ──────────────────────────────────────
+
+    /// The 403 body must not contain the caller's actual capability name.
+    /// Disclosing "have read" or "have write" leaks information about the
+    /// token's privilege level to an attacker probing the API.
+    #[tokio::test]
+    async fn test_forbidden_body_does_not_leak_caller_capability() {
+        let key = generate_key();
+        let t = now();
+        let jwt = mint_token(&key, Capability::Read, t, t + 3600);
+        let app = build_app_with_guard(auth_state(&key, true), |req, next| {
+            Box::pin(require_write(req, next))
+        });
+
+        let (status, body) = send(app, Some(&jwt)).await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        // Required capability is disclosed (helps the caller fix the problem).
+        assert!(body.contains("need write"), "body: {body:?}");
+        // Actual capability must NOT be disclosed.
+        assert!(
+            !body.contains("have "),
+            "body must not leak 'have <cap>', got: {body:?}"
+        );
+        assert!(
+            !body.contains("read"),
+            "body must not leak capability name 'read', got: {body:?}"
         );
     }
 
