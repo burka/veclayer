@@ -306,11 +306,25 @@ async fn store_single_entry(
     let push_mode = ctx.push_mode;
     let parent_id = input.parent_id.as_deref().filter(|s| !s.is_empty());
 
+    // Determine the hierarchy level and path for the new chunk.
+    //
+    // When a `parent_id` is supplied but the lookup finds no matching node (the
+    // parent was never stored, was deleted, or the prefix is wrong), we fall back
+    // **silently** to `ChunkLevel::CONTENT` (level 7) and use `source_file` as
+    // the path — the same values that would be used for a root-level entry
+    // submitted without any `parent_id`.
+    //
+    // **Contract**: this fallback is intentional and documented.  A hard error
+    // would break callers that store children of ephemeral or already-evicted
+    // parents; the entry is still persisted at content level so no data is lost.
+    // The `parent_id` field in the stored chunk still carries the raw string the
+    // caller provided, so the relationship can be reconstructed later if needed.
+    // See the pinning test `store_nonexistent_parent_id_falls_back_to_content_level`.
     let (level, path) = if let Some(pid) = parent_id {
         if let Ok(Some(parent)) = store.get_by_id_prefix(pid).await {
             (parent.level.child(), format!("{}/agent", parent.path))
         } else {
-            (crate::chunk::ChunkLevel(7), input.source_file.clone())
+            (crate::chunk::ChunkLevel::CONTENT, input.source_file.clone())
         }
     } else {
         (crate::chunk::ChunkLevel(1), input.source_file.clone())
@@ -3418,6 +3432,157 @@ mod tests {
         assert!(
             result.contains("store()"),
             "expected store() instruction, got: {result}"
+        );
+    }
+
+    // ── Parent-ID fallback contract ───────────────────────────────────────
+
+    /// When `parent_id` points to a node that does not exist in the store the
+    /// entry must still be persisted, at `ChunkLevel::CONTENT` (level 7).
+    ///
+    /// This pins the documented fallback contract so that any future change
+    /// (e.g. returning an error instead) is a conscious, visible decision.
+    #[tokio::test]
+    async fn store_nonexistent_parent_id_falls_back_to_content_level() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
+
+        // Deliberately reference a parent that was never inserted.
+        let input = StoreInput {
+            content: "orphan entry".to_string(),
+            parent_id: Some("does-not-exist-anywhere".to_string()),
+            source_file: "[agent]".to_string(),
+            heading: None,
+            visibility: "normal".to_string(),
+            perspectives: vec![],
+            relations: vec![],
+            entry_type: None,
+            items: vec![],
+            impression_hint: None,
+            impression_strength: None,
+            scope: "personal".to_string(),
+        };
+
+        // Must succeed — no error even though the parent is absent.
+        execute_store(&test_ctx(&store, &embedder, &blob_store, dir.path()), input)
+            .await
+            .expect("store with a non-existent parent_id must not fail");
+
+        // The entry must be persisted at the documented fallback level.
+        let entries = store.list_entries(&[], None, None, 10).await.unwrap();
+        let stored = entries
+            .iter()
+            .find(|e| e.content == "orphan entry")
+            .expect("entry was not stored despite non-existent parent");
+        assert_eq!(
+            stored.level,
+            crate::chunk::ChunkLevel::CONTENT,
+            "non-existent parent must fall back to CONTENT level (7), got level {}",
+            stored.level.0
+        );
+    }
+
+    // ── execute_think: consolidate action ────────────────────────────────
+
+    /// `consolidate` on an empty store must return a non-error response.
+    ///
+    /// Without the `llm` feature the implementation falls back to the self-
+    /// consolidation nudge.  With the `llm` feature it may reach the LLM or
+    /// also fall back to the nudge if the LLM is unreachable in CI.  Either
+    /// way the call must succeed and return a non-empty string.
+    #[tokio::test]
+    async fn execute_think_consolidate_empty_store_returns_ok() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+        let input = ThinkInput {
+            action: Some("consolidate".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
+        .await;
+        // Must not error — consolidate always returns Ok with a human-readable message.
+        let msg = result.expect("consolidate on empty store must return Ok");
+        assert!(
+            !msg.is_empty(),
+            "consolidate response must be a non-empty string, got empty"
+        );
+        // In all paths (llm feature or not, empty or populated) the response
+        // must contain at least the word "consolidate" so callers know what happened.
+        assert!(
+            msg.to_lowercase().contains("consolidate"),
+            "consolidate response must reference 'consolidate', got: {msg}"
+        );
+    }
+
+    /// `consolidate` on a populated store must return a non-error response.
+    ///
+    /// With the `llm` feature and a reachable LLM, the response contains
+    /// "## Think Cycle Complete".  Without the feature (or when the LLM is
+    /// unreachable) it returns the self-consolidation nudge.  The test asserts
+    /// the union of both outcomes: Ok + non-empty + "consolidate" in the text.
+    #[tokio::test]
+    async fn execute_think_consolidate_populated_store_returns_ok() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+
+        // Populate the store so consolidation has something to reason about.
+        let mut chunk = make_test_chunk(
+            "c0ns01idate000000aaabbbcccddd0000000000000",
+            "Architecture decision: prefer async over sync IO",
+        );
+        chunk.access_profile.record_access();
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let input = ThinkInput {
+            action: Some("consolidate".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
+        .await;
+        let msg = result.expect("consolidate on populated store must return Ok");
+        assert!(
+            !msg.is_empty(),
+            "consolidate response must be non-empty, got empty"
+        );
+        assert!(
+            msg.to_lowercase().contains("consolidate"),
+            "consolidate response must reference 'consolidate', got: {msg}"
         );
     }
 
