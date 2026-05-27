@@ -1077,17 +1077,9 @@ async fn think_history(store: &Arc<StoreBackend>, input: &ThinkInput) -> Result<
     Ok(report)
 }
 
-#[cfg(feature = "llm")]
 async fn think_discover(store: &Arc<StoreBackend>, input: &ThinkInput) -> Result<String> {
     let limit = clamp_result_limit(input.hot_limit.unwrap_or(10));
     crate::think::discover_unlinked_pairs(store, limit).await
-}
-
-#[cfg(not(feature = "llm"))]
-async fn think_discover(_store: &Arc<StoreBackend>, _input: &ThinkInput) -> Result<String> {
-    Err(crate::Error::config(
-        "think(discover) requires the 'llm' feature",
-    ))
 }
 
 async fn think_sync(
@@ -1696,6 +1688,42 @@ mod tests {
         assert!(!result.contains("Git Memory"));
     }
 
+    #[tokio::test]
+    async fn test_think_discover_empty_store() {
+        let (store, blob_store, dir) = make_test_store_with_dir().await;
+
+        let input = ThinkInput {
+            action: Some("discover".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+        let result = execute_think(
+            &test_ctx(
+                &store,
+                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
+                &blob_store,
+                dir.path(),
+            ),
+            input,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            result.contains("No entries in the store. Nothing to discover."),
+            "unexpected result: {result}"
+        );
+    }
+
     #[test]
     fn test_store_single_input_structure() {
         let input = StoreSingleInput {
@@ -2062,40 +2090,6 @@ mod tests {
         let mut chunk = make_test_chunk(id, content);
         chunk.embedding = Some(embeddings.into_iter().next().unwrap());
         chunk
-    }
-
-    #[cfg(feature = "llm")]
-    #[tokio::test]
-    async fn test_discover_empty_store() {
-        let (store, blob_store, dir) = make_test_store_with_dir().await;
-
-        let input = ThinkInput {
-            action: Some("discover".to_string()),
-            hot_limit: Some(10),
-            stale_limit: None,
-            id: None,
-            visibility: None,
-            source_id: None,
-            target_id: None,
-            kind: None,
-            degrade_after_days: None,
-            degrade_to: None,
-            degrade_from: None,
-            direction: None,
-        };
-        let result = execute_think(
-            &test_ctx(
-                &store,
-                &(Arc::new(MockEmbedder::new()) as Arc<dyn crate::Embedder + Send + Sync>),
-                &blob_store,
-                dir.path(),
-            ),
-            input,
-            None,
-        )
-        .await
-        .unwrap();
-        assert!(result.contains("Nothing to discover") || result.contains("No entries"));
     }
 
     #[cfg(all(feature = "embedding-local", feature = "llm"))]
