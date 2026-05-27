@@ -571,6 +571,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::MockEmbedder;
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -752,36 +753,6 @@ mod tests {
 
         async fn count_pending_embeddings(&self) -> Result<usize> {
             Ok(0)
-        }
-    }
-
-    /// Mock embedder for testing
-    struct MockEmbedder {
-        dimension: usize,
-    }
-
-    impl MockEmbedder {
-        fn new(dimension: usize) -> Self {
-            Self { dimension }
-        }
-    }
-
-    impl Embedder for MockEmbedder {
-        fn embed<'a>(
-            &'a self,
-            texts: &'a [&'a str],
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Vec<f32>>>> + Send + 'a>>
-        {
-            let result: Vec<Vec<f32>> = texts.iter().map(|_| vec![1.0; self.dimension]).collect();
-            Box::pin(async move { Ok(result) })
-        }
-
-        fn dimension(&self) -> usize {
-            self.dimension
-        }
-
-        fn name(&self) -> &str {
-            "mock"
         }
     }
 
