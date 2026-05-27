@@ -141,11 +141,22 @@ pub struct OAuthState {
 /// cleared (a stale page simply needs reloading) so it cannot grow unbounded.
 const MAX_DEVICE_CSRF_TOKENS: usize = 1024;
 
+/// Upper bound on outstanding (unconsumed, unexpired) device authorization
+/// codes. Expired entries are purged before this cap is checked, so it only
+/// bites under a flood of fresh requests — bounding memory against a client
+/// that loops the device-code endpoint.
+const MAX_DEVICE_CODES: usize = 1024;
+
 // ─── Consent CSRF tracking ────────────────────────────────────────────────────
 
 /// Maximum length for the OAuth `state` parameter (RFC 6749 does not mandate a
 /// limit but unbounded values are a DoS/injection risk).
 const MAX_STATE_LEN: usize = 512;
+
+/// Upper bound on outstanding consent sessions; when exceeded the map is
+/// cleared (a stale consent page simply needs reloading) so it cannot grow
+/// unbounded under a flood of `GET /oauth/authorize` renders.
+const MAX_PENDING_CONSENTS: usize = 1024;
 
 /// Short-lived record created when the consent page is rendered.
 ///
@@ -532,16 +543,21 @@ async fn authorize_get_handler(
     // Generate a CSRF token for this consent session and store it server-side
     // so the POST handler can validate it (prevents cross-site consent forgery).
     let csrf_token = generate_opaque_token();
-    state
-        .pending_consents
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(
+    {
+        let mut consents = state
+            .pending_consents
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if consents.len() >= MAX_PENDING_CONSENTS {
+            consents.clear();
+        }
+        consents.insert(
             csrf_token.clone(),
             PendingConsent {
                 csrf_token: csrf_token.clone(),
             },
         );
+    }
 
     // Show consent page.
     Html(consent_page(
@@ -1002,11 +1018,19 @@ async fn device_code_handler(
         denied: false,
     };
 
-    state
-        .device_codes
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(device_code.clone(), pending);
+    {
+        let mut map = state.device_codes.lock().unwrap_or_else(|e| e.into_inner());
+        // Drop expired entries first so a steady stream of legitimate,
+        // short-lived codes never trips the cap; then bound the live set.
+        map.retain(|_, e| unix_now() <= e.expires_at);
+        if map.len() >= MAX_DEVICE_CODES {
+            return token_error(
+                "temporarily_unavailable",
+                "too many pending device authorizations; try again shortly",
+            );
+        }
+        map.insert(device_code.clone(), pending);
+    }
 
     let url = &state.server_url;
     let formatted_code = format_user_code(&user_code);
@@ -1046,11 +1070,7 @@ async fn device_page_handler(
         tokens.insert(csrf_token.clone());
     }
 
-    Html(device_verification_page(
-        &state.server_url,
-        &prefill,
-        &csrf_token,
-    ))
+    Html(device_verification_page(&prefill, &csrf_token))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1090,7 +1110,13 @@ async fn device_approve_handler(
     let normalized = normalize_user_code(&form.user_code);
 
     let scope_str = form.scope.as_deref().unwrap_or("read");
-    let capability = scope_str.parse::<Capability>().unwrap_or(Capability::Read);
+    let capability = match scope_str.parse::<Capability>() {
+        Ok(cap) => cap,
+        Err(_) => {
+            warn!("Device approval rejected: unknown scope {scope_str:?}");
+            return Html(error_page("Unknown scope"));
+        }
+    };
 
     let mut map = state.device_codes.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -1201,8 +1227,7 @@ fn consent_page(
     page_shell("Authorize Access", extra_css, &body)
 }
 
-fn device_verification_page(server_url: &str, prefill_code: &str, csrf_token: &str) -> String {
-    let _ = server_url; // available for future use if needed
+fn device_verification_page(prefill_code: &str, csrf_token: &str) -> String {
     let prefill_code = html_escape(prefill_code);
     // CSRF token is URL-safe alphanumeric; escape defensively regardless.
     let csrf_token = html_escape(csrf_token);
@@ -2239,6 +2264,42 @@ mod tests {
         assert!(html.contains(&client_id));
     }
 
+    /// The consent-session map is bounded: once it reaches MAX_PENDING_CONSENTS
+    /// the next consent-page render clears it before inserting, so it cannot
+    /// grow without bound under a flood of `GET /oauth/authorize` renders.
+    /// Discriminating: without the cap the map would stay at MAX + 1.
+    #[tokio::test]
+    async fn test_pending_consents_map_is_bounded() {
+        let (state, _dir) = make_state(false);
+        let consents = state.pending_consents.clone();
+        let app = oauth_router(state);
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (_, challenge) = pkce_pair();
+
+        {
+            let mut map = consents.lock().unwrap();
+            for i in 0..MAX_PENDING_CONSENTS {
+                let token = format!("stale-{i}");
+                map.insert(token.clone(), PendingConsent { csrf_token: token });
+            }
+            assert_eq!(map.len(), MAX_PENDING_CONSENTS);
+        }
+
+        let authorize_uri = format!(
+            "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&code_challenge_method=S256"
+        );
+        let resp = app.oneshot(get_req(&authorize_uri)).await.expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Cleared at the cap, then the fresh session inserted: bounded.
+        let len = consents.lock().unwrap().len();
+        assert_eq!(
+            len, 1,
+            "consent map must be cleared+reinserted at cap, got {len}"
+        );
+    }
+
     // ── Authorize POST (consent form) ─────────────────────────────────────────
 
     #[tokio::test]
@@ -2876,6 +2937,191 @@ mod tests {
             html.contains("already been processed"),
             "a second device approval must be rejected, got: {html}"
         );
+    }
+
+    /// A device approval whose `scope` field cannot be parsed must be rejected
+    /// with the error page — not silently approved with a default capability.
+    /// Discriminating: the old `unwrap_or(Capability::Read)` approved the device
+    /// (success page) and a subsequent poll would mint a token.
+    #[tokio::test]
+    async fn test_device_approve_unknown_scope_rejected() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+        let client_id = register_client(&app, "https://app.example.com/cb").await;
+
+        let resp = app
+            .clone()
+            .oneshot(post_form(
+                "/oauth/device/code",
+                &format!("client_id={client_id}&scope=read"),
+            ))
+            .await
+            .unwrap();
+        let json = body_json(resp).await;
+        let device_code = json["device_code"].as_str().unwrap().to_owned();
+        let user_code = json["user_code"].as_str().unwrap().to_owned();
+
+        // Approve with an unparseable scope.
+        let csrf = device_csrf_token(&app).await;
+        let resp = app
+            .clone()
+            .oneshot(post_form(
+                "/oauth/device",
+                &format!("user_code={user_code}&scope=garbage&approved=true&csrf_token={csrf}"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let html = String::from_utf8(body_vec(resp).await).unwrap();
+        assert!(
+            html.contains("Unknown scope"),
+            "unparseable scope must be rejected, got: {html}"
+        );
+        assert!(
+            !html.contains("Authorized"),
+            "device must NOT be approved on a bad scope, got: {html}"
+        );
+
+        // The entry must still be pending: polling yields authorization_pending,
+        // never a token.
+        let poll_body = format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code={device_code}&client_id={client_id}"
+        );
+        let resp = app
+            .oneshot(post_form("/oauth/token", &poll_body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "authorization_pending");
+    }
+
+    /// A device approval POST that omits the `scope` field entirely must default
+    /// to `read` and succeed — the error branch added by the unknown-scope fix
+    /// must not swallow the legitimate absent-scope case (`unwrap_or("read")`).
+    #[tokio::test]
+    async fn test_device_approve_missing_scope_defaults_to_read() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+        let client_id = register_client(&app, "https://app.example.com/cb").await;
+
+        let resp = app
+            .clone()
+            .oneshot(post_form(
+                "/oauth/device/code",
+                &format!("client_id={client_id}&scope=read"),
+            ))
+            .await
+            .unwrap();
+        let user_code = body_json(resp).await["user_code"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // No `scope` field in the approval form.
+        let csrf = device_csrf_token(&app).await;
+        let resp = app
+            .oneshot(post_form(
+                "/oauth/device",
+                &format!("user_code={user_code}&approved=true&csrf_token={csrf}"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let html = String::from_utf8(body_vec(resp).await).unwrap();
+        assert!(
+            html.contains("Authorized"),
+            "absent scope must default to read and approve, got: {html}"
+        );
+    }
+
+    /// When the device-code map is already full of live (unexpired) entries, a
+    /// new device-code request is rejected rather than growing memory without
+    /// bound. Pre-populates the shared map directly to avoid 1024 HTTP calls.
+    #[tokio::test]
+    async fn test_device_code_rejected_when_map_full() {
+        let (state, _dir) = make_state(false);
+        let codes = state.device_codes.clone();
+        let app = oauth_router(state);
+        let client_id = register_client(&app, "https://app.example.com/cb").await;
+
+        let live_until = unix_now() + DEVICE_CODE_TTL_SECS;
+        {
+            let mut map = codes.lock().unwrap();
+            for i in 0..MAX_DEVICE_CODES {
+                let key = format!("dc-{i}");
+                map.insert(
+                    key.clone(),
+                    PendingDeviceAuth {
+                        device_code: key,
+                        user_code: format!("UC{i:08}"),
+                        client_id: client_id.clone(),
+                        scope: Capability::Read,
+                        expires_at: live_until,
+                        approved: None,
+                        denied: false,
+                    },
+                );
+            }
+        }
+
+        let resp = app
+            .oneshot(post_form(
+                "/oauth/device/code",
+                &format!("client_id={client_id}&scope=read"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "temporarily_unavailable");
+    }
+
+    /// A map full of *expired* entries must not block new requests: the handler
+    /// purges expired codes before checking the cap. Discriminating: without
+    /// the purge the map would be at capacity and the request would be rejected.
+    #[tokio::test]
+    async fn test_device_code_purges_expired_before_cap() {
+        let (state, _dir) = make_state(false);
+        let codes = state.device_codes.clone();
+        let app = oauth_router(state);
+        let client_id = register_client(&app, "https://app.example.com/cb").await;
+
+        {
+            let mut map = codes.lock().unwrap();
+            for i in 0..MAX_DEVICE_CODES {
+                let key = format!("expired-{i}");
+                map.insert(
+                    key.clone(),
+                    PendingDeviceAuth {
+                        device_code: key,
+                        user_code: format!("EX{i:08}"),
+                        client_id: client_id.clone(),
+                        scope: Capability::Read,
+                        expires_at: 0, // long expired
+                        approved: None,
+                        denied: false,
+                    },
+                );
+            }
+        }
+
+        let resp = app
+            .oneshot(post_form(
+                "/oauth/device/code",
+                &format!("client_id={client_id}&scope=read"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert!(
+            json["device_code"].is_string(),
+            "expected a new device code"
+        );
+
+        // The expired entries were purged; only the freshly inserted one remains.
+        assert_eq!(codes.lock().unwrap().len(), 1);
     }
 
     // ── Device flow: client_id binding ───────────────────────────────────────
