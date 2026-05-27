@@ -999,6 +999,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_store_batch_with_empty_item_content_returns_bad_request() {
+        let (state, _dir) = make_test_app_state().await;
+        let app = build_app(state);
+
+        // Non-empty top-level `content` so the single-entry guard in `api_store`
+        // is satisfied — the empty batch item must be the sole reason for the 400,
+        // genuinely exercising the per-item guard in `execute_store`.
+        let body = serde_json::json!({
+            "content": "ignored-when-items-present",
+            "items": [
+                { "content": "valid item", "visibility": "normal", "scope": "project" },
+                { "content": "", "visibility": "normal", "scope": "project" }
+            ]
+        });
+        let response = post_json(app, "/api/store", &body).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn api_focus_with_unknown_id_returns_not_found() {
         let (state, _dir) = make_test_app_state().await;
         let app = build_app(state);

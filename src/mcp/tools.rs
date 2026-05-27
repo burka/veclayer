@@ -617,6 +617,9 @@ pub async fn execute_store(ctx: &ToolContext, input: StoreInput) -> Result<serde
     validate_impression_strength(input.impression_strength)?;
     for item in &input.items {
         validate_impression_strength(item.impression_strength)?;
+        if item.content.is_empty() {
+            return Err(crate::Error::parse("content is required"));
+        }
     }
 
     if !input.items.is_empty() {
@@ -2502,6 +2505,68 @@ mod tests {
 
         let entries = store.list_entries(&[], None, None, 10).await.unwrap();
         assert_eq!(entries.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn execute_store_batch_with_empty_item_content_returns_error() {
+        let (store, blob_store, _dir) = make_test_store_with_dir().await;
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(MockEmbedder::new());
+
+        let items = vec![
+            StoreItem {
+                content: "valid item".to_string(),
+                parent_id: None,
+                heading: None,
+                visibility: "normal".to_string(),
+                perspectives: vec![],
+                source_file: None,
+                entry_type: None,
+                relations: vec![],
+                impression_hint: None,
+                impression_strength: None,
+                scope: "project".to_string(),
+            },
+            StoreItem {
+                content: String::new(),
+                parent_id: None,
+                heading: None,
+                visibility: "normal".to_string(),
+                perspectives: vec![],
+                source_file: None,
+                entry_type: None,
+                relations: vec![],
+                impression_hint: None,
+                impression_strength: None,
+                scope: "project".to_string(),
+            },
+        ];
+        let input = StoreInput {
+            content: String::new(),
+            parent_id: None,
+            source_file: "[agent]".to_string(),
+            heading: None,
+            visibility: "normal".to_string(),
+            perspectives: vec![],
+            relations: vec![],
+            entry_type: None,
+            items,
+            impression_hint: None,
+            impression_strength: None,
+            scope: "project".to_string(),
+        };
+        let result = execute_store(
+            &test_ctx(&store, &embedder, &blob_store, _dir.path()),
+            input,
+        )
+        .await;
+        assert!(result.is_err(), "expected error for empty item content");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("content is required"),
+            "expected 'content is required' in error message"
+        );
     }
 
     #[tokio::test]
