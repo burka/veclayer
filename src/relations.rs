@@ -112,6 +112,13 @@ pub async fn process_relations(
 
         match raw.kind.as_str() {
             "supersedes" | "version_of" => {
+                // Forward link on the source preserves the exact kind. The
+                // relation-kind constants equal these strings, so `new`
+                // reproduces `supersedes` / `version_of` without re-dispatching.
+                let forward = ChunkRelation::new(raw.kind.as_str(), &target);
+                store.add_relation(source_id, forward).await?;
+                // Both kinds intentionally share the `superseded_by` inverse and
+                // demote the target: a new `version_of` supersedes its prior version.
                 let inverse = ChunkRelation::superseded_by(source_id);
                 store.add_relation(&target, inverse).await?;
                 info!("Auto-demoting superseded entry: {}", target);
@@ -210,6 +217,65 @@ mod tests {
     }
 
     // --- process_relations ---
+
+    #[tokio::test]
+    async fn test_process_supersedes_writes_forward_link_on_source() {
+        let (store, _data_dir, _dir) = test_store_with_chunks(vec![
+            make_test_chunk("1111111100000000", "old content"),
+            make_test_chunk("2222222200000000", "new content"),
+        ])
+        .await;
+
+        let relations = vec![RawRelation {
+            kind: "supersedes".to_string(),
+            target_id: "11111111".to_string(), // short hex prefix
+        }];
+        process_relations(&store, "2222222200000000", relations)
+            .await
+            .unwrap();
+
+        let source_chunk = store.get_by_id("2222222200000000").await.unwrap().unwrap();
+        assert_chunk_has_relation(
+            &source_chunk,
+            "supersedes",
+            "1111111100000000",
+            "source should have forward supersedes link",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_version_of_writes_forward_link_on_source_and_demotes_target() {
+        let (store, _data_dir, _dir) = test_store_with_chunks(vec![
+            make_test_chunk("3333333300000000", "old version"),
+            make_test_chunk("4444444400000000", "new version"),
+        ])
+        .await;
+
+        let relations = vec![RawRelation {
+            kind: "version_of".to_string(),
+            target_id: "33333333".to_string(), // short hex prefix
+        }];
+        process_relations(&store, "4444444400000000", relations)
+            .await
+            .unwrap();
+
+        let source_chunk = store.get_by_id("4444444400000000").await.unwrap().unwrap();
+        assert_chunk_has_relation(
+            &source_chunk,
+            "version_of",
+            "3333333300000000",
+            "source should have forward version_of link",
+        );
+
+        let target_chunk = store.get_by_id("3333333300000000").await.unwrap().unwrap();
+        assert_eq!(target_chunk.visibility, crate::visibility::EXPIRING);
+        assert_chunk_has_relation(
+            &target_chunk,
+            "superseded_by",
+            "4444444400000000",
+            "target should have inverse superseded_by link",
+        );
+    }
 
     #[tokio::test]
     async fn test_process_supersedes_demotes_and_inverses() {
