@@ -40,6 +40,7 @@ pub fn to_did(verifying_key: &VerifyingKey) -> String {
 ///
 /// Returns [`CryptoError::InvalidDid`] if the input is not a valid `did:key:z`
 /// string, does not decode as base58, lacks the Ed25519 multicodec prefix,
+/// does not decode to exactly 34 bytes (2-byte multicodec prefix + 32-byte key),
 /// or does not contain a valid 32-byte public key.
 pub fn from_did(did: &str) -> Result<VerifyingKey, CryptoError> {
     let encoded = did
@@ -50,9 +51,10 @@ pub fn from_did(did: &str) -> Result<VerifyingKey, CryptoError> {
         .into_vec()
         .map_err(|e| CryptoError::InvalidDid(format!("base58 decode failed: {e}")))?;
 
-    if bytes.len() < ED25519_MULTICODEC.len() + PUBLIC_KEY_LEN {
+    if bytes.len() != ED25519_MULTICODEC.len() + PUBLIC_KEY_LEN {
         return Err(CryptoError::InvalidDid(format!(
-            "decoded bytes too short: {} bytes",
+            "decoded bytes must be exactly {} bytes, got {}",
+            ED25519_MULTICODEC.len() + PUBLIC_KEY_LEN,
             bytes.len()
         )));
     }
@@ -129,5 +131,27 @@ mod tests {
     fn test_from_did_rejects_not_did_key() {
         let err = from_did("not-a-did").unwrap_err();
         assert!(matches!(err, CryptoError::InvalidDid(_)));
+    }
+
+    #[test]
+    fn test_from_did_rejects_trailing_bytes() {
+        // A valid DID with one extra byte appended must be rejected to prevent aliasing.
+        let signing_key = generate();
+        let verifying_key = signing_key.verifying_key();
+        let did = to_did(&verifying_key);
+
+        // Strip the "did:key:z" prefix and base58-decode the payload.
+        let encoded = did.strip_prefix("did:key:z").unwrap();
+        let mut bytes = bs58::decode(encoded).into_vec().unwrap();
+
+        // Append a trailing garbage byte.
+        bytes.push(0x00);
+
+        let tampered_did = format!("did:key:z{}", bs58::encode(&bytes).into_string());
+        let result = from_did(&tampered_did);
+        assert!(
+            result.is_err(),
+            "expected Err for DID with trailing byte, got Ok"
+        );
     }
 }
