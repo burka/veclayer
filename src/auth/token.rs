@@ -342,6 +342,50 @@ mod tests {
         assert_eq!(recovered.nbf, t, "nbf must equal iat");
     }
 
+    /// `verify` requires `nbf` via `set_required_spec_claims(&["exp","nbf"])`.
+    /// A token that has `exp` but omits `nbf` entirely must be rejected.
+    #[test]
+    fn test_verify_rejects_token_missing_nbf() {
+        use ed25519_dalek::pkcs8::EncodePrivateKey;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header};
+
+        // A minimal claims struct that intentionally omits `nbf`.
+        #[derive(serde::Serialize)]
+        struct ClaimsWithoutNbf {
+            iss: String,
+            sub: String,
+            aud: String,
+            iat: u64,
+            exp: u64,
+            jti: String,
+        }
+
+        let key = generate_key();
+        let t = now();
+
+        let claims_no_nbf = ClaimsWithoutNbf {
+            iss: "did:key:zServer".to_owned(),
+            sub: "did:key:zAlice".to_owned(),
+            aud: "did:key:zServer".to_owned(),
+            iat: t,
+            exp: t + 3600,
+            jti: uuid::Uuid::new_v4().to_string(),
+        };
+
+        let der = key.to_pkcs8_der().expect("export pkcs8 der");
+        let encoding_key = EncodingKey::from_ed_der(der.as_bytes());
+        let header = Header::new(Algorithm::EdDSA);
+        let token = jsonwebtoken::encode(&header, &claims_no_nbf, &encoding_key)
+            .expect("encode token without nbf");
+
+        // verify() must reject a token that lacks the required `nbf` claim.
+        let result = verify(&token, &key.verifying_key(), None);
+        assert!(
+            result.is_err(),
+            "verify() must return Err for a token missing 'nbf', got Ok"
+        );
+    }
+
     #[test]
     fn test_token_with_future_nbf_rejected() {
         let key = generate_key();

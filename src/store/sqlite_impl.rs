@@ -1841,6 +1841,47 @@ mod tests {
         assert_eq!(entries[0].id, before.id);
     }
 
+    /// Verify that `perspective_like_pattern` escapes `%` so that a perspective
+    /// like `"te%st"` does NOT act as a SQL wildcard and match everything.
+    ///
+    /// Two chunks are inserted:
+    ///   - `"test"` perspective  — the naive unescaped wildcard `%"te%st"%` would match this
+    ///   - `"te%st"` perspective — the only chunk that should match the literal query
+    ///
+    /// Querying list_entries with `"te%st"` must return exactly 1 result (the
+    /// literal match), not 2 (which would indicate the `%` was treated as a wildcard).
+    #[tokio::test]
+    async fn perspective_like_percent_not_treated_as_wildcard() {
+        let (store, _dir) = create_test_store().await;
+
+        let c_plain = make_chunk("plain test perspective", "pct.md").with_perspective("test");
+        let c_literal =
+            make_chunk("literal percent perspective", "pct.md").with_perspective("te%st");
+
+        store
+            .insert_chunks(vec![c_plain, c_literal.clone()])
+            .await
+            .expect("insert");
+
+        // Query using the literal perspective "te%st". If `%` is not escaped in
+        // the LIKE pattern, both chunks would match (naive pattern `%"te%st"%`
+        // matches `["test"]` because `%` acts as wildcard). With correct escaping
+        // only the chunk whose perspective IS literally "te%st" must be returned.
+        let entries = store
+            .list_entries(&["te%st"], None, None, 100)
+            .await
+            .expect("list_entries");
+
+        assert_eq!(
+            entries.len(),
+            1,
+            "only the literal 'te%st' perspective chunk must match; \
+             got {} (unescaped % would match both chunks)",
+            entries.len()
+        );
+        assert_eq!(entries[0].id, c_literal.id);
+    }
+
     #[tokio::test]
     async fn list_entries_empty_store_returns_empty() {
         let (store, _dir) = create_test_store().await;

@@ -322,6 +322,28 @@ mod tests {
     }
 
     #[test]
+    fn get_returns_error_on_corrupt_blob_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlobStore::open(dir.path()).unwrap();
+
+        // Store a valid blob so the on-disk file exists.
+        let blob = test_blob("corrupt me");
+        let hash = store.put(&blob).unwrap();
+
+        // Overwrite the blob file with garbage bytes that cannot be deserialized.
+        let path = store.path_for(&hash);
+        fs::write(&path, b"this is not valid postcard data \xff\xfe\x00").unwrap();
+
+        // get() must return Err (deserialization failure), not Ok or a panic.
+        let result = store.get(&hash);
+        assert!(
+            result.is_err(),
+            "get() must return Err on a corrupt blob file, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
     fn count_matches_number_of_puts() {
         let dir = tempfile::tempdir().unwrap();
         let store = BlobStore::open(dir.path()).unwrap();
