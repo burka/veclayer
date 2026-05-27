@@ -522,12 +522,11 @@ impl VectorStore for SqliteStore {
         let prefix = prefix.to_owned();
 
         self.with_conn(move |conn| {
-            // Validate hex-only prefix before touching the DB
-            if !prefix.chars().all(|c| c.is_ascii_hexdigit()) {
-                return Err(Error::store(format!(
-                    "invalid id prefix '{}': must contain only hex digits",
-                    prefix
-                )));
+            // IDs are SHA-256 hex; an empty or non-hex prefix can never match an id.
+            // Return Ok(None) (consistent with the LanceDB backend) so resolve_id
+            // surfaces one uniform not-found error across backends.
+            if prefix.is_empty() || !prefix.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Ok(None);
             }
 
             // Try exact match first
@@ -1579,12 +1578,35 @@ mod tests {
         assert!(result.is_err(), "ambiguous prefix must return error");
     }
 
+    // --- unified Ok(None) contract for empty / non-hex prefixes ---
+
     #[tokio::test]
-    async fn get_by_id_prefix_non_hex_returns_error() {
+    async fn get_by_id_prefix_empty_returns_none() {
         let (store, _dir) = create_test_store().await;
 
-        let result = store.get_by_id_prefix("xyz!").await;
-        assert!(result.is_err(), "non-hex prefix must return error");
+        // Insert one chunk so the store is non-empty; the empty prefix should
+        // still return Ok(None) rather than scanning all rows.
+        let chunk = make_chunk("some content", "test.md");
+        store.insert_chunks(vec![chunk]).await.expect("insert");
+
+        let result = store
+            .get_by_id_prefix("")
+            .await
+            .expect("empty prefix must not error");
+        assert!(result.is_none(), "empty prefix must return Ok(None)");
+    }
+
+    #[tokio::test]
+    async fn get_by_id_prefix_non_hex_returns_none() {
+        let (store, _dir) = create_test_store().await;
+
+        // A non-hex prefix can never match a SHA-256 id; must return Ok(None)
+        // consistent with the LanceDB backend (not an Err).
+        let result = store
+            .get_by_id_prefix("xyz!")
+            .await
+            .expect("non-hex prefix must not error");
+        assert!(result.is_none(), "non-hex prefix must return Ok(None)");
     }
 
     #[tokio::test]
