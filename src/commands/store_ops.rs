@@ -15,7 +15,7 @@ pub fn init(cwd: &Path, data_dir: &Path, share: bool) -> Result<()> {
         let is_global_store = data_dir == crate::default_data_dir();
         if !(share && is_global_store) {
             println!("VecLayer store already exists at {}", data_dir.display());
-            println!("  use `veclayer add` to add knowledge");
+            println!("  use `veclayer store <path-or-text>` to add knowledge");
         }
     } else {
         std::fs::create_dir_all(data_dir)?;
@@ -71,15 +71,24 @@ fn init_share(cwd: &Path) -> Result<()> {
     // store's correctness (MemoryStore::open is idempotent w.r.t. the branch).
     let branch_existed = detect_existing_memory_branch(&git_dir);
 
+    println!("Setting up git-based memory sharing…");
+    println!(
+        "  Configuring memory branch '{}' (may fetch from remote)…",
+        crate::git::DEFAULT_BRANCH
+    );
+
     // Use MemoryStore::open which handles remote tracking branch detection.
     crate::git::memory_store::MemoryStore::open(&git_dir, None).map_err(|e| {
         crate::Error::InvalidOperation(format!("Failed to open memory branch: {e}"))
     })?;
 
     if branch_existed {
-        println!("  Using existing memory branch 'veclayer-memory'");
+        println!(
+            "  Using existing memory branch '{}'",
+            crate::git::DEFAULT_BRANCH
+        );
     } else {
-        println!("  Created memory branch 'veclayer-memory'");
+        println!("  Created memory branch '{}'", crate::git::DEFAULT_BRANCH);
     }
 
     let project_veclayer_dir = cwd.join(".veclayer");
