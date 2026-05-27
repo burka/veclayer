@@ -106,7 +106,7 @@ fn normalize_base(url: &str) -> String {
 /// as a whole delimiter-separated token.
 fn is_chat_model(id_lower: &str) -> bool {
     id_lower
-        .split(|c| matches!(c, '-' | '_' | '/' | '.'))
+        .split(['-', '_', '/', '.'])
         .any(|token| CHAT_MODEL_TOKENS.contains(&token))
 }
 
