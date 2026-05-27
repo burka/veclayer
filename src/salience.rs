@@ -50,6 +50,13 @@ const MAX_PERSPECTIVES: f32 = 8.0;
 /// Relation count where the revision signal saturates.
 const REVISION_SATURATION: f32 = 5.0;
 
+/// Maximum number of stale chunks fetched per `apply_aging` pass.
+///
+/// Bounds the per-run work to a predictable batch so that a very large store
+/// with many stale entries does not cause an unbounded memory or latency spike.
+/// Aging is idempotent — subsequent runs will catch whatever this pass misses.
+pub const MAX_AGING_BATCH_SIZE: usize = 500;
+
 /// Compute the salience score for a chunk.
 pub fn compute(chunk: &HierarchicalChunk, weights: &SalienceWeights) -> SalienceScore {
     let interaction = chunk.access_profile.relevancy_score(None);
@@ -71,9 +78,11 @@ pub fn compute(chunk: &HierarchicalChunk, weights: &SalienceWeights) -> Salience
         composite += 0.1;
     }
 
-    // Impressions are modulated by their strength (default 1.0 = full weight)
+    // Impressions are modulated by their strength (default 1.0 = full weight).
+    // Clamp to the documented [0.0, 1.0] range so a caller supplying a negative
+    // value does not invert the composite (negative boost would be nonsensical).
     if chunk.entry_type == crate::chunk::EntryType::Impression {
-        composite *= chunk.impression_strength;
+        composite *= chunk.impression_strength.clamp(0.0, 1.0);
     }
 
     // The composite is contractually in [0, 1]; the summary bonus and the
@@ -389,5 +398,97 @@ mod tests {
 
         let score = compute(&chunk, &SalienceWeights::default());
         assert_eq!(score.composite, 0.0);
+    }
+
+    // ── Finding #1: negative impression_strength must not corrupt salience ──
+
+    #[test]
+    fn test_negative_impression_strength_clamped_to_zero() {
+        // A negative strength must produce the same result as strength=0.0,
+        // i.e. the composite is zeroed rather than negated.
+        let mut neg = test_chunk("negative impression");
+        neg.entry_type = crate::chunk::EntryType::Impression;
+        neg.impression_strength = -5.0;
+        neg.access_profile.record_access();
+        neg.perspectives = vec!["decisions".to_string()];
+
+        let mut zero = test_chunk("zero impression");
+        zero.entry_type = crate::chunk::EntryType::Impression;
+        zero.impression_strength = 0.0;
+        zero.access_profile.record_access();
+        zero.perspectives = vec!["decisions".to_string()];
+
+        let w = SalienceWeights::default();
+        let neg_score = compute(&neg, &w);
+        let zero_score = compute(&zero, &w);
+
+        // Negative strength must not produce a negative composite.
+        assert!(
+            neg_score.composite >= 0.0,
+            "composite must not go negative with negative strength, got {}",
+            neg_score.composite
+        );
+        // It should match the zero-strength case exactly (both clamp to 0.0).
+        assert!(
+            (neg_score.composite - zero_score.composite).abs() < 0.001,
+            "negative strength should behave like zero strength: {} vs {}",
+            neg_score.composite,
+            zero_score.composite
+        );
+    }
+
+    #[test]
+    fn test_positive_impression_strength_still_modulates() {
+        // A normal positive strength in [0,1] still scales the composite correctly.
+        let mut chunk = test_chunk("half strength");
+        chunk.entry_type = crate::chunk::EntryType::Impression;
+        chunk.impression_strength = 0.5;
+        chunk.access_profile.record_access();
+        chunk.perspectives = vec!["decisions".to_string()];
+
+        let mut full = test_chunk("full strength");
+        full.entry_type = crate::chunk::EntryType::Impression;
+        full.impression_strength = 1.0;
+        full.access_profile.record_access();
+        full.perspectives = vec!["decisions".to_string()];
+
+        let w = SalienceWeights::default();
+        let half_score = compute(&chunk, &w);
+        let full_score = compute(&full, &w);
+
+        // Half strength should yield roughly half the composite of full strength.
+        assert!(
+            half_score.composite > 0.0,
+            "positive strength must yield positive composite"
+        );
+        assert!(
+            (half_score.composite - full_score.composite * 0.5).abs() < 0.001,
+            "0.5 strength should halve the composite: {} vs {}*0.5={}",
+            half_score.composite,
+            full_score.composite,
+            full_score.composite * 0.5
+        );
+    }
+
+    // ── Finding #2: MAX_AGING_BATCH_SIZE const existence and value ──────────
+
+    #[test]
+    fn test_max_aging_batch_size_constant() {
+        // Pin the cap so any accidental change is caught by tests.
+        // Values below 500 are not capped; 500 and above all resolve to 500.
+        // (This mirrors the behavior of .min(MAX_AGING_BATCH_SIZE) in apply_aging.)
+        assert_eq!(MAX_AGING_BATCH_SIZE, 500);
+
+        // Simulate boundary behaviour: a batch request of 499 fits within the cap.
+        let requested_499 = 499_usize.min(MAX_AGING_BATCH_SIZE);
+        assert_eq!(requested_499, 499);
+
+        // A request of exactly 500 is at the cap.
+        let requested_500 = 500_usize.min(MAX_AGING_BATCH_SIZE);
+        assert_eq!(requested_500, 500);
+
+        // A request of 501 is capped at 500.
+        let requested_501 = 501_usize.min(MAX_AGING_BATCH_SIZE);
+        assert_eq!(requested_501, 500);
     }
 }

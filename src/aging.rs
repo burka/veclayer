@@ -107,7 +107,9 @@ pub async fn apply_aging<S: VectorStore>(store: &S, config: &AgingConfig) -> Res
     let cutoff_secs = config.stale_seconds();
     let weights = SalienceWeights::default();
 
-    let stale = store.get_stale_chunks(cutoff_secs, 500).await?;
+    let stale = store
+        .get_stale_chunks(cutoff_secs, crate::salience::MAX_AGING_BATCH_SIZE)
+        .await?;
 
     let mut degraded_ids = Vec::new();
 
