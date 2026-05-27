@@ -73,7 +73,7 @@ impl FastEmbedder {
     /// Create a FastEmbedder with a specific model
     pub fn with_model(model_type: EmbeddingModel) -> Result<Self> {
         let model_name = format!("{:?}", model_type);
-        let dimension = Self::get_dimension(&model_type);
+        let dimension = Self::model_dimension(&model_type)?;
 
         Ok(Self {
             model: RetryCache::new(),
@@ -94,15 +94,16 @@ impl FastEmbedder {
         })
     }
 
-    fn get_dimension(model: &EmbeddingModel) -> usize {
-        match model {
-            EmbeddingModel::BGESmallENV15 => 384,
-            EmbeddingModel::BGEBaseENV15 => 768,
-            EmbeddingModel::BGELargeENV15 => 1024,
-            EmbeddingModel::AllMiniLML6V2 => 384,
-            EmbeddingModel::AllMiniLML12V2 => 384,
-            _ => 384, // Default fallback
-        }
+    /// Resolve a model's embedding dimension from fastembed's own metadata.
+    ///
+    /// This is the single source of truth for every supported model, so adding
+    /// or upgrading an upstream model needs no change here. Fails fast for a
+    /// model fastembed itself does not recognize rather than silently assuming
+    /// a dimension that would later corrupt the vector store.
+    fn model_dimension(model: &EmbeddingModel) -> Result<usize> {
+        TextEmbedding::get_model_info(model)
+            .map(|info| info.dim)
+            .map_err(|e| Error::embedding(format!("Unsupported embedding model {model:?}: {e}")))
     }
 }
 
@@ -275,22 +276,37 @@ mod tests {
     }
 
     #[test]
-    fn test_get_dimension_known_models() {
-        assert_eq!(
-            FastEmbedder::get_dimension(&EmbeddingModel::BGESmallENV15),
-            384
-        );
-        assert_eq!(
-            FastEmbedder::get_dimension(&EmbeddingModel::BGEBaseENV15),
-            768
-        );
-        assert_eq!(
-            FastEmbedder::get_dimension(&EmbeddingModel::BGELargeENV15),
-            1024
-        );
-        assert_eq!(
-            FastEmbedder::get_dimension(&EmbeddingModel::AllMiniLML6V2),
-            384
-        );
+    fn test_with_model_resolves_known_dimensions() {
+        // Dimensions come from fastembed's own metadata, so these assert the
+        // real upstream contract rather than a hand-maintained table. Building
+        // the embedder is cheap: the ONNX session is initialized lazily, so no
+        // model is downloaded here. NomicEmbedTextV15 is included specifically
+        // because it is a fully supported model (dim 768) that an earlier
+        // hand-rolled match wrongly rejected.
+        let cases = [
+            (EmbeddingModel::BGESmallENV15, 384),
+            (EmbeddingModel::BGEBaseENV15, 768),
+            (EmbeddingModel::BGELargeENV15, 1024),
+            (EmbeddingModel::AllMiniLML6V2, 384),
+            (EmbeddingModel::AllMiniLML12V2, 384),
+            (EmbeddingModel::NomicEmbedTextV15, 768),
+        ];
+        for (model, expected) in cases {
+            let embedder = FastEmbedder::with_model(model.clone())
+                .unwrap_or_else(|e| panic!("with_model({model:?}) should succeed: {e}"));
+            assert_eq!(
+                embedder.dimension(),
+                expected,
+                "unexpected dimension for {model:?}"
+            );
+            assert_eq!(embedder.name(), format!("{model:?}"));
+        }
     }
+
+    // NOTE: the error path of `model_dimension` (fastembed not recognizing a
+    // model) is unreachable from a test today: every `EmbeddingModel` enum
+    // variant has metadata in fastembed 4.9.1, and the enum is the only way to
+    // construct a model. The `Result` is retained as defensive handling for a
+    // future fastembed that ships an enum variant without metadata, so we fail
+    // fast instead of unwrapping upstream's `Result`.
 }
