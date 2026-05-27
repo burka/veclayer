@@ -128,11 +128,20 @@ pub struct StoredBlob {
 }
 
 impl StoredBlob {
-    /// Content-addressed hash — based on the entry's content ID only.
+    /// Storage key for this blob, derived from the entry's `content_id`.
     ///
-    /// Uses `content_hash(content)` (SHA-256) as the key, then blake3-hashes
-    /// that to produce the storage path. This ensures the same logical content
-    /// always maps to the same blob, regardless of timestamps or embeddings.
+    /// The derivation is deliberately two-stage: (1) `content_id()` is a
+    /// SHA-256 hex string over the entry content — it is the crate-wide
+    /// logical identity used throughout the DB and git filenames; (2)
+    /// `blake3::hash` of that hex string yields the fixed-width
+    /// [`blake3::Hash`] the blob store uses for its path/shard layout.
+    /// Deriving from the already-computed `content_id` rather than hashing
+    /// the raw content a second time means the storage path is cheaply
+    /// recomputable anywhere the `content_id` is known, without re-reading
+    /// potentially large content.
+    ///
+    /// Changing either stage invalidates every persisted blob path on disk
+    /// and requires a migration — do not alter without one.
     pub fn blob_hash(&self) -> blake3::Hash {
         let content_id = self.entry.content_id();
         blake3::hash(content_id.as_bytes())
@@ -549,6 +558,30 @@ mod tests {
             embeddings: vec![],
         };
         assert_eq!(blob_early.blob_hash(), blob_late.blob_hash());
+    }
+
+    /// Pins the exact two-stage derivation: SHA-256 content_id → blake3.
+    ///
+    /// This test is a regression guard — it must fail loudly if anyone
+    /// changes the hash chain, because doing so silently invalidates every
+    /// blob path already written to disk.
+    #[test]
+    fn test_blob_hash_pins_two_stage_sha256_then_blake3() {
+        let blob = sample_blob();
+
+        // Stage 1: content_id is SHA-256 hex of the entry content.
+        let expected_content_id = crate::chunk::content_hash(&blob.entry.content);
+        assert_eq!(blob.entry.content_id(), expected_content_id);
+
+        // Stage 2: blob_hash is blake3 over the SHA-256 hex string (not the raw content).
+        let expected_hash = blake3::hash(expected_content_id.as_bytes());
+        assert_eq!(blob.blob_hash(), expected_hash);
+
+        // Explicit end-to-end form: blake3(sha256_hex(content)).
+        assert_eq!(
+            blob.blob_hash(),
+            blake3::hash(crate::chunk::content_hash(&blob.entry.content).as_bytes()),
+        );
     }
 
     /// Round-trip test: Entry::from_chunk → HierarchicalChunk::from_entry.
