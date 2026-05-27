@@ -306,4 +306,80 @@ Deep content here.
         let section21 = chunks.iter().find(|c| c.content == "Section 2.1").unwrap();
         assert_eq!(section21.parent_id, Some(chapter2.id.clone()));
     }
+
+    // --- Edge / robustness tests ---
+
+    #[test]
+    fn test_empty_string_yields_empty_chunk_list() {
+        // The flush_content min-size guard (default 10) filters out empty/tiny
+        // strings, so an empty document must produce zero chunks.
+        let parser = MarkdownParser::new();
+        let chunks = parser.parse("", "f.md").unwrap();
+        assert!(
+            chunks.is_empty(),
+            "expected empty chunk list for empty input, got {} chunk(s)",
+            chunks.len()
+        );
+    }
+
+    #[test]
+    fn test_whitespace_only_yields_empty_chunk_list() {
+        // Whitespace-only input has no headings, and its body trims to the
+        // empty string (length 0 < min_chunk_size), so the result must be empty.
+        let parser = MarkdownParser::new();
+        let inputs = ["   ", "\n", "\n\n\n", "  \t  \n  "];
+        for input in &inputs {
+            let chunks = parser.parse(input, "f.md").unwrap();
+            assert!(
+                chunks.is_empty(),
+                "expected empty chunk list for whitespace-only input {:?}, got {} chunk(s)",
+                input,
+                chunks.len()
+            );
+        }
+    }
+
+    #[test]
+    fn test_heading_only_document_no_body_chunk() {
+        // A document consisting solely of "# Title\n" has one heading and no
+        // body text.  The parser should emit exactly one chunk:
+        //   - level  == H1
+        //   - content == "Title"
+        //   - heading == Some("Title")
+        //   - parent_id is None  (root-level)
+        // No CONTENT-level chunk should appear because there is no body text.
+        let parser = MarkdownParser::new();
+        let chunks = parser.parse("# Title\n", "f.md").unwrap();
+
+        assert_eq!(
+            chunks.len(),
+            1,
+            "expected exactly 1 chunk for heading-only document, got {}: {:?}",
+            chunks.len(),
+            chunks
+                .iter()
+                .map(|c| (&c.level, &c.content))
+                .collect::<Vec<_>>()
+        );
+
+        let heading_chunk = &chunks[0];
+        assert_eq!(
+            heading_chunk.level,
+            ChunkLevel::H1,
+            "chunk level should be H1"
+        );
+        assert_eq!(
+            heading_chunk.content, "Title",
+            "chunk content should equal the heading text"
+        );
+        assert_eq!(
+            heading_chunk.heading,
+            Some("Title".to_string()),
+            "heading field should be populated for a heading chunk"
+        );
+        assert!(
+            heading_chunk.parent_id.is_none(),
+            "root heading should have no parent"
+        );
+    }
 }

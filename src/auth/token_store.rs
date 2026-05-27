@@ -519,6 +519,51 @@ mod tests {
         assert_file_mode_600(&path, "reopened store with loose permissions");
     }
 
+    // ─── PKCE verifier length boundary tests (RFC 7636 §4.1: 43..=128) ──────────
+
+    /// A 42-character verifier (one below the 43-character minimum) must be
+    /// rejected with the RFC 7636 length-validation error, not a PKCE mismatch.
+    #[test]
+    fn test_pkce_verifier_too_short_42_rejected() {
+        let (_dir, mut store, _verifier, code) = code_test_harness();
+
+        let short_verifier = "A".repeat(42); // 42 chars — one below minimum
+
+        let err = store.consume_code(&code, &short_verifier).unwrap_err();
+        assert!(
+            err.to_string().contains("43-128 characters"),
+            "expected RFC 7636 length error (43-128 characters), got: {err}"
+        );
+    }
+
+    /// A 129-character verifier (one above the 128-character maximum) must be
+    /// rejected with the RFC 7636 length-validation error, not a PKCE mismatch.
+    #[test]
+    fn test_pkce_verifier_too_long_129_rejected() {
+        let (_dir, mut store, _verifier, code) = code_test_harness();
+
+        let long_verifier = "A".repeat(129); // 129 chars — one above maximum
+
+        let err = store.consume_code(&code, &long_verifier).unwrap_err();
+        assert!(
+            err.to_string().contains("43-128 characters"),
+            "expected RFC 7636 length error (43-128 characters), got: {err}"
+        );
+    }
+
+    /// An empty verifier (length 0) must be rejected with the RFC 7636
+    /// length-validation error, not some other failure (e.g. a PKCE mismatch).
+    #[test]
+    fn test_pkce_verifier_empty_rejected() {
+        let (_dir, mut store, _verifier, code) = code_test_harness();
+
+        let err = store.consume_code(&code, "").unwrap_err();
+        assert!(
+            err.to_string().contains("43-128 characters"),
+            "expected RFC 7636 length error (43-128 characters), got: {err}"
+        );
+    }
+
     #[test]
     fn test_pkce_wrong_verifier_rejected() {
         let (_dir, mut store) = tmp_store();

@@ -2310,4 +2310,160 @@ mod tests {
             "error message must be non-empty when DB file is absent"
         );
     }
+
+    // --- search_text ---
+
+    /// Happy path: a single inserted chunk is returned when its content
+    /// contains the queried word.
+    #[tokio::test]
+    async fn search_text_happy_path_returns_matching_chunk() {
+        let (store, _dir) = create_test_store().await;
+
+        let hit = make_chunk("the quick brown fox", "st.md");
+        let miss = make_chunk("pack my box with five dozen liquor jugs", "st.md");
+        let hit_id = hit.id.clone();
+        store.insert_chunks(vec![hit, miss]).await.expect("insert");
+
+        let results = store
+            .search_text("fox", &[], None, None, 10)
+            .await
+            .expect("search_text");
+
+        assert_eq!(results.len(), 1, "only the matching chunk is returned");
+        assert_eq!(results[0].id, hit_id);
+    }
+
+    /// Multi-word AND logic: only chunks whose content contains BOTH words are
+    /// returned; a chunk with only one of the words is excluded.
+    #[tokio::test]
+    async fn search_text_multi_word_requires_all_words() {
+        let (store, _dir) = create_test_store().await;
+
+        // Contains both "apple" and "orange"
+        let both = make_chunk("apple and orange together", "st.md");
+        // Contains only "apple"
+        let only_apple = make_chunk("apple alone here", "st.md");
+        // Contains only "orange"
+        let only_orange = make_chunk("orange on its own", "st.md");
+
+        let both_id = both.id.clone();
+        store
+            .insert_chunks(vec![both, only_apple, only_orange])
+            .await
+            .expect("insert");
+
+        let results = store
+            .search_text("apple orange", &[], None, None, 10)
+            .await
+            .expect("search_text multi-word");
+
+        assert_eq!(
+            results.len(),
+            1,
+            "only the chunk with BOTH words is returned"
+        );
+        assert_eq!(results[0].id, both_id);
+    }
+
+    /// Empty query returns all rows up to `limit` — no WHERE clause is built
+    /// when there are no words and no other filters.
+    #[tokio::test]
+    async fn search_text_empty_query_returns_all_up_to_limit() {
+        let (store, _dir) = create_test_store().await;
+
+        let chunks: Vec<_> = (0..5)
+            .map(|i| make_chunk(&format!("entry {i}"), "st.md"))
+            .collect();
+        store.insert_chunks(chunks).await.expect("insert");
+
+        // limit=10 — should return all 5
+        let all = store
+            .search_text("", &[], None, None, 10)
+            .await
+            .expect("search_text empty unlimited");
+        assert_eq!(all.len(), 5, "empty query returns every chunk");
+
+        // limit=3 — should cap at 3
+        let capped = store
+            .search_text("", &[], None, None, 3)
+            .await
+            .expect("search_text empty capped");
+        assert_eq!(capped.len(), 3, "limit is respected for empty query");
+    }
+
+    /// LIKE-escape correctness for `%`: a chunk containing a literal `%` is
+    /// found only when the query contains a literal `%`, and that `%` does NOT
+    /// act as a SQL wildcard matching arbitrary content.
+    ///
+    /// Without proper escaping, `search_text("50%", …)` would use the pattern
+    /// `%50%%` which matches anything containing "50" followed by any suffix —
+    /// hitting both the "50% off" chunk AND the "50 cents" chunk.  With correct
+    /// escaping (`ESCAPE '\'`) only the literal-`%` chunk is returned.
+    #[tokio::test]
+    async fn search_text_percent_is_not_treated_as_wildcard() {
+        let (store, _dir) = create_test_store().await;
+
+        // This chunk contains a literal '%'
+        let literal_pct = make_chunk("discount 50% off today", "escape.md");
+        // This chunk contains "50" but no '%' — must NOT be matched
+        let no_pct = make_chunk("50 cents change", "escape.md");
+
+        let literal_pct_id = literal_pct.id.clone();
+        store
+            .insert_chunks(vec![literal_pct, no_pct])
+            .await
+            .expect("insert");
+
+        let results = store
+            .search_text("50%", &[], None, None, 10)
+            .await
+            .expect("search_text percent escape");
+
+        assert_eq!(
+            results.len(),
+            1,
+            "unescaped '%' would match 'no_pct' too — exactly 1 result means escape works"
+        );
+        assert_eq!(
+            results[0].id, literal_pct_id,
+            "the returned chunk must be the one with a literal '%'"
+        );
+    }
+
+    /// LIKE-escape correctness for `_`: a chunk containing a literal `_` is
+    /// found only when the query contains a literal `_`, and that `_` does NOT
+    /// act as a single-character SQL wildcard.
+    ///
+    /// Without escaping, `search_text("a_c", …)` would match "abc", "a-c",
+    /// "a_c", etc.  With proper escaping only "a_c" is returned.
+    #[tokio::test]
+    async fn search_text_underscore_is_not_treated_as_wildcard() {
+        let (store, _dir) = create_test_store().await;
+
+        // Content with a literal underscore matching the query exactly
+        let with_under = make_chunk("config key a_c defined", "escape.md");
+        // Content whose middle character differs — must NOT match literal "a_c"
+        let without_under = make_chunk("config key abc defined", "escape.md");
+
+        let with_under_id = with_under.id.clone();
+        store
+            .insert_chunks(vec![with_under, without_under])
+            .await
+            .expect("insert");
+
+        let results = store
+            .search_text("a_c", &[], None, None, 10)
+            .await
+            .expect("search_text underscore escape");
+
+        assert_eq!(
+            results.len(),
+            1,
+            "unescaped '_' would also match 'abc' — exactly 1 result means escape works"
+        );
+        assert_eq!(
+            results[0].id, with_under_id,
+            "the returned chunk must be the one with a literal '_'"
+        );
+    }
 }

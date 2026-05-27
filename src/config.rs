@@ -2303,4 +2303,35 @@ storage = "git"
         assert_eq!(config.port, 9090);
         assert!(!config.read_only);
     }
+
+    // parse_push_mode: unrecognized string must warn and fall back to PushMode::Review.
+    #[test]
+    fn test_parse_push_mode_unknown_falls_back_to_review() {
+        use crate::git::branch_config::PushMode;
+        assert!(
+            matches!(parse_push_mode("review"), PushMode::Review),
+            "canonical \"review\" must map to PushMode::Review"
+        );
+        let result = parse_push_mode("bogus");
+        assert!(
+            matches!(result, PushMode::Review),
+            "expected PushMode::Review for unknown input, got {:?}",
+            result
+        );
+    }
+
+    // append_match_to_user_config: both matchers None must return Err with the guard message.
+    #[test]
+    fn test_append_match_to_user_config_both_none_returns_err() {
+        let result = append_match_to_user_config(None, None, "myproject");
+        assert!(
+            result.is_err(),
+            "expected Err when both git_remote and path_glob are None"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("at least one of"),
+            "error message should contain 'at least one of', got: {msg}"
+        );
+    }
 }
