@@ -172,6 +172,21 @@ impl LanceStore {
         self.lock_dir.is_none()
     }
 
+    /// Open the store's table and return it together with its version list.
+    async fn open_table_and_versions(&self) -> Result<(Table, Vec<lancedb::table::Version>)> {
+        let table = self
+            .connection
+            .open_table(TABLE_NAME)
+            .execute()
+            .await
+            .map_err(|e| Error::store(format!("Failed to open table: {}", e)))?;
+        let versions = table
+            .list_versions()
+            .await
+            .map_err(|e| Error::store(format!("Failed to list versions: {}", e)))?;
+        Ok((table, versions))
+    }
+
     /// Compact fragments + prune old versions if version count exceeds MAX_VERSIONS.
     /// Keeps the last 3 versions as a safety margin for concurrent access.
     /// Below the threshold this is a near-free `list_versions()` check.
@@ -180,21 +195,7 @@ impl LanceStore {
             return Ok(CompactStats::default());
         }
 
-        let table = match self.connection.open_table(TABLE_NAME).execute().await {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::warn!("Auto-compact: failed to open table: {}", e);
-                return Ok(CompactStats::default());
-            }
-        };
-
-        let versions = match table.list_versions().await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("Auto-compact: failed to list versions: {}", e);
-                return Ok(CompactStats::default());
-            }
-        };
+        let (table, versions) = self.open_table_and_versions().await?;
 
         if versions.len() <= MAX_VERSIONS {
             return Ok(CompactStats::default());
@@ -212,17 +213,7 @@ impl LanceStore {
             return Err(Error::store("Cannot compact a read-only store".to_string()));
         }
 
-        let table = self
-            .connection
-            .open_table(TABLE_NAME)
-            .execute()
-            .await
-            .map_err(|e| Error::store(format!("Failed to open table: {}", e)))?;
-        let versions = table
-            .list_versions()
-            .await
-            .map_err(|e| Error::store(format!("Failed to list versions: {}", e)))?;
-
+        let (table, versions) = self.open_table_and_versions().await?;
         Self::run_compact(&table, versions).await
     }
 
@@ -3684,6 +3675,59 @@ mod tests {
         );
         assert_eq!(retrieved.unwrap().id, tricky_id);
     }
+
+    // ── auto_compact_if_needed ────────────────────────────────────────────────
+
+    /// auto_compact_if_needed on a read-only store must return Ok(default) — the
+    /// early-return guard must still work after the error-propagation refactor.
+    #[tokio::test]
+    async fn test_auto_compact_noop_on_read_only_store() {
+        let temp_dir = TempDir::new().unwrap();
+        // Create the table via a read-write handle first.
+        let rw = LanceStore::open(temp_dir.path(), 384, false).await.unwrap();
+        rw.insert_chunks(vec![create_test_chunk(
+            "ro-auto-001",
+            "read-only auto compact test",
+            ChunkLevel::CONTENT,
+        )])
+        .await
+        .unwrap();
+        drop(rw);
+
+        let ro = LanceStore::open(temp_dir.path(), 384, true).await.unwrap();
+        let result = ro.auto_compact_if_needed().await;
+        assert!(
+            result.is_ok(),
+            "auto_compact_if_needed on a read-only store must return Ok: {:?}",
+            result
+        );
+        let stats = result.unwrap();
+        assert_eq!(stats.fragments_removed, 0);
+        assert_eq!(stats.versions_removed, 0);
+    }
+
+    /// auto_compact_if_needed on a fresh store (versions <= MAX_VERSIONS) must
+    /// return Ok(default) — the below-threshold early return must still work.
+    #[tokio::test]
+    async fn test_auto_compact_noop_below_threshold() {
+        let (store, _dir) = create_test_store().await;
+        // Only the initial table version exists — well below MAX_VERSIONS.
+        let result = store.auto_compact_if_needed().await;
+        assert!(
+            result.is_ok(),
+            "auto_compact_if_needed below threshold must not error: {:?}",
+            result
+        );
+        let stats = result.unwrap();
+        assert_eq!(stats.fragments_removed, 0);
+        assert_eq!(stats.versions_removed, 0);
+    }
+
+    // NOTE: the open_table/list_versions error paths in auto_compact_if_needed
+    // are not covered by a dedicated test because triggering them deterministically
+    // requires a corrupted or deleted store directory. The code now mirrors the
+    // already-tested force_compact implementation, so confidence comes from that
+    // shared structure rather than a brittle filesystem-corruption fixture.
 
     // ── force_compact ─────────────────────────────────────────────────────────
 
