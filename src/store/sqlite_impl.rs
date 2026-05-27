@@ -727,11 +727,18 @@ impl VectorStore for SqliteStore {
                     "write rejected: store was opened in read-only mode",
                 ));
             }
-            conn.execute(
-                "UPDATE chunks SET visibility = ?2 WHERE id = ?1",
-                params![chunk_id, visibility],
-            )
-            .map_err(|e| Error::store(format!("update_visibility: {e}")))?;
+            let updated = conn
+                .execute(
+                    "UPDATE chunks SET visibility = ?2 WHERE id = ?1",
+                    params![chunk_id, visibility],
+                )
+                .map_err(|e| Error::store(format!("update_visibility: {e}")))?;
+            if updated == 0 {
+                return Err(Error::store(format!(
+                    "update_visibility: chunk '{}' not found",
+                    chunk_id
+                )));
+            }
             Ok(())
         })
     }
@@ -1652,6 +1659,18 @@ mod tests {
 
         let fetched = store.get_by_id(&id).await.expect("query").expect("chunk");
         assert_eq!(fetched.visibility, "archived");
+    }
+
+    #[tokio::test]
+    async fn update_visibility_missing_chunk_returns_error() {
+        let (store, _dir) = create_test_store().await;
+
+        let result = store.update_visibility("nonexistent-id", "archived").await;
+
+        assert!(
+            result.is_err(),
+            "update_visibility on a nonexistent chunk must return Err, got Ok"
+        );
     }
 
     // --- add_relation ---

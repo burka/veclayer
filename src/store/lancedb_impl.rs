@@ -438,7 +438,9 @@ impl LanceStore {
     /// LanceDB uses optimistic concurrency — concurrent UpdateConfig transactions
     /// can conflict. This reopens the table on each retry to get a fresh view of
     /// the latest committed version, then retries with short backoff.
-    async fn retry_on_conflict<F, Fut>(&self, op_name: &str, f: F) -> Result<()>
+    /// Returns the number of rows updated by the successful attempt, so callers
+    /// can distinguish a no-op (filter matched nothing) from a real update.
+    async fn retry_on_conflict<F, Fut>(&self, op_name: &str, f: F) -> Result<u64>
     where
         F: Fn(Table) -> Fut,
         Fut: std::future::Future<
@@ -451,7 +453,7 @@ impl LanceStore {
         for attempt in 0..max_attempts {
             let table = self.get_table().await?;
             match f(table).await {
-                Ok(_) => return Ok(()),
+                Ok(result) => return Ok(result.rows_updated),
                 Err(e) if attempt + 1 < max_attempts && is_commit_conflict(&e) => {
                     tracing::debug!(
                         "{op_name}: commit conflict (attempt {attempt}), retrying in {delay:?}"
@@ -1367,18 +1369,26 @@ impl VectorStore for LanceStore {
         self.with_write_lock(|| async {
             let filter = eq_filter("id", chunk_id);
 
-            self.retry_on_conflict("update visibility", |table| {
-                let filter = filter.clone();
-                async move {
-                    table
-                        .update()
-                        .column("visibility", format!("'{}'", sql_escape(visibility)))
-                        .only_if(filter)
-                        .execute()
-                        .await
-                }
-            })
-            .await?;
+            let rows_updated = self
+                .retry_on_conflict("update visibility", |table| {
+                    let filter = filter.clone();
+                    async move {
+                        table
+                            .update()
+                            .column("visibility", format!("'{}'", sql_escape(visibility)))
+                            .only_if(filter)
+                            .execute()
+                            .await
+                    }
+                })
+                .await?;
+
+            if rows_updated == 0 {
+                return Err(Error::store(format!(
+                    "update_visibility: chunk '{}' not found",
+                    chunk_id
+                )));
+            }
 
             Ok(())
         })
@@ -1614,6 +1624,29 @@ impl VectorStore for LanceStore {
         self.collect_chunks(&results)
     }
 
+    /// Updates the stored embedding vectors for the given chunk IDs.
+    ///
+    /// # Atomicity warning — NON-ATOMIC delete-then-add
+    ///
+    /// Internally this function performs a `table.delete(filter)` followed by a
+    /// `table.add(...)`.  These two operations are **not** wrapped in a single
+    /// LanceDB transaction:
+    ///
+    /// * If `delete` succeeds but `add` fails, the affected rows are permanently
+    ///   absent from the LanceDB index for the current session.
+    /// * Callers **must** treat an `Err` return as "index possibly inconsistent".
+    ///   The blob store is the source of truth; a full `rebuild_index` will
+    ///   reconstruct the index from blobs and restore consistency.
+    /// * This limitation is intentional — id-based delete filters make an
+    ///   add-before-delete swap unsafe (duplicate rows) and a proper atomic
+    ///   replace requires a LanceDB-level merge operation.  That rework is
+    ///   tracked separately.
+    ///
+    /// # Unknown IDs are silently skipped
+    ///
+    /// IDs that are not present in the LanceDB table are logged at `WARN` level
+    /// and skipped.  The call still returns `Ok(())` in that case, and any IDs
+    /// that *were* found are updated normally.
     async fn batch_update_embeddings(&self, updates: Vec<(String, Vec<f32>)>) -> Result<()> {
         if updates.is_empty() {
             return Ok(());
@@ -3100,18 +3133,18 @@ mod tests {
         assert!(result.is_ok(), "empty update must return Ok");
     }
 
-    /// `update_visibility` on a nonexistent chunk ID returns Ok — LanceDB
-    /// silently updates zero rows and that is not an error.
+    /// `update_visibility` on a nonexistent chunk ID returns Err — a zero-row
+    /// update means the target is missing, matching the SQLite backend and the
+    /// `add_relation` contract (both reject unknown chunk IDs).
     #[tokio::test]
-    async fn test_update_visibility_nonexistent_id_is_ok() {
+    async fn test_update_visibility_nonexistent_id_returns_err() {
         let (store, _temp) = create_test_store().await;
         let result = store
             .update_visibility("no-such-id-000000000000000000000000000000", "always")
             .await;
         assert!(
-            result.is_ok(),
-            "update on nonexistent chunk must not error: {:?}",
-            result
+            result.is_err(),
+            "update on nonexistent chunk must return Err, got Ok"
         );
     }
 
@@ -3203,6 +3236,20 @@ mod tests {
 
         assert!(r1.is_ok(), "concurrent update #1 must succeed: {:?}", r1);
         assert!(r2.is_ok(), "concurrent update #2 must succeed: {:?}", r2);
+
+        // The row exists, so neither update may spuriously hit the zero-row Err
+        // guard; the surviving value must be one of the two writers' inputs.
+        let verify = LanceStore::open(&path, 384, false).await.unwrap();
+        let final_vis = verify
+            .get_by_id("conc-vis-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .visibility;
+        assert!(
+            final_vis == "always" || final_vis == "deep_only",
+            "final visibility must be one of the concurrent writes, got {final_vis:?}"
+        );
     }
 
     /// Concurrent store + recall: one task writes new chunks while another
@@ -3696,6 +3743,69 @@ mod tests {
         assert!(
             ro.force_compact().await.is_err(),
             "force_compact on a read-only store must return an error"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_batch_update_embeddings_skips_unknown_id() {
+        let (store, _temp) = create_test_store().await;
+
+        // Insert one chunk without an embedding so it starts as pending.
+        let mut chunk = create_test_chunk("real-id", "Real chunk content", ChunkLevel::H1);
+        chunk.embedding = None;
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        // Verify the chunk is pending (not yet searchable).
+        let query = vec![0.1f32; 384];
+        let results_before = store.search(&query, 10, None, &[]).await.unwrap();
+        assert!(
+            results_before.is_empty(),
+            "pending chunk must not appear in vector search"
+        );
+
+        // Call batch_update_embeddings with one real id and one ghost id.
+        let new_embedding = vec![0.1f32; 384];
+        let result = store
+            .batch_update_embeddings(vec![
+                ("real-id".to_string(), new_embedding.clone()),
+                ("ghost-id".to_string(), vec![0.9f32; 384]),
+            ])
+            .await;
+
+        // Must return Ok — unknown ids are skipped, not an error.
+        assert!(
+            result.is_ok(),
+            "ghost id must not cause an error: {:?}",
+            result
+        );
+
+        // The real chunk must still exist and have the updated embedding.
+        let retrieved = store
+            .get_by_id("real-id")
+            .await
+            .unwrap()
+            .expect("real chunk must still be present after update");
+        assert_eq!(retrieved.id, "real-id");
+        assert_eq!(
+            retrieved.embedding.as_deref(),
+            Some(new_embedding.as_slice()),
+            "embedding must be updated to the new vector"
+        );
+
+        // The real chunk must now be searchable.
+        let results_after = store.search(&query, 10, None, &[]).await.unwrap();
+        assert_eq!(
+            results_after.len(),
+            1,
+            "real chunk must be searchable after embedding update"
+        );
+        assert_eq!(results_after[0].chunk.id, "real-id");
+
+        // The ghost id must not have created a spurious row.
+        let ghost = store.get_by_id("ghost-id").await.unwrap();
+        assert!(
+            ghost.is_none(),
+            "ghost id must not have been inserted into the store"
         );
     }
 }

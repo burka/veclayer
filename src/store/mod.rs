@@ -106,6 +106,9 @@ pub trait VectorStore: Send + Sync {
     ) -> impl Future<Output = Result<()>> + Send;
 
     /// Update the visibility of a chunk (for promote/demote).
+    ///
+    /// Returns `Err` if no chunk with `chunk_id` exists (a zero-row update),
+    /// consistent across all backends and with [`Self::add_relation`].
     fn update_visibility(
         &self,
         chunk_id: &str,
