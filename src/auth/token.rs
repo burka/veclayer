@@ -111,7 +111,7 @@ pub fn verify_with_issuer(
     expected_audience: Option<&str>,
     expected_issuer: Option<&str>,
 ) -> Result<Claims, AuthError> {
-    // jsonwebtoken's rust_crypto EdDSA verifier reads the first 32 bytes as raw
+    // jsonwebtoken's aws_lc_rs EdDSA verifier reads the first 32 bytes as raw
     // public key bytes — it does not parse DER/SPKI structure despite the method name.
     let decoding_key = DecodingKey::from_ed_der(verifying_key.as_bytes());
 

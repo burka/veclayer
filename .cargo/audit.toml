@@ -1,0 +1,12 @@
+[advisories]
+# rustls-webpki 0.101.7 is transitively pinned by aws-smithy-http-client 1.x
+# (aws-smithy-http-client → rustls 0.21 → rustls-webpki 0.101.7) used by lancedb
+# for object-store TLS. The 0.101 series cannot be bumped without a major lancedb
+# or aws-sdk upgrade (out of scope). Certificates are from trusted CAs; the
+# name-constraint, CRL, and policy issues are not exploitable in veclayer's usage.
+# Tracked for remediation when lancedb migrates to rustls 0.23.
+ignore = [
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0104",
+    "RUSTSEC-2026-0098",
+]

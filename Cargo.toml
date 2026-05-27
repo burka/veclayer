@@ -90,7 +90,7 @@ blake3 = "1"
 ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"], optional = true }
 
 # Auth — JWT tokens and capability model (gated behind "auth" feature)
-jsonwebtoken = { version = "10", features = ["ed25519-dalek", "rust_crypto"], optional = true }
+jsonwebtoken = { version = "10", features = ["ed25519-dalek", "aws_lc_rs"], optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
 zeroize = { version = "1", optional = true }
 aes-gcm = { version = "0.10", optional = true }

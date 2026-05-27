@@ -8,7 +8,8 @@
 .claude/settings.local.json
 *.rlib
 veclayer.toml
-.cargo/
+.cargo/*
+!.cargo/audit.toml
 report/
 .claude/scheduled_tasks.json
 .claude/scheduled_tasks.lock
