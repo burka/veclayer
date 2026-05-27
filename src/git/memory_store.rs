@@ -419,7 +419,14 @@ fn extract_id_from_path(path: &str) -> Option<String> {
 
 /// Return `true` if the filename at `path` contains the given `id` as a suffix
 /// or prefix match of the short ID embedded in the filename.
+///
+/// An empty `id` never matches: `starts_with("")` is universally true, which
+/// would otherwise make every entry "match" and surface a misleading
+/// ambiguous-id error to the caller instead of a clean not-found.
 fn path_matches_id(path: &str, id: &str) -> bool {
+    if id.is_empty() {
+        return false;
+    }
     let filename = match path.rsplit('/').next() {
         Some(f) => f,
         None => return false,
@@ -847,6 +854,468 @@ mod tests {
         // Keep temp dirs alive until end of test.
         drop(local_dir);
         drop(remote_dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // Remote test helpers
+    // -----------------------------------------------------------------------
+
+    /// Helper: run a git command via `--git-dir` with hermetic identity.
+    fn git_hermetic_gitdir(git_dir: &Path, args: &[&str]) -> std::process::Output {
+        std::process::Command::new("git")
+            .arg("--git-dir")
+            .arg(git_dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_ASKPASS", "echo")
+            .env("LC_ALL", "C")
+            .output()
+            .expect("git command failed to spawn")
+    }
+
+    /// Create a bare repo as a local "remote" and add it as `origin` to the
+    /// repo at `git_dir`.  Returns the `TempDir` for the bare repo (must be
+    /// kept alive for the duration of the test).
+    fn add_bare_remote(git_dir: &Path) -> tempfile::TempDir {
+        let remote_dir = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(remote_dir.path())
+            .output()
+            .unwrap();
+
+        git_hermetic_gitdir(
+            git_dir,
+            &[
+                "remote",
+                "add",
+                "origin",
+                &remote_dir.path().to_string_lossy(),
+            ],
+        );
+
+        remote_dir
+    }
+
+    /// Push `branch` from `git_dir` to origin and set the upstream tracking ref.
+    fn push_set_upstream(git_dir: &Path, branch: &str) {
+        let out = git_hermetic_gitdir(git_dir, &["push", "--set-upstream", "origin", branch]);
+        assert!(
+            out.status.success(),
+            "push --set-upstream failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // try_create_from_remote
+    // -----------------------------------------------------------------------
+
+    /// When origin has the branch, `try_create_from_remote` must create a
+    /// local branch and return `true`.
+    #[test]
+    fn test_try_create_from_remote_success() {
+        // Set up "source" repo with the memory branch and push it to a bare remote.
+        let (_src_dir, src_git_dir) = setup_test_repo();
+        let _remote_dir = add_bare_remote(&src_git_dir);
+
+        let src_store = MemoryStore::open(&src_git_dir, Some("test-memory")).unwrap();
+        src_store.store_entry(&sample_entry()).unwrap();
+        push_set_upstream(&src_git_dir, "test-memory");
+
+        // Set up a fresh "destination" repo that also points at the bare remote.
+        let (_dst_dir, dst_git_dir) = setup_test_repo();
+        git_hermetic_gitdir(
+            &dst_git_dir,
+            &[
+                "remote",
+                "add",
+                "origin",
+                &_remote_dir.path().to_string_lossy(),
+            ],
+        );
+
+        // Fetch so origin/test-memory exists in the destination.
+        let branch = crate::git::GitMemoryBranch::open(&dst_git_dir, Some("test-memory")).unwrap();
+        branch.fetch().unwrap();
+
+        // The local branch must not exist yet.
+        assert!(!branch.branch_exists().unwrap());
+
+        // try_create_from_remote must return `true` and create the branch.
+        let created = try_create_from_remote(&branch).unwrap();
+        assert!(created, "expected try_create_from_remote to return true");
+        assert!(
+            branch.branch_exists().unwrap(),
+            "local branch must exist after try_create_from_remote"
+        );
+    }
+
+    /// When origin does not have the branch, `try_create_from_remote` must
+    /// return `false` (not an error).
+    #[test]
+    fn test_try_create_from_remote_missing_remote_ref_returns_false() {
+        let (_dir, git_dir) = setup_test_repo();
+        // Add a real remote so `has_remote()` passes, but don't push any branch.
+        let _remote_dir = add_bare_remote(&git_dir);
+
+        let branch = crate::git::GitMemoryBranch::open(&git_dir, Some("test-memory")).unwrap();
+        // No fetch performed — origin/test-memory does not exist.
+        let created = try_create_from_remote(&branch).unwrap();
+        assert!(!created, "must return false when remote ref does not exist");
+    }
+
+    // -----------------------------------------------------------------------
+    // push / pull round-trip
+    // -----------------------------------------------------------------------
+
+    /// Store an entry in repo A, push it, then open the same branch in a
+    /// second clone and verify the entry arrives via `pull`.
+    #[test]
+    fn test_push_pull_round_trip() {
+        // Repo A — writer.
+        let (_dir_a, git_dir_a) = setup_test_repo();
+        let remote_dir = add_bare_remote(&git_dir_a);
+
+        let store_a = MemoryStore::open(&git_dir_a, Some("test-memory")).unwrap();
+        store_a.store_entry(&sample_entry()).unwrap();
+
+        // Push from A.
+        let push_result = store_a.push().unwrap();
+        assert_eq!(
+            push_result,
+            crate::git::PushResult::Success,
+            "first push must succeed"
+        );
+        // Set up the tracking ref so pull knows the remote branch.
+        push_set_upstream(&git_dir_a, "test-memory");
+
+        // Repo B — reader.
+        let (_dir_b, git_dir_b) = setup_test_repo();
+        git_hermetic_gitdir(
+            &git_dir_b,
+            &[
+                "remote",
+                "add",
+                "origin",
+                &remote_dir.path().to_string_lossy(),
+            ],
+        );
+
+        // Open store B; open() will fetch and find origin/test-memory,
+        // calling try_create_from_remote internally.
+        let store_b = MemoryStore::open(&git_dir_b, Some("test-memory")).unwrap();
+
+        // load() fetches and reads all entries.
+        let entries_b = store_b.load().unwrap();
+        assert!(
+            entries_b
+                .iter()
+                .any(|e| e.content == sample_entry().content),
+            "entry written in repo A must be visible after pull in repo B; got: {:?}",
+            entries_b.iter().map(|e| &e.content).collect::<Vec<_>>()
+        );
+
+        drop(remote_dir);
+        drop(_dir_a);
+        drop(_dir_b);
+    }
+
+    // -----------------------------------------------------------------------
+    // push — no-remote returns NothingToPush, not an error
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_push_no_remote_returns_nothing_to_push() {
+        let (_dir, git_dir) = setup_test_repo();
+        let store = MemoryStore::open(&git_dir, Some("test-memory")).unwrap();
+        let result = store.push().unwrap();
+        assert_eq!(
+            result,
+            crate::git::PushResult::NothingToPush,
+            "push without a remote must return NothingToPush"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // pull — no-remote returns NothingToSync, not an error
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_pull_no_remote_returns_nothing_to_sync() {
+        let (_dir, git_dir) = setup_test_repo();
+        let store = MemoryStore::open(&git_dir, Some("test-memory")).unwrap();
+        match store.pull().unwrap() {
+            crate::git::SyncResult::NothingToSync => {}
+            other => panic!("expected NothingToSync, got: {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // pull — already up-to-date after push returns NothingToSync
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_pull_already_up_to_date_after_push() {
+        let (_dir, git_dir) = setup_test_repo();
+        let _remote_dir = add_bare_remote(&git_dir);
+
+        let store = MemoryStore::open(&git_dir, Some("test-memory")).unwrap();
+        store.store_entry(&sample_entry()).unwrap();
+        push_set_upstream(&git_dir, "test-memory");
+
+        // After pushing, there's nothing new on remote — pull must be NothingToSync.
+        match store.pull().unwrap() {
+            crate::git::SyncResult::NothingToSync => {}
+            other => panic!("expected NothingToSync immediately after push, got: {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // sync — no-remote returns NothingToSync
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sync_no_remote_returns_nothing_to_sync() {
+        let (_dir, git_dir) = setup_test_repo();
+        let store = MemoryStore::open(&git_dir, Some("test-memory")).unwrap();
+        match store.sync().unwrap() {
+            crate::git::SyncResult::NothingToSync => {}
+            other => panic!("expected NothingToSync, got: {other:?}"),
+        }
+    }
+
+    /// Full sync cycle: store, push (via sync), store more, sync again.
+    /// After each sync the repo must be in sync with the remote.
+    #[test]
+    fn test_sync_push_pull_cycle() {
+        let (_dir, git_dir) = setup_test_repo();
+        let _remote_dir = add_bare_remote(&git_dir);
+
+        let store = MemoryStore::open(&git_dir, Some("test-memory")).unwrap();
+        store.store_entry(&sample_entry()).unwrap();
+        // First push via raw git to set up the tracking ref; then sync.
+        push_set_upstream(&git_dir, "test-memory");
+
+        // Sync after the upstream is set — should succeed (nothing new on remote).
+        let sync_result = store.sync().unwrap();
+        // NothingToSync or Success both mean "in sync now".
+        match sync_result {
+            crate::git::SyncResult::NothingToSync | crate::git::SyncResult::Success => {}
+            crate::git::SyncResult::Conflicts(files) => {
+                panic!("unexpected conflicts after sync: {files:?}")
+            }
+        }
+
+        // Store a second entry — now we have a local commit ahead of remote.
+        let second = Entry {
+            content: "Second entry for sync test.".to_string(),
+            heading: Some("Sync Entry Two".to_string()),
+            ..sample_entry()
+        };
+        store.store_entry(&second).unwrap();
+
+        // sync() should push it and report success (not a conflict).
+        let sync_result2 = store.sync().unwrap();
+        match sync_result2 {
+            crate::git::SyncResult::NothingToSync | crate::git::SyncResult::Success => {}
+            crate::git::SyncResult::Conflicts(files) => {
+                panic!("unexpected conflicts after second sync: {files:?}")
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // remove_entry
+    // -----------------------------------------------------------------------
+
+    /// Store an entry, remove it by ID, verify it no longer appears in load.
+    #[test]
+    fn test_remove_entry_success() {
+        let (_dir, git_dir) = setup_test_repo();
+        let store = MemoryStore::open(&git_dir, Some("test-memory")).unwrap();
+
+        let entry = sample_entry();
+        store.store_entry(&entry).unwrap();
+
+        let ids = store.list_entry_ids().unwrap();
+        assert_eq!(ids.len(), 1, "expected exactly one entry id");
+        let id = &ids[0];
+
+        store.remove_entry(id).unwrap();
+
+        let files_after = store.list_entry_files().unwrap();
+        assert!(
+            files_after.is_empty(),
+            "no entry files should remain after removal; got: {files_after:?}"
+        );
+
+        let loaded = store.load().unwrap();
+        assert!(
+            loaded.is_empty(),
+            "no entries should be visible after removal"
+        );
+    }
+
+    /// The removal must persist after reopening the store (it's committed to git).
+    #[test]
+    fn test_remove_entry_persists_after_reopen() {
+        let (_dir, git_dir) = setup_test_repo();
+
+        // Write and remove in the first store instance.
+        {
+            let store = MemoryStore::open(&git_dir, Some("test-memory")).unwrap();
+            store.store_entry(&sample_entry()).unwrap();
+            let ids = store.list_entry_ids().unwrap();
+            store.remove_entry(&ids[0]).unwrap();
+        }
+
+        // Reopen and confirm the entry is gone.
+        let store2 = MemoryStore::open(&git_dir, Some("test-memory")).unwrap();
+        let files = store2.list_entry_files().unwrap();
+        assert!(
+            files.is_empty(),
+            "entry must not reappear after reopen; got: {files:?}"
+        );
+    }
+
+    /// Removing a non-existent ID must return a descriptive error.
+    #[test]
+    fn test_remove_entry_not_found_returns_error() {
+        let (_dir, git_dir) = setup_test_repo();
+        let store = MemoryStore::open(&git_dir, Some("test-memory")).unwrap();
+
+        let result = store.remove_entry("0000000");
+        assert!(
+            result.is_err(),
+            "remove_entry with unknown id must return an error"
+        );
+        match result.unwrap_err() {
+            GitError::CommandFailed { stderr, .. } => {
+                assert!(
+                    stderr.contains("no entry found"),
+                    "error message should mention 'no entry found', got: {stderr:?}"
+                );
+            }
+            other => panic!("expected CommandFailed, got: {other:?}"),
+        }
+    }
+
+    /// Ambiguous prefix (matches >1 file) must return an error naming both matches.
+    #[test]
+    fn test_remove_entry_ambiguous_prefix_returns_error() {
+        let (_dir, git_dir) = setup_test_repo();
+        let store = MemoryStore::open(&git_dir, Some("test-memory")).unwrap();
+
+        // Store two entries with different content so they get distinct IDs.
+        let entry_a = Entry {
+            content: "Distinct content for ambiguity test entry A.".to_string(),
+            heading: Some("Ambiguous A".to_string()),
+            ..sample_entry()
+        };
+        let entry_b = Entry {
+            content: "Distinct content for ambiguity test entry B.".to_string(),
+            heading: Some("Ambiguous B".to_string()),
+            ..sample_entry()
+        };
+        store.store_entry(&entry_a).unwrap();
+        store.store_entry(&entry_b).unwrap();
+
+        // Both IDs are 7-char hex.  An empty prefix would match both but is not
+        // a valid prefix to pass (each 7-char ID is unique; we test a real shared
+        // prefix by constructing a partial-match scenario via direct file creation).
+        //
+        // Instead: write two files whose embedded IDs share the same first char,
+        // so that passing that single character as the id is ambiguous.
+        // We do this by planting two .md files via the branch directly.
+        let branch = store.branch();
+        branch
+            .write_file("decisions/heading-aaa0001.md", b"# Heading A\ncontent A\n")
+            .unwrap();
+        branch
+            .write_file("decisions/heading-aaa0002.md", b"# Heading B\ncontent B\n")
+            .unwrap();
+        branch.commit("add two entries with shared prefix").unwrap();
+
+        // Remove with prefix "aaa" — matches both files.
+        let result = store.remove_entry("aaa");
+        assert!(result.is_err(), "ambiguous prefix must return an error");
+        match result.unwrap_err() {
+            GitError::CommandFailed { stderr, .. } => {
+                assert!(
+                    stderr.contains("ambiguous"),
+                    "error message should mention 'ambiguous', got: {stderr:?}"
+                );
+            }
+            other => panic!("expected CommandFailed, got: {other:?}"),
+        }
+    }
+
+    /// Exact full 7-char ID that is also the beginning of another ID must NOT
+    /// be treated as ambiguous — path_matches_id requires the short-ID to equal
+    /// the query or start with it, so "aaa0001" must not match "aaa0002".
+    #[test]
+    fn test_remove_entry_exact_id_not_ambiguous() {
+        let (_dir, git_dir) = setup_test_repo();
+        let store = MemoryStore::open(&git_dir, Some("test-memory")).unwrap();
+
+        // Plant two files whose IDs share a 6-char prefix but differ at position 7.
+        let branch = store.branch();
+        branch
+            .write_file("decisions/entry-abc0001.md", b"# Entry 1\ncontent 1\n")
+            .unwrap();
+        branch
+            .write_file("decisions/entry-abc0002.md", b"# Entry 2\ncontent 2\n")
+            .unwrap();
+        branch.commit("plant two entries").unwrap();
+
+        // "abc0001" is an exact 7-char match; it must not match "abc0002".
+        let result = store.remove_entry("abc0001");
+        assert!(
+            result.is_ok(),
+            "exact 7-char id must not be treated as ambiguous: {:?}",
+            result.unwrap_err()
+        );
+
+        // "abc0002" must still exist.
+        let files = store.list_entry_files().unwrap();
+        assert!(
+            files.iter().any(|f| f.contains("abc0002")),
+            "abc0002 must survive removal of abc0001; files: {files:?}"
+        );
+    }
+
+    /// An empty id must never match (it would otherwise `starts_with("")`-match
+    /// every entry): the caller gets a clean not-found and nothing is deleted.
+    #[test]
+    fn test_remove_entry_empty_id_matches_nothing() {
+        let (_dir, git_dir) = setup_test_repo();
+        let store = MemoryStore::open(&git_dir, Some("test-memory")).unwrap();
+
+        let branch = store.branch();
+        branch
+            .write_file("decisions/entry-abc0001.md", b"# Entry 1\ncontent 1\n")
+            .unwrap();
+        branch.commit("plant one entry").unwrap();
+
+        let err = store.remove_entry("").unwrap_err();
+        match err {
+            GitError::CommandFailed { stderr, .. } => assert!(
+                stderr.contains("no entry found"),
+                "empty id must be not-found, not ambiguous; got: {stderr:?}"
+            ),
+            other => panic!("expected CommandFailed not-found, got: {other:?}"),
+        }
+
+        let files = store.list_entry_files().unwrap();
+        assert!(
+            files.iter().any(|f| f.contains("abc0001")),
+            "no entry may be deleted for an empty id; files: {files:?}"
+        );
     }
 
     // -----------------------------------------------------------------------
