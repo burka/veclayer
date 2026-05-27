@@ -693,6 +693,10 @@ fn parse_impression_strength(s: &str) -> std::result::Result<f32, String> {
     }
 }
 
+fn resolve_current_dir(result: std::io::Result<std::path::PathBuf>) -> Result<std::path::PathBuf> {
+    result.map_err(|e| veclayer::Error::config(format!("Cannot determine working directory: {e}")))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Disable ANSI escape codes when stdout is not a TTY (e.g. piped output)
@@ -711,7 +715,7 @@ async fn main() -> Result<()> {
     // 6. Git auto-detection (remote → project, branch → scope)
     // 7. Platform defaults
 
-    let cwd = std::env::current_dir().expect("Failed to determine current directory");
+    let cwd = resolve_current_dir(std::env::current_dir())?;
     let git_info = veclayer::git::detect::detect(&cwd);
 
     let user_config = veclayer::config::UserConfig::discover();
@@ -1370,6 +1374,27 @@ mod tests {
         assert!(
             err.is_err(),
             "providing both positional and --kind must be an error"
+        );
+    }
+
+    // ── resolve_current_dir ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_current_dir_ok_returns_path() {
+        let path = std::path::PathBuf::from("/some/path");
+        let result = resolve_current_dir(Ok(path.clone()));
+        assert_eq!(result.unwrap(), path);
+    }
+
+    #[test]
+    fn test_resolve_current_dir_err_produces_config_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "no such dir");
+        let result = resolve_current_dir(Err(io_err));
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Cannot determine working directory"),
+            "expected config error message, got: {msg}"
         );
     }
 }
