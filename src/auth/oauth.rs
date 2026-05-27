@@ -681,6 +681,19 @@ async fn authorize_post_handler(
 
     let redirect_uri = form.redirect_uri.clone();
 
+    // Validate the optional `state` parameter length — mirrors the GET-path
+    // guard so an attacker who obtained a valid CSRF token cannot smuggle an
+    // arbitrarily long state through the POST body.
+    if let Some(s) = form.state.as_deref() {
+        if s.len() > MAX_STATE_LEN {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html(error_page("state parameter too long")),
+            )
+                .into_response();
+        }
+    }
+
     // Deny button was pressed or `approved` field is absent.
     if form.approved.as_deref() != Some("true") {
         return redirect_with_error(
@@ -2533,6 +2546,73 @@ mod tests {
         assert!(
             location.contains("error=invalid_request"),
             "expected invalid_request in redirect, got: {location}"
+        );
+    }
+
+    /// A state value of 513 bytes submitted via the consent POST must be
+    /// rejected with 400 Bad Request — mirroring the GET-path guard.
+    /// Discriminating: without the POST guard this would redirect with a code.
+    #[tokio::test]
+    async fn test_authorize_post_rejects_state_exceeding_max_len() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (_, challenge) = pkce_pair();
+
+        // Obtain a valid CSRF token via the consent page GET.
+        let csrf = get_consent_csrf_token(&app, &client_id, redirect_uri, &challenge).await;
+        let long_state = "s".repeat(MAX_STATE_LEN + 1); // 513 bytes
+        let form = format!(
+            "client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&approved=true&csrf_token={csrf}&state={long_state}"
+        );
+        let resp = app
+            .clone()
+            .oneshot(post_form("/oauth/authorize", &form))
+            .await
+            .expect("request");
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "expected 400 for oversized state"
+        );
+    }
+
+    /// A state value of exactly MAX_STATE_LEN (512) bytes must pass the guard
+    /// and proceed normally (redirect with a code, not a 400).
+    #[tokio::test]
+    async fn test_authorize_post_accepts_state_at_max_len() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (_, challenge) = pkce_pair();
+
+        let csrf = get_consent_csrf_token(&app, &client_id, redirect_uri, &challenge).await;
+        let exact_state = "s".repeat(MAX_STATE_LEN); // exactly 512 bytes
+        let form = format!(
+            "client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={challenge}&approved=true&csrf_token={csrf}&state={exact_state}"
+        );
+        let resp = app
+            .clone()
+            .oneshot(post_form("/oauth/authorize", &form))
+            .await
+            .expect("request");
+
+        // Must NOT be rejected by the length guard — should redirect with a code.
+        assert_ne!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "state of exactly MAX_STATE_LEN should pass the guard"
+        );
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(
+            location.contains("code="),
+            "expected code in redirect, got: {location}"
         );
     }
 
