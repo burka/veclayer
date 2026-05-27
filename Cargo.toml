@@ -27,7 +27,7 @@ default = ["full"]
 store-lance = ["dep:lancedb", "dep:arrow-array", "dep:arrow-schema", "dep:futures"]
 store-sqlite = ["dep:rusqlite"]
 parser = ["dep:pulldown-cmark"]
-config = ["dep:toml", "dep:glob", "dep:directories", "dep:shellexpand", "dep:regex", "dep:serde_yml", "dep:walkdir"]
+config = ["dep:toml", "dep:glob", "dep:directories", "dep:shellexpand", "dep:regex", "dep:serde_norway", "dep:walkdir"]
 cli = ["store-lance", "mcp", "config", "parser", "dep:clap", "dep:owo-colors", "dep:tracing-subscriber"]
 mcp = ["config", "dep:rmcp", "dep:schemars"]
 embedding-local = ["config", "dep:fastembed"]
@@ -124,7 +124,7 @@ linfa = { version = "0.7", optional = true }
 linfa-clustering = { version = "0.7", optional = true }
 ndarray = { version = "0.15", optional = true }
 owo-colors = { version = "4.2.3", features = ["supports-colors"], optional = true }
-serde_yml = { version = "0.0.12", optional = true }
+serde_norway = { version = "0.9.42", optional = true }
 
 [[bin]]
 name = "veclayer"

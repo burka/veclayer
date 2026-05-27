@@ -435,7 +435,7 @@ pub fn parse(markdown: &[u8]) -> Result<(Entry, String), GitError> {
 
     let (yaml, body) = split_frontmatter(text)?;
 
-    let fm: Frontmatter = serde_yml::from_str(yaml).map_err(|e| GitError::CommandFailed {
+    let fm: Frontmatter = serde_norway::from_str(yaml).map_err(|e| GitError::CommandFailed {
         command: "parse frontmatter".to_string(),
         stderr: format!("invalid YAML: {e}"),
         exit_code: 1,
@@ -448,7 +448,7 @@ pub fn parse(markdown: &[u8]) -> Result<(Entry, String), GitError> {
 /// Render an [`Entry`] as a Markdown string with YAML frontmatter.
 pub fn render(entry: &Entry) -> Result<String, GitError> {
     let fm = entry_to_frontmatter(entry)?;
-    let yaml = serde_yml::to_string(&fm).map_err(|e| GitError::CommandFailed {
+    let yaml = serde_norway::to_string(&fm).map_err(|e| GitError::CommandFailed {
         command: "render frontmatter".to_string(),
         stderr: format!("YAML serialization failed: {e}"),
         exit_code: 1,
@@ -514,7 +514,7 @@ pub fn entry_path(entry: &Entry) -> String {
 /// `\n---\n`, which is the standard frontmatter convention used by Jekyll,
 /// Hugo, and most static-site generators.  This approach assumes that no YAML
 /// *value* inside the frontmatter block itself contains a bare `\n---\n`
-/// sequence.  That assumption is safe in practice because `serde_yml` always
+/// sequence.  That assumption is safe in practice because `serde_norway` always
 /// quotes or block-indents multi-line strings, so any value that contains
 /// `---` on its own line will be wrapped in quotes or indented, preventing a
 /// false match.
@@ -1036,26 +1036,26 @@ mod tests {
     #[test]
     fn test_string_or_vec_serialize_single() {
         let v = StringOrVec::single("abc");
-        let yaml = serde_yml::to_string(&v).unwrap();
+        let yaml = serde_norway::to_string(&v).unwrap();
         assert_eq!(yaml.trim(), "abc");
     }
 
     #[test]
     fn test_string_or_vec_serialize_multiple() {
         let v = StringOrVec::multiple(vec!["abc".to_string(), "def".to_string()]);
-        let yaml = serde_yml::to_string(&v).unwrap();
+        let yaml = serde_norway::to_string(&v).unwrap();
         assert!(yaml.contains("abc") && yaml.contains("def"));
     }
 
     #[test]
     fn test_string_or_vec_deserialize_string() {
-        let v: StringOrVec = serde_yml::from_str("abc").unwrap();
+        let v: StringOrVec = serde_norway::from_str("abc").unwrap();
         assert_eq!(v.0, vec!["abc"]);
     }
 
     #[test]
     fn test_string_or_vec_deserialize_list() {
-        let v: StringOrVec = serde_yml::from_str("- abc\n- def\n").unwrap();
+        let v: StringOrVec = serde_norway::from_str("- abc\n- def\n").unwrap();
         assert_eq!(v.0, vec!["abc", "def"]);
     }
 
@@ -1212,12 +1212,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // F13: serde_yml quotes multi-line strings — no bare \n---\n in YAML
+    // F13: serde_norway quotes multi-line strings — no bare \n---\n in YAML
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_serde_yml_quotes_multiline_strings() {
-        // If serde_yml did NOT quote multi-line values, a Frontmatter whose
+    fn test_serde_norway_quotes_multiline_strings() {
+        // If serde_norway did NOT quote multi-line values, a Frontmatter whose
         // `impression` field contained `\n---\n` would fool `split_frontmatter`
         // into treating it as the closing delimiter.  Verify that does not happen.
         let fm = Frontmatter {
@@ -1235,11 +1235,28 @@ mod tests {
             level: FrontmatterLevel::H1,
         };
 
-        let yaml = serde_yml::to_string(&fm).unwrap();
+        let yaml = serde_norway::to_string(&fm).unwrap();
         // The bare sequence that would fool the parser must not appear verbatim.
         assert!(
             !yaml.contains("\n---\n"),
-            "serde_yml must quote the multi-line value; bare \\n---\\n found in: {yaml}"
+            "serde_norway must quote the multi-line value; bare \\n---\\n found in: {yaml}"
+        );
+
+        // End-to-end guard: assemble a document the way `render` does and confirm
+        // `split_frontmatter` is NOT fooled by the embedded `---` line — the body
+        // must be recovered intact and the dangerous impression value must
+        // round-trip through the emitter+parser pair unchanged.
+        let body = "the body";
+        let doc = format!("---\n{yaml}---\n{body}");
+        let (recovered_yaml, recovered_body) =
+            split_frontmatter(&doc).expect("split_frontmatter must find the real delimiter");
+        assert_eq!(recovered_body, body, "body must survive the embedded ---");
+        let parsed: Frontmatter =
+            serde_norway::from_str(recovered_yaml).expect("frontmatter must parse back");
+        assert_eq!(
+            parsed.impression,
+            Some("line one\n---\nline two".to_string()),
+            "the multi-line impression must round-trip unchanged"
         );
     }
 

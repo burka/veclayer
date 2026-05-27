@@ -24,7 +24,7 @@
 //!
 //! ### Other features
 //! - `parser`: Enables `DocumentParser` and Markdown parsing (requires `pulldown-cmark`)
-//! - `config`: Enables config file discovery, user config, and `git` module (requires `toml`, `glob`, `directories`, `shellexpand`, `regex`, `serde_yml`, `walkdir`)
+//! - `config`: Enables config file discovery, user config, and `git` module (requires `toml`, `glob`, `directories`, `shellexpand`, `regex`, `serde_norway`, `walkdir`)
 //! - `cli`: Enables the CLI binary, implies `store-lance`, `mcp`, `config`, and `parser`
 //! - `mcp`: Enables the MCP server module, implies `config`
 //! - `embedding-local`: Enables local embedding via `FastEmbed` (`ONNX`)
