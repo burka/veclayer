@@ -747,6 +747,258 @@ mod tests {
         assert!(text.contains("Design decision: use Rust"));
     }
 
+    // ── text_resource ────────────────────────────────────────────────────
+
+    /// The URI embedded in ResourceContents must mirror the input URI exactly.
+    #[test]
+    fn text_resource_preserves_uri_in_contents() {
+        let uri = "veclayer://some/path";
+        let result = text_resource(uri, "content");
+        let embedded_uri = result
+            .contents
+            .iter()
+            .find_map(|c| {
+                if let rmcp::model::ResourceContents::TextResourceContents {
+                    uri: content_uri,
+                    ..
+                } = c
+                {
+                    Some(content_uri.clone())
+                } else {
+                    None
+                }
+            })
+            .expect("result must have at least one TextResourceContents");
+        assert_eq!(embedded_uri, uri);
+    }
+
+    /// The MIME type in ResourceContents is text/markdown.
+    #[test]
+    fn text_resource_sets_text_markdown_mime() {
+        let result = text_resource("veclayer://x", "hello");
+        let mime = result
+            .contents
+            .iter()
+            .find_map(|c| {
+                if let rmcp::model::ResourceContents::TextResourceContents { mime_type, .. } = c {
+                    mime_type.clone()
+                } else {
+                    None
+                }
+            })
+            .expect("must have a text content item");
+        assert_eq!(mime, "text/markdown");
+    }
+
+    // ── static_resources priorities ──────────────────────────────────────
+
+    /// Priorities are as documented in the static_resources source (identity
+    /// highest at 0.8, hot second at 0.7, etc.).
+    #[test]
+    fn static_resources_priorities_match_documented_values() {
+        let by_uri: std::collections::HashMap<String, f32> = static_resources()
+            .into_iter()
+            .filter_map(|r| {
+                r.annotations
+                    .as_ref()
+                    .and_then(|a| a.priority)
+                    .map(|p| (r.raw.uri.clone(), p))
+            })
+            .collect();
+
+        assert_eq!(
+            by_uri.get("veclayer://identity").copied(),
+            Some(0.8),
+            "identity should have priority 0.8"
+        );
+        assert_eq!(
+            by_uri.get("veclayer://hot").copied(),
+            Some(0.7),
+            "hot should have priority 0.7"
+        );
+        assert_eq!(
+            by_uri.get("veclayer://recent").copied(),
+            Some(0.6),
+            "recent should have priority 0.6"
+        );
+        assert_eq!(
+            by_uri.get("veclayer://status").copied(),
+            Some(0.5),
+            "status should have priority 0.5"
+        );
+        assert_eq!(
+            by_uri.get("veclayer://perspectives").copied(),
+            Some(0.4),
+            "perspectives should have priority 0.4"
+        );
+    }
+
+    // ── format_entries_list no-heading sentinel ──────────────────────────
+
+    /// A chunk with no heading uses "(no heading)" as the list entry label.
+    #[tokio::test]
+    async fn read_recent_entry_with_no_heading_shows_sentinel() {
+        let mut chunk = crate::test_helpers::make_test_chunk("nohead000001", "Content here");
+        chunk.heading = None;
+        let text = read_from_store_with_chunks("veclayer://recent", vec![chunk]).await;
+        assert!(
+            text.contains("(no heading)"),
+            "entries without heading must show the '(no heading)' sentinel"
+        );
+    }
+
+    // ── read_perspectives: empty store (no perspectives defined) ─────────
+
+    /// Writing an empty perspectives list to disk triggers the
+    /// "No perspectives defined." sentinel in read_perspectives.
+    #[tokio::test]
+    async fn read_perspectives_returns_sentinel_when_list_is_empty() {
+        let (store, data_dir, _dir) = test_store_meta().await;
+        // Write an empty perspectives file to override defaults.
+        let empty = r#"{"perspectives":[]}"#;
+        std::fs::write(data_dir.join("perspectives.json"), empty).unwrap();
+        let text = read_and_extract(&store, &data_dir, "veclayer://perspectives", None, None).await;
+        assert!(
+            text.contains("No perspectives defined."),
+            "empty perspectives list must return the sentinel: got: {text}"
+        );
+    }
+
+    // ── read_hot: branch filter ──────────────────────────────────────────
+
+    /// A chunk scoped to project "myproj" + branch "feature-x" is excluded when
+    /// filtering for project "myproj" + branch "main".
+    /// Branch tag format: "branch:{project}@{branch}" (see passes_scope_filter).
+    #[tokio::test]
+    async fn read_hot_with_branch_filter_excludes_wrong_branch() {
+        let mut chunk = crate::test_helpers::make_test_chunk("hotbranch001", "Branch-scoped entry");
+        // Tag the chunk to project "myproj" on branch "feature-x"
+        chunk.perspectives = vec![
+            "project:myproj".to_string(),
+            "branch:myproj@feature-x".to_string(),
+        ];
+        let (store, data_dir, _dir) = test_store_with_chunks(vec![chunk]).await;
+        let text = read(
+            "veclayer://hot",
+            &store,
+            &data_dir,
+            Some("myproj"),
+            Some("main"),
+            &default_embedder_config(),
+        )
+        .await
+        .unwrap();
+        let text = extract_text(&text);
+        assert!(
+            text.contains("No entries"),
+            "hot should exclude entries scoped to a different branch: got: {text}"
+        );
+    }
+
+    // ── read_recent: branch filter ───────────────────────────────────────
+
+    /// A chunk scoped to project "myproj" + branch "feature-y" is excluded when
+    /// filtering for project "myproj" + branch "main".
+    #[tokio::test]
+    async fn read_recent_with_branch_filter_excludes_wrong_branch() {
+        let mut chunk =
+            crate::test_helpers::make_test_chunk("recentbranch01", "Branch-scoped recent entry");
+        // Tag the chunk to project "myproj" on branch "feature-y"
+        chunk.perspectives = vec![
+            "project:myproj".to_string(),
+            "branch:myproj@feature-y".to_string(),
+        ];
+        let (store, data_dir, _dir) = test_store_with_chunks(vec![chunk]).await;
+        let text = read(
+            "veclayer://recent",
+            &store,
+            &data_dir,
+            Some("myproj"),
+            Some("main"),
+            &default_embedder_config(),
+        )
+        .await
+        .unwrap();
+        let text = extract_text(&text);
+        assert!(
+            text.contains("No entries found"),
+            "recent should exclude entries scoped to a different branch: got: {text}"
+        );
+    }
+
+    // ── read_perspective_entries: scope filter ───────────────────────────
+
+    /// Entries under a valid perspective are excluded when they belong to a
+    /// different project scope.
+    #[tokio::test]
+    async fn read_perspective_entries_excludes_wrong_project_scope() {
+        // chunk is tagged "decisions" but also scoped to "other-project"
+        let mut chunk = crate::test_helpers::make_test_chunk("perspscope01", "Scoped decision");
+        chunk.perspectives = vec!["decisions".to_string(), "project:other-project".to_string()];
+        let (store, data_dir, _dir) = test_store_with_chunks(vec![chunk]).await;
+        let text = read(
+            "veclayer://perspectives/decisions",
+            &store,
+            &data_dir,
+            Some("my-project"),
+            None,
+            &default_embedder_config(),
+        )
+        .await
+        .unwrap();
+        let text = extract_text(&text);
+        assert!(
+            text.contains("No entries"),
+            "perspective entries scoped to a different project must be excluded: got: {text}"
+        );
+    }
+
+    // ── read_perspective_entries: valid perspective, no matching entries ──
+
+    /// A valid perspective with zero matching entries returns the empty message,
+    /// not an error.
+    #[tokio::test]
+    async fn read_perspective_entries_returns_empty_message_when_no_entries() {
+        // No chunks with "decisions" perspective — the perspective exists but is empty.
+        let text = read_from_meta_store("veclayer://perspectives/decisions").await;
+        // Should succeed (no error) and contain the empty sentinel.
+        assert!(
+            text.contains("## Perspective: decisions"),
+            "empty perspective must still return a header"
+        );
+        assert!(
+            text.contains("No entries") || text.contains("entry(ies)"),
+            "empty perspective must contain the empty message or entry count"
+        );
+    }
+
+    // ── read_entry: short ID prefix lookup ───────────────────────────────
+
+    /// get_by_id_prefix accepts a prefix shorter than the full ID; a 6-char
+    /// hex prefix uniquely identifies the entry and its detail should be
+    /// returned. IDs are SHA-256 hex, so the prefix must be hex `[0-9a-f]`.
+    #[tokio::test]
+    async fn read_entry_accepts_short_id_prefix() {
+        let chunk = crate::test_helpers::make_test_chunk("abc123def456", "Prefix lookup test");
+        let (store, data_dir, _dir) = test_store_with_chunks(vec![chunk]).await;
+        // Use first 6 hex chars as prefix
+        let text = read(
+            "veclayer://entries/abc123",
+            &store,
+            &data_dir,
+            None,
+            None,
+            &default_embedder_config(),
+        )
+        .await
+        .unwrap();
+        let text = extract_text(&text);
+        assert!(
+            text.contains("Prefix lookup test"),
+            "short prefix should resolve to the entry: got: {text}"
+        );
+    }
+
     // ── format_epoch ─────────────────────────────────────────────────────
 
     #[test]
