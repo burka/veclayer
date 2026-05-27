@@ -477,23 +477,25 @@ impl LanceStore {
         Self::open(path, dimension, read_only).await
     }
 
+    // Single chokepoint: all 6 mutating trait methods route here, so rejecting
+    // writes for read-only stores is enforced in one place.
     async fn with_write_lock<F, Fut, T>(&self, f: F) -> Result<T>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<T>>,
     {
-        let _lock = match self.lock_dir.as_ref() {
-            Some(dir) => {
-                let dir = dir.clone();
-                Some(
-                    // Outer ? = tokio JoinError (task panicked), inner ? = lock acquisition error
-                    tokio::task::spawn_blocking(move || FileLock::acquire_blocking(&dir))
-                        .await
-                        .map_err(|e| Error::store(format!("lock task failed: {e}")))??,
-                )
+        let dir = match self.lock_dir.as_ref() {
+            Some(dir) => dir.clone(),
+            None => {
+                return Err(Error::store(
+                    "write rejected: store was opened in read-only mode",
+                ))
             }
-            None => None,
         };
+
+        let _lock = tokio::task::spawn_blocking(move || FileLock::acquire_blocking(&dir))
+            .await
+            .map_err(|e| Error::store(format!("lock task failed: {e}")))??;
 
         f().await
     }
@@ -3050,6 +3052,140 @@ mod tests {
             .unwrap()
             .expect("chunk must be readable back");
         assert_eq!(retrieved.content, "Written after ro open");
+    }
+
+    // ── read-only write-rejection tests ──────────────────────────────────────
+
+    /// Helper: open a seeded read-only LanceStore. Returns the store and the
+    /// TempDir (kept alive by the caller).
+    async fn open_seeded_read_only(id: &str) -> (LanceStore, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let rw = LanceStore::open(dir.path(), 384, false).await.unwrap();
+        rw.insert_chunks(vec![create_test_chunk(id, "seed", ChunkLevel::H1)])
+            .await
+            .unwrap();
+        // Release the write lock before the read-only open so the two handles
+        // don't contend on the same FileLock.
+        drop(rw);
+        let ro = LanceStore::open(dir.path(), 384, true).await.unwrap();
+        (ro, dir)
+    }
+
+    #[tokio::test]
+    async fn test_read_only_store_rejects_insert_chunks() {
+        let (ro, _dir) = open_seeded_read_only("ro-ins-seed").await;
+        let chunk = create_test_chunk("ro-ins-new", "should not appear", ChunkLevel::H1);
+        let err = ro.insert_chunks(vec![chunk]).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("write rejected: store was opened in read-only mode"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_only_store_rejects_delete_by_source() {
+        let (ro, _dir) = open_seeded_read_only("ro-del-seed").await;
+        let err = ro.delete_by_source("test.md").await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("write rejected: store was opened in read-only mode"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_only_store_rejects_update_visibility() {
+        let (ro, _dir) = open_seeded_read_only("ro-vis-seed").await;
+        let err = ro
+            .update_visibility("ro-vis-seed", "private")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("write rejected: store was opened in read-only mode"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_only_store_rejects_add_relation() {
+        let (ro, _dir) = open_seeded_read_only("ro-rel-seed").await;
+        let relation = crate::ChunkRelation::related_to("other");
+        let err = ro.add_relation("ro-rel-seed", relation).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("write rejected: store was opened in read-only mode"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_only_store_rejects_batch_update_embeddings() {
+        let (ro, _dir) = open_seeded_read_only("ro-emb-seed").await;
+        let updates = vec![("ro-emb-seed".to_string(), vec![0.2_f32; 384])];
+        let err = ro.batch_update_embeddings(updates).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("write rejected: store was opened in read-only mode"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Rejected insert must leave contents unchanged: seed 1 row, reopen
+    /// read-only, attempt insert → Err, reopen read-write → still 1 row.
+    #[tokio::test]
+    async fn test_read_only_rejected_insert_leaves_contents_unchanged() {
+        let dir = TempDir::new().unwrap();
+
+        // Seed one row via a read-write handle.
+        let rw = LanceStore::open(dir.path(), 384, false).await.unwrap();
+        rw.insert_chunks(vec![create_test_chunk(
+            "ro-stable-seed",
+            "original",
+            ChunkLevel::H1,
+        )])
+        .await
+        .unwrap();
+        drop(rw);
+
+        // Read-only handle: insert must be rejected.
+        let ro = LanceStore::open(dir.path(), 384, true).await.unwrap();
+        let chunk = create_test_chunk("ro-stable-new", "should not appear", ChunkLevel::H1);
+        let err = ro.insert_chunks(vec![chunk]).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("write rejected: store was opened in read-only mode"),
+            "unexpected error: {err}"
+        );
+        drop(ro);
+
+        // Re-open read-write and confirm exactly 1 row remains.
+        let rw2 = LanceStore::open(dir.path(), 384, false).await.unwrap();
+        let stats = rw2.stats().await.unwrap();
+        assert_eq!(
+            stats.total_chunks, 1,
+            "rejected insert must not change row count"
+        );
+        let original = rw2
+            .get_by_id("ro-stable-seed")
+            .await
+            .unwrap()
+            .expect("original row must still exist");
+        assert_eq!(original.content, "original");
+    }
+
+    #[tokio::test]
+    async fn test_read_only_store_rejects_update_access_profiles() {
+        let (ro, _dir) = open_seeded_read_only("ro-acc-seed").await;
+        // Non-empty updates: the empty case short-circuits to Ok before the lock.
+        let updates = vec![("ro-acc-seed".to_string(), crate::AccessProfile::new())];
+        let err = ro.update_access_profiles(updates).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("write rejected: store was opened in read-only mode"),
+            "unexpected error: {err}"
+        );
     }
 
     /// Multiple concurrent `open()` calls on the same fresh directory must all
