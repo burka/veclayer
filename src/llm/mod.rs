@@ -16,9 +16,9 @@ use crate::util::{build_hardened_client, read_capped_body, MAX_HTTP_BODY_BYTES};
 
 /// Build a hardened reqwest `Client` with standard timeouts (10s connect, 120s
 /// overall) and redirects disabled.
-pub fn make_standard_http_client() -> Client {
+pub fn make_standard_http_client() -> crate::Result<Client> {
     build_hardened_client(Duration::from_secs(10), Duration::from_secs(120))
-        .expect("reqwest client")
+        .ok_or_else(|| crate::Error::llm("failed to build reqwest client"))
 }
 
 /// Read the body from a non-success HTTP response and format it as an LLM error.
@@ -163,10 +163,10 @@ impl LlmProvider for LlmBackend {
 
 impl LlmBackend {
     /// Create an LLM backend from config.
-    pub fn from_config(config: &LlmConfig) -> Self {
+    pub fn from_config(config: &LlmConfig) -> crate::Result<Self> {
         match config.provider.as_str() {
-            "openai" => Self::OpenAi(OpenAiLlm::new(config)),
-            _ => Self::Ollama(OllamaLlm::new(config)),
+            "openai" => Ok(Self::OpenAi(OpenAiLlm::new(config)?)),
+            _ => Ok(Self::Ollama(OllamaLlm::new(config)?)),
         }
     }
 }
@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn test_llm_backend_from_config_ollama() {
         let config = LlmConfig::default();
-        let backend = LlmBackend::from_config(&config);
+        let backend = LlmBackend::from_config(&config).expect("client build should succeed");
         assert_eq!(backend.name(), "llama3.2");
     }
 
@@ -212,7 +212,13 @@ mod tests {
             api_key: Some("sk-test".to_string()),
             ..Default::default()
         };
-        let backend = LlmBackend::from_config(&config);
+        let backend = LlmBackend::from_config(&config).expect("client build should succeed");
         assert_eq!(backend.name(), "gpt-4o");
+    }
+
+    #[test]
+    fn test_make_standard_http_client_returns_ok() {
+        let result = make_standard_http_client();
+        assert!(result.is_ok(), "expected Ok from make_standard_http_client");
     }
 }

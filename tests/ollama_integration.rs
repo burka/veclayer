@@ -48,7 +48,9 @@ async fn test_ollama_summarizer_basic() {
         return;
     }
 
-    let summarizer = OllamaSummarizer::new().with_model("tinyllama");
+    let summarizer = OllamaSummarizer::new()
+        .expect("client build")
+        .with_model("tinyllama");
 
     let texts = &[
         "Rust is a systems programming language focused on safety and performance.",
@@ -71,7 +73,9 @@ async fn test_ollama_summarizer_empty_input() {
         return;
     }
 
-    let summarizer = OllamaSummarizer::new().with_model("tinyllama");
+    let summarizer = OllamaSummarizer::new()
+        .expect("client build")
+        .with_model("tinyllama");
     let result = summarizer.summarize(&[]).await;
 
     assert!(result.is_ok());
@@ -86,7 +90,9 @@ async fn test_ollama_summarizer_single_text() {
         return;
     }
 
-    let summarizer = OllamaSummarizer::new().with_model("tinyllama");
+    let summarizer = OllamaSummarizer::new()
+        .expect("client build")
+        .with_model("tinyllama");
     let texts = &["Vector databases store embeddings for semantic search."];
 
     let summary = summarizer.summarize(texts).await;
@@ -105,7 +111,9 @@ async fn test_ollama_summarizer_batch() {
         return;
     }
 
-    let summarizer = OllamaSummarizer::new().with_model("tinyllama");
+    let summarizer = OllamaSummarizer::new()
+        .expect("client build")
+        .with_model("tinyllama");
 
     let groups = vec![
         vec![
@@ -134,7 +142,9 @@ async fn test_ollama_summarizer_wrong_model() {
         return;
     }
 
-    let summarizer = OllamaSummarizer::new().with_model("nonexistent-model-xyz");
+    let summarizer = OllamaSummarizer::new()
+        .expect("client build")
+        .with_model("nonexistent-model-xyz");
     let result = summarizer.summarize(&["test"]).await;
 
     // Should fail with model not found
@@ -178,7 +188,9 @@ async fn test_cluster_pipeline_with_ollama() {
         .collect();
 
     // Create pipeline with Ollama
-    let summarizer = OllamaSummarizer::new().with_model("tinyllama");
+    let summarizer = OllamaSummarizer::new()
+        .expect("client build")
+        .with_model("tinyllama");
     let pipeline_embedder = FastEmbedder::new().expect("Failed to create embedder");
 
     let pipeline = ClusterPipeline::with_summarizer(pipeline_embedder, summarizer)
@@ -262,7 +274,9 @@ async fn test_cluster_pipeline_discovers_semantic_clusters() {
         })
         .collect();
 
-    let summarizer = OllamaSummarizer::new().with_model("tinyllama");
+    let summarizer = OllamaSummarizer::new()
+        .expect("client build")
+        .with_model("tinyllama");
     let pipeline_embedder = FastEmbedder::new().expect("Failed to create embedder");
 
     let pipeline = ClusterPipeline::with_summarizer(pipeline_embedder, summarizer)

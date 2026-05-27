@@ -17,18 +17,26 @@ pub struct OllamaSummarizer {
 impl OllamaSummarizer {
     /// Create a new Ollama summarizer with default settings.
     /// Uses llama3.2 model and localhost:11434 endpoint.
-    pub fn new() -> Self {
-        Self {
+    ///
+    /// Fallible (hence no `Default` impl) because building the hardened HTTP
+    /// client can fail.
+    pub fn new() -> Result<Self> {
+        Ok(Self {
             model: "llama3.2".to_string(),
             base_url: DEFAULT_OLLAMA_URL.to_string(),
             client: build_hardened_client(Duration::from_secs(10), Duration::from_secs(120))
-                .expect("reqwest client"),
-        }
+                .ok_or_else(|| Error::summarization("failed to build reqwest client"))?,
+        })
+    }
+
+    /// Set the model in place, reusing the existing HTTP client.
+    pub fn set_model(&mut self, model: impl Into<String>) {
+        self.model = model.into();
     }
 
     /// Use a specific model
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
-        self.model = model.into();
+        self.set_model(model);
         self
     }
 
@@ -54,12 +62,6 @@ TEXT CHUNKS:
 
 Provide a clear, comprehensive summary in 2-4 sentences that would help someone understand what these texts are about without reading them in full. Do not use phrases like "The texts discuss" or "These chunks cover" - write directly about the content."#
         )
-    }
-}
-
-impl Default for OllamaSummarizer {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -128,10 +130,17 @@ mod tests {
 
     #[test]
     fn test_prompt_building() {
-        let summarizer = OllamaSummarizer::new();
+        let summarizer = OllamaSummarizer::new().expect("client build should succeed");
         let prompt = summarizer.build_prompt(&["Text one", "Text two"]);
         assert!(prompt.contains("Text one"));
         assert!(prompt.contains("Text two"));
         assert!(prompt.contains("---"));
+    }
+
+    #[test]
+    fn test_new_returns_ok() {
+        let result = OllamaSummarizer::new();
+        assert!(result.is_ok(), "OllamaSummarizer::new() should return Ok");
+        assert_eq!(result.unwrap().name(), "llama3.2");
     }
 }

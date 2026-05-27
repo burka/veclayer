@@ -20,18 +20,18 @@ pub struct ClusterPipeline<S: Summarizer, E: Embedder> {
 
 impl<E: Embedder> ClusterPipeline<OllamaSummarizer, E> {
     /// Create pipeline with default Ollama summarizer
-    pub fn new(embedder: E) -> Self {
-        Self {
-            summarizer: OllamaSummarizer::new(),
+    pub fn new(embedder: E) -> crate::Result<Self> {
+        Ok(Self {
+            summarizer: OllamaSummarizer::new()?,
             embedder,
             clusterer: SoftClusterer::new(),
             min_cluster_size: 2,
-        }
+        })
     }
 
     /// Use a specific Ollama model
     pub fn with_model(mut self, model: &str) -> Self {
-        self.summarizer = OllamaSummarizer::new().with_model(model);
+        self.summarizer.set_model(model);
         self
     }
 }
@@ -264,13 +264,14 @@ mod tests {
     #[test]
     fn test_pipeline_creation() {
         let embedder = MockEmbedder::new(384);
-        let _pipeline = ClusterPipeline::new(embedder);
+        let _pipeline = ClusterPipeline::new(embedder).expect("pipeline build should succeed");
     }
 
     #[test]
     fn test_pipeline_with_config() {
         let embedder = MockEmbedder::new(384);
         let pipeline = ClusterPipeline::new(embedder)
+            .expect("pipeline build should succeed")
             .with_min_cluster_size(3)
             .with_cluster_range(2, 5);
 
@@ -418,7 +419,9 @@ mod tests {
     #[tokio::test]
     async fn test_pipeline_with_model() {
         let embedder = MockEmbedder::new(384);
-        let pipeline = ClusterPipeline::new(embedder).with_model("custom-model");
+        let pipeline = ClusterPipeline::new(embedder)
+            .expect("pipeline build should succeed")
+            .with_model("custom-model");
 
         // Just verify it compiles and sets the model
         assert_eq!(pipeline.min_cluster_size, 2);

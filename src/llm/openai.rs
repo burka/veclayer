@@ -17,15 +17,15 @@ pub struct OpenAiLlm {
 }
 
 impl OpenAiLlm {
-    pub fn new(config: &LlmConfig) -> Self {
-        Self {
-            client: make_standard_http_client(),
+    pub fn new(config: &LlmConfig) -> crate::Result<Self> {
+        Ok(Self {
+            client: make_standard_http_client()?,
             model: config.model.clone(),
             base_url: config.base_url.clone(),
             api_key: config.api_key.clone().unwrap_or_default(),
             temperature: config.temperature,
             max_tokens: config.max_tokens,
-        }
+        })
     }
 }
 
@@ -118,7 +118,7 @@ mod tests {
         );
         let (port, mock) = spawn_mock(response).await;
 
-        let llm = OpenAiLlm::new(&make_config(port, Some("sk-test")));
+        let llm = OpenAiLlm::new(&make_config(port, Some("sk-test"))).expect("client build");
         let result = llm.complete(&[Message::user("hi")]).await;
 
         let request = mock.await.unwrap();
@@ -143,7 +143,7 @@ mod tests {
         );
         let (port, mock) = spawn_mock(response).await;
 
-        let llm = OpenAiLlm::new(&make_config(port, Some("bad-key")));
+        let llm = OpenAiLlm::new(&make_config(port, Some("bad-key"))).expect("client build");
         let result = llm.complete(&[Message::user("hi")]).await;
 
         mock.await.unwrap();
@@ -166,7 +166,7 @@ mod tests {
         );
         let (port, mock) = spawn_mock(response).await;
 
-        let llm = OpenAiLlm::new(&make_config(port, None));
+        let llm = OpenAiLlm::new(&make_config(port, None)).expect("client build");
         let result = llm.complete(&[Message::user("hi")]).await;
 
         mock.await.unwrap();
@@ -189,7 +189,7 @@ mod tests {
         );
         let (port, mock) = spawn_mock(response).await;
 
-        let llm = OpenAiLlm::new(&make_config(port, None));
+        let llm = OpenAiLlm::new(&make_config(port, None)).expect("client build");
         let result = llm.complete(&[Message::user("hi")]).await;
 
         mock.await.unwrap();
@@ -211,7 +211,7 @@ mod tests {
         );
         let (port, mock) = spawn_mock(response).await;
 
-        let llm = OpenAiLlm::new(&make_config(port, None));
+        let llm = OpenAiLlm::new(&make_config(port, None)).expect("client build");
         let result = llm.complete(&[Message::user("hi")]).await;
 
         mock.await.unwrap();

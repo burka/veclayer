@@ -123,7 +123,7 @@ async fn add_files(
         );
 
         let summary_embedder = crate::embedder::from_config(&_config.embedder)?;
-        let summarizer = OllamaSummarizer::new().with_model(&options.model);
+        let summarizer = OllamaSummarizer::new()?.with_model(&options.model);
 
         let pipeline = ClusterPipeline::with_summarizer(summary_embedder, summarizer)
             .with_min_cluster_size(2)

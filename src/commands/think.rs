@@ -7,7 +7,7 @@ use super::*;
 pub async fn think(data_dir: &Path) -> Result<()> {
     let (config, embedder, store, blob_store) = open_store(data_dir).await?;
 
-    let llm = crate::llm::LlmBackend::from_config(&config.llm);
+    let llm = crate::llm::LlmBackend::from_config(&config.llm)?;
 
     println!(
         "Think: starting sleep cycle (LLM: {} via {})",

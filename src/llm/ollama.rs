@@ -12,13 +12,13 @@ pub struct OllamaLlm {
 }
 
 impl OllamaLlm {
-    pub fn new(config: &LlmConfig) -> Self {
-        Self {
-            client: make_standard_http_client(),
+    pub fn new(config: &LlmConfig) -> crate::Result<Self> {
+        Ok(Self {
+            client: make_standard_http_client()?,
             model: config.model.clone(),
             base_url: config.base_url.clone(),
             temperature: config.temperature,
-        }
+        })
     }
 }
 
@@ -107,6 +107,7 @@ mod tests {
             temperature: 0.0,
             max_tokens: 256,
         })
+        .expect("client build should succeed")
     }
 
     // --- green path ---

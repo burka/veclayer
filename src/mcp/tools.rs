@@ -843,7 +843,7 @@ async fn think_consolidate(
     project: Option<&str>,
 ) -> Result<String> {
     let config = crate::Config::new().with_data_dir(data_dir);
-    let llm = crate::llm::LlmBackend::from_config(&config.llm);
+    let llm = crate::llm::LlmBackend::from_config(&config.llm)?;
     let embedder = crate::embedder::from_config(&config.embedder)
         .map_err(|e| crate::Error::llm(format!("Failed to init embedder: {}", e)))?;
 
