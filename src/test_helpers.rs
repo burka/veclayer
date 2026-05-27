@@ -70,7 +70,7 @@ pub(crate) async fn test_store_with_chunks(
 /// Open a test metadata store, returning (store, data_dir, temp_dir_guard).
 ///
 /// For use with read-only store operations that don't require full embeddings.
-#[cfg(all(test, feature = "store-lance"))]
+#[cfg(all(test, feature = "store-lance", feature = "mcp"))]
 pub(crate) async fn test_store_meta() -> (
     std::sync::Arc<crate::store::StoreBackend>,
     std::path::PathBuf,
@@ -105,8 +105,7 @@ async fn test_store_setup(
 }
 
 /// Assert that a file has unix permission bits 0o600 (owner read/write only).
-#[cfg(unix)]
-#[cfg(test)]
+#[cfg(all(unix, test, feature = "auth"))]
 pub(crate) fn assert_file_mode_600(path: &std::path::Path, context: &str) {
     use std::os::unix::fs::MetadataExt;
     let meta = std::fs::metadata(path).unwrap();
