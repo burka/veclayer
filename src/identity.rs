@@ -639,6 +639,189 @@ pub fn generate_brief_priming(snapshot: &IdentitySnapshot) -> String {
     priming
 }
 
+#[cfg(test)]
+mod pure_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn empty_snapshot() -> IdentitySnapshot {
+        IdentitySnapshot {
+            centroids: vec![],
+            core_entries: vec![],
+            open_threads: vec![],
+            recent_learnings: vec![],
+            emergent_clusters: vec![],
+            other_branches: vec![],
+        }
+    }
+
+    fn core_entry(heading: &str, content: &str) -> CoreEntry {
+        CoreEntry {
+            id: heading.to_string(),
+            heading: Some(heading.to_string()),
+            content_preview: content.to_string(),
+            salience: 0.5,
+            perspectives: vec![],
+        }
+    }
+
+    // ── passes_ongoing_filter ─────────────────────────────────────────────────
+
+    #[test]
+    fn passes_ongoing_filter_none_allows_any_id() {
+        assert!(passes_ongoing_filter(&None, "any-id"));
+        assert!(passes_ongoing_filter(&None, ""));
+    }
+
+    #[test]
+    fn passes_ongoing_filter_empty_set_blocks_all() {
+        let filter = Some(HashSet::new());
+        assert!(!passes_ongoing_filter(&filter, "some-id"));
+    }
+
+    #[test]
+    fn passes_ongoing_filter_id_present_passes() {
+        let mut set = HashSet::new();
+        set.insert("known".to_string());
+        let filter = Some(set);
+        assert!(passes_ongoing_filter(&filter, "known"));
+    }
+
+    #[test]
+    fn passes_ongoing_filter_id_absent_blocks() {
+        let mut set = HashSet::new();
+        set.insert("known".to_string());
+        let filter = Some(set);
+        assert!(!passes_ongoing_filter(&filter, "unknown"));
+    }
+
+    // ── generate_brief_priming ────────────────────────────────────────────────
+
+    #[test]
+    fn generate_brief_priming_empty_snapshot_returns_empty() {
+        assert_eq!(generate_brief_priming(&empty_snapshot()), String::new());
+    }
+
+    #[test]
+    fn generate_brief_priming_includes_key_knowledge_section() {
+        let snapshot = IdentitySnapshot {
+            core_entries: vec![core_entry("Rust Choice", "We chose Rust")],
+            ..empty_snapshot()
+        };
+        let out = generate_brief_priming(&snapshot);
+        assert!(out.contains("Key Knowledge"));
+        assert!(out.contains("Rust Choice"));
+        assert!(out.contains("We chose Rust"));
+    }
+
+    #[test]
+    fn generate_brief_priming_caps_core_entries_at_five() {
+        let entries: Vec<CoreEntry> = (0..7).map(|i| core_entry(&format!("E{i}"), "x")).collect();
+        let snapshot = IdentitySnapshot {
+            core_entries: entries,
+            ..empty_snapshot()
+        };
+        let out = generate_brief_priming(&snapshot);
+        assert!(out.contains("E0"));
+        assert!(out.contains("E4"));
+        assert!(!out.contains("E5"));
+        assert!(!out.contains("E6"));
+    }
+
+    #[test]
+    fn generate_brief_priming_includes_open_threads() {
+        let snapshot = IdentitySnapshot {
+            // generate_brief_priming returns "" for an empty snapshot, so one
+            // core entry is required to reach the open-threads rendering path.
+            core_entries: vec![core_entry("Anchor", "scaffolding")],
+            open_threads: vec![OpenThread {
+                id: "t1".to_string(),
+                heading: Some("Pending DB choice".to_string()),
+                reason: "Superseded but visible".to_string(),
+                related_ids: vec![],
+            }],
+            ..empty_snapshot()
+        };
+        let out = generate_brief_priming(&snapshot);
+        assert!(out.contains("Open Threads"));
+        assert!(out.contains("Pending DB choice"));
+    }
+
+    #[test]
+    fn generate_brief_priming_caps_recent_learnings_at_three() {
+        let learnings: Vec<CoreEntry> = (0..5).map(|i| core_entry(&format!("L{i}"), "y")).collect();
+        let snapshot = IdentitySnapshot {
+            core_entries: vec![core_entry("Root", "x")],
+            recent_learnings: learnings,
+            ..empty_snapshot()
+        };
+        let out = generate_brief_priming(&snapshot);
+        assert!(out.contains("L0"));
+        assert!(out.contains("L2"));
+        assert!(!out.contains("L3"));
+    }
+
+    #[test]
+    fn generate_brief_priming_omits_emergent_clusters_and_branches() {
+        let snapshot = IdentitySnapshot {
+            core_entries: vec![core_entry("Item", "content")],
+            emergent_clusters: vec![EmergentCluster {
+                cluster_id: "cluster-x".to_string(),
+                representative: core_entry("Rep", "rep content"),
+                member_count: 2,
+                dominant_perspectives: vec![],
+            }],
+            other_branches: vec![BranchActivity {
+                branch: "feat/other".to_string(),
+                entry_count: 1,
+                latest_heading: None,
+            }],
+            ..empty_snapshot()
+        };
+        let out = generate_brief_priming(&snapshot);
+        assert!(
+            !out.contains("cluster-x"),
+            "brief output must omit emergent clusters"
+        );
+        assert!(
+            !out.contains("feat/other"),
+            "brief output must omit branch activity"
+        );
+    }
+
+    #[test]
+    fn generate_brief_priming_entry_with_perspectives_shown() {
+        let snapshot = IdentitySnapshot {
+            core_entries: vec![CoreEntry {
+                id: "e1".to_string(),
+                heading: Some("Arch Decision".to_string()),
+                content_preview: "use actors".to_string(),
+                salience: 0.8,
+                perspectives: vec!["decisions".to_string()],
+            }],
+            ..empty_snapshot()
+        };
+        let out = generate_brief_priming(&snapshot);
+        assert!(out.contains("[decisions]"));
+    }
+
+    #[test]
+    fn generate_brief_priming_no_heading_falls_back_to_untitled() {
+        let snapshot = IdentitySnapshot {
+            core_entries: vec![CoreEntry {
+                id: "e1".to_string(),
+                heading: None,
+                content_preview: "headless content".to_string(),
+                salience: 0.5,
+                perspectives: vec![],
+            }],
+            ..empty_snapshot()
+        };
+        let out = generate_brief_priming(&snapshot);
+        assert!(out.contains("(untitled)"));
+    }
+}
+
 #[cfg(all(test, feature = "store-lance"))]
 mod tests {
     use super::*;
