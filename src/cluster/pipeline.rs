@@ -140,7 +140,7 @@ impl<S: Summarizer, E: Embedder> ClusterPipeline<S, E> {
             }
 
             // Embed the summary
-            let summary_embedding = match self.embedder.embed(&[&summary_text]) {
+            let summary_embedding = match self.embedder.embed(&[&summary_text]).await {
                 Ok(embeddings) => embeddings.into_iter().next(),
                 Err(e) => {
                     info!("Failed to embed summary for cluster {}: {}", cluster_id, e);
@@ -206,17 +206,22 @@ mod tests {
     }
 
     impl Embedder for MockEmbedder {
-        fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-            Ok(texts
-                .iter()
-                .enumerate()
-                .map(|(i, _)| {
-                    let mut vec = vec![0.5; self.dimension];
+        fn embed<'a>(
+            &'a self,
+            texts: &'a [&'a str],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Vec<f32>>>> + Send + 'a>>
+        {
+            let n = texts.len();
+            let dim = self.dimension;
+            let result: Vec<Vec<f32>> = (0..n)
+                .map(|i| {
+                    let mut vec = vec![0.5; dim];
                     // Add some variation based on index
-                    vec[0] = i as f32 / texts.len() as f32;
+                    vec[0] = i as f32 / n.max(1) as f32;
                     vec
                 })
-                .collect())
+                .collect();
+            Box::pin(async move { Ok(result) })
         }
 
         fn dimension(&self) -> usize {
@@ -532,8 +537,12 @@ mod tests {
     struct FailingEmbedder;
 
     impl Embedder for FailingEmbedder {
-        fn embed(&self, _texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-            Err(Error::embedding("Intentional embedding failure"))
+        fn embed<'a>(
+            &'a self,
+            _texts: &'a [&'a str],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Vec<f32>>>> + Send + 'a>>
+        {
+            Box::pin(async move { Err(Error::embedding("Intentional embedding failure")) })
         }
 
         fn dimension(&self) -> usize {

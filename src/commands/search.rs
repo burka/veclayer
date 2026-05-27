@@ -232,7 +232,7 @@ pub async fn focus(data_dir: &Path, id: &str, options: &FocusOptions) -> Result<
 
     if !children.is_empty() {
         if let Some(ref question) = options.question {
-            let query_emb = embedder.embed(&[question.as_str()])?;
+            let query_emb = embedder.embed(&[question.as_str()]).await?;
             if let Some(query_vec) = query_emb.into_iter().next() {
                 children.sort_by(|a, b| {
                     let score_a = a

@@ -81,7 +81,7 @@ async fn add_files(
         }
 
         let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
-        let embeddings = embedder.embed(&texts)?;
+        let embeddings = embedder.embed(&texts).await?;
 
         for (chunk, embedding) in chunks.iter_mut().zip(embeddings) {
             chunk.embedding = Some(embedding);
@@ -225,7 +225,7 @@ async fn add_text(
     }
     chunk.impression_strength = options.impression_strength;
 
-    let embeddings = embedder.embed(&[text])?;
+    let embeddings = embedder.embed(&[text]).await?;
     chunk.embedding = Some(
         embeddings
             .into_iter()

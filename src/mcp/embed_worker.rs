@@ -77,15 +77,10 @@ async fn process_batch(
         return Ok(0);
     }
 
-    // CPU-bound embedding — run off the async executor
-    let embedder_clone = Arc::clone(embedder);
+    // Embedders own their own threading; await directly on the async executor.
     let texts: Vec<String> = pending.iter().map(|c| c.content.clone()).collect();
-    let embeddings = tokio::task::spawn_blocking(move || {
-        let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        embedder_clone.embed(&refs)
-    })
-    .await
-    .map_err(|e| crate::Error::embedding(format!("Embedding task panicked: {e}")))??;
+    let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+    let embeddings = embedder.embed(&refs).await?;
 
     if embeddings.len() != pending.len() {
         return Err(crate::Error::embedding(format!(
@@ -205,8 +200,14 @@ mod tests {
     struct FixedEmbedder;
 
     impl crate::Embedder for FixedEmbedder {
-        fn embed(&self, texts: &[&str]) -> crate::Result<Vec<Vec<f32>>> {
-            Ok(texts.iter().map(|_| vec![0.5f32; 384]).collect())
+        fn embed<'a>(
+            &'a self,
+            texts: &'a [&'a str],
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = crate::Result<Vec<Vec<f32>>>> + Send + 'a>,
+        > {
+            let result: Vec<Vec<f32>> = texts.iter().map(|_| vec![0.5f32; 384]).collect();
+            Box::pin(async move { Ok(result) })
         }
 
         fn dimension(&self) -> usize {
@@ -302,13 +303,19 @@ mod tests {
     struct MismatchEmbedder;
 
     impl crate::Embedder for MismatchEmbedder {
-        fn embed(&self, texts: &[&str]) -> crate::Result<Vec<Vec<f32>>> {
+        fn embed<'a>(
+            &'a self,
+            texts: &'a [&'a str],
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = crate::Result<Vec<Vec<f32>>>> + Send + 'a>,
+        > {
             // Return fewer embeddings than texts to trigger count mismatch
-            if texts.len() > 1 {
+            let result = if texts.len() > 1 {
                 Ok(vec![vec![0.1f32; 384]])
             } else {
                 Ok(texts.iter().map(|_| vec![0.1f32; 384]).collect())
-            }
+            };
+            Box::pin(async move { result })
         }
 
         fn dimension(&self) -> usize {

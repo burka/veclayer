@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 
@@ -17,7 +17,7 @@ fn fastembed_cache_dir() -> std::path::PathBuf {
 /// This keeps MCP stdio startup cheap for short-lived sessions that only need
 /// initialization metadata and never actually run semantic operations.
 pub struct FastEmbedder {
-    model: OnceLock<std::result::Result<TextEmbedding, String>>,
+    model: OnceLock<std::result::Result<Arc<TextEmbedding>, String>>,
     model_type: EmbeddingModel,
     cache_dir: std::path::PathBuf,
     dimension: usize,
@@ -44,17 +44,18 @@ impl FastEmbedder {
         })
     }
 
-    fn get_or_init_model(&self) -> Result<&TextEmbedding> {
+    fn get_or_init_model(&self) -> Result<Arc<TextEmbedding>> {
         let init = self.model.get_or_init(|| {
             tracing::debug!("Initializing FastEmbed model {}", self.model_name);
             let options =
                 InitOptions::new(self.model_type.clone()).with_cache_dir(self.cache_dir.clone());
             TextEmbedding::try_new(options)
+                .map(Arc::new)
                 .map_err(|e| format!("Failed to initialize FastEmbed: {e}"))
         });
 
         match init {
-            Ok(model) => Ok(model),
+            Ok(model) => Ok(Arc::clone(model)),
             Err(msg) => Err(Error::embedding(msg.clone())),
         }
     }
@@ -78,17 +79,25 @@ impl Default for FastEmbedder {
 }
 
 impl Embedder for FastEmbedder {
-    fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        if texts.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let texts: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
-        let model = self.get_or_init_model()?;
-
-        model
-            .embed(texts, None)
-            .map_err(|e| Error::embedding(format!("Embedding failed: {}", e)))
+    fn embed<'a>(
+        &'a self,
+        texts: &'a [&'a str],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Vec<f32>>>> + Send + 'a>>
+    {
+        let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
+        Box::pin(async move {
+            if owned.is_empty() {
+                return Ok(vec![]);
+            }
+            let model = self.get_or_init_model()?;
+            tokio::task::spawn_blocking(move || {
+                model
+                    .embed(owned, None)
+                    .map_err(|e| Error::embedding(format!("Embedding failed: {}", e)))
+            })
+            .await
+            .map_err(|e| Error::embedding(format!("Embedding task panicked: {}", e)))?
+        })
     }
 
     fn dimension(&self) -> usize {
@@ -111,24 +120,24 @@ mod tests {
         assert!(embedder.is_ok());
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore = "requires ONNX model file (download via fastembed)"]
-    fn test_fastembed_embed() {
+    async fn test_fastembed_embed() {
         let embedder = FastEmbedder::new().unwrap();
         let texts = vec!["Hello world", "This is a test"];
-        let embeddings = embedder.embed(&texts).unwrap();
+        let embeddings = embedder.embed(&texts).await.unwrap();
 
         assert_eq!(embeddings.len(), 2);
         assert_eq!(embeddings[0].len(), embedder.dimension());
         assert_eq!(embeddings[1].len(), embedder.dimension());
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore = "requires ONNX model file (download via fastembed)"]
-    fn test_fastembed_empty() {
+    async fn test_fastembed_empty() {
         let embedder = FastEmbedder::new().unwrap();
         let texts: Vec<&str> = vec![];
-        let embeddings = embedder.embed(&texts).unwrap();
+        let embeddings = embedder.embed(&texts).await.unwrap();
         assert!(embeddings.is_empty());
     }
 

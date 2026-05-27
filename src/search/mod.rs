@@ -228,8 +228,8 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
     }
 
     /// Embed a query string
-    fn embed_query(&self, query: &str) -> Result<Vec<f32>> {
-        let embeddings = self.embedder.embed(&[query])?;
+    async fn embed_query(&self, query: &str) -> Result<Vec<f32>> {
+        let embeddings = self.embedder.embed(&[query]).await?;
         embeddings
             .into_iter()
             .next()
@@ -238,7 +238,7 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
 
     /// Search for top-level matches (H1/H2)
     pub async fn search_top_level(&self, query: &str) -> Result<Vec<SearchResult>> {
-        let query_embedding = self.embed_query(query)?;
+        let query_embedding = self.embed_query(query).await?;
 
         // Search H1 chunks first
         let mut results = self
@@ -274,7 +274,7 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
     /// 3. For each match, search its children
     /// 4. Record access and compute combined scores (vector + relevancy)
     pub async fn search(&self, query: &str) -> Result<Vec<HierarchicalSearchResult>> {
-        let query_embedding = self.embed_query(query)?;
+        let query_embedding = self.embed_query(query).await?;
 
         // Fetch more than top_k so we still have enough after visibility filtering
         let fetch_k = if self.config.deep {
@@ -376,7 +376,7 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
         query: &str,
         parent_id: &str,
     ) -> Result<Vec<HierarchicalSearchResult>> {
-        let query_embedding = self.embed_query(query)?;
+        let query_embedding = self.embed_query(query).await?;
 
         // Get all children of this parent
         let children = self.store.get_children(parent_id).await?;
@@ -767,8 +767,13 @@ mod tests {
     }
 
     impl Embedder for MockEmbedder {
-        fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-            Ok(texts.iter().map(|_| vec![1.0; self.dimension]).collect())
+        fn embed<'a>(
+            &'a self,
+            texts: &'a [&'a str],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Vec<f32>>>> + Send + 'a>>
+        {
+            let result: Vec<Vec<f32>> = texts.iter().map(|_| vec![1.0; self.dimension]).collect();
+            Box::pin(async move { Ok(result) })
         }
 
         fn dimension(&self) -> usize {
@@ -951,7 +956,7 @@ mod tests {
         let embedder = MockEmbedder::new(3);
         let search = HierarchicalSearch::new(store, embedder);
 
-        let embedding = search.embed_query("test query").unwrap();
+        let embedding = search.embed_query("test query").await.unwrap();
         assert_eq!(embedding.len(), 3);
         assert_eq!(embedding, vec![1.0, 1.0, 1.0]);
     }

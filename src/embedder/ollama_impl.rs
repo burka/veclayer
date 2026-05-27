@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tokio::runtime::Handle;
 
 use super::Embedder;
 use crate::util::{build_hardened_client, read_capped_body, MAX_HTTP_BODY_BYTES};
@@ -192,11 +191,12 @@ impl OllamaEmbedder {
 }
 
 impl Embedder for OllamaEmbedder {
-    // TODO: block_in_place panics on current_thread runtimes and requires an active
-    // tokio Handle. Consider making the Embedder trait async or constructing a dedicated
-    // runtime in new() to decouple from the caller's executor.
-    fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        tokio::task::block_in_place(|| Handle::current().block_on(self.embed_async(texts)))
+    fn embed<'a>(
+        &'a self,
+        texts: &'a [&'a str],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Vec<f32>>>> + Send + 'a>>
+    {
+        Box::pin(self.embed_async(texts))
     }
 
     fn dimension(&self) -> usize {
@@ -574,6 +574,24 @@ mod tests {
         );
     }
 
+    // ── TDD regression: embed must not panic on a current_thread runtime ────────
+
+    /// RED before this fix: the old sync `embed` used block_in_place, which
+    /// panics on a current_thread runtime. GREEN now that embed is async.
+    #[tokio::test(flavor = "current_thread")]
+    async fn embed_on_current_thread_runtime_succeeds() {
+        let texts = vec!["a", "b"];
+        let (listener, base_url) = mock_listener().await;
+        let log = serve_n_chunks(listener, vec![2]);
+        let embedder = embedder_at(&base_url);
+        let result = embedder
+            .embed(&texts)
+            .await
+            .expect("embed must not panic on current_thread");
+        assert_eq!(result.len(), 2);
+        assert_eq!(log.lock().unwrap().len(), 1);
+    }
+
     // ── integration smoke tests (require live server, skipped by default) ──────
 
     #[tokio::test]
@@ -581,7 +599,7 @@ mod tests {
     async fn test_ollama_embed() {
         let embedder = OllamaEmbedder::new("nomic-embed-text", DEFAULT_OLLAMA_URL, 768).unwrap();
         let texts = vec!["Hello world", "This is a test"];
-        let embeddings = embedder.embed(&texts).unwrap();
+        let embeddings = embedder.embed(&texts).await.unwrap();
 
         assert_eq!(embeddings.len(), 2);
         assert_eq!(embeddings[0].len(), 768);
@@ -591,7 +609,7 @@ mod tests {
     #[ignore = "requires a running Ollama or TEI service at localhost:11434"]
     async fn test_ollama_embed_empty() {
         let embedder = OllamaEmbedder::new("nomic-embed-text", DEFAULT_OLLAMA_URL, 768).unwrap();
-        let embeddings = embedder.embed(&[]).unwrap();
+        let embeddings = embedder.embed(&[]).await.unwrap();
         assert!(embeddings.is_empty());
     }
 
@@ -601,7 +619,7 @@ mod tests {
         let embedder =
             OllamaEmbedder::new("BAAI/bge-small-en-v1.5", "http://localhost:8080", 384).unwrap();
         let texts = vec!["Hello world"];
-        let embeddings = embedder.embed(&texts).unwrap();
+        let embeddings = embedder.embed(&texts).await.unwrap();
 
         assert_eq!(embeddings.len(), 1);
         assert_eq!(embeddings[0].len(), 384);

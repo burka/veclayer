@@ -178,7 +178,10 @@ async fn test_cluster_pipeline_with_ollama() {
         "Python is dynamically typed and interpreted at runtime.",
     ];
 
-    let embeddings = embedder.embed(texts.as_ref()).expect("Failed to embed");
+    let embeddings = embedder
+        .embed(texts.as_ref())
+        .await
+        .expect("Failed to embed");
 
     let chunks: Vec<HierarchicalChunk> = texts
         .iter()
@@ -262,7 +265,7 @@ async fn test_cluster_pipeline_discovers_semantic_clusters() {
     ];
 
     let all_texts: Vec<&str> = rust_texts.iter().chain(web_texts.iter()).copied().collect();
-    let embeddings = embedder.embed(&all_texts).expect("Failed to embed");
+    let embeddings = embedder.embed(&all_texts).await.expect("Failed to embed");
 
     let chunks: Vec<HierarchicalChunk> = all_texts
         .iter()

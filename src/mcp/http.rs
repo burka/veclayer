@@ -845,8 +845,14 @@ mod tests {
 
         struct FixedEmbedder;
         impl crate::Embedder for FixedEmbedder {
-            fn embed(&self, texts: &[&str]) -> crate::Result<Vec<Vec<f32>>> {
-                Ok(texts.iter().map(|_| vec![0.1f32; 384]).collect())
+            fn embed<'a>(
+                &'a self,
+                texts: &'a [&'a str],
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = crate::Result<Vec<Vec<f32>>>> + Send + 'a>,
+            > {
+                let result: Vec<Vec<f32>> = texts.iter().map(|_| vec![0.1f32; 384]).collect();
+                Box::pin(async move { Ok(result) })
             }
             fn dimension(&self) -> usize {
                 384

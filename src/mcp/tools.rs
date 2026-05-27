@@ -554,7 +554,7 @@ pub async fn execute_focus(ctx: &ToolContext, input: FocusInput) -> Result<Focus
     let children = store.get_children(&node.id).await?;
 
     let focus_children = if let Some(ref question) = input.question {
-        let question_embedding = embedder.embed(&[question.as_str()])?;
+        let question_embedding = embedder.embed(&[question.as_str()]).await?;
         let question_vec = question_embedding
             .into_iter()
             .next()
@@ -1866,7 +1866,7 @@ mod tests {
 
         // Insert a plain chunk with a real embedding so semantic search can find it
         let plain_content = "plain entry about architecture decisions";
-        let plain_embeddings = embedder.embed(&[plain_content]).unwrap();
+        let plain_embeddings = embedder.embed(&[plain_content]).await.unwrap();
         let mut plain = make_test_chunk(
             "ccccccc3333333333333333333333333333333333333333333333333333333333",
             plain_content,
@@ -1876,7 +1876,7 @@ mod tests {
 
         // Insert a chunk that qualifies as an open thread (superseded, still "normal" visibility)
         let open_content = "unresolved entry about design decisions";
-        let open_embeddings = embedder.embed(&[open_content]).unwrap();
+        let open_embeddings = embedder.embed(&[open_content]).await.unwrap();
         let mut open = make_test_chunk(
             "ddddddd4444444444444444444444444444444444444444444444444444444444",
             open_content,
@@ -2047,7 +2047,7 @@ mod tests {
         id: &str,
         content: &str,
     ) -> crate::HierarchicalChunk {
-        let embeddings = embedder.embed(&[content]).unwrap();
+        let embeddings = embedder.embed(&[content]).await.unwrap();
         let mut chunk = make_test_chunk(id, content);
         chunk.embedding = Some(embeddings.into_iter().next().unwrap());
         chunk
@@ -2233,8 +2233,13 @@ mod tests {
     }
 
     impl crate::Embedder for MockEmbedder {
-        fn embed(&self, texts: &[&str]) -> crate::Result<Vec<Vec<f32>>> {
-            Ok(texts
+        fn embed<'a>(
+            &'a self,
+            texts: &'a [&'a str],
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = crate::Result<Vec<Vec<f32>>>> + Send + 'a>,
+        > {
+            let result: Vec<Vec<f32>> = texts
                 .iter()
                 .enumerate()
                 .map(|(i, _)| {
@@ -2242,7 +2247,8 @@ mod tests {
                     v[0] = (i + 1) as f32 / 100.0;
                     v
                 })
-                .collect())
+                .collect();
+            Box::pin(async move { Ok(result) })
         }
 
         fn dimension(&self) -> usize {

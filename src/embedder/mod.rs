@@ -24,7 +24,16 @@ use crate::Result;
 pub trait Embedder: Send + Sync {
     /// Embed a batch of texts into vectors.
     /// Returns a vector of embeddings, one per input text.
-    fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>>;
+    ///
+    /// Returns a boxed future rather than `-> impl Future` because `dyn Embedder` is used
+    /// widely across the codebase and RPITIT is not dyn-compatible; a boxed future keeps
+    /// the trait object-safe without needing a separate `DynEmbedder` wrapper (unlike
+    /// `LlmProvider`/`DynLlmProvider`).
+    #[allow(clippy::type_complexity)]
+    fn embed<'a>(
+        &'a self,
+        texts: &'a [&'a str],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Vec<f32>>>> + Send + 'a>>;
 
     /// Get the dimension of the embedding vectors produced by this embedder.
     fn dimension(&self) -> usize;
@@ -33,15 +42,33 @@ pub trait Embedder: Send + Sync {
     fn name(&self) -> &str;
 }
 
-// Implement Embedder for Arc<T> where T: Embedder
-crate::arc_impl!(Embedder {
-    fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>>;
-    fn dimension(&self) -> usize;
-    fn name(&self) -> &str;
-});
+// Implement Embedder for Arc<T> where T: Embedder.
+// Cannot use arc_impl! here because the embed signature carries a lifetime
+// that the macro cannot express; hand-write the delegation instead.
+impl<T: Embedder + ?Sized> Embedder for std::sync::Arc<T> {
+    fn embed<'a>(
+        &'a self,
+        texts: &'a [&'a str],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Vec<f32>>>> + Send + 'a>>
+    {
+        (**self).embed(texts)
+    }
+
+    fn dimension(&self) -> usize {
+        (**self).dimension()
+    }
+
+    fn name(&self) -> &str {
+        (**self).name()
+    }
+}
 
 impl<T: Embedder + ?Sized> Embedder for Box<T> {
-    fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+    fn embed<'a>(
+        &'a self,
+        texts: &'a [&'a str],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Vec<f32>>>> + Send + 'a>>
+    {
         (**self).embed(texts)
     }
 

@@ -363,8 +363,13 @@ mod tests {
     struct StubEmbedder;
 
     impl Embedder for StubEmbedder {
-        fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-            Ok(texts.iter().map(|_| vec![0.0f32; 384]).collect())
+        fn embed<'a>(
+            &'a self,
+            texts: &'a [&'a str],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Vec<f32>>>> + Send + 'a>>
+        {
+            let result: Vec<Vec<f32>> = texts.iter().map(|_| vec![0.0f32; 384]).collect();
+            Box::pin(async move { Ok(result) })
         }
 
         fn dimension(&self) -> usize {

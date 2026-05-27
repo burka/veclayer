@@ -8,17 +8,27 @@
 //! # Example
 //!
 //! ```no_run
-//! use veclayer::{VecLayer, Embedder, Result};
 //! use std::path::Path;
+//! use std::pin::Pin;
+//!
+//! use veclayer::{Embedder, Result, VecLayer};
 //!
 //! struct MyEmbedder;
 //! impl Embedder for MyEmbedder {
-//!     fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+//!     fn embed<'a>(
+//!         &'a self,
+//!         texts: &'a [&'a str],
+//!     ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<Vec<f32>>>> + Send + 'a>> {
 //!         // call your API, run your model, etc.
-//!         Ok(texts.iter().map(|_| vec![0.0; 384]).collect())
+//!         let result: Vec<Vec<f32>> = texts.iter().map(|_| vec![0.0; 384]).collect();
+//!         Box::pin(async move { Ok(result) })
 //!     }
-//!     fn dimension(&self) -> usize { 384 }
-//!     fn name(&self) -> &str { "my-embedder" }
+//!     fn dimension(&self) -> usize {
+//!         384
+//!     }
+//!     fn name(&self) -> &str {
+//!         "my-embedder"
+//!     }
 //! }
 //!
 //! # async fn example() -> Result<()> {
@@ -159,7 +169,7 @@ impl<E: Embedder> VecLayer<E> {
             Some(h) => format!("{h}\n{content}"),
             None => content.to_string(),
         };
-        let embedding = self.embed_one(&embed_text)?;
+        let embedding = self.embed_one(&embed_text).await?;
 
         let source = options.source.unwrap_or_else(|| "[api]".to_string());
         let mut chunk = HierarchicalChunk::new(
@@ -227,7 +237,7 @@ impl<E: Embedder> VecLayer<E> {
 
     /// Raw vector search without hierarchical enrichment.
     pub async fn search_raw(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
-        let embedding = self.embed_one(query)?;
+        let embedding = self.embed_one(query).await?;
         let results = self.store.search(&embedding, limit, None, &[]).await?;
 
         // Track access for returned entries
@@ -259,7 +269,7 @@ impl<E: Embedder> VecLayer<E> {
         let children = self.store.get_children(&entry.id).await?;
 
         let ranked_children = if let Some(q) = question {
-            let query_embedding = self.embed_one(q)?;
+            let query_embedding = self.embed_one(q).await?;
             let mut scored: Vec<_> = children
                 .into_iter()
                 .map(|c| {
@@ -319,8 +329,8 @@ impl<E: Embedder> VecLayer<E> {
     }
 
     /// Embed a single text. Convenience wrapper around the embedder.
-    pub fn embed_one(&self, text: &str) -> Result<Vec<f32>> {
-        let results = self.embedder.embed(&[text])?;
+    pub async fn embed_one(&self, text: &str) -> Result<Vec<f32>> {
+        let results = self.embedder.embed(&[text]).await?;
         results
             .into_iter()
             .next()
@@ -328,8 +338,8 @@ impl<E: Embedder> VecLayer<E> {
     }
 
     /// Embed a batch of texts.
-    pub fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        self.embedder.embed(texts)
+    pub async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        self.embedder.embed(texts).await
     }
 
     /// Access the underlying store for advanced operations.
@@ -441,14 +451,19 @@ mod tests {
     struct TestEmbedder;
 
     impl Embedder for TestEmbedder {
-        fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-            Ok(texts
+        fn embed<'a>(
+            &'a self,
+            texts: &'a [&'a str],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Vec<f32>>>> + Send + 'a>>
+        {
+            let result: Vec<Vec<f32>> = texts
                 .iter()
                 .map(|t| {
                     let seed = t.len() as f32;
                     vec![seed / 100.0, (seed * 0.7) / 100.0, (seed * 0.3) / 100.0]
                 })
-                .collect())
+                .collect();
+            Box::pin(async move { Ok(result) })
         }
 
         fn dimension(&self) -> usize {
@@ -653,10 +668,10 @@ mod tests {
         }
 
         fn embed_helpers(vl) {
-            let single = vl.embed_one("hello").unwrap();
+            let single = vl.embed_one("hello").await.unwrap();
             assert_eq!(single.len(), 3);
 
-            let batch = vl.embed_batch(&["hello", "world"]).unwrap();
+            let batch = vl.embed_batch(&["hello", "world"]).await.unwrap();
             assert_eq!(batch.len(), 2);
         }
 

@@ -213,7 +213,7 @@ async fn index_entries(
             continue;
         }
 
-        let embedding = match embedder.embed(&[entry.content.as_str()]) {
+        let embedding = match embedder.embed(&[entry.content.as_str()]).await {
             Ok(vecs) => match vecs.into_iter().next() {
                 Some(emb) if !emb.is_empty() => emb,
                 _ => {

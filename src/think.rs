@@ -391,7 +391,7 @@ async fn write_entry(
     source: &str,
     blob_store: Option<&crate::blob_store::BlobStore>,
 ) -> Result<String> {
-    let embeddings = embedder.embed(&[content])?;
+    let embeddings = embedder.embed(&[content]).await?;
     let embedding = embeddings
         .into_iter()
         .next()
@@ -758,8 +758,14 @@ mod tests {
     }
 
     impl Embedder for FixedEmbedder {
-        fn embed(&self, texts: &[&str]) -> crate::Result<Vec<Vec<f32>>> {
-            Ok(texts.iter().map(|_| vec![0.1f32; self.dim]).collect())
+        fn embed<'a>(
+            &'a self,
+            texts: &'a [&'a str],
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = crate::Result<Vec<Vec<f32>>>> + Send + 'a>,
+        > {
+            let result: Vec<Vec<f32>> = texts.iter().map(|_| vec![0.1f32; self.dim]).collect();
+            Box::pin(async move { Ok(result) })
         }
         fn dimension(&self) -> usize {
             self.dim

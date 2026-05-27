@@ -149,7 +149,7 @@ pub async fn rebuild_index(data_dir: &Path) -> Result<()> {
                 None => {
                     // Try to re-embed; if it fails (e.g., too large for Ollama context),
                     // skip the entry so the index build doesn't fail.
-                    match embedder.embed(&[blob.entry.content.as_str()]) {
+                    match embedder.embed(&[blob.entry.content.as_str()]).await {
                         Ok(mut vecs) => vecs.pop().unwrap_or_default(),
                         Err(e) => {
                             println!(
@@ -213,7 +213,7 @@ async fn import_parsed_entry(
         return Ok(false);
     }
 
-    let embeddings = embedder.embed(&[chunk.content.as_str()])?;
+    let embeddings = embedder.embed(&[chunk.content.as_str()]).await?;
     chunk.embedding = embeddings.into_iter().next();
 
     let blob = crate::entry::StoredBlob::from_chunk_and_embedding(&chunk, embedder.name());

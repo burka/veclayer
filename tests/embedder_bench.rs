@@ -18,30 +18,30 @@ use veclayer::Embedder;
 
 const SAMPLE_TEXT: &str = "The quick brown fox jumps over the lazy dog near the riverbank.";
 
-fn warm_embedder() -> FastEmbedder {
+async fn warm_embedder() -> FastEmbedder {
     let embedder = FastEmbedder::new().expect("create FastEmbedder");
     // Force model init + warm CPU caches off the timing path.
-    let _ = embedder.embed(&[SAMPLE_TEXT]).expect("warmup embed");
+    let _ = embedder.embed(&[SAMPLE_TEXT]).await.expect("warmup embed");
     embedder
 }
 
-fn time_embed(embedder: &FastEmbedder, texts: &[&str]) -> std::time::Duration {
+async fn time_embed(embedder: &FastEmbedder, texts: &[&str]) -> std::time::Duration {
     let start = Instant::now();
-    let out = embedder.embed(texts).expect("embed");
+    let out = embedder.embed(texts).await.expect("embed");
     let elapsed = start.elapsed();
     assert_eq!(out.len(), texts.len());
     elapsed
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "downloads ~90MB model on first run; run explicitly with --ignored"]
-fn embed_single_text_under_100ms() {
-    let embedder = warm_embedder();
+async fn embed_single_text_under_100ms() {
+    let embedder = warm_embedder().await;
 
     let runs = 5;
     let mut total = std::time::Duration::ZERO;
     for _ in 0..runs {
-        total += time_embed(&embedder, &[SAMPLE_TEXT]);
+        total += time_embed(&embedder, &[SAMPLE_TEXT]).await;
     }
     let avg = total / runs;
     eprintln!("single embed avg over {runs} runs: {avg:?}");
@@ -53,17 +53,17 @@ fn embed_single_text_under_100ms() {
     );
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "downloads ~90MB model on first run; run explicitly with --ignored"]
-fn embed_batch_of_32_under_500ms() {
-    let embedder = warm_embedder();
+async fn embed_batch_of_32_under_500ms() {
+    let embedder = warm_embedder().await;
 
     let batch: Vec<&str> = (0..32).map(|_| SAMPLE_TEXT).collect();
 
     let runs = 3;
     let mut total = std::time::Duration::ZERO;
     for _ in 0..runs {
-        total += time_embed(&embedder, &batch);
+        total += time_embed(&embedder, &batch).await;
     }
     let avg = total / runs;
     eprintln!(
@@ -79,14 +79,14 @@ fn embed_batch_of_32_under_500ms() {
     );
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "downloads ~90MB model on first run; run explicitly with --ignored"]
-fn embed_cold_init_under_one_second() {
+async fn embed_cold_init_under_one_second() {
     // Measure the first-call cost (model load + first inference) separately,
     // since OnceLock init happens inside the first embed() call.
     let embedder = FastEmbedder::new().expect("create FastEmbedder");
     let start = Instant::now();
-    let _ = embedder.embed(&[SAMPLE_TEXT]).expect("cold embed");
+    let _ = embedder.embed(&[SAMPLE_TEXT]).await.expect("cold embed");
     let cold = start.elapsed();
     eprintln!("cold embed (includes model init): {cold:?}");
 
