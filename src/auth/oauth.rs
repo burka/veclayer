@@ -24,7 +24,7 @@ use rand::Rng;
 use rand_core::{OsRng, RngCore};
 use serde::Deserialize;
 
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use super::capability::Capability;
 use super::token::{mint, Claims};
@@ -740,7 +740,8 @@ async fn handle_auth_code_grant(state: OAuthState, form: TokenRequest) -> Respon
         match store.consume_code(code, verifier) {
             Ok(ac) => ac,
             Err(e) => {
-                return token_error("invalid_grant", &e.to_string());
+                warn!("Authorization code exchange failed: {e}");
+                return token_error("invalid_grant", "invalid authorization code");
             }
         }
     };
@@ -790,7 +791,8 @@ async fn handle_refresh_token_grant(state: OAuthState, form: TokenRequest) -> Re
         match store.validate_and_revoke_refresh(refresh) {
             Ok(record) => record,
             Err(e) => {
-                return token_error("invalid_grant", &e.to_string());
+                warn!("Refresh token exchange failed: {e}");
+                return token_error("invalid_grant", "invalid refresh token");
             }
         }
     };
@@ -901,11 +903,12 @@ fn mint_token_response(
     let access_token = match mint(&state.signing_key, &claims) {
         Ok(t) => t,
         Err(e) => {
+            error!("Failed to mint access token: {e}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
                     "error": "server_error",
-                    "error_description": e.to_string()
+                    "error_description": "failed to issue token"
                 })),
             )
                 .into_response();
@@ -3461,5 +3464,96 @@ mod tests {
             StatusCode::OK,
             "state of exactly 512 bytes must be accepted"
         );
+    }
+
+    // ── test_error_description_does_not_leak_internal_detail ─────────────────
+
+    /// Bad authorization code: the error_description must be a stable generic
+    /// string and must NOT contain internal implementation detail.
+    #[tokio::test]
+    async fn test_auth_code_error_description_is_generic() {
+        let (state, _dir) = make_state(true);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (verifier, _) = pkce_pair();
+
+        // Submit a completely bogus authorization code with a valid verifier.
+        let body = format!(
+            "grant_type=authorization_code&code=BOGUS_CODE&code_verifier={verifier}&client_id={client_id}&redirect_uri={redirect_uri}"
+        );
+        let resp = app
+            .clone()
+            .oneshot(post_form("/oauth/token", &body))
+            .await
+            .expect("token");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "invalid_grant");
+
+        let desc = json["error_description"].as_str().unwrap_or("");
+        // Must equal the generic message — not a raw error string.
+        assert_eq!(
+            desc, "invalid authorization code",
+            "error_description must be generic, got: {desc:?}"
+        );
+        // Must not bleed internal implementation strings.
+        for forbidden in &[
+            "signature",
+            "InvalidToken",
+            "jsonwebtoken",
+            "Base64",
+            "decode",
+        ] {
+            assert!(
+                !desc.contains(forbidden),
+                "error_description must not contain {forbidden:?}, got: {desc:?}"
+            );
+        }
+    }
+
+    /// Bad refresh token: the error_description must be a stable generic string
+    /// and must NOT contain internal implementation detail.
+    #[tokio::test]
+    async fn test_refresh_token_error_description_is_generic() {
+        let (state, _dir) = make_state(true);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+
+        // Submit a completely bogus refresh token.
+        let body =
+            format!("grant_type=refresh_token&refresh_token=BOGUS_REFRESH&client_id={client_id}");
+        let resp = app
+            .clone()
+            .oneshot(post_form("/oauth/token", &body))
+            .await
+            .expect("refresh");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "invalid_grant");
+
+        let desc = json["error_description"].as_str().unwrap_or("");
+        // Must equal the generic message — not a raw error string.
+        assert_eq!(
+            desc, "invalid refresh token",
+            "error_description must be generic, got: {desc:?}"
+        );
+        // Must not bleed internal implementation strings.
+        for forbidden in &[
+            "signature",
+            "InvalidToken",
+            "jsonwebtoken",
+            "Base64",
+            "decode",
+            "not found",
+        ] {
+            assert!(
+                !desc.contains(forbidden),
+                "error_description must not contain {forbidden:?}, got: {desc:?}"
+            );
+        }
     }
 }
