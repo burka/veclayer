@@ -237,16 +237,12 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::*;
+    use crate::test_helpers::{mock_listener, serve_once};
     use crate::util::DEFAULT_OLLAMA_URL;
 
-    // ── mock server helpers ────────────────────────────────────────────────────
-
-    /// Bind a TCP listener on an ephemeral port and return it with the base URL.
-    async fn mock_listener() -> (TcpListener, String) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        (listener, format!("http://127.0.0.1:{port}"))
-    }
+    // ── JSON response builders + multi-connection mock server ──────────────────
+    // Single-connection helpers live in `crate::test_helpers` (mock_listener,
+    // serve_once); `serve_n_chunks` below is embedder-specific (batched requests).
 
     /// Build the Ollama-format JSON response for `n` embeddings of dimension 1.
     /// Each embedding is a single-element vec `[i as f32]` so callers can verify order.
@@ -291,21 +287,6 @@ mod tests {
         });
 
         log
-    }
-
-    /// Like `serve_n_chunks` but every connection gets a non-2xx error reply.
-    fn serve_error_once(listener: TcpListener, status: u16) {
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut buf = vec![0u8; 4096];
-            let _ = stream.read(&mut buf).await;
-            let body = r#"{"error":"oops"}"#;
-            let response = format!(
-                "HTTP/1.1 {status} Error\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{body}",
-                body.len(),
-            );
-            stream.write_all(response.as_bytes()).await.unwrap();
-        });
     }
 
     fn embedder_at(base_url: &str) -> OllamaEmbedder {
@@ -498,7 +479,7 @@ mod tests {
     #[tokio::test]
     async fn non_2xx_on_first_chunk_returns_err() {
         let (listener, base_url) = mock_listener().await;
-        serve_error_once(listener, 503);
+        serve_once(listener, 503, r#"{"error":"oops"}"#);
 
         let embedder = embedder_at(&base_url);
         let result = embedder.embed_async(&["text"]).await;
@@ -623,23 +604,6 @@ mod tests {
         format!(r#"{{"data":[{}]}}"#, data.join(","))
     }
 
-    /// Spawn a mock that accepts one TCP connection and replies with the given
-    /// status + body, then closes.
-    fn serve_once_raw(listener: TcpListener, status: u16, body: String) {
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut buf = vec![0u8; 4096];
-            let _ = stream.read(&mut buf).await;
-            let response = format!(
-                "HTTP/1.1 {status} {reason}\r\nContent-Length: {len}\r\nContent-Type: application/json\r\n\r\n{body}",
-                status = status,
-                reason = if status == 200 { "OK" } else { "Error" },
-                len = body.len(),
-            );
-            stream.write_all(response.as_bytes()).await.unwrap();
-        });
-    }
-
     fn embedder_openai_at(base_url: &str) -> OllamaEmbedder {
         let e = OllamaEmbedder::new("test-model", base_url, 1).unwrap();
         e.api_format.store(FORMAT_OPENAI, Ordering::Relaxed);
@@ -653,7 +617,7 @@ mod tests {
     async fn ollama_count_mismatch_returns_err() {
         let (listener, base_url) = mock_listener().await;
         // Return only 1 embedding even though we send 2 inputs.
-        serve_once_raw(listener, 200, ollama_response_json(1, 0));
+        serve_once(listener, 200, ollama_response_json(1, 0));
 
         let embedder = embedder_at(&base_url);
         let result = embedder.embed_async(&["text1", "text2"]).await;
@@ -673,7 +637,7 @@ mod tests {
     #[tokio::test]
     async fn ollama_count_match_returns_ok() {
         let (listener, base_url) = mock_listener().await;
-        serve_once_raw(listener, 200, ollama_response_json(2, 0));
+        serve_once(listener, 200, ollama_response_json(2, 0));
 
         let embedder = embedder_at(&base_url);
         let result = embedder.embed_async(&["text1", "text2"]).await;
@@ -692,7 +656,7 @@ mod tests {
     #[tokio::test]
     async fn openai_count_mismatch_returns_err() {
         let (listener, base_url) = mock_listener().await;
-        serve_once_raw(listener, 200, openai_response_json(1));
+        serve_once(listener, 200, openai_response_json(1));
 
         let embedder = embedder_openai_at(&base_url);
         let result = embedder.embed_async(&["text1", "text2"]).await;
@@ -712,7 +676,7 @@ mod tests {
     #[tokio::test]
     async fn openai_count_match_returns_ok() {
         let (listener, base_url) = mock_listener().await;
-        serve_once_raw(listener, 200, openai_response_json(2));
+        serve_once(listener, 200, openai_response_json(2));
 
         let embedder = embedder_openai_at(&base_url);
         let result = embedder.embed_async(&["text1", "text2"]).await;

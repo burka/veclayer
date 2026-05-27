@@ -66,37 +66,7 @@ impl LlmProvider for OllamaLlm {
 mod tests {
     use super::*;
     use crate::config::LlmConfig;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-
-    /// Bind a TCP listener on a free port and return it together with the base URL.
-    async fn mock_listener() -> (TcpListener, String) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let base_url = format!("http://127.0.0.1:{port}");
-        (listener, base_url)
-    }
-
-    /// Serve exactly one HTTP request, then reply with the given status + body.
-    fn serve_once(listener: TcpListener, status: u16, body: &'static str) {
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            // Drain the request bytes (we don't need to inspect them for these tests).
-            let mut buf = [0u8; 4096];
-            let _ = stream.read(&mut buf).await;
-            let response = format!(
-                "HTTP/1.1 {status} {reason}\r\nContent-Length: {len}\r\nContent-Type: application/json\r\n\r\n{body}",
-                status = status,
-                reason = if status == 200 { "OK" } else { "Error" },
-                len = body.len(),
-                body = body,
-            );
-            stream
-                .write_all(response.as_bytes())
-                .await
-                .expect("mock write failed");
-        });
-    }
+    use crate::test_helpers::{mock_listener, serve_once};
 
     fn ollama_at(base_url: &str) -> OllamaLlm {
         OllamaLlm::new(&LlmConfig {
@@ -196,10 +166,8 @@ mod tests {
     #[tokio::test]
     async fn complete_returns_err_on_connection_refused() {
         // Bind and immediately drop to ensure the port is not listening.
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
+        let (listener, base_url) = mock_listener().await;
         drop(listener);
-        let base_url = format!("http://127.0.0.1:{port}");
 
         let llm = ollama_at(&base_url);
         let result = llm.complete(&[Message::user("ping")]).await;

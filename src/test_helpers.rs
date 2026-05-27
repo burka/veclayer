@@ -200,3 +200,36 @@ pub(crate) fn test_blob(content: &str, visibility: &str) -> crate::StoredBlob {
         embeddings: vec![],
     }
 }
+
+/// Bind a loopback listener on an ephemeral port, returning the listener and its
+/// base URL (`http://127.0.0.1:<port>`). Shared by the HTTP-client tests for the
+/// llm, embedder, and summarizer Ollama backends.
+#[cfg(test)]
+pub(crate) async fn mock_listener() -> (tokio::net::TcpListener, String) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    (listener, format!("http://127.0.0.1:{port}"))
+}
+
+/// Accept exactly one connection, drain the request, then reply with `status`
+/// and the given JSON `body` before closing. Spawns a background task, so call
+/// this before issuing the client request under test.
+#[cfg(test)]
+pub(crate) fn serve_once(listener: tokio::net::TcpListener, status: u16, body: impl Into<String>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let body = body.into();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        let _ = stream.read(&mut buf).await;
+        let response = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Length: {len}\r\nContent-Type: application/json\r\n\r\n{body}",
+            reason = if status == 200 { "OK" } else { "Error" },
+            len = body.len(),
+        );
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .expect("mock write failed");
+    });
+}

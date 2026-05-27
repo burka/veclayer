@@ -129,36 +129,8 @@ impl Summarizer for OllamaSummarizer {
 
 #[cfg(test)]
 mod tests {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-
     use super::*;
-
-    // ── mock server helpers ───────────────────────────────────────────────────
-
-    async fn mock_listener() -> (TcpListener, String) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        (listener, format!("http://127.0.0.1:{port}"))
-    }
-
-    fn serve_once(listener: TcpListener, status: u16, body: &'static str) {
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut buf = [0u8; 4096];
-            let _ = stream.read(&mut buf).await;
-            let response = format!(
-                "HTTP/1.1 {status} {reason}\r\nContent-Length: {len}\r\nContent-Type: application/json\r\n\r\n{body}",
-                status = status,
-                reason = if status == 200 { "OK" } else { "Error" },
-                len = body.len(),
-            );
-            stream
-                .write_all(response.as_bytes())
-                .await
-                .expect("mock write failed");
-        });
-    }
+    use crate::test_helpers::{mock_listener, serve_once};
 
     fn summarizer_at(base_url: &str) -> OllamaSummarizer {
         OllamaSummarizer::new()
