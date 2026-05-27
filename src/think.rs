@@ -459,6 +459,10 @@ struct DiscoveredPair {
 /// 3. For each (candidate, neighbor) pair, check whether a relation already exists in either direction.
 /// 4. Deduplicate symmetric pairs using a sorted-ID set key.
 /// 5. Sort by similarity descending and return up to `output_limit`.
+///
+/// There is no minimum-similarity floor: every unlinked ANN neighbor is a candidate,
+/// relying on `output_limit` plus the descending-similarity sort to keep the most
+/// relevant pairs at the top rather than filtering on an absolute score.
 pub async fn discover_unlinked_pairs(
     store: &Arc<StoreBackend>,
     output_limit: usize,
@@ -1146,6 +1150,182 @@ mod tests {
 
         let prep = prepare(&store, dir.path()).await.unwrap().unwrap();
         assert_eq!(prep.entry_ids[0].1, "(untitled)");
+    }
+
+    // ── discover_unlinked_pairs() tests ──────────────────────────────────
+
+    // BOUNDARY: empty store → early-exit message, no panic.
+    #[tokio::test]
+    async fn test_discover_unlinked_pairs_empty_store() {
+        let (store, _data_dir, _dir) = crate::test_helpers::test_store_with_chunks(vec![]).await;
+
+        let report = discover_unlinked_pairs(&store, 10)
+            .await
+            .expect("should succeed on empty store");
+
+        assert!(
+            report.contains("No entries in the store"),
+            "unexpected report: {report}"
+        );
+    }
+
+    // BOUNDARY: single node → no pair can be formed.
+    #[tokio::test]
+    async fn test_discover_unlinked_pairs_single_node() {
+        let chunk = crate::test_helpers::make_test_chunk("aaaa111100000000", "Sole entry in store");
+        let (store, _data_dir, _dir) =
+            crate::test_helpers::test_store_with_chunks(vec![chunk]).await;
+
+        let report = discover_unlinked_pairs(&store, 10)
+            .await
+            .expect("should succeed with one entry");
+
+        assert!(
+            report.contains("No unlinked similar entries found"),
+            "unexpected report: {report}"
+        );
+    }
+
+    // GREEN: two nodes with embeddings and no relations are surfaced as a pair.
+    // Assert the specific IDs appear in the output.
+    #[tokio::test]
+    async fn test_discover_unlinked_pairs_two_unlinked_nodes_surfaced() {
+        let id_a = "aaaa222200000000";
+        let id_b = "bbbb333300000000";
+
+        let chunk_a = crate::test_helpers::make_test_chunk(id_a, "Rust concurrency patterns");
+        let chunk_b = crate::test_helpers::make_test_chunk(id_b, "Async runtime design");
+        let (store, _data_dir, _dir) =
+            crate::test_helpers::test_store_with_chunks(vec![chunk_a, chunk_b]).await;
+
+        let report = discover_unlinked_pairs(&store, 10)
+            .await
+            .expect("should succeed");
+
+        // Both short IDs must appear in the report.
+        assert!(
+            report.contains(&id_a[..7]),
+            "entry A short-id not in report: {report}"
+        );
+        assert!(
+            report.contains(&id_b[..7]),
+            "entry B short-id not in report: {report}"
+        );
+        // Exactly one pair discovered (symmetric deduplication works).
+        assert!(
+            report.contains("1 pair(s) found"),
+            "expected exactly 1 pair: {report}"
+        );
+    }
+
+    // EDGE: a pair that is ALREADY linked (relation on entry_a → entry_b) must be excluded.
+    #[tokio::test]
+    async fn test_discover_unlinked_pairs_linked_pair_excluded() {
+        let id_a = "cccc444400000000";
+        let id_b = "dddd555500000000";
+
+        let mut chunk_a = crate::test_helpers::make_test_chunk(id_a, "Decision: use LanceDB");
+        // Pre-wire a forward relation from A → B so they are already linked.
+        chunk_a
+            .relations
+            .push(crate::chunk::ChunkRelation::related_to(id_b));
+        let chunk_b = crate::test_helpers::make_test_chunk(id_b, "LanceDB performance notes");
+        let (store, _data_dir, _dir) =
+            crate::test_helpers::test_store_with_chunks(vec![chunk_a, chunk_b]).await;
+
+        let report = discover_unlinked_pairs(&store, 10)
+            .await
+            .expect("should succeed");
+
+        assert!(
+            report.contains("No unlinked similar entries found"),
+            "linked pair should be excluded: {report}"
+        );
+    }
+
+    // EDGE: reverse-direction link (entry_b → entry_a) is also sufficient to exclude the pair.
+    #[tokio::test]
+    async fn test_discover_unlinked_pairs_reverse_link_also_excluded() {
+        let id_a = "eeee666600000000";
+        let id_b = "ffff777700000000";
+
+        let chunk_a = crate::test_helpers::make_test_chunk(id_a, "Architecture decision");
+        // The link goes from B → A (reverse direction), which should still suppress the pair.
+        let mut chunk_b = crate::test_helpers::make_test_chunk(id_b, "Follow-up note");
+        chunk_b
+            .relations
+            .push(crate::chunk::ChunkRelation::related_to(id_a));
+        let (store, _data_dir, _dir) =
+            crate::test_helpers::test_store_with_chunks(vec![chunk_a, chunk_b]).await;
+
+        let report = discover_unlinked_pairs(&store, 10)
+            .await
+            .expect("should succeed");
+
+        assert!(
+            report.contains("No unlinked similar entries found"),
+            "reverse-linked pair should be excluded: {report}"
+        );
+    }
+
+    // EDGE: output_limit truncates results when there are more pairs than the limit.
+    // Three unlinked nodes → up to 3 pairs possible; limit=1 → report shows exactly 1 pair.
+    #[tokio::test]
+    async fn test_discover_unlinked_pairs_output_limit_truncates() {
+        let id_a = "aaaa888800000000";
+        let id_b = "bbbb999900000000";
+        let id_c = "cccc000011110000";
+
+        let chunk_a = crate::test_helpers::make_test_chunk(id_a, "Entry alpha");
+        let chunk_b = crate::test_helpers::make_test_chunk(id_b, "Entry beta");
+        let chunk_c = crate::test_helpers::make_test_chunk(id_c, "Entry gamma");
+        let (store, _data_dir, _dir) =
+            crate::test_helpers::test_store_with_chunks(vec![chunk_a, chunk_b, chunk_c]).await;
+
+        // No limit → multiple pairs expected.
+        let report_full = discover_unlinked_pairs(&store, 10)
+            .await
+            .expect("should succeed");
+        let full_count: usize = report_full.matches("pair(s) found").count();
+        assert_eq!(full_count, 1, "footer should appear exactly once");
+        // Verify more than one pair exists before applying limit.
+        assert!(
+            report_full.contains("2 pair(s) found") || report_full.contains("3 pair(s) found"),
+            "expected multiple pairs without limit: {report_full}"
+        );
+
+        // With limit=1 → exactly 1 pair in output.
+        let report_limited = discover_unlinked_pairs(&store, 1)
+            .await
+            .expect("should succeed with limit=1");
+        assert!(
+            report_limited.contains("1 pair(s) found"),
+            "limit=1 should yield exactly 1 pair: {report_limited}"
+        );
+    }
+
+    // EDGE: entries without embeddings are skipped (they can never be a candidate).
+    #[tokio::test]
+    async fn test_discover_unlinked_pairs_skips_entries_without_embeddings() {
+        let id_a = "aaaa111122220000";
+        let id_b = "bbbb333344440000";
+
+        let mut chunk_a = crate::test_helpers::make_test_chunk(id_a, "Has embedding");
+        let mut chunk_b = crate::test_helpers::make_test_chunk(id_b, "No embedding");
+        chunk_b.embedding = None; // strip the embedding
+                                  // Also strip chunk_a's embedding so no search loop runs at all.
+        chunk_a.embedding = None;
+        let (store, _data_dir, _dir) =
+            crate::test_helpers::test_store_with_chunks(vec![chunk_a, chunk_b]).await;
+
+        let report = discover_unlinked_pairs(&store, 10)
+            .await
+            .expect("should succeed");
+
+        assert!(
+            report.contains("No unlinked similar entries found"),
+            "embedding-less entries should not form pairs: {report}"
+        );
     }
 
     // ── build_prompt tests ──────────────────────────────────────────────
