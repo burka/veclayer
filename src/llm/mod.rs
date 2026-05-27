@@ -173,6 +173,8 @@ impl LlmBackend {
 
 #[cfg(test)]
 mod tests {
+    use secrecy::SecretString;
+
     use super::*;
 
     #[test]
@@ -209,7 +211,7 @@ mod tests {
             provider: "openai".to_string(),
             model: "gpt-4o".to_string(),
             base_url: "https://api.openai.com".to_string(),
-            api_key: Some("sk-test".to_string()),
+            api_key: Some(SecretString::from("sk-test".to_string())),
             ..Default::default()
         };
         let backend = LlmBackend::from_config(&config).expect("client build should succeed");

@@ -479,7 +479,7 @@ pub struct ResolvedConfig {
 }
 
 #[cfg(feature = "config")]
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct FileLlmConfig {
     /// "ollama" or "openai"
     #[serde(default = "default_llm_provider")]
@@ -489,6 +489,20 @@ struct FileLlmConfig {
     api_key: Option<String>,
     temperature: Option<f32>,
     max_tokens: Option<usize>,
+}
+
+#[cfg(feature = "config")]
+impl std::fmt::Debug for FileLlmConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileLlmConfig")
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("temperature", &self.temperature)
+            .field("max_tokens", &self.max_tokens)
+            .finish()
+    }
 }
 
 #[cfg(feature = "config")]
@@ -910,7 +924,9 @@ impl Config {
                  VECLAYER_LLM_API_KEY environment variable instead for better security"
             );
         }
-        let api_key = api_key_from_env.or(api_key_from_file);
+        let api_key = api_key_from_env
+            .or(api_key_from_file)
+            .map(secrecy::SecretString::from);
         let is_loopback = base_url.contains("localhost") || base_url.contains("127.0.0.1");
         if api_key.is_some() && !base_url.starts_with("https://") && !is_loopback {
             tracing::warn!(
@@ -1075,12 +1091,9 @@ pub struct LlmConfig {
     pub model: String,
     /// Base URL for the API
     pub base_url: String,
-    // TODO(security): API key stored as plain String — not zeroed on drop.
-    // Acceptable for short-lived CLI use. For long-running server deployments,
-    // consider using a secrets crate (e.g., secrecy::SecretString) that zeros
-    // memory on drop. Tracked for a future release.
-    /// API key (required for OpenAI-compatible providers)
-    pub api_key: Option<String>,
+    /// API key (required for OpenAI-compatible providers). Stored as a
+    /// `SecretString` so the value is zeroed in memory on drop.
+    pub api_key: Option<secrecy::SecretString>,
     /// Sampling temperature
     pub temperature: f32,
     /// Maximum tokens in the response
@@ -1298,6 +1311,38 @@ mod tests {
         assert!(config.port > 0);
         assert_eq!(config.search_top_k, 5);
         assert_eq!(config.search_children_k, 3);
+    }
+
+    // Security: api_key is a SecretString — Debug must redact, not leak.
+    #[test]
+    fn test_llm_config_debug_redacts_api_key_when_present() {
+        let config = LlmConfig {
+            api_key: Some(secrecy::SecretString::from("sk-supersecret")),
+            ..LlmConfig::default()
+        };
+        let debug_output = format!("{config:?}");
+        assert!(
+            debug_output.contains("<redacted>"),
+            "Debug output must contain '<redacted>', got: {debug_output}"
+        );
+        assert!(
+            !debug_output.contains("sk-supersecret"),
+            "Debug output must NOT leak the secret value, got: {debug_output}"
+        );
+    }
+
+    // Security: api_key absent → Debug shows None, not a redacted placeholder.
+    #[test]
+    fn test_llm_config_debug_shows_none_when_api_key_absent() {
+        let config = LlmConfig {
+            api_key: None,
+            ..LlmConfig::default()
+        };
+        let debug_output = format!("{config:?}");
+        assert!(
+            debug_output.contains("api_key: None"),
+            "Debug output must show 'api_key: None' when absent, got: {debug_output}"
+        );
     }
 
     #[test]

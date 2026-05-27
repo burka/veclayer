@@ -126,6 +126,9 @@ ndarray = { version = "0.15", optional = true }
 owo-colors = { version = "4.2.3", features = ["supports-colors"], optional = true }
 serde_norway = { version = "0.9.42", optional = true }
 
+# Secret zeroing (always available — used for API keys in LlmConfig)
+secrecy = { version = "0.10", default-features = false }
+
 [[bin]]
 name = "veclayer"
 path = "src/main.rs"

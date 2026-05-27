@@ -3,6 +3,8 @@
 //! Works with OpenAI, Azure OpenAI, LM Studio, and any API that implements
 //! the /v1/chat/completions endpoint.
 
+use secrecy::{ExposeSecret, SecretString};
+
 use super::{make_standard_http_client, LlmConfig, LlmProvider, Message};
 use crate::util::{read_capped_body, MAX_HTTP_BODY_BYTES};
 use reqwest::Client;
@@ -11,7 +13,7 @@ pub struct OpenAiLlm {
     client: Client,
     model: String,
     base_url: String,
-    api_key: String,
+    api_key: SecretString,
     temperature: f32,
     max_tokens: usize,
 }
@@ -22,7 +24,10 @@ impl OpenAiLlm {
             client: make_standard_http_client()?,
             model: config.model.clone(),
             base_url: config.base_url.clone(),
-            api_key: config.api_key.clone().unwrap_or_default(),
+            api_key: config
+                .api_key
+                .clone()
+                .unwrap_or_else(|| SecretString::from(String::new())),
             temperature: config.temperature,
             max_tokens: config.max_tokens,
         })
@@ -36,7 +41,10 @@ impl LlmProvider for OpenAiLlm {
         let resp = self
             .client
             .post(format!("{}/v1/chat/completions", self.base_url))
-            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.api_key.expose_secret()),
+            )
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({
                 "model": self.model,
@@ -101,7 +109,7 @@ mod tests {
             provider: "openai".to_string(),
             model: "gpt-test".to_string(),
             base_url: format!("http://127.0.0.1:{port}"),
-            api_key: api_key.map(String::from),
+            api_key: api_key.map(|s| SecretString::from(s.to_string())),
             temperature: 0.0,
             max_tokens: 16,
         }

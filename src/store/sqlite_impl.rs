@@ -107,10 +107,17 @@ fn vec_to_bytes(v: &[f32]) -> Vec<u8> {
     bytes
 }
 
-fn bytes_to_vec(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
+fn bytes_to_vec(b: &[u8]) -> rusqlite::Result<Vec<f32>> {
+    if !b.len().is_multiple_of(4) {
+        return Err(rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Blob,
+            format!("embedding blob length {} is not a multiple of 4", b.len()).into(),
+        ));
+    }
+    Ok(b.chunks_exact(4)
         .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("chunk is exactly 4 bytes")))
-        .collect()
+        .collect())
 }
 
 // --- Row mapping ---
@@ -164,7 +171,7 @@ fn row_to_chunk(row: &rusqlite::Row) -> rusqlite::Result<HierarchicalChunk> {
     let embedding = if embedding_status == EMBEDDING_STATUS_PENDING {
         None
     } else {
-        embedding_blob.map(|b| bytes_to_vec(&b))
+        embedding_blob.map(|b| bytes_to_vec(&b)).transpose()?
     };
 
     let perspectives: Vec<String> = serde_json::from_str(&perspectives_json).unwrap_or_default();
@@ -1033,6 +1040,36 @@ mod tests {
     #[allow(unused_imports)]
     use crate::chunk::{visibility, EntryType};
     use tempfile::TempDir;
+
+    // --- bytes_to_vec ---
+
+    #[test]
+    fn bytes_to_vec_happy_path_round_trips_floats() {
+        let input = vec![1.0f32, 2.0, 3.0];
+        let blob = vec_to_bytes(&input);
+        let output = bytes_to_vec(&blob).expect("valid blob must decode");
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn bytes_to_vec_empty_blob_yields_empty_vec() {
+        // Length 0 is a valid multiple of 4.
+        let output = bytes_to_vec(&[]).expect("empty blob must succeed");
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn bytes_to_vec_non_multiple_of_4_returns_error() {
+        // 5 bytes: not a multiple of 4 — must fail, not silently truncate.
+        let corrupt: Vec<u8> = vec![0x00, 0x01, 0x02, 0x03, 0x04];
+        let result = bytes_to_vec(&corrupt);
+        assert!(result.is_err(), "non-multiple-of-4 blob must return Err");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not a multiple of 4"),
+            "error must mention 'not a multiple of 4', got: {msg}"
+        );
+    }
 
     #[test]
     fn test_narrow_accepts_in_range_and_rejects_overflow() {
