@@ -63,6 +63,44 @@ impl<T: Embedder + ?Sized> Embedder for std::sync::Arc<T> {
     }
 }
 
+#[cfg(all(test, feature = "embedding-local"))]
+mod tests {
+    use super::resolve_fastembed_model;
+    use fastembed::EmbeddingModel;
+
+    #[test]
+    fn known_model_name_resolves_without_fallback() {
+        // fastembed's FromStr matches the model_code; Display emits that same
+        // code, so a Display round-trip yields a name parse() accepts.
+        let name = EmbeddingModel::BGESmallENV15.to_string();
+        let (model, fell_back) = resolve_fastembed_model(&name);
+        assert!(!fell_back, "known name must not trigger fallback");
+        assert!(
+            matches!(model, EmbeddingModel::BGESmallENV15),
+            "must resolve to the correct variant"
+        );
+    }
+
+    #[test]
+    fn unrecognised_model_name_falls_back_to_default() {
+        // fastembed's model_code for BGESmallENV15 is "Xenova/bge-small-en-v1.5",
+        // so the BAAI-prefixed legacy name misses FromStr and must fall back.
+        let (model, fell_back) = resolve_fastembed_model("BAAI/bge-small-en-v1.5");
+        assert!(fell_back, "unrecognised name must trigger fallback");
+        assert!(
+            matches!(model, EmbeddingModel::BGESmallENV15),
+            "fallback must be BGESmallENV15"
+        );
+    }
+
+    #[test]
+    fn empty_model_name_falls_back_to_default() {
+        let (model, fell_back) = resolve_fastembed_model("");
+        assert!(fell_back);
+        assert!(matches!(model, EmbeddingModel::BGESmallENV15));
+    }
+}
+
 impl<T: Embedder + ?Sized> Embedder for Box<T> {
     fn embed<'a>(
         &'a self,
@@ -81,25 +119,34 @@ impl<T: Embedder + ?Sized> Embedder for Box<T> {
     }
 }
 
+/// Resolve a fastembed model name to an `EmbeddingModel`, falling back to the
+/// default when the name is unrecognised. Returns `(model, fell_back)`.
+///
+/// Pure function: no I/O, no model download, no side effects. The fallback
+/// preserves backward compatibility with config values like
+/// "BAAI/bge-small-en-v1.5" that pre-date the Xenova naming convention used by
+/// fastembed.
+#[cfg(feature = "embedding-local")]
+fn resolve_fastembed_model(name: &str) -> (fastembed::EmbeddingModel, bool) {
+    match name.parse::<fastembed::EmbeddingModel>() {
+        Ok(m) => (m, false),
+        Err(_) => (fastembed::EmbeddingModel::BGESmallENV15, true),
+    }
+}
+
 /// Create an embedder from configuration.
 pub fn from_config(config: &EmbedderConfig) -> Result<Box<dyn Embedder + Send + Sync>> {
     match config {
         #[cfg(feature = "embedding-local")]
         EmbedderConfig::FastEmbed { model } => {
-            // Try parsing the model name; fall back to the default model if unrecognised.
-            // This preserves backward compatibility with config values like "BAAI/bge-small-en-v1.5"
-            // that pre-date the Xenova model code convention used by fastembed.
-            let embedder = match model.parse::<fastembed::EmbeddingModel>() {
-                Ok(m) => FastEmbedder::with_model(m)?,
-                Err(_) => {
-                    tracing::warn!(
-                        "Unrecognised fastembed model '{}', falling back to default",
-                        model
-                    );
-                    FastEmbedder::new()?
-                }
-            };
-            Ok(Box::new(embedder))
+            let (model_type, fell_back) = resolve_fastembed_model(model);
+            if fell_back {
+                tracing::warn!(
+                    "Unrecognised fastembed model '{}', falling back to default",
+                    model
+                );
+            }
+            Ok(Box::new(FastEmbedder::with_model(model_type)?))
         }
         #[cfg(not(feature = "embedding-local"))]
         EmbedderConfig::FastEmbed { .. } => Err(crate::Error::config(
