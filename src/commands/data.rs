@@ -140,7 +140,17 @@ pub async fn rebuild_index(data_dir: &Path) -> Result<()> {
     let dimension = embedder.dimension();
     let store = StoreBackend::open(data_dir, dimension, false).await?;
 
+    rebuild_index_with(&*embedder, &store, &blob_store).await
+}
+
+/// Inner rebuild loop with injected embedder and store — extracted for testability.
+async fn rebuild_index_with(
+    embedder: &(impl crate::Embedder + ?Sized),
+    store: &(impl crate::store::VectorStore + ?Sized),
+    blob_store: &BlobStore,
+) -> Result<()> {
     let model_name = embedder.name();
+    let dimension = embedder.dimension();
     let mut count = 0;
     let mut skipped = 0;
 
@@ -163,7 +173,17 @@ pub async fn rebuild_index(data_dir: &Path) -> Result<()> {
                     // Try to re-embed; if it fails (e.g., too large for Ollama context),
                     // skip the entry so the index build doesn't fail.
                     match embedder.embed(&[blob.entry.content.as_str()]).await {
-                        Ok(mut vecs) => vecs.pop().unwrap_or_default(),
+                        Ok(mut vecs) => match vecs.pop() {
+                            Some(v) if !v.is_empty() => v,
+                            _ => {
+                                println!(
+                                    "Skipping '{}': embedder returned empty vector",
+                                    short_id(&blob.entry.content_id())
+                                );
+                                skipped += 1;
+                                continue;
+                            }
+                        },
                         Err(e) => {
                             println!(
                                 "Skipping '{}': re-embedding failed ({})",
@@ -470,6 +490,68 @@ mod tests {
             perspectives: vec!["decisions".to_string()],
         };
         export_entries(dir.path(), &opts).await?;
+        Ok(())
+    }
+
+    /// An embedder that always returns `Ok(vec![])` — the outer vec is empty.
+    ///
+    /// This exercises the `unwrap_or_default` hole fixed in `rebuild_index_with`:
+    /// an empty outer vec must be treated as a skip, not as a silent zero-length
+    /// embedding that would corrupt the store insert.
+    struct EmptyVecEmbedder {
+        dimension: usize,
+    }
+
+    impl crate::Embedder for EmptyVecEmbedder {
+        fn embed<'a>(
+            &'a self,
+            _texts: &'a [&'a str],
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = crate::Result<Vec<Vec<f32>>>> + Send + 'a>,
+        > {
+            Box::pin(async move { Ok(vec![]) })
+        }
+
+        fn dimension(&self) -> usize {
+            self.dimension
+        }
+
+        fn name(&self) -> &str {
+            "empty-vec-mock"
+        }
+    }
+
+    /// rebuild_index_with must skip — not error — when the embedder returns Ok(vec![]).
+    ///
+    /// Before the fix, `vecs.pop().unwrap_or_default()` yielded an empty Vec<f32>
+    /// that was passed straight to `store.insert_chunks`, which aborted the whole
+    /// rebuild with an error.  After the fix the entry is counted as skipped and
+    /// the function returns Ok(()).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_rebuild_index_skips_empty_embedding() -> Result<()> {
+        let dir = TempDir::new()?;
+        let dim = 4usize;
+        let blob_store = BlobStore::open(dir.path())?;
+
+        // Insert a blob with no cached embedding so the re-embed path is taken.
+        let blob =
+            crate::test_helpers::test_blob("content that will get empty embedding", "normal");
+        blob_store.put(&blob)?;
+
+        let store = StoreBackend::open(dir.path(), dim, false).await?;
+        let embedder = EmptyVecEmbedder { dimension: dim };
+
+        // Must complete Ok — not propagate an error from insert_chunks.
+        rebuild_index_with(&embedder, &store, &blob_store).await?;
+
+        // No entries should have been inserted; the blob was skipped.
+        let entries = store.list_entries(&[], None, None, 100).await?;
+        assert_eq!(
+            entries.len(),
+            0,
+            "expected 0 entries after skipping empty embedding"
+        );
+
         Ok(())
     }
 }
