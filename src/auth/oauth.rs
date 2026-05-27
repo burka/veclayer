@@ -487,6 +487,15 @@ async fn authorize_get_handler(
         }
     };
 
+    if code_challenge.len() > MAX_STRING_LENGTH {
+        return redirect_with_error(
+            &redirect_uri,
+            "invalid_request",
+            "code_challenge too long",
+            params.state.as_deref(),
+        );
+    }
+
     // Only S256 is supported.
     if params
         .code_challenge_method
@@ -667,6 +676,17 @@ async fn authorize_post_handler(
             );
         }
     };
+
+    // Bound the PKCE challenge before it is persisted — mirrors the GET-path
+    // guard so an oversized challenge cannot be smuggled in via the consent POST.
+    if form.code_challenge.len() > MAX_STRING_LENGTH {
+        return redirect_with_error(
+            &redirect_uri,
+            "invalid_request",
+            "code_challenge too long",
+            oauth_state,
+        );
+    }
 
     let code = state
         .token_store
@@ -2238,6 +2258,34 @@ mod tests {
         assert!(location.contains("error=invalid_request"));
     }
 
+    // ── Authorize GET: code_challenge length guard ────────────────────────────
+
+    #[tokio::test]
+    async fn test_authorize_get_code_challenge_too_long_redirects_with_error() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let long_challenge = "x".repeat(MAX_STRING_LENGTH + 1);
+
+        let authorize_uri = format!(
+            "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&code_challenge={long_challenge}&code_challenge_method=S256&scope=read"
+        );
+        let resp = app
+            .clone()
+            .oneshot(get_req(&authorize_uri))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(
+            location.contains("error=invalid_request"),
+            "expected invalid_request in redirect, got: {location}"
+        );
+    }
+
     // ── Authorize GET: consent page ───────────────────────────────────────────
 
     #[tokio::test]
@@ -2408,6 +2456,40 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(location.contains("error=invalid_scope"));
+    }
+
+    /// Even with a valid CSRF token and `approved=true`, an oversized
+    /// `code_challenge` smuggled in via the consent POST must be rejected with
+    /// `invalid_request` rather than persisted — mirroring the GET-path guard.
+    /// Discriminating: without the POST guard this would issue a `code=`.
+    #[tokio::test]
+    async fn test_authorize_post_code_challenge_too_long_redirects_with_error() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+
+        let redirect_uri = "https://app.example.com/cb";
+        let client_id = register_client(&app, redirect_uri).await;
+        let (_, challenge) = pkce_pair();
+
+        // Obtain a valid CSRF token via the consent page (rendered with a normal
+        // challenge), then submit an oversized challenge in the POST body.
+        let csrf = get_consent_csrf_token(&app, &client_id, redirect_uri, &challenge).await;
+        let long_challenge = "x".repeat(MAX_STRING_LENGTH + 1);
+        let form = format!(
+            "client_id={client_id}&redirect_uri={redirect_uri}&scope=read&code_challenge={long_challenge}&approved=true&csrf_token={csrf}"
+        );
+        let resp = app
+            .clone()
+            .oneshot(post_form("/oauth/authorize", &form))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(
+            location.contains("error=invalid_request"),
+            "expected invalid_request in redirect, got: {location}"
+        );
     }
 
     // ── Token endpoint: error paths ───────────────────────────────────────────
