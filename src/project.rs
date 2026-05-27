@@ -32,6 +32,19 @@ pub enum ProjectSource {
     None,
 }
 
+/// The subset of [`ProjectSource`] values whose data directory is resolved by
+/// [`resolve_project_data_dir`].  `LocalConfig` (path comes from the walk-up
+/// result) and `None` are intentionally excluded — they can never reach the
+/// resolver, and this type makes that invariant compile-time rather than
+/// runtime.
+#[derive(Debug, Clone, Copy)]
+enum ResolvableSource {
+    EnvVar,
+    GitRemote,
+    OpenClawAgent,
+    ConfigMatch,
+}
+
 /// Result of project detection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectDetection {
@@ -51,7 +64,7 @@ pub fn detect_project(start_dir: &Path) -> ProjectDetection {
     if let Some(project) = std::env::var_os("VECLAYER_PROJECT") {
         if !project.is_empty() {
             let project_str = project.to_string_lossy();
-            let data_dir = resolve_project_data_dir(&project_str, ProjectSource::EnvVar);
+            let data_dir = resolve_project_data_dir(&project_str, ResolvableSource::EnvVar);
             return ProjectDetection {
                 project: Some(project_str.into_owned()),
                 source: ProjectSource::EnvVar,
@@ -63,7 +76,7 @@ pub fn detect_project(start_dir: &Path) -> ProjectDetection {
     // 2. Git remote — primary identifier for project-first architecture
     let git_info = crate::git::detect::detect(start_dir);
     if let Some(remote) = &git_info.remote {
-        let data_dir = resolve_project_data_dir(remote, ProjectSource::GitRemote);
+        let data_dir = resolve_project_data_dir(remote, ResolvableSource::GitRemote);
         return ProjectDetection {
             project: Some(remote.clone()),
             source: ProjectSource::GitRemote,
@@ -78,7 +91,7 @@ pub fn detect_project(start_dir: &Path) -> ProjectDetection {
             // Agent IDs from OpenClaw look like "agent_xxx" — use as project name
             if agent_str.starts_with("agent_") {
                 let data_dir =
-                    resolve_project_data_dir(&agent_str, ProjectSource::OpenClawAgent);
+                    resolve_project_data_dir(&agent_str, ResolvableSource::OpenClawAgent);
                 return ProjectDetection {
                     project: Some(agent_str.into_owned()),
                     source: ProjectSource::OpenClawAgent,
@@ -104,7 +117,7 @@ pub fn detect_project(start_dir: &Path) -> ProjectDetection {
     {
         let user_config = UserConfig::discover();
         if let Some(project) = user_config.resolve(start_dir, git_info.remote.as_deref()).project {
-            let data_dir = resolve_project_data_dir(&project, ProjectSource::ConfigMatch);
+            let data_dir = resolve_project_data_dir(&project, ResolvableSource::ConfigMatch);
             return ProjectDetection {
                 project: Some(project),
                 source: ProjectSource::ConfigMatch,
@@ -139,14 +152,18 @@ fn discover_local_project(start_dir: &Path) -> Option<(PathBuf, crate::config::P
 /// `~/.veclayer/projects/<project>/`.  For env-var, uses `VECLAYER_DATA_DIR`
 /// if set, otherwise `~/.veclayer/projects/<project>/`.
 ///
-/// `LocalConfig` is handled by the caller directly (data_dir comes from the
-/// walk-up result) so it is not a valid argument here.
-fn resolve_project_data_dir(project: &str, source: ProjectSource) -> Option<PathBuf> {
+/// `LocalConfig` and `None` are intentionally absent from [`ResolvableSource`]
+/// and therefore cannot be passed here.  `LocalConfig`'s data directory comes
+/// directly from the walk-up result in `detect_project`; `None` means no
+/// project was detected at all.  The type enforces this at compile time.
+fn resolve_project_data_dir(project: &str, source: ResolvableSource) -> Option<PathBuf> {
     let base_dirs = directories::BaseDirs::new()?;
     let veclayer_home = base_dirs.home_dir().join(".veclayer");
 
     let data_dir = match source {
-        ProjectSource::GitRemote | ProjectSource::ConfigMatch | ProjectSource::OpenClawAgent => {
+        ResolvableSource::GitRemote
+        | ResolvableSource::ConfigMatch
+        | ResolvableSource::OpenClawAgent => {
             // Auto-create per-remote store: ~/.veclayer/projects/<remote>/
             let projects_dir = veclayer_home.join("projects").join(project);
             if !projects_dir.exists() {
@@ -154,7 +171,7 @@ fn resolve_project_data_dir(project: &str, source: ProjectSource) -> Option<Path
             }
             projects_dir
         }
-        ProjectSource::EnvVar => {
+        ResolvableSource::EnvVar => {
             // ENV var — use explicit path if set, otherwise per-project store
             if let Some(explicit) = std::env::var_os("VECLAYER_DATA_DIR") {
                 PathBuf::from(explicit)
@@ -166,13 +183,6 @@ fn resolve_project_data_dir(project: &str, source: ProjectSource) -> Option<Path
                 projects_dir
             }
         }
-        ProjectSource::None => return None,
-        // LocalConfig data_dir comes directly from the walk-up result in
-        // detect_project and is never routed through this function.
-        ProjectSource::LocalConfig => unreachable!(
-            "LocalConfig data_dir is provided by discover_local_project, \
-             not resolved here"
-        ),
     };
 
     Some(data_dir)
@@ -384,13 +394,8 @@ mod tests {
 
     // ── resolve_project_data_dir ──────────────────────────────────────────────
 
-    /// ProjectSource::None must always yield None from resolve_project_data_dir.
-    #[test]
-    fn test_resolve_data_dir_none_source_returns_none() {
-        clear_project_env();
-        let result = resolve_project_data_dir("anything", ProjectSource::None);
-        assert!(result.is_none());
-    }
+    // NOTE: there is no test for "None source returns None" because
+    // ResolvableSource cannot represent None — the type system is the proof.
 
     /// When VECLAYER_DATA_DIR is set, EnvVar source must return that path
     /// exactly, without creating any directories.
@@ -402,7 +407,7 @@ mod tests {
         std::fs::create_dir_all(&explicit).unwrap();
 
         std::env::set_var("VECLAYER_DATA_DIR", &explicit);
-        let result = resolve_project_data_dir("ignored", ProjectSource::EnvVar);
+        let result = resolve_project_data_dir("ignored", ResolvableSource::EnvVar);
         std::env::remove_var("VECLAYER_DATA_DIR");
 
         assert_eq!(result, Some(explicit));
