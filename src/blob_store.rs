@@ -122,7 +122,7 @@ impl BlobStore {
     pub fn get(&self, hash: &blake3::Hash) -> crate::Result<Option<StoredBlob>> {
         let path = self.path_for(hash);
 
-        if !path.exists() {
+        if !path.is_file() {
             return Ok(None);
         }
 
@@ -134,7 +134,7 @@ impl BlobStore {
 
     /// Return `true` if the object is present in the store.
     pub fn has(&self, hash: &blake3::Hash) -> bool {
-        self.path_for(hash).exists()
+        self.path_for(hash).is_file()
     }
 
     /// Iterate over all hashes in the store.
@@ -340,6 +340,33 @@ mod tests {
             result.is_err(),
             "get() must return Err on a corrupt blob file, got: {:?}",
             result
+        );
+    }
+
+    #[test]
+    fn get_returns_none_when_path_is_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlobStore::open(dir.path()).unwrap();
+
+        // Compute the hash of a blob that has never been stored.
+        let blob = test_blob("directory-collision");
+        let hash = blob.blob_hash();
+        let final_path = store.path_for(&hash);
+
+        // Create the shard dir first, then place a DIRECTORY where the file would be.
+        fs::create_dir_all(&final_path).unwrap();
+
+        // get() must return Ok(None), not an IO error from trying to read a directory.
+        let result = store.get(&hash);
+        assert!(
+            result.unwrap().is_none(),
+            "get() must return Ok(None) when a directory exists at the hash path"
+        );
+
+        // has() must agree with get(): a directory at the path is not a stored object.
+        assert!(
+            !store.has(&hash),
+            "has() must return false when a directory exists at the hash path"
         );
     }
 
