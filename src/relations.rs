@@ -609,4 +609,51 @@ mod tests {
         let targets: Vec<&str> = result.iter().map(|r| r.target_id.as_str()).collect();
         assert_eq!(targets, vec!["a", "b", "c"]);
     }
+
+    // --- process_relations: resolution error paths ---
+
+    #[tokio::test]
+    async fn test_process_relations_target_not_found_returns_err() {
+        let (store, _data_dir, _dir) =
+            test_store_with_chunks(vec![make_test_chunk("1234abcd00000000", "some content")]).await;
+
+        let relations = vec![RawRelation {
+            kind: "related_to".to_string(),
+            target_id: "deadbeef".to_string(),
+        }];
+        let err = process_relations(&store, "1234abcd00000000", relations)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("deadbeef"),
+            "error should name the unresolvable target; got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_relations_ambiguous_prefix_returns_err() {
+        // Two chunks that share the "face" prefix trigger the ambiguity guard in
+        // get_by_id_prefix, which returns Err rather than Ok(None). That error
+        // propagates through resolve_id and process_relations unchanged.
+        let (store, _data_dir, _dir) = test_store_with_chunks(vec![
+            make_test_chunk("face000000000000", "first"),
+            make_test_chunk("face111111111111", "second"),
+            make_test_chunk("beef000000000000", "source"),
+        ])
+        .await;
+
+        let relations = vec![RawRelation {
+            kind: "related_to".to_string(),
+            target_id: "face".to_string(),
+        }];
+        let err = process_relations(&store, "beef000000000000", relations)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ambiguous") || msg.contains("face"),
+            "error should indicate ambiguous prefix; got: {msg}"
+        );
+    }
 }
