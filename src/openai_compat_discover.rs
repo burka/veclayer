@@ -30,7 +30,7 @@ const PROBE_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Case-insensitive substrings that mark a model id as an embedding model.
-/// Any match qualifies; chat/instruct models match none of these.
+/// Any match qualifies; generation models are excluded via `CHAT_MODEL_TOKENS`.
 const EMBED_MODEL_SUBSTRINGS: &[&str] = &[
     "embed",
     "bge",
@@ -43,6 +43,14 @@ const EMBED_MODEL_SUBSTRINGS: &[&str] = &[
     "minilm",
     "instructor",
 ];
+
+/// Whole tokens that mark a model id as a chat/generation model.
+///
+/// Checked as **exact delimiter-separated tokens**, not as substrings, so that
+/// "instructor" (a real embedding model) is never disqualified by a match
+/// against "instruct" — they are distinct tokens once the id is split on
+/// `-`, `_`, `/`, and `.`.
+const CHAT_MODEL_TOKENS: &[&str] = &["instruct", "chat"];
 
 /// A discovered OpenAI-compatible embedding endpoint.
 #[derive(Debug, Clone, PartialEq)]
@@ -94,13 +102,24 @@ fn normalize_base(url: &str) -> String {
         .to_string()
 }
 
+/// Return `true` when the lowercased model id contains any `CHAT_MODEL_TOKENS`
+/// as a whole delimiter-separated token.
+fn is_chat_model(id_lower: &str) -> bool {
+    id_lower
+        .split(|c| matches!(c, '-' | '_' | '/' | '.'))
+        .any(|token| CHAT_MODEL_TOKENS.contains(&token))
+}
+
 /// Pick the first model id that looks like an embedding model, or `None`.
+///
+/// A model qualifies when it matches an `EMBED_MODEL_SUBSTRINGS` entry AND is
+/// not identified as a chat/generation model by `is_chat_model`.
 fn pick_embed_model(model_ids: &[String]) -> Option<&str> {
     model_ids
         .iter()
         .find(|id| {
             let lower = id.to_lowercase();
-            EMBED_MODEL_SUBSTRINGS.iter().any(|s| lower.contains(s))
+            !is_chat_model(&lower) && EMBED_MODEL_SUBSTRINGS.iter().any(|s| lower.contains(s))
         })
         .map(String::as_str)
 }
@@ -279,6 +298,36 @@ mod tests {
     #[test]
     fn pick_embed_model_returns_none_for_empty() {
         assert_eq!(pick_embed_model(&[]), None);
+    }
+
+    #[test]
+    fn pick_embed_model_does_not_select_gte_instruct_chat_model() {
+        // "gte" is an embed substring, but "instruct" is a generation token —
+        // the whole token "instruct" (not a substring) must disqualify it.
+        let models = ids(&["Alibaba-NLP/gte-Qwen2-7B-instruct"]);
+        assert_eq!(pick_embed_model(&models), None);
+    }
+
+    #[test]
+    fn pick_embed_model_selects_legit_gte_embed_model() {
+        // "gte-large" has no chat token — must still be selected.
+        let models = ids(&["thenlper/gte-large"]);
+        assert_eq!(pick_embed_model(&models), Some("thenlper/gte-large"));
+    }
+
+    #[test]
+    fn pick_embed_model_selects_instructor_embed_model() {
+        // "instructor" is a whole token; "instruct" (a chat token) is NOT a
+        // substring match against "instructor" — they are different tokens.
+        let models = ids(&["hkunlp/instructor-large"]);
+        assert_eq!(pick_embed_model(&models), Some("hkunlp/instructor-large"));
+    }
+
+    #[test]
+    fn pick_embed_model_skips_chat_and_picks_bge_next() {
+        // chat model first → skipped; bge embed model second → selected.
+        let models = ids(&["meta-llama/Llama-3-8B-chat", "BAAI/bge-small-en"]);
+        assert_eq!(pick_embed_model(&models), Some("BAAI/bge-small-en"));
     }
 
     // --- first_embedding_len + JSON parsing ---
