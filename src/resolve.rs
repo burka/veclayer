@@ -222,6 +222,79 @@ mod tests {
         assert_eq!(parse_temporal("-1d"), None);
     }
 
+    // --- weeks branch ("w") ---
+
+    /// `parse_relative_duration` is private but accessible inside this module.
+    /// Verify the "w" arm returns `now - count * 7 * 86400`.
+    #[test]
+    fn test_parse_relative_duration_weeks_direct() {
+        let now = crate::chunk::now_epoch_secs();
+        let result = parse_relative_duration("2w");
+        assert!(
+            result.is_some(),
+            "parse_relative_duration(\"2w\") must return Some"
+        );
+        let ts = result.unwrap();
+        let expected = now - 2 * 7 * 86400;
+        assert!(
+            (ts - expected).abs() <= 2,
+            "2w: got {ts}, expected ~{expected} (now={now})"
+        );
+    }
+
+    #[test]
+    fn test_parse_relative_duration_one_week() {
+        let now = crate::chunk::now_epoch_secs();
+        let ts =
+            parse_relative_duration("1w").expect("parse_relative_duration(\"1w\") should be Some");
+        let expected = now - 7 * 86400;
+        assert!(
+            (ts - expected).abs() <= 2,
+            "1w: got {ts}, expected ~{expected}"
+        );
+    }
+
+    /// Zero weeks is valid (count = 0 ≥ 0) and should return a timestamp equal to now.
+    #[test]
+    fn test_parse_relative_duration_zero_weeks() {
+        let now = crate::chunk::now_epoch_secs();
+        let ts =
+            parse_relative_duration("0w").expect("parse_relative_duration(\"0w\") should be Some");
+        assert!((ts - now).abs() <= 2, "0w: got {ts}, expected ~now={now}");
+    }
+
+    /// Negative count is rejected by the `count < 0` guard even for the "w" unit.
+    #[test]
+    fn test_parse_relative_duration_negative_weeks_returns_none() {
+        assert_eq!(
+            parse_relative_duration("-1w"),
+            None,
+            "negative week count must return None"
+        );
+    }
+
+    /// Exercise the "w" branch via the public `parse_temporal` API.
+    #[test]
+    fn test_parse_temporal_weeks_via_public_api() {
+        // Sample `now` immediately before each call so neither assertion can
+        // drift if the two calls straddle a clock tick.
+        let now_2w = crate::chunk::now_epoch_secs();
+        let ts_2w = parse_temporal("2w").expect("parse_temporal(\"2w\") should be Some");
+        let expected_2w = now_2w - 2 * 7 * 86400;
+        assert!(
+            (ts_2w - expected_2w).abs() <= 2,
+            "parse_temporal(\"2w\"): got {ts_2w}, expected ~{expected_2w}"
+        );
+
+        let now_4w = crate::chunk::now_epoch_secs();
+        let ts_4w = parse_temporal("4w").expect("parse_temporal(\"4w\") should be Some");
+        let expected_4w = now_4w - 4 * 7 * 86400;
+        assert!(
+            (ts_4w - expected_4w).abs() <= 2,
+            "parse_temporal(\"4w\"): got {ts_4w}, expected ~{expected_4w}"
+        );
+    }
+
     #[tokio::test]
     async fn test_resolve_id_exact_match() {
         let (_dir, store) = temp_store().await;

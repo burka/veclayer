@@ -1063,4 +1063,69 @@ mod tests {
 
         assert!(!chunk.is_expired());
     }
+
+    // --- short_id boundary tests ---
+
+    #[test]
+    fn test_short_id_shorter_than_truncation_length_returned_unchanged() {
+        // "abc" is 3 chars, below the 7-char threshold — must be returned as-is.
+        assert_eq!(short_id("abc"), "abc");
+    }
+
+    #[test]
+    fn test_short_id_empty_string_returned_unchanged() {
+        // Edge case: empty string is also shorter than 7 — must not panic.
+        assert_eq!(short_id(""), "");
+    }
+
+    #[test]
+    fn test_short_id_exactly_truncation_length_returned_unchanged() {
+        // A 7-char input is exactly at the boundary; id.len() >= 7 is true,
+        // so it returns &id[..7] — which equals the whole string.
+        assert_eq!(short_id("1234567"), "1234567");
+    }
+
+    // --- EntryType::from_str tests ---
+
+    #[test]
+    fn test_entry_type_from_str_happy_paths() {
+        assert_eq!("raw".parse::<EntryType>().unwrap(), EntryType::Raw);
+        assert_eq!("summary".parse::<EntryType>().unwrap(), EntryType::Summary);
+        assert_eq!("meta".parse::<EntryType>().unwrap(), EntryType::Meta);
+        assert_eq!(
+            "impression".parse::<EntryType>().unwrap(),
+            EntryType::Impression
+        );
+    }
+
+    #[test]
+    fn test_entry_type_from_str_unknown_value_is_err() {
+        let err = "bogus".parse::<EntryType>().unwrap_err();
+        assert!(
+            err.contains("Unknown entry_type"),
+            "expected 'Unknown entry_type' in error, got: {err}"
+        );
+        assert!(
+            err.contains("raw, summary, meta, impression"),
+            "expected valid variants listed in error, got: {err}"
+        );
+        // Assert the exact full message so regressions are caught immediately.
+        assert_eq!(
+            err,
+            "Unknown entry_type: 'bogus'. Valid: raw, summary, meta, impression"
+        );
+    }
+
+    #[test]
+    fn test_entry_type_from_str_case_sensitive() {
+        // Uppercase variants are not accepted — the match arms are lowercase only.
+        assert!("Raw".parse::<EntryType>().is_err());
+        assert!("SUMMARY".parse::<EntryType>().is_err());
+    }
+
+    #[test]
+    fn test_entry_type_from_str_empty_string_is_err() {
+        let err = "".parse::<EntryType>().unwrap_err();
+        assert!(err.contains("Unknown entry_type"));
+    }
 }

@@ -305,4 +305,152 @@ mod tests {
         assert_chunk_has_relation(&source_chunk, "contradicts", "2222000000000000", "source");
         assert_chunk_no_relations(&target_chunk, "target");
     }
+
+    // --- RawRelation::parse_custom ---
+
+    #[test]
+    fn test_parse_custom_happy_path() {
+        let specs = vec!["supersedes:abc-123".to_string()];
+        let result = RawRelation::parse_custom(&specs).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].kind, "supersedes");
+        assert_eq!(result[0].target_id, "abc-123");
+    }
+
+    #[test]
+    fn test_parse_custom_multiple_specs() {
+        let specs = vec![
+            "supersedes:abc-123".to_string(),
+            "related_to:def-456".to_string(),
+        ];
+        let result = RawRelation::parse_custom(&specs).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].kind, "supersedes");
+        assert_eq!(result[0].target_id, "abc-123");
+        assert_eq!(result[1].kind, "related_to");
+        assert_eq!(result[1].target_id, "def-456");
+    }
+
+    #[test]
+    fn test_parse_custom_empty_slice_returns_empty() {
+        let result = RawRelation::parse_custom(&[]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_custom_no_colon_returns_err() {
+        let specs = vec!["nocolon".to_string()];
+        let err = RawRelation::parse_custom(&specs).unwrap_err();
+        let msg = err.to_string();
+        // Error::Parse displays as "Parsing error: <inner>"
+        assert!(
+            msg.contains("Invalid --rel format 'nocolon': expected KIND:ID"),
+            "unexpected error message: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_parse_custom_empty_kind_returns_err() {
+        let specs = vec![":some-id".to_string()];
+        let err = RawRelation::parse_custom(&specs).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Invalid --rel format ':some-id': expected KIND:ID"),
+            "unexpected error message: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_parse_custom_empty_target_returns_err() {
+        let specs = vec!["supersedes:".to_string()];
+        let err = RawRelation::parse_custom(&specs).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Invalid --rel format 'supersedes:': expected KIND:ID"),
+            "unexpected error message: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_parse_custom_custom_kind_passes() {
+        // A kind that is far from all known kinds (Levenshtein > 2) passes validation
+        let specs = vec!["contradicts:xyz-789".to_string()];
+        let result = RawRelation::parse_custom(&specs).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].kind, "contradicts");
+        assert_eq!(result[0].target_id, "xyz-789");
+    }
+
+    // --- RawRelation::from_typed_options ---
+
+    #[test]
+    fn test_from_typed_options_all_empty() {
+        let result = RawRelation::from_typed_options(&[], &[], &[], &[], &[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_from_typed_options_single_supersedes() {
+        let supersedes = vec!["target-id-001".to_string()];
+        let result = RawRelation::from_typed_options(&supersedes, &[], &[], &[], &[]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].kind, "supersedes");
+        assert_eq!(result[0].target_id, "target-id-001");
+    }
+
+    #[test]
+    fn test_from_typed_options_each_kind_maps_correctly() {
+        let supersedes = vec!["s1".to_string()];
+        let summarizes = vec!["s2".to_string()];
+        let related_to = vec!["r1".to_string()];
+        let derived_from = vec!["d1".to_string()];
+        let version_of = vec!["v1".to_string()];
+
+        let result = RawRelation::from_typed_options(
+            &supersedes,
+            &summarizes,
+            &related_to,
+            &derived_from,
+            &version_of,
+        );
+
+        assert_eq!(result.len(), 5);
+
+        let find = |kind: &str, target: &str| {
+            result
+                .iter()
+                .any(|r| r.kind == kind && r.target_id == target)
+        };
+
+        assert!(find("supersedes", "s1"), "missing supersedes:s1");
+        assert!(find("summarizes", "s2"), "missing summarizes:s2");
+        assert!(find("related_to", "r1"), "missing related_to:r1");
+        assert!(find("derived_from", "d1"), "missing derived_from:d1");
+        assert!(find("version_of", "v1"), "missing version_of:v1");
+
+        // Output order is stable: it follows the fixed (kind, targets) pairs.
+        let kinds: Vec<&str> = result.iter().map(|r| r.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "supersedes",
+                "summarizes",
+                "related_to",
+                "derived_from",
+                "version_of"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_from_typed_options_multiple_targets_per_kind() {
+        let supersedes = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let result = RawRelation::from_typed_options(&supersedes, &[], &[], &[], &[]);
+        assert_eq!(result.len(), 3);
+        for r in &result {
+            assert_eq!(r.kind, "supersedes");
+        }
+        let targets: Vec<&str> = result.iter().map(|r| r.target_id.as_str()).collect();
+        assert_eq!(targets, vec!["a", "b", "c"]);
+    }
 }

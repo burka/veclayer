@@ -589,6 +589,29 @@ mod tests {
         );
     }
 
+    /// `consume_code` returns a not-found error when called with a code string
+    /// that was never stored.
+    ///
+    /// Branch ordering in `consume_code`: the map lookup (not-found guard) runs
+    /// BEFORE the RFC 7636 verifier-length check, so a too-short verifier would
+    /// mask this branch.  A 43-character verifier (the RFC 7636 minimum) is used
+    /// to ensure only the not-found branch executes.
+    #[test]
+    fn test_consume_code_unknown_code_returns_not_found() {
+        let (_dir, mut store) = tmp_store();
+
+        // 43 chars — RFC 7636 minimum — so the length guard does not fire first.
+        let verifier = "A".repeat(43);
+        let unknown_code = "this-code-was-never-stored";
+
+        let err = store.consume_code(unknown_code, &verifier).unwrap_err();
+
+        assert!(
+            err.to_string().contains("authorization code not found"),
+            "expected 'authorization code not found' error, got: {err}"
+        );
+    }
+
     // ─── Refresh tokens ───────────────────────────────────────────────────────
 
     #[test]
