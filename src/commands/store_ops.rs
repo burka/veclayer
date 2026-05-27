@@ -64,12 +64,23 @@ fn init_share(cwd: &Path) -> Result<()> {
         )
     })?;
 
+    // Probe for an existing branch before MemoryStore::open creates or tracks it,
+    // so we can emit the correct message afterward. This probe-then-open is not
+    // atomic: a concurrent `init` could create the branch in between. That race
+    // is benign — it only affects which cosmetic message we print, never the
+    // store's correctness (MemoryStore::open is idempotent w.r.t. the branch).
+    let branch_existed = detect_existing_memory_branch(&git_dir);
+
     // Use MemoryStore::open which handles remote tracking branch detection.
     crate::git::memory_store::MemoryStore::open(&git_dir, None).map_err(|e| {
         crate::Error::InvalidOperation(format!("Failed to open memory branch: {e}"))
     })?;
 
-    println!("  Created memory branch 'veclayer-memory'");
+    if branch_existed {
+        println!("  Using existing memory branch 'veclayer-memory'");
+    } else {
+        println!("  Created memory branch 'veclayer-memory'");
+    }
 
     let project_veclayer_dir = cwd.join(".veclayer");
     std::fs::create_dir_all(&project_veclayer_dir)?;
@@ -80,6 +91,35 @@ fn init_share(cwd: &Path) -> Result<()> {
     println!("Team members run: veclayer sync");
 
     Ok(())
+}
+
+/// Returns `true` when the `veclayer-memory` branch (or its remote counterpart)
+/// already exists, so `init_share` can emit "Using existing …" vs "Created …".
+fn detect_existing_memory_branch(git_dir: &std::path::Path) -> bool {
+    use crate::git::GitMemoryBranch;
+
+    let Ok(branch) = GitMemoryBranch::open(git_dir, None) else {
+        return false;
+    };
+
+    // Local branch present?
+    if branch.branch_exists().unwrap_or(false) {
+        return true;
+    }
+
+    // Remote tracking ref present? (refs/remotes/origin/veclayer-memory)
+    // Use the same remote name as the rest of the codebase ("origin").
+    let remote_ref = format!(
+        "refs/remotes/{}/{}",
+        crate::git::REMOTE,
+        crate::git::DEFAULT_BRANCH
+    );
+    let output = std::process::Command::new("git")
+        .arg("--git-dir")
+        .arg(git_dir)
+        .args(["rev-parse", "--verify", &remote_ref])
+        .output();
+    output.map(|o| o.status.success()).unwrap_or(false)
 }
 
 /// Write `storage = "git"` and `push = "review"` into `.veclayer/config.toml`.
@@ -1111,5 +1151,95 @@ mod tests {
         let temp_dir = TempDir::new()?;
         print_sources(temp_dir.path()).await?;
         Ok(())
+    }
+
+    // ── detect_existing_memory_branch ────────────────────────────────────────
+
+    /// Create a bare-minimum git repo in `dir` (no commits needed).
+    fn init_git_repo(dir: &std::path::Path) {
+        let status = std::process::Command::new("git")
+            .args(["init", "--initial-branch=main", dir.to_str().unwrap()])
+            .output()
+            .expect("git init");
+        assert!(status.status.success(), "git init failed");
+    }
+
+    /// Returns the `.git/` directory inside `dir`.
+    fn git_dir(repo_root: &std::path::Path) -> std::path::PathBuf {
+        repo_root.join(".git")
+    }
+
+    /// Returns `false` when no memory branch exists in a fresh repo.
+    #[test]
+    fn test_detect_existing_branch_fresh_repo_returns_false() {
+        let temp = TempDir::new().unwrap();
+        init_git_repo(temp.path());
+        let result = detect_existing_memory_branch(&git_dir(temp.path()));
+        assert!(!result, "fresh repo must report no existing branch");
+    }
+
+    /// Returns `true` when the memory branch was already created.
+    #[test]
+    fn test_detect_existing_branch_after_branch_created_returns_true() {
+        let temp = TempDir::new().unwrap();
+        init_git_repo(temp.path());
+        let repo_root = temp.path();
+
+        // Create an empty orphan veclayer-memory branch so the branch exists.
+        let _ = std::process::Command::new("git")
+            .args([
+                "--git-dir",
+                &git_dir(repo_root).to_string_lossy(),
+                "symbolic-ref",
+                "HEAD",
+                "refs/heads/veclayer-memory",
+            ])
+            .output()
+            .expect("symbolic-ref");
+
+        // Write a tree object and a commit so the branch ref is actually created.
+        let tree_out = std::process::Command::new("git")
+            .args([
+                "--git-dir",
+                &git_dir(repo_root).to_string_lossy(),
+                "hash-object",
+                "-t",
+                "tree",
+                "--stdin",
+            ])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("hash-object tree");
+        let tree_sha = String::from_utf8_lossy(&tree_out.stdout).trim().to_string();
+
+        let commit_out = std::process::Command::new("git")
+            .args([
+                "--git-dir",
+                &git_dir(repo_root).to_string_lossy(),
+                "commit-tree",
+                &tree_sha,
+                "-m",
+                "init",
+            ])
+            .output()
+            .expect("commit-tree");
+        let commit_sha = String::from_utf8_lossy(&commit_out.stdout)
+            .trim()
+            .to_string();
+
+        // Point the branch ref at the commit.
+        let _ = std::process::Command::new("git")
+            .args([
+                "--git-dir",
+                &git_dir(repo_root).to_string_lossy(),
+                "update-ref",
+                "refs/heads/veclayer-memory",
+                &commit_sha,
+            ])
+            .output()
+            .expect("update-ref");
+
+        let result = detect_existing_memory_branch(&git_dir(repo_root));
+        assert!(result, "must report existing branch after it was created");
     }
 }

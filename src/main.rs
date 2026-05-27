@@ -553,9 +553,13 @@ enum ThinkAction {
         /// Target entry ID (full or short prefix)
         target: String,
 
-        /// Relation kind: supersedes, summarizes, related_to, derived_from, version_of
-        #[arg(long, default_value = "related_to")]
-        kind: String,
+        /// Relation kind (positional): supersedes, summarizes, related_to, derived_from, version_of
+        #[arg(conflicts_with = "kind")]
+        kind_pos: Option<String>,
+
+        /// Relation kind (named flag): supersedes, summarizes, related_to, derived_from, version_of
+        #[arg(long, conflicts_with = "kind_pos")]
+        kind: Option<String>,
     },
 
     /// Discover hidden connections: find similar-but-unlinked entries
@@ -1121,8 +1125,10 @@ async fn main() -> Result<()> {
                 source,
                 target,
                 kind,
+                kind_pos,
             }) => {
-                think_relate(&data_dir, &source, &target, &kind).await?;
+                let resolved_kind = resolve_relation_kind(kind, kind_pos);
+                think_relate(&data_dir, &source, &target, &resolved_kind).await?;
             }
             Some(ThinkAction::Discover { limit }) => {
                 think_discover(&data_dir, limit).await?;
@@ -1283,4 +1289,87 @@ fn init_logging(verbose: bool, quiet: bool) {
         .with_target(false)
         .with_writer(std::io::stderr)
         .init();
+}
+
+/// Resolve the relation kind for `think relate`: positional argument wins over
+/// the `--kind` flag, falling back to `related_to` when neither is given.
+fn resolve_relation_kind(kind: Option<String>, kind_pos: Option<String>) -> String {
+    kind_pos.or(kind).unwrap_or_else(|| "related_to".to_owned())
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    /// Parse `veclayer think relate <args>` and extract the Relate variant.
+    fn parse_relate(
+        args: &[&str],
+    ) -> std::result::Result<(String, String, Option<String>, Option<String>), clap::Error> {
+        let argv: Vec<&str> = std::iter::once("veclayer")
+            .chain(std::iter::once("think"))
+            .chain(std::iter::once("relate"))
+            .chain(args.iter().copied())
+            .collect();
+        let cli = Cli::try_parse_from(argv)?;
+        match cli.command {
+            Some(Commands::Think {
+                action:
+                    Some(ThinkAction::Relate {
+                        source,
+                        target,
+                        kind,
+                        kind_pos,
+                    }),
+                ..
+            }) => Ok((source, target, kind, kind_pos)),
+            _ => panic!(
+                "unexpected parse result: expected Think {{ action: Some(Relate {{ .. }}) }}"
+            ),
+        }
+    }
+
+    // ── think relate positional kind ─────────────────────────────────────────
+
+    #[test]
+    fn test_think_relate_positional_kind() {
+        let (source, target, kind, kind_pos) =
+            parse_relate(&["src-id", "tgt-id", "supersedes"]).expect("parse");
+        assert_eq!(source, "src-id");
+        assert_eq!(target, "tgt-id");
+        let resolved = resolve_relation_kind(kind, kind_pos);
+        assert_eq!(resolved, "supersedes");
+    }
+
+    #[test]
+    fn test_think_relate_named_flag_kind() {
+        let (source, target, kind, kind_pos) =
+            parse_relate(&["src-id", "tgt-id", "--kind", "summarizes"]).expect("parse");
+        assert_eq!(source, "src-id");
+        assert_eq!(target, "tgt-id");
+        let resolved = resolve_relation_kind(kind, kind_pos);
+        assert_eq!(resolved, "summarizes");
+    }
+
+    #[test]
+    fn test_think_relate_default_kind_when_neither_provided() {
+        let (source, target, kind, kind_pos) = parse_relate(&["src-id", "tgt-id"]).expect("parse");
+        assert_eq!(source, "src-id");
+        assert_eq!(target, "tgt-id");
+        let resolved = resolve_relation_kind(kind, kind_pos);
+        assert_eq!(resolved, "related_to");
+    }
+
+    #[test]
+    fn test_think_relate_both_positional_and_named_flag_conflicts() {
+        // clap should reject providing both forms.
+        let err = parse_relate(&["src-id", "tgt-id", "supersedes", "--kind", "summarizes"]);
+        assert!(
+            err.is_err(),
+            "providing both positional and --kind must be an error"
+        );
+    }
 }

@@ -57,7 +57,7 @@ pub async fn auth_middleware(
                 }
                 Err(e) => {
                     warn!("Auth rejected: {e}");
-                    (StatusCode::UNAUTHORIZED, format!("Invalid token: {e}")).into_response()
+                    (StatusCode::UNAUTHORIZED, "invalid_token").into_response()
                 }
             }
         }
@@ -288,7 +288,7 @@ mod tests {
         let (status, body) = send(app, Some("garbage.token.here")).await;
 
         assert_eq!(status, StatusCode::UNAUTHORIZED);
-        assert!(body.contains("Invalid token"));
+        assert!(body.contains("invalid_token"));
     }
 
     #[tokio::test]
@@ -302,7 +302,43 @@ mod tests {
         let (status, body) = send(app, Some(&jwt)).await;
 
         assert_eq!(status, StatusCode::UNAUTHORIZED);
-        assert!(body.contains("Invalid token"));
+        assert!(body.contains("invalid_token"));
+    }
+
+    /// The client-facing error body must be a generic opaque token and must not
+    /// contain internal error detail (e.g. jsonwebtoken error messages or
+    /// header/signature strings from the token itself).
+    #[tokio::test]
+    async fn test_invalid_bearer_body_does_not_leak_internal_detail() {
+        let key = generate_key();
+
+        // Use a structurally plausible but wrong-key-signed token so that the
+        // underlying verify() produces a detailed internal error message (e.g.
+        // "InvalidSignature" or similar from jsonwebtoken).
+        let wrong_key = generate_key();
+        let t = now();
+        let jwt = mint_token(&wrong_key, Capability::Write, t, t + 3600);
+        let app = build_app(auth_state(&key, true)); // verifier uses `key`, not `wrong_key`
+
+        let (status, body) = send(app, Some(&jwt)).await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // Body must be the generic token — no internal error strings.
+        assert_eq!(
+            body, "invalid_token",
+            "client-facing body must be exactly 'invalid_token', got: {body:?}"
+        );
+
+        // Specifically must not contain internal error detail substrings.
+        assert!(
+            !body.to_lowercase().contains("signature"),
+            "body must not leak signature detail, got: {body:?}"
+        );
+        assert!(
+            !body.to_lowercase().contains("invalid token:"),
+            "body must not contain 'invalid token:', got: {body:?}"
+        );
     }
 
     #[tokio::test]
