@@ -212,7 +212,7 @@ async fn mcp_initialize_returns_server_info() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
-async fn mcp_tools_list_returns_five_tools() {
+async fn mcp_tools_list_returns_four_tools() {
     let (base, _tmp) = spawn_server().await;
     let client = reqwest::Client::new();
 
@@ -239,8 +239,8 @@ async fn mcp_tools_list_returns_five_tools() {
 
     assert_eq!(
         tools.len(),
-        5,
-        "expected exactly 5 tools, got {}",
+        4,
+        "expected exactly 4 tools, got {}",
         tools.len()
     );
 
@@ -249,13 +249,20 @@ async fn mcp_tools_list_returns_five_tools() {
         .map(|t| t["name"].as_str().expect("tool must have a name"))
         .collect();
 
-    let expected = ["recall", "focus", "store", "think", "share"];
+    let expected = ["recall", "focus", "store", "think"];
     for name in expected {
         assert!(
             names.contains(&name),
             "tool '{name}' not found in list: {names:?}"
         );
     }
+
+    // `share` must NOT be advertised until UCAN capability-token signing is
+    // implemented — advertising a tool that always errors misleads agents.
+    assert!(
+        !names.contains(&"share"),
+        "`share` must not be advertised until UCAN signing lands: {names:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

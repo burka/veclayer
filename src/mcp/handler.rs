@@ -271,23 +271,12 @@ impl McpHandler {
         }
     }
 
-    #[tool(
-        description = "[Placeholder] Share-token generation (UCAN signing not yet implemented — returns an error)."
-    )]
-    async fn share(
-        &self,
-        Parameters(_input): Parameters<ShareInput>,
-    ) -> Result<CallToolResult, McpError> {
-        if !self.capability.permits(Capability::Write) {
-            return Ok(CallToolResult::error(vec![Content::text(
-                "Insufficient permission: need write",
-            )]));
-        }
-        Ok(CallToolResult::error(vec![Content::text(
-            "share is not yet available: capability-token (UCAN) signing is not implemented. \
-             This tool is a placeholder for a future release.",
-        )]))
-    }
+    // `share` is intentionally NOT a tool here: UCAN capability-token signing is
+    // unimplemented, so advertising it would mislead agents into retrying a tool
+    // that always errors. The HTTP layer's `api_share` returns not-implemented
+    // for parity; when UCAN signing lands, add `#[tool]` here. The
+    // `share_not_advertised_in_tool_list` test guards against re-advertising it
+    // prematurely.
 }
 
 #[tool_handler]
@@ -565,74 +554,6 @@ mod tests {
         );
     }
 
-    // ── share tool ───────────────────────────────────────────────────────────
-
-    /// `share` must reject callers that lack write permission with a
-    /// permission error, preserving the same gate as every other write tool.
-    #[tokio::test]
-    async fn share_requires_write_permission() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let handler = make_handler(dir.path(), Capability::Read, None, None).await;
-
-        let input = super::super::types::ShareInput {
-            tree: "projects:veclayer".to_string(),
-            can: vec![],
-            expires: None,
-        };
-
-        let result = handler
-            .share(Parameters(input))
-            .await
-            .expect("share must return Ok (tool-level error), not a protocol error");
-
-        assert_eq!(
-            result.is_error,
-            Some(true),
-            "read-only handler must return an error result for share"
-        );
-        let text = result.content[0].as_text().unwrap().text.clone();
-        assert!(
-            text.contains("permission") || text.contains("Insufficient"),
-            "error must mention permission — got: {text}"
-        );
-    }
-
-    /// `share` must return a tool-level error even for write-capable callers,
-    /// because UCAN signing is not yet implemented.  It must NOT return a
-    /// token-shaped success.
-    #[tokio::test]
-    async fn share_returns_not_implemented_error() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let handler = make_handler(dir.path(), Capability::Write, None, None).await;
-
-        let input = super::super::types::ShareInput {
-            tree: "projects:veclayer".to_string(),
-            can: vec![],
-            expires: None,
-        };
-
-        let result = handler
-            .share(Parameters(input))
-            .await
-            .expect("share must return Ok (tool-level error), not a protocol error");
-
-        assert_eq!(
-            result.is_error,
-            Some(true),
-            "share must return is_error=true (not a success) until UCAN signing lands"
-        );
-        let text = result.content[0].as_text().unwrap().text.clone();
-        assert!(
-            text.contains("not yet") || text.contains("not implemented"),
-            "error must explain the feature is not yet available — got: {text}"
-        );
-        // The response must NOT look like a token payload.
-        assert!(
-            !text.contains("veclayer-share-v1-preview"),
-            "response must not contain a token payload — got: {text}"
-        );
-    }
-
     /// A `Write`-capability handler must allow `recall` (a read operation).
     #[tokio::test]
     async fn write_capability_permits_recall() {
@@ -663,6 +584,399 @@ mod tests {
             result.is_error,
             Some(true),
             "write-capability handler must not block read operations"
+        );
+    }
+
+    // ── share not advertised ─────────────────────────────────────────────────
+
+    /// `share` must NOT appear in the MCP tool list until UCAN signing is
+    /// implemented.  Advertising a tool that always returns an error misleads
+    /// agents into attempting it repeatedly.
+    #[test]
+    fn share_not_advertised_in_tool_list() {
+        let router = McpHandler::tool_router();
+        assert!(
+            router.get("share").is_none(),
+            "`share` must not be registered in the tool router until UCAN signing lands"
+        );
+    }
+
+    // ── recall output shaping ────────────────────────────────────────────────
+
+    /// `recall` with no query on an empty store returns a success result whose
+    /// text body is the canonical "No entries found." message.
+    #[tokio::test]
+    async fn recall_empty_store_returns_no_entries_found() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let handler = make_handler(dir.path(), Capability::Read, None, None).await;
+
+        let input = super::super::types::RecallInput {
+            query: None,
+            limit: 5,
+            deep: false,
+            recency: None,
+            perspectives: None,
+            similar_to: None,
+            min_salience: None,
+            min_score: None,
+            since: None,
+            until: None,
+            ongoing: None,
+        };
+
+        let result = handler
+            .recall(Parameters(input))
+            .await
+            .expect("recall must not return a protocol error");
+
+        assert_ne!(
+            result.is_error,
+            Some(true),
+            "empty-store recall must succeed"
+        );
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert_eq!(
+            text, "No entries found.",
+            "empty browse must produce canonical message — got: {text}"
+        );
+    }
+
+    /// `recall` with a query that matches nothing returns "No results for …".
+    #[tokio::test]
+    async fn recall_query_no_results_returns_no_results_message() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let handler = make_handler(dir.path(), Capability::Read, None, None).await;
+
+        let input = super::super::types::RecallInput {
+            query: Some("xyzzy-missing".to_string()),
+            limit: 5,
+            deep: false,
+            recency: None,
+            perspectives: None,
+            similar_to: None,
+            min_salience: None,
+            min_score: None,
+            since: None,
+            until: None,
+            ongoing: None,
+        };
+
+        let result = handler
+            .recall(Parameters(input))
+            .await
+            .expect("recall must not return a protocol error");
+
+        assert_ne!(
+            result.is_error,
+            Some(true),
+            "no-results recall must succeed"
+        );
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            text.contains("No results for") && text.contains("xyzzy-missing"),
+            "no-results recall must mention the query — got: {text}"
+        );
+    }
+
+    /// `recall` with data produces structured markdown: numbered headings,
+    /// metadata blockquotes, and a result footer.
+    #[tokio::test]
+    async fn recall_with_data_produces_structured_markdown() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Pre-populate via store tool, then recall without a query (browse mode)
+        let handler = make_handler(dir.path(), Capability::Write, None, None).await;
+
+        let store_input = super::super::types::StoreInput {
+            content: "Architecture decision: use Rust".to_string(),
+            parent_id: None,
+            source_file: "[agent]".to_string(),
+            heading: Some("Rust decision".to_string()),
+            visibility: "normal".to_string(),
+            perspectives: vec!["decisions".to_string()],
+            relations: vec![],
+            items: vec![],
+            entry_type: None,
+            impression_hint: None,
+            impression_strength: None,
+            scope: "project".to_string(),
+        };
+        let store_result = handler
+            .store(Parameters(store_input))
+            .await
+            .expect("store must not return a protocol error");
+        assert_ne!(
+            store_result.is_error,
+            Some(true),
+            "store must succeed before recall test"
+        );
+
+        let recall_input = super::super::types::RecallInput {
+            query: None,
+            limit: 5,
+            deep: false,
+            recency: None,
+            perspectives: None,
+            similar_to: None,
+            min_salience: None,
+            min_score: None,
+            since: None,
+            until: None,
+            ongoing: None,
+        };
+        let result = handler
+            .recall(Parameters(recall_input))
+            .await
+            .expect("recall must not return a protocol error");
+
+        assert_ne!(result.is_error, Some(true), "recall with data must succeed");
+        let text = result.content[0].as_text().unwrap().text.clone();
+
+        // Numbered header
+        assert!(
+            text.contains("### 1."),
+            "recall output must have numbered entry header — got: {text}"
+        );
+        // Metadata blockquote line starts with ">"
+        assert!(
+            text.contains("> `"),
+            "recall output must have metadata blockquote — got: {text}"
+        );
+        // Footer
+        assert!(
+            text.contains("result(s)"),
+            "recall output must have result footer — got: {text}"
+        );
+        // Content present
+        assert!(
+            text.contains("Architecture decision"),
+            "recall output must include entry content — got: {text}"
+        );
+    }
+
+    // ── focus output shaping ─────────────────────────────────────────────────
+
+    /// `focus` on a non-existent ID returns a tool-level error mentioning the ID.
+    #[tokio::test]
+    async fn focus_missing_id_returns_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let handler = make_handler(dir.path(), Capability::Read, None, None).await;
+
+        let input = super::super::types::FocusInput {
+            id: "nonexistent-id-xyz".to_string(),
+            question: None,
+            limit: 10,
+        };
+
+        let result = handler
+            .focus(Parameters(input))
+            .await
+            .expect("focus must return Ok (tool-level error), not a protocol error");
+
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "focus on missing ID must return is_error=true"
+        );
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            text.contains("Error:"),
+            "focus error must be prefixed with 'Error:' — got: {text}"
+        );
+    }
+
+    /// `focus` on an existing entry returns structured markdown: heading,
+    /// metadata blockquote, content, and a children section.
+    #[tokio::test]
+    async fn focus_existing_entry_produces_structured_markdown() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let handler = make_handler(dir.path(), Capability::Write, None, None).await;
+
+        // Store an entry to focus on
+        let store_input = super::super::types::StoreInput {
+            content: "Focus target content".to_string(),
+            parent_id: None,
+            source_file: "[agent]".to_string(),
+            heading: Some("Focus Heading".to_string()),
+            visibility: "normal".to_string(),
+            perspectives: vec![],
+            relations: vec![],
+            items: vec![],
+            entry_type: None,
+            impression_hint: None,
+            impression_strength: None,
+            scope: "project".to_string(),
+        };
+        handler
+            .store(Parameters(store_input))
+            .await
+            .expect("store must succeed");
+
+        // Browse to find the ID
+        let recall_input = super::super::types::RecallInput {
+            query: None,
+            limit: 1,
+            deep: false,
+            recency: None,
+            perspectives: None,
+            similar_to: None,
+            min_salience: None,
+            min_score: None,
+            since: None,
+            until: None,
+            ongoing: None,
+        };
+        let recall_result = handler
+            .recall(Parameters(recall_input))
+            .await
+            .expect("recall must succeed");
+        let recall_text = recall_result.content[0].as_text().unwrap().text.clone();
+
+        // Extract short ID from the backtick in metadata: "`<id>`"
+        let short_id = recall_text
+            .lines()
+            .find(|l| l.trim_start().starts_with("> `") && l.contains("·"))
+            .and_then(|l| {
+                let start = l.find('`')? + 1;
+                let end = l[start..].find('`')? + start;
+                Some(l[start..end].to_string())
+            })
+            .expect("recall must contain a metadata blockquote with an ID");
+
+        let focus_input = super::super::types::FocusInput {
+            id: short_id.clone(),
+            question: None,
+            limit: 10,
+        };
+        let result = handler
+            .focus(Parameters(focus_input))
+            .await
+            .expect("focus must not return a protocol error");
+
+        assert_ne!(
+            result.is_error,
+            Some(true),
+            "focus on existing entry must succeed"
+        );
+        let text = result.content[0].as_text().unwrap().text.clone();
+
+        // Heading
+        assert!(
+            text.contains("## Focus Heading"),
+            "focus output must include the entry heading — got: {text}"
+        );
+        // Metadata blockquote
+        assert!(
+            text.contains("> `"),
+            "focus output must have metadata blockquote — got: {text}"
+        );
+        // Content
+        assert!(
+            text.contains("Focus target content"),
+            "focus output must include the entry content — got: {text}"
+        );
+        // Empty children message (leaf node)
+        assert!(
+            text.contains("no children"),
+            "focus on leaf entry must show no-children message — got: {text}"
+        );
+    }
+
+    // ── think(reflect) output shaping ────────────────────────────────────────
+
+    /// `think` with no action on an empty store returns the reflection report
+    /// with the expected section headings (Hot Chunks, Stale Chunks, Summary,
+    /// Suggested Actions) and a "No urgent actions" message.
+    #[tokio::test]
+    async fn think_reflect_empty_store_produces_full_report() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Initialize perspectives so think_perspectives used internally works
+        crate::perspective::init(dir.path()).unwrap();
+        let handler = make_handler(dir.path(), Capability::Write, None, None).await;
+
+        let input = super::super::types::ThinkInput {
+            action: None,
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+
+        let result = handler
+            .think(Parameters(input))
+            .await
+            .expect("think must not return a protocol error");
+
+        assert_ne!(
+            result.is_error,
+            Some(true),
+            "reflect on empty store must succeed"
+        );
+        let text = result.content[0].as_text().unwrap().text.clone();
+
+        assert!(
+            text.contains("## Hot Chunks"),
+            "reflect report must have Hot Chunks section — got: {text}"
+        );
+        assert!(
+            text.contains("## Stale Chunks"),
+            "reflect report must have Stale Chunks section — got: {text}"
+        );
+        assert!(
+            text.contains("## Summary"),
+            "reflect report must have Summary section — got: {text}"
+        );
+        assert!(
+            text.contains("## Suggested Actions"),
+            "reflect report must have Suggested Actions section — got: {text}"
+        );
+        assert!(
+            text.contains("No urgent actions"),
+            "reflect on empty store must say no urgent actions — got: {text}"
+        );
+    }
+
+    /// `think` reflect on a read-only handler is blocked (write permission required).
+    #[tokio::test]
+    async fn think_reflect_blocked_without_write_permission() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let handler = make_handler(dir.path(), Capability::Read, None, None).await;
+
+        let input = super::super::types::ThinkInput {
+            action: None,
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+
+        let result = handler
+            .think(Parameters(input))
+            .await
+            .expect("think must not return a protocol error");
+
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "reflect without write permission must return is_error=true"
+        );
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            text.contains("permission") || text.contains("Insufficient"),
+            "error must mention permission — got: {text}"
         );
     }
 

@@ -1,4 +1,4 @@
-//! MCP server module: 5-tool agent interface (recall, focus, store, think, share).
+//! MCP server module: 4-tool agent interface (recall, focus, store, think).
 //!
 //! Split into:
 //! - `types` -- Input/output structs
@@ -58,7 +58,7 @@ You have access to a structured, aging knowledge base. Unlike flat key-value mem
 organizes knowledge in trees (headings → subheadings → content) with visibility levels and \
 access tracking. Knowledge that you use often stays prominent. Knowledge you ignore fades.
 
-## Five Tools
+## Four Tools
 
 ### recall — What do I know about this?
 Find relevant knowledge using semantic search, or browse without a query. Results include \
@@ -92,11 +92,6 @@ salience scores, and suggested actions. With an action, executes curation:
 - `action: 'status'` — Show store statistics (entry count, source files, aging policy)
 - `action: 'history'` — Show an entry's relations and metadata (requires `id`)
 - `action: 'sync'` — Sync with remote: pull then push. Optional `direction`: 'pull', 'push', or omit for both
-
-### share — Here, this is for you. [Experimental — not yet functional]
-Generates a scoped share-token payload describing what knowledge to share and with what \
-permissions. This is a preview of the upcoming UCAN-based sharing system — tokens are not \
-yet cryptographically signed. Do not rely on this tool in production workflows.
 
 ## How to Use Your Memory
 
@@ -324,12 +319,19 @@ mod tests {
     }
 
     #[test]
-    fn mcp_instructions_contains_all_five_tools() {
+    fn mcp_instructions_contains_all_four_tools() {
         assert!(MCP_INSTRUCTIONS.contains("recall"));
         assert!(MCP_INSTRUCTIONS.contains("focus"));
         assert!(MCP_INSTRUCTIONS.contains("store"));
         assert!(MCP_INSTRUCTIONS.contains("think"));
-        assert!(MCP_INSTRUCTIONS.contains("share"));
+    }
+
+    #[test]
+    fn mcp_instructions_does_not_advertise_share() {
+        assert!(
+            !MCP_INSTRUCTIONS.contains("### share"),
+            "share is unimplemented (UCAN signing pending); advertising it misleads agents"
+        );
     }
 
     #[test]
