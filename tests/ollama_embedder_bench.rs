@@ -7,6 +7,10 @@
 //! Requires a running Ollama at `http://localhost:11434` with the
 //! `nomic-embed-text` model pulled (`ollama pull nomic-embed-text`). If the
 //! model is missing the tests skip with a clear message rather than failing.
+//!
+//! Requires the `llm` feature (provides `OllamaEmbedder`); the whole
+//! file compiles to nothing without it.
+#![cfg(feature = "llm")]
 
 use std::time::{Duration, Instant};
 
