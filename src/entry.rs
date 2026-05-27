@@ -138,11 +138,18 @@ impl StoredBlob {
     pub fn from_chunk_and_embedding(chunk: &HierarchicalChunk, model_name: &str) -> Self {
         let entry = Entry::from_chunk(chunk);
         let embeddings = match chunk.embedding.as_ref() {
-            Some(vec) => vec![EmbeddingCache {
-                model: model_name.to_string(),
-                dimensions: vec.len() as u16,
-                vector: vec.clone(),
-            }],
+            Some(vec) => {
+                debug_assert!(
+                    vec.len() <= u16::MAX as usize,
+                    "embedding dimension {} exceeds u16::MAX (65535) — silent truncation would occur",
+                    vec.len()
+                );
+                vec![EmbeddingCache {
+                    model: model_name.to_string(),
+                    dimensions: vec.len() as u16,
+                    vector: vec.clone(),
+                }]
+            }
             None => vec![],
         };
         Self { entry, embeddings }
@@ -569,5 +576,47 @@ mod tests {
         assert_eq!(restored.start_offset, 0);
         assert_eq!(restored.end_offset, 0);
         assert!(restored.cluster_memberships.is_empty());
+    }
+
+    // --- dimension guard ---
+
+    /// Happy path: a 384-dim vector (typical for text-embedding models) must
+    /// round-trip without truncation — `dimensions` must equal the vec length.
+    #[test]
+    fn test_dimensions_normal_range_round_trips() {
+        let embedding: Vec<f32> = vec![0.0_f32; 384];
+        let chunk = crate::chunk::HierarchicalChunk::new(
+            "dim test".to_string(),
+            crate::chunk::ChunkLevel::CONTENT,
+            None,
+            String::new(),
+            "test.md".to_string(),
+        )
+        .with_embedding(embedding.clone());
+
+        let blob = StoredBlob::from_chunk_and_embedding(&chunk, "model");
+        assert_eq!(blob.embeddings[0].dimensions as usize, embedding.len());
+    }
+
+    /// Edge: a vector exceeding u16::MAX dimensions trips the `debug_assert`.
+    /// Gated on `debug_assertions` because the assert is a no-op under
+    /// `--release` (and `cargo test --release` therefore skips this test).
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "embedding dimension")]
+    fn test_dimensions_exceeding_u16_max_panics_in_debug() {
+        // Allocate a 65536-element (256 KiB) vector — acceptable in a test.
+        let oversized: Vec<f32> = vec![0.0_f32; (u16::MAX as usize) + 1];
+        let chunk = crate::chunk::HierarchicalChunk::new(
+            "oversize dim test".to_string(),
+            crate::chunk::ChunkLevel::CONTENT,
+            None,
+            String::new(),
+            "test.md".to_string(),
+        )
+        .with_embedding(oversized);
+
+        // In debug builds this must panic; in release it would silently truncate.
+        StoredBlob::from_chunk_and_embedding(&chunk, "model");
     }
 }

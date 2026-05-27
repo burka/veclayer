@@ -319,9 +319,16 @@ async fn write_think_results(
         // Demote summarized source entries to deep_only so the summary
         // replaces them in standard search, reducing redundancy.
         for source_id in &valid_ids {
-            let _ = store
+            if let Err(e) = store
                 .update_visibility(source_id, crate::chunk::visibility::DEEP_ONLY)
-                .await;
+                .await
+            {
+                tracing::warn!(
+                    "Failed to demote source entry {} to deep_only after consolidation: {}",
+                    source_id,
+                    e
+                );
+            }
         }
     }
 

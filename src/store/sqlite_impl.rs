@@ -622,7 +622,7 @@ impl VectorStore for SqliteStore {
                 .query_map([], |row| {
                     let level: i64 = row.get(0)?;
                     let count: i64 = row.get(1)?;
-                    Ok((level as u8, count as usize))
+                    Ok((narrow::<u8>(level, "level")?, count as usize))
                 })
                 .map_err(|e| Error::store(format!("stats by_level query: {e}")))?
                 .collect::<rusqlite::Result<Vec<_>>>()
@@ -2501,6 +2501,74 @@ mod tests {
         assert_eq!(
             results[0].id, with_under_id,
             "the returned chunk must be the one with a literal '_'"
+        );
+    }
+
+    // --- stats: level validation ---
+
+    /// Happy path: stats() correctly aggregates (level, count) pairs for rows
+    /// whose level values are in the valid u8 range.
+    #[tokio::test]
+    async fn stats_groups_by_level_correctly() {
+        let (store, _dir) = create_test_store().await;
+
+        // Two H1 chunks (level=1) and one H2 chunk (level=2).
+        let c1 = make_chunk("a", "l.md");
+        let c2 = make_chunk("b", "l.md");
+        let c3 = HierarchicalChunk::new(
+            "c".to_string(),
+            ChunkLevel::H2,
+            None,
+            "root".to_string(),
+            "l.md".to_string(),
+        );
+        store.insert_chunks(vec![c1, c2, c3]).await.expect("insert");
+
+        let s = store.stats().await.expect("stats");
+
+        assert_eq!(s.total_chunks, 3);
+        assert_eq!(*s.chunks_by_level.get(&1).expect("level 1 present"), 2);
+        assert_eq!(*s.chunks_by_level.get(&2).expect("level 2 present"), 1);
+    }
+
+    /// Error path: a row whose `level` column holds an out-of-range value (256)
+    /// causes `stats()` to return `Err` rather than silently wrapping 256 → 0
+    /// (the old `level as u8` behaviour).
+    ///
+    /// The test is discriminating: the old `as u8` cast would map 256 → 0 and
+    /// return `Ok(...)`, so a `Ok` result is a regression indicator.  The fixed
+    /// `narrow::<u8>` call returns `FromSqlConversionFailure` for any value that
+    /// does not fit in a `u8`.
+    ///
+    /// To plant the bad row we bypass the normal insert path and write directly
+    /// via a raw SQL `execute` against the same connection the store uses.
+    #[tokio::test]
+    async fn stats_out_of_range_level_returns_error() {
+        let (store, _dir) = create_test_store().await;
+
+        // Insert a valid row first so we know the schema is initialised, then
+        // overwrite its level to 256 via a raw UPDATE.
+        let chunk = make_chunk("sentinel", "oor.md");
+        let id = chunk.id.clone();
+        store.insert_chunks(vec![chunk]).await.expect("insert");
+
+        // Directly mutate the level to an out-of-range value via the internal
+        // connection.  `mod tests` is a child of this module so private fields
+        // are accessible.
+        {
+            let conn = store.conn.lock().expect("lock");
+            conn.execute(
+                "UPDATE chunks SET level = 256 WHERE id = ?1",
+                rusqlite::params![id],
+            )
+            .expect("raw UPDATE to plant out-of-range level");
+        }
+
+        let result = store.stats().await;
+
+        assert!(
+            result.is_err(),
+            "stats() must return Err when a row has level=256 (would wrap to 0 with `as u8`)"
         );
     }
 }
