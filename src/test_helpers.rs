@@ -19,6 +19,63 @@ pub(crate) fn make_test_chunk(id: &str, content: &str) -> crate::HierarchicalChu
     make_test_chunk_dim(id, content, 384)
 }
 
+/// Deterministic in-memory embedder for hermetic tests.
+///
+/// Produces a constant vector of the configured dimension so tests never depend
+/// on a network embedding service. Use [`MockEmbedder::failing`] to exercise
+/// embedding-failure paths.
+#[cfg(test)]
+pub(crate) struct MockEmbedder {
+    dimension: usize,
+    fail: bool,
+}
+
+#[cfg(test)]
+impl MockEmbedder {
+    pub(crate) fn new(dimension: usize) -> Self {
+        Self {
+            dimension,
+            fail: false,
+        }
+    }
+
+    /// An embedder whose `embed` always returns an error, for import-failure tests.
+    pub(crate) fn failing(dimension: usize) -> Self {
+        Self {
+            dimension,
+            fail: true,
+        }
+    }
+}
+
+#[cfg(test)]
+impl crate::Embedder for MockEmbedder {
+    fn embed<'a>(
+        &'a self,
+        texts: &'a [&'a str],
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = crate::Result<Vec<Vec<f32>>>> + Send + 'a>,
+    > {
+        let fail = self.fail;
+        let dimension = self.dimension;
+        let count = texts.len();
+        Box::pin(async move {
+            if fail {
+                return Err(crate::Error::config("mock embedder failure"));
+            }
+            Ok(vec![vec![1.0; dimension]; count])
+        })
+    }
+
+    fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    fn name(&self) -> &str {
+        "mock"
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn make_test_chunk_dim(
     id: &str,

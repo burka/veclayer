@@ -30,9 +30,22 @@ pub async fn export_entries(data_dir: &Path, options: &ExportOptions) -> Result<
 /// Import entries from a JSONL file (or stdin when path is "-").
 pub async fn import_entries(data_dir: &Path, options: &ImportOptions) -> Result<ImportResult> {
     let (_config, embedder, store, blob_store) = open_store(data_dir).await?;
-
     let lines = read_jsonl_lines(&options.path)?;
+    import_from_lines(&embedder, &store, &blob_store, lines).await
+}
 
+/// Import already-read JSONL lines into the given store.
+///
+/// The dependencies are injected so this core import logic — JSON parsing,
+/// duplicate detection, embedding, and storage — can be tested without a live
+/// embedding service. [`import_entries`] wires in the real config-derived
+/// embedder and store.
+async fn import_from_lines(
+    embedder: &impl crate::Embedder,
+    store: &impl crate::store::VectorStore,
+    blob_store: &BlobStore,
+    lines: Vec<String>,
+) -> Result<ImportResult> {
     let mut imported = 0usize;
     let mut skipped_duplicates = 0usize;
     let mut skipped_parse_errors = 0usize;
@@ -47,7 +60,7 @@ pub async fn import_entries(data_dir: &Path, options: &ImportOptions) -> Result<
                 continue;
             }
         };
-        match import_parsed_entry(&embedder, &store, &blob_store, chunk).await {
+        match import_parsed_entry(embedder, store, blob_store, chunk).await {
             Ok(true) => imported += 1,
             Ok(false) => skipped_duplicates += 1,
             Err(e) => {
@@ -229,25 +242,11 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    async fn seed_store(dir: &Path) -> StoreBackend {
-        let dim = crate::test_helpers::config_dimension();
+    /// Open a writable store and its blob store in the same directory.
+    async fn open_store_and_blobs(dir: &Path, dim: usize) -> (StoreBackend, BlobStore) {
         let store = StoreBackend::open(dir, dim, false).await.unwrap();
-        store
-            .insert_chunks(vec![
-                crate::test_helpers::make_test_chunk_dim(
-                    "aaa111",
-                    "First entry about architecture",
-                    dim,
-                ),
-                crate::test_helpers::make_test_chunk_dim(
-                    "bbb222",
-                    "Second entry about testing",
-                    dim,
-                ),
-            ])
-            .await
-            .unwrap();
-        store
+        let blob_store = BlobStore::open(dir).unwrap();
+        (store, blob_store)
     }
 
     #[test]
@@ -275,27 +274,32 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_import_skips_existing_entries() -> Result<()> {
         let dir = TempDir::new()?;
-        seed_store(dir.path()).await;
+        let dim = crate::test_helpers::config_dimension();
+        let (store, blob_store) = open_store_and_blobs(dir.path(), dim).await;
+
+        let chunks = vec![
+            crate::test_helpers::make_test_chunk_dim(
+                "aaa111",
+                "First entry about architecture",
+                dim,
+            ),
+            crate::test_helpers::make_test_chunk_dim("bbb222", "Second entry about testing", dim),
+        ];
+        store.insert_chunks(chunks.clone()).await?;
 
         let jsonl_file = dir.path().join("export.jsonl");
-        let entry_count = {
-            let store = StoreBackend::open_metadata(dir.path(), true).await?;
-            let entries = store.list_entries(&[], None, None, 10_000).await?;
-            let jsonl: String = entries
-                .iter()
-                .map(|c| serde_json::to_string(&c.clone().without_embedding()).unwrap() + "\n")
-                .collect();
-            fs::write(&jsonl_file, &jsonl)?;
-            entries.len()
-        };
+        let jsonl: String = chunks
+            .iter()
+            .map(|c| serde_json::to_string(&c.clone().without_embedding()).unwrap() + "\n")
+            .collect();
+        fs::write(&jsonl_file, &jsonl)?;
 
-        let opts = ImportOptions {
-            path: jsonl_file.to_string_lossy().to_string(),
-        };
-        let result = import_entries(dir.path(), &opts).await?;
+        let lines = read_jsonl_lines(&jsonl_file.to_string_lossy())?;
+        let embedder = crate::test_helpers::MockEmbedder::new(dim);
+        let result = import_from_lines(&embedder, &store, &blob_store, lines).await?;
 
         assert_eq!(result.imported, 0);
-        assert_eq!(result.skipped, entry_count);
+        assert_eq!(result.skipped, chunks.len());
         Ok(())
     }
 
@@ -304,9 +308,9 @@ mod tests {
         let source_dir = TempDir::new()?;
         let target_dir = TempDir::new()?;
         let jsonl_file = source_dir.path().join("roundtrip.jsonl");
+        let dim = crate::test_helpers::config_dimension();
 
         {
-            let dim = crate::test_helpers::config_dimension();
             let store = StoreBackend::open(source_dir.path(), dim, false).await?;
             store
                 .insert_chunks(vec![
@@ -323,33 +327,41 @@ mod tests {
                 ])
                 .await?;
 
-            let entries = store.list_entries(&[], None, None, 10_000).await?;
-            let mut sorted = entries.clone();
-            sorted.sort_by(|a, b| a.id.cmp(&b.id));
-            let jsonl: String = sorted
+            let mut entries = store.list_entries(&[], None, None, 10_000).await?;
+            entries.sort_by(|a, b| a.id.cmp(&b.id));
+            let jsonl: String = entries
                 .iter()
                 .map(|c| serde_json::to_string(&c.clone().without_embedding()).unwrap() + "\n")
                 .collect();
             fs::write(&jsonl_file, &jsonl)?;
         }
 
-        let opts = ImportOptions {
-            path: jsonl_file.to_string_lossy().to_string(),
-        };
-        let result = import_entries(target_dir.path(), &opts).await?;
+        let (target_store, target_blobs) = open_store_and_blobs(target_dir.path(), dim).await;
+        let embedder = crate::test_helpers::MockEmbedder::new(dim);
+        let path = jsonl_file.to_string_lossy();
 
+        let result = import_from_lines(
+            &embedder,
+            &target_store,
+            &target_blobs,
+            read_jsonl_lines(&path)?,
+        )
+        .await?;
         assert_eq!(result.imported, 2);
         assert_eq!(result.skipped, 0);
 
-        {
-            let target_store = StoreBackend::open_metadata(target_dir.path(), true).await?;
-            let imported_entries = target_store
-                .list_entries(&[], None, None, usize::MAX)
-                .await?;
-            assert_eq!(imported_entries.len(), 2);
-        }
+        let imported_entries = target_store
+            .list_entries(&[], None, None, usize::MAX)
+            .await?;
+        assert_eq!(imported_entries.len(), 2);
 
-        let result2 = import_entries(target_dir.path(), &opts).await?;
+        let result2 = import_from_lines(
+            &embedder,
+            &target_store,
+            &target_blobs,
+            read_jsonl_lines(&path)?,
+        )
+        .await?;
         assert_eq!(result2.imported, 0);
         assert_eq!(result2.skipped, 2);
 
@@ -359,21 +371,46 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_import_skips_bad_lines() -> Result<()> {
         let dir = TempDir::new()?;
+        let dim = crate::test_helpers::config_dimension();
+        let (store, blob_store) = open_store_and_blobs(dir.path(), dim).await;
 
-        let valid_chunk =
-            crate::test_helpers::make_test_chunk("badline001", "Valid entry for bad line test");
-        let valid_json = serde_json::to_string(&valid_chunk.clone().without_embedding()).unwrap();
+        let valid_chunk = crate::test_helpers::make_test_chunk_dim(
+            "badline001",
+            "Valid entry for bad line test",
+            dim,
+        );
+        let valid_json = serde_json::to_string(&valid_chunk.without_embedding()).unwrap();
         let jsonl_content = format!("{}\n{{invalid json}}\n", valid_json);
 
         let jsonl_file = dir.path().join("bad_lines.jsonl");
         fs::write(&jsonl_file, &jsonl_content)?;
 
-        let opts = ImportOptions {
-            path: jsonl_file.to_string_lossy().to_string(),
-        };
-        let result = import_entries(dir.path(), &opts).await?;
+        let lines = read_jsonl_lines(&jsonl_file.to_string_lossy())?;
+        let embedder = crate::test_helpers::MockEmbedder::new(dim);
+        let result = import_from_lines(&embedder, &store, &blob_store, lines).await?;
 
         assert_eq!(result.imported, 1);
+        assert_eq!(result.skipped, 1);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_import_counts_embed_failures_as_import_errors() -> Result<()> {
+        let dir = TempDir::new()?;
+        let dim = crate::test_helpers::config_dimension();
+        let (store, blob_store) = open_store_and_blobs(dir.path(), dim).await;
+
+        let chunk = crate::test_helpers::make_test_chunk_dim(
+            "failimport001",
+            "Entry whose embedding fails",
+            dim,
+        );
+        let lines = vec![serde_json::to_string(&chunk.without_embedding()).unwrap()];
+
+        let embedder = crate::test_helpers::MockEmbedder::failing(dim);
+        let result = import_from_lines(&embedder, &store, &blob_store, lines).await?;
+
+        assert_eq!(result.imported, 0);
         assert_eq!(result.skipped, 1);
         Ok(())
     }
