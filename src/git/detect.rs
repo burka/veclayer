@@ -89,41 +89,60 @@ fn get_branch(git_root: &std::path::Path) -> Option<String> {
     Some(branch)
 }
 
+/// Strip an optional `userinfo@` prefix that appears before the first `/`.
+///
+/// Handles plain usernames (`user@host/path`) and user:password pairs
+/// (`user:token@host/path`).  An `@` that only appears after the first `/`
+/// (e.g. a path segment like `host/a@b`) is left untouched.
+fn strip_userinfo(s: &str) -> &str {
+    let slash_pos = s.find('/').unwrap_or(s.len());
+    // Only strip when @ is strictly before the first /.  Use rfind (last @),
+    // not find: per RFC 3986 the userinfo ends at the LAST @ before the
+    // authority, so `user:p@ss@host/x` must strip `user:p@ss@`, not just
+    // `user:p@`.
+    if let Some(at_pos) = s[..slash_pos].rfind('@') {
+        &s[at_pos + 1..]
+    } else {
+        s
+    }
+}
+
 fn normalize_remote(url: &str) -> String {
-    let mut normalized = url.to_string();
+    let normalized: &str = if let Some(rest) = url.strip_prefix("git@") {
+        // git@github.com:org/repo  →  colon replaced by slash below
+        // No userinfo to strip; the "git@" is already removed.
+        rest
+    } else if let Some(rest) = url.strip_prefix("https://") {
+        strip_userinfo(rest)
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        strip_userinfo(rest)
+    } else if let Some(rest) = url.strip_prefix("ssh://") {
+        strip_userinfo(rest)
+    } else {
+        url
+    };
 
-    if normalized.starts_with("git@") {
-        normalized = normalized.replacen("git@", "", 1);
-        if let Some(idx) = normalized.find(':') {
-            normalized.replace_range(idx..=idx, "/");
-        }
-    } else if normalized.starts_with("https://") {
-        normalized = normalized.replacen("https://", "", 1);
-    } else if normalized.starts_with("http://") {
-        normalized = normalized.replacen("http://", "", 1);
-    } else if normalized.starts_with("ssh://git@") {
-        normalized = normalized.replacen("ssh://git@", "", 1);
-    } else if normalized.starts_with("ssh://") {
-        normalized = normalized.replacen("ssh://", "", 1);
-        // Strip optional user@ prefix (e.g. "user@github.com/org/repo")
-        if let Some(at_idx) = normalized.find('@') {
-            let slash_idx = normalized.find('/').unwrap_or(normalized.len());
-            if at_idx < slash_idx {
-                normalized = normalized[at_idx + 1..].to_string();
-            }
+    let mut result = normalized.to_string();
+
+    // git@ SCP syntax uses a colon as host/path separator — normalise to slash.
+    if url.starts_with("git@") {
+        if let Some(idx) = result.find(':') {
+            result.replace_range(idx..=idx, "/");
         }
     }
 
-    if normalized.ends_with(".git") {
-        normalized.truncate(normalized.len() - 4);
+    if result.ends_with(".git") {
+        result.truncate(result.len() - 4);
     }
 
-    normalized
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── existing green tests (must remain passing) ────────────────────────────
 
     #[test]
     fn test_normalize_ssh_remote() {
@@ -180,6 +199,67 @@ mod tests {
             normalize_remote("ssh://deploy@github.com/org/repo.git"),
             "github.com/org/repo"
         );
+    }
+
+    // ── security fix: credential stripping ───────────────────────────────────
+
+    /// PAT embedded as password must be stripped — this is the primary security fix.
+    #[test]
+    fn test_normalize_https_with_user_and_token_strips_credentials() {
+        assert_eq!(
+            normalize_remote("https://user:token@github.com/org/repo.git"),
+            "github.com/org/repo"
+        );
+    }
+
+    /// Plain username (no password) in https must also be stripped.
+    #[test]
+    fn test_normalize_https_with_bare_username_strips_credentials() {
+        assert_eq!(normalize_remote("https://user@host/x"), "host/x");
+    }
+
+    /// http:// (not https://) with embedded token must be stripped.
+    #[test]
+    fn test_normalize_http_with_token_strips_credentials() {
+        assert_eq!(normalize_remote("http://tok@host/x.git"), "host/x");
+    }
+
+    // ── strip_userinfo edge cases ─────────────────────────────────────────────
+
+    /// An @ that appears only inside a path segment (after the first /) must
+    /// NOT be treated as a userinfo separator.
+    #[test]
+    fn test_normalize_at_sign_only_in_path_is_preserved() {
+        // After stripping "https://" we have "host/a@b" — the @ is after the
+        // first slash, so nothing should be stripped.
+        assert_eq!(normalize_remote("https://host/a@b"), "host/a@b");
+    }
+
+    /// Verify strip_userinfo directly: @ only in path → untouched.
+    #[test]
+    fn test_strip_userinfo_at_in_path_only() {
+        assert_eq!(strip_userinfo("host/a@b"), "host/a@b");
+    }
+
+    /// Verify strip_userinfo directly: no @ at all → untouched.
+    #[test]
+    fn test_strip_userinfo_no_at() {
+        assert_eq!(strip_userinfo("github.com/org/repo"), "github.com/org/repo");
+    }
+
+    /// Verify strip_userinfo directly: user:pass@host → host/...
+    #[test]
+    fn test_strip_userinfo_user_pass() {
+        assert_eq!(
+            strip_userinfo("user:pass@github.com/org/repo"),
+            "github.com/org/repo"
+        );
+    }
+
+    /// Verify strip_userinfo directly: user@host/path → host/path.
+    #[test]
+    fn test_strip_userinfo_bare_user() {
+        assert_eq!(strip_userinfo("user@host/x"), "host/x");
     }
 
     #[test]
