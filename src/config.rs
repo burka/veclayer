@@ -362,9 +362,7 @@ impl UserConfig {
     /// Either matcher triggering counts as a match (OR logic).
     /// All matching overrides are applied in declaration order; last match wins per field.
     pub fn resolve(&self, cwd: &Path, git_remote: Option<&str>) -> ResolvedConfig {
-        let cwd_str = cwd
-            .to_str()
-            .expect("Current working directory is not valid UTF-8");
+        let cwd_str = cwd.to_string_lossy();
 
         let mut resolved = ResolvedConfig {
             project: self.project.clone(),
@@ -380,7 +378,7 @@ impl UserConfig {
         let mut match_scope_names: Vec<String> = Vec::new();
 
         for override_ in &self.matches {
-            if override_.matches(cwd_str, git_remote) {
+            if override_.matches(cwd_str.as_ref(), git_remote) {
                 if override_.project.is_some() {
                     resolved.project = override_.project.clone();
                 }
@@ -2377,6 +2375,63 @@ storage = "git"
         assert!(
             msg.contains("at least one of"),
             "error message should contain 'at least one of', got: {msg}"
+        );
+    }
+
+    // Regression: resolve() with a valid UTF-8 cwd must behave identically to before
+    // the lossy-conversion change (common-case correctness).
+    #[test]
+    fn test_resolve_utf8_cwd_behavior_unchanged() {
+        let mut config = UserConfig::default();
+        config.matches.push(MatchOverride {
+            path: Some(glob::Pattern::new("/tmp/project/*").unwrap()),
+            git_remote: None,
+            project: Some("myproject".to_string()),
+            data_dir: Some("/tmp/data".to_string()),
+            host: None,
+            port: None,
+            read_only: Some(false),
+            scopes: vec![],
+        });
+
+        // Matching path: override must be applied.
+        let resolved = config.resolve(Path::new("/tmp/project/src"), None);
+        assert_eq!(
+            resolved.project.as_deref(),
+            Some("myproject"),
+            "UTF-8 matching cwd must yield the expected project override"
+        );
+        assert_eq!(resolved.data_dir.as_deref(), Some("/tmp/data"));
+        assert_eq!(resolved.read_only, Some(false));
+
+        // Non-matching path: override must NOT be applied.
+        let resolved_no_match = config.resolve(Path::new("/other/path"), None);
+        assert!(
+            resolved_no_match.project.is_none(),
+            "UTF-8 non-matching cwd must not apply any override"
+        );
+    }
+
+    // Edge case: resolve() with a non-UTF-8 cwd must not panic (lossy conversion).
+    // On Linux, paths are arbitrary byte sequences that need not be valid UTF-8.
+    // This test would panic against the old `.expect("... not valid UTF-8")` and
+    // must pass cleanly after the fix.
+    #[test]
+    #[cfg(unix)]
+    fn test_resolve_non_utf8_cwd_does_not_panic() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        // 0x66 0x80 0x6f — the 0x80 byte is not valid UTF-8.
+        let non_utf8_bytes: &[u8] = &[0x2f, 0x66, 0x80, 0x6f]; // "/f\x80o"
+        let non_utf8_path = Path::new(OsStr::from_bytes(non_utf8_bytes));
+
+        let config = UserConfig::default();
+        // Must not panic; result is unimportant (no matches configured).
+        let resolved = config.resolve(non_utf8_path, None);
+        assert!(
+            resolved.project.is_none(),
+            "non-UTF-8 cwd with no match overrides must return no project"
         );
     }
 }
