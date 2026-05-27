@@ -226,29 +226,46 @@ impl LanceStore {
         Self::run_compact(&table, versions).await
     }
 
+    /// Compute the prune cutoff: the age (duration before `now`) of the
+    /// `keep`-th most recent version, so pruning removes everything older than
+    /// that and the newest `keep` versions are retained.
+    ///
+    /// `timestamps_desc` must be sorted newest-first. Returns zero when there
+    /// are `keep` or fewer versions, or when the cutoff timestamp is in the
+    /// future relative to `now` (clock skew) — never a negative delta, which
+    /// lance would reject.
+    fn compute_prune_cutoff(
+        timestamps_desc: &[chrono::DateTime<chrono::Utc>],
+        keep: usize,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> chrono::TimeDelta {
+        if keep == 0 || timestamps_desc.len() <= keep {
+            return chrono::TimeDelta::zero();
+        }
+        let cutoff = timestamps_desc[keep - 1];
+        (now - cutoff).max(chrono::TimeDelta::zero())
+    }
+
     /// Compact fragments and prune old versions, keeping the last `KEEP_VERSIONS`.
+    ///
+    /// Returns an error if either the fragment compaction or the version prune
+    /// fails. This is deliberate: a silently swallowed failure on the only
+    /// space-reclaiming path lets the store grow without bound (issue #92), so
+    /// callers must be able to observe — and surface — a broken compaction.
     async fn run_compact(
         table: &Table,
         versions: Vec<lancedb::table::Version>,
     ) -> Result<CompactStats> {
         const KEEP_VERSIONS: usize = 3;
 
-        // Cutoff = timestamp of the KEEP_VERSIONS-th most recent version, so prune
-        // removes everything older than that.
+        // Cutoff = age of the KEEP_VERSIONS-th most recent version, so prune
+        // removes everything older than that (keeping the newest KEEP_VERSIONS).
         let mut sorted = versions;
         sorted.sort_by_key(|b| std::cmp::Reverse(b.version));
         let total_versions = sorted.len();
-        let older_than = if sorted.len() > KEEP_VERSIONS {
-            let cutoff = sorted[KEEP_VERSIONS - 1].timestamp;
-            chrono::TimeDelta::from_std(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::SystemTime::from(cutoff))
-                    .unwrap_or(std::time::Duration::ZERO),
-            )
-            .unwrap_or(chrono::TimeDelta::zero())
-        } else {
-            chrono::TimeDelta::zero()
-        };
+        let timestamps: Vec<chrono::DateTime<chrono::Utc>> =
+            sorted.iter().map(|v| v.timestamp).collect();
+        let older_than = Self::compute_prune_cutoff(&timestamps, KEEP_VERSIONS, chrono::Utc::now());
 
         tracing::info!(
             "Auto-compact: {} versions, compacting fragments and pruning older than {:?} (keep {})",
@@ -259,6 +276,7 @@ impl LanceStore {
 
         use lancedb::table::OptimizeAction;
         let mut stats = CompactStats::default();
+        let mut errors: Vec<String> = Vec::new();
 
         // 1. Compact fragments — merges small files and materializes deletions.
         //    This is what physically reclaims space from updates and tombstoned rows.
@@ -279,6 +297,7 @@ impl LanceStore {
             }
             Err(e) => {
                 tracing::warn!("Auto-compact: fragment compaction failed: {}", e);
+                errors.push(format!("fragment compaction failed: {e}"));
             }
         }
 
@@ -299,19 +318,28 @@ impl LanceStore {
             }
             Err(e) => {
                 tracing::warn!("Auto-compact: version prune failed: {}", e);
+                errors.push(format!("version prune failed: {e}"));
             }
         }
 
         tracing::info!(
-            "Auto-compact done: {} versions removed, {} fragments merged ({} -> {}), {} bytes reclaimed",
+            "Auto-compact done: {} versions removed, {} fragments compacted into {}, {} bytes reclaimed",
             stats.versions_removed,
-            stats.fragments_removed,
             stats.fragments_removed,
             stats.fragments_added,
             stats.bytes_reclaimed
         );
 
-        Ok(stats)
+        // Surface failures instead of swallowing them: an unbounded store grows
+        // because a persistently failing compaction looked like success (#92).
+        if errors.is_empty() {
+            Ok(stats)
+        } else {
+            Err(Error::store(format!(
+                "compaction incomplete ({total_versions} versions): {}",
+                errors.join("; ")
+            )))
+        }
     }
 
     pub async fn open(path: impl AsRef<Path>, dimension: usize, read_only: bool) -> Result<Self> {
@@ -3743,6 +3771,89 @@ mod tests {
         assert!(
             ro.force_compact().await.is_err(),
             "force_compact on a read-only store must return an error"
+        );
+    }
+
+    #[test]
+    fn test_compute_prune_cutoff_empty_returns_zero() {
+        let now = chrono::Utc::now();
+        assert_eq!(
+            LanceStore::compute_prune_cutoff(&[], 3, now),
+            chrono::TimeDelta::zero(),
+            "no versions means nothing to prune"
+        );
+    }
+
+    #[test]
+    fn test_compute_prune_cutoff_at_or_below_keep_returns_zero() {
+        let now = chrono::Utc::now();
+        let ts: Vec<_> = (1..=3).map(|h| now - chrono::TimeDelta::hours(h)).collect();
+        // len == keep: every version is within the keep window → nothing to prune.
+        assert_eq!(
+            LanceStore::compute_prune_cutoff(&ts, 3, now),
+            chrono::TimeDelta::zero()
+        );
+        // len < keep: likewise nothing to prune.
+        assert_eq!(
+            LanceStore::compute_prune_cutoff(&ts[..2], 3, now),
+            chrono::TimeDelta::zero()
+        );
+    }
+
+    #[test]
+    fn test_compute_prune_cutoff_keep_zero_returns_zero() {
+        let now = chrono::Utc::now();
+        let ts: Vec<_> = (1..=3).map(|h| now - chrono::TimeDelta::hours(h)).collect();
+        // keep == 0 must not collapse to "prune everything" — guard returns zero.
+        assert_eq!(
+            LanceStore::compute_prune_cutoff(&ts, 0, now),
+            chrono::TimeDelta::zero()
+        );
+    }
+
+    #[test]
+    fn test_compute_prune_cutoff_normal_uses_keep_th_timestamp() {
+        let now = chrono::Utc::now();
+        // Newest-first: 1h, 2h, 3h, 4h ago.
+        let ts: Vec<_> = (1..=4).map(|h| now - chrono::TimeDelta::hours(h)).collect();
+        // keep=3 → cutoff is the 3rd most recent (3h ago), so older_than == 3h and
+        // only the 4h-old version falls outside the keep window.
+        assert_eq!(
+            LanceStore::compute_prune_cutoff(&ts, 3, now),
+            chrono::TimeDelta::hours(3)
+        );
+    }
+
+    #[test]
+    fn test_compute_prune_cutoff_keep_one_uses_most_recent() {
+        let now = chrono::Utc::now();
+        // keep=1 with 2 versions: cutoff is the single most recent (index 0, 1h ago),
+        // so older_than == 1h and the 2h-old version is pruned. Guards the sharpest
+        // index edge — keep-1 == 0 must read the newest, not panic or off-by-one.
+        let ts = vec![
+            now - chrono::TimeDelta::hours(1),
+            now - chrono::TimeDelta::hours(2),
+        ];
+        assert_eq!(
+            LanceStore::compute_prune_cutoff(&ts, 1, now),
+            chrono::TimeDelta::hours(1)
+        );
+    }
+
+    #[test]
+    fn test_compute_prune_cutoff_future_timestamp_clamps_to_zero() {
+        let now = chrono::Utc::now();
+        // Clock skew: the keep-th most recent version is timestamped in the future.
+        let ts = vec![
+            now + chrono::TimeDelta::hours(2),
+            now + chrono::TimeDelta::hours(1),
+            now - chrono::TimeDelta::hours(1),
+        ];
+        // keep=2 → cutoff = ts[1] = now+1h → now - cutoff is negative → clamped to
+        // zero so lance never receives a negative duration.
+        assert_eq!(
+            LanceStore::compute_prune_cutoff(&ts, 2, now),
+            chrono::TimeDelta::zero()
         );
     }
 
