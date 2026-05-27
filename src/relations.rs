@@ -127,6 +127,8 @@ pub async fn process_relations(
                     .await?;
             }
             "summarizes" => {
+                let forward = ChunkRelation::summarizes(&target);
+                store.add_relation(source_id, forward).await?;
                 let inverse = ChunkRelation::summarized_by(source_id);
                 store.add_relation(&target, inverse).await?;
             }
@@ -370,6 +372,94 @@ mod tests {
         let target_chunk = store.get_by_id("2222000000000000").await.unwrap().unwrap();
         assert_chunk_has_relation(&source_chunk, "contradicts", "2222000000000000", "source");
         assert_chunk_no_relations(&target_chunk, "target");
+    }
+
+    #[tokio::test]
+    async fn test_process_summarizes_writes_forward_link_on_source() {
+        // RED→GREEN: before the fix, only the inverse was written; the forward
+        // link on the source (required for salience boost) was dropped.
+        let (store, _data_dir, _dir) = test_store_with_chunks(vec![
+            make_test_chunk("5555000000000000", "detailed content"),
+            make_test_chunk("6666000000000000", "summary content"),
+        ])
+        .await;
+
+        let relations = vec![RawRelation {
+            kind: "summarizes".to_string(),
+            target_id: "55550000".to_string(),
+        }];
+        process_relations(&store, "6666000000000000", relations)
+            .await
+            .unwrap();
+
+        let source_chunk = store.get_by_id("6666000000000000").await.unwrap().unwrap();
+        assert_chunk_has_relation(
+            &source_chunk,
+            "summarizes",
+            "5555000000000000",
+            "source should have forward summarizes link",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_summarizes_writes_inverse_on_target() {
+        // Regression guard: the inverse (summarized_by) must still be written
+        // on the target after the forward-link fix.
+        let (store, _data_dir, _dir) = test_store_with_chunks(vec![
+            make_test_chunk("7777000000000000", "detailed content"),
+            make_test_chunk("8888000000000000", "summary content"),
+        ])
+        .await;
+
+        let relations = vec![RawRelation {
+            kind: "summarizes".to_string(),
+            target_id: "77770000".to_string(),
+        }];
+        process_relations(&store, "8888000000000000", relations)
+            .await
+            .unwrap();
+
+        let target_chunk = store.get_by_id("7777000000000000").await.unwrap().unwrap();
+        assert_chunk_has_relation(
+            &target_chunk,
+            "summarized_by",
+            "8888000000000000",
+            "target should have inverse summarized_by link",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_summarizes_self_relation_does_not_panic() {
+        // EDGE: a chunk that summarizes itself — both links land on the same
+        // chunk. No crash, no infinite loop; the chunk ends up with both
+        // `summarizes` and `summarized_by` pointing at itself.
+        let (store, _data_dir, _dir) = test_store_with_chunks(vec![make_test_chunk(
+            "9999000000000000",
+            "self-summarising chunk",
+        )])
+        .await;
+
+        let relations = vec![RawRelation {
+            kind: "summarizes".to_string(),
+            target_id: "99990000".to_string(),
+        }];
+        process_relations(&store, "9999000000000000", relations)
+            .await
+            .unwrap();
+
+        let chunk = store.get_by_id("9999000000000000").await.unwrap().unwrap();
+        assert_chunk_has_relation(
+            &chunk,
+            "summarizes",
+            "9999000000000000",
+            "self-summarises forward link",
+        );
+        assert_chunk_has_relation(
+            &chunk,
+            "summarized_by",
+            "9999000000000000",
+            "self-summarises inverse link",
+        );
     }
 
     // --- RawRelation::parse_custom ---
