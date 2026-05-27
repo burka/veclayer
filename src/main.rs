@@ -697,8 +697,24 @@ fn resolve_current_dir(result: std::io::Result<std::path::PathBuf>) -> Result<st
     result.map_err(|e| veclayer::Error::config(format!("Cannot determine working directory: {e}")))
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// IO-concurrency cap applied to the one-shot `reflect prune` recovery path.
+const RECOVERY_LANCE_IO_THREADS: &str = "2";
+
+/// Chooses the `LANCE_IO_THREADS` value for the one-shot `reflect prune`
+/// recovery path, or `None` to leave the environment untouched.
+///
+/// A large version backlog makes lance cleanup read every manifest
+/// concurrently (`try_for_each_concurrent(io_parallelism())`), which can
+/// OOM-kill the process. Capping IO concurrency bounds peak memory so a
+/// one-shot prune completes. A user-provided non-empty value always wins.
+fn lance_io_threads_for_prune(current: Option<&str>) -> Option<&'static str> {
+    match current {
+        Some(v) if !v.trim().is_empty() => None,
+        _ => Some(RECOVERY_LANCE_IO_THREADS),
+    }
+}
+
+fn main() -> Result<()> {
     // Disable ANSI escape codes when stdout is not a TTY (e.g. piped output)
     if !std::io::stdout().is_terminal() {
         owo_colors::set_override(false);
@@ -706,6 +722,37 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // A one-shot `reflect prune` on a large version backlog can OOM if lance
+    // reads every manifest concurrently. Cap IO concurrency BEFORE the runtime
+    // spawns worker threads — mutating the environment mid-process is a data
+    // race. The long-running MCP server keeps normal concurrency (cleanup is
+    // cheap at the ~50-version threshold it maintains).
+    if matches!(
+        cli.command,
+        Some(Commands::Reflect {
+            action: Some(ReflectAction::Prune)
+        })
+    ) {
+        let current = std::env::var("LANCE_IO_THREADS").ok();
+        if let Some(threads) = lance_io_threads_for_prune(current.as_deref()) {
+            // SAFETY: the process is still single-threaded here — the tokio
+            // runtime below has not yet spawned any worker threads, so no other
+            // thread can observe a torn environment.
+            unsafe {
+                std::env::set_var("LANCE_IO_THREADS", threads);
+            }
+        }
+    }
+
+    // Equivalent to `#[tokio::main]`'s default expansion; expanded by hand so
+    // the env cap above runs before any worker thread spawns.
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(cli))
+}
+
+async fn run(cli: Cli) -> Result<()> {
     // Configuration precedence (highest to lowest):
     // 1. CLI flags (--port, --host, --data-dir, etc.)
     // 2. Environment variables (VECLAYER_PORT, VECLAYER_HOST, etc.)
@@ -1308,6 +1355,39 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+
+    // ── lance_io_threads_for_prune ───────────────────────────────────────────
+
+    #[test]
+    fn test_lance_io_threads_for_prune_unset_returns_default() {
+        assert_eq!(
+            lance_io_threads_for_prune(None),
+            Some(RECOVERY_LANCE_IO_THREADS)
+        );
+    }
+
+    #[test]
+    fn test_lance_io_threads_for_prune_empty_returns_default() {
+        assert_eq!(
+            lance_io_threads_for_prune(Some("")),
+            Some(RECOVERY_LANCE_IO_THREADS)
+        );
+        assert_eq!(
+            lance_io_threads_for_prune(Some("   ")),
+            Some(RECOVERY_LANCE_IO_THREADS)
+        );
+    }
+
+    #[test]
+    fn test_lance_io_threads_for_prune_user_value_wins() {
+        assert_eq!(lance_io_threads_for_prune(Some("8")), None);
+        assert_eq!(lance_io_threads_for_prune(Some("1")), None);
+        // "0" is a non-empty user value; pass it through untouched even though
+        // lance would treat it as a misconfiguration.
+        assert_eq!(lance_io_threads_for_prune(Some("0")), None);
+        // Surrounding whitespace must not cause a real value to be swallowed.
+        assert_eq!(lance_io_threads_for_prune(Some("  8  ")), None);
+    }
 
     /// Parse `veclayer think relate <args>` and extract the Relate variant.
     fn parse_relate(
