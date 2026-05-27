@@ -338,7 +338,11 @@ pub struct ApplyReport {
 ///
 /// Returns the merged value and a report of what was added vs skipped.
 /// Pure function — no file I/O — so it can be unit-tested directly.
-pub fn merge_claude_config(existing: Value) -> (Value, ApplyReport) {
+///
+/// Returns `Err` when an existing field has the wrong JSON type (e.g.
+/// `"mcpServers": null` or `"hooks": "disabled"`), guiding the user to fix
+/// their settings file rather than panicking.
+fn merge_claude_config(existing: Value) -> Result<(Value, ApplyReport)> {
     let mut root = match existing {
         Value::Object(map) => map,
         _ => serde_json::Map::new(),
@@ -351,7 +355,12 @@ pub fn merge_claude_config(existing: Value) -> (Value, ApplyReport) {
         .entry("mcpServers")
         .or_insert_with(|| json!({}))
         .as_object_mut()
-        .expect("mcpServers must be an object");
+        .ok_or_else(|| {
+            crate::Error::config(
+                "'mcpServers' in settings.json is not an object — \
+                 expected {…}; fix or remove it",
+            )
+        })?;
 
     if mcp_servers.contains_key(VECLAYER_MCP_KEY) {
         report.mcp_server_skipped = true;
@@ -368,7 +377,12 @@ pub fn merge_claude_config(existing: Value) -> (Value, ApplyReport) {
         .entry("hooks")
         .or_insert_with(|| json!({}))
         .as_object_mut()
-        .expect("hooks must be an object");
+        .ok_or_else(|| {
+            crate::Error::config(
+                "'hooks' in settings.json is not an object — \
+                 expected {…}; fix or remove it",
+            )
+        })?;
 
     merge_hook(
         hooks,
@@ -382,7 +396,7 @@ pub fn merge_claude_config(existing: Value) -> (Value, ApplyReport) {
         },
         &mut report.session_start_added,
         &mut report.session_start_skipped,
-    );
+    )?;
 
     merge_hook(
         hooks,
@@ -396,7 +410,7 @@ pub fn merge_claude_config(existing: Value) -> (Value, ApplyReport) {
         },
         &mut report.post_tool_use_added,
         &mut report.post_tool_use_skipped,
-    );
+    )?;
 
     merge_hook(
         hooks,
@@ -409,7 +423,7 @@ pub fn merge_claude_config(existing: Value) -> (Value, ApplyReport) {
         },
         &mut report.pre_compact_added,
         &mut report.pre_compact_skipped,
-    );
+    )?;
 
     merge_hook(
         hooks,
@@ -422,7 +436,7 @@ pub fn merge_claude_config(existing: Value) -> (Value, ApplyReport) {
         },
         &mut report.post_compact_added,
         &mut report.post_compact_skipped,
-    );
+    )?;
 
     merge_hook(
         hooks,
@@ -435,15 +449,18 @@ pub fn merge_claude_config(existing: Value) -> (Value, ApplyReport) {
         },
         &mut report.stop_added,
         &mut report.stop_skipped,
-    );
+    )?;
 
-    (Value::Object(root), report)
+    Ok((Value::Object(root), report))
 }
 
 /// Merge a single hook entry into the hooks map for a given event type.
 ///
 /// Checks every entry in the existing array for any hook whose `command`
 /// field contains `marker`. If found, marks as skipped; otherwise appends.
+///
+/// Returns `Err` when an existing hook-event value is not a JSON array
+/// (e.g. `"Stop": "disabled"`).
 fn merge_hook(
     hooks: &mut serde_json::Map<String, Value>,
     event: &str,
@@ -451,12 +468,17 @@ fn merge_hook(
     build_entry: impl FnOnce() -> Value,
     added: &mut bool,
     skipped: &mut bool,
-) {
+) -> Result<()> {
     let array = hooks
         .entry(event)
         .or_insert_with(|| json!([]))
         .as_array_mut()
-        .expect("hook event value must be an array");
+        .ok_or_else(|| {
+            crate::Error::config(format!(
+                "'hooks.{event}' in settings.json is not an array — \
+                 expected […]; fix or remove it",
+            ))
+        })?;
 
     if hook_array_has_command(array, marker) {
         *skipped = true;
@@ -464,6 +486,7 @@ fn merge_hook(
         array.push(build_entry());
         *added = true;
     }
+    Ok(())
 }
 
 /// Return true if any entry in the hook array already has a `command` containing `needle`.
@@ -518,7 +541,7 @@ pub fn setup_claude_apply(cwd: &Path, global: bool) -> Result<()> {
     let settings_path = settings_dir.join("settings.json");
 
     let existing = read_existing_settings(&settings_path)?;
-    let (merged, report) = merge_claude_config(existing);
+    let (merged, report) = merge_claude_config(existing)?;
     let json_str = serde_json::to_string_pretty(&merged).expect("serialisation is infallible");
 
     fs::create_dir_all(&settings_dir)?;
@@ -803,7 +826,7 @@ mod tests {
 
     #[test]
     fn test_merge_into_empty_file() {
-        let (result, report) = merge_claude_config(empty());
+        let (result, report) = merge_claude_config(empty()).unwrap();
 
         // MCP server present
         assert!(result["mcpServers"]["veclayer"].is_object());
@@ -849,7 +872,7 @@ mod tests {
             }
         });
 
-        let (result, report) = merge_claude_config(existing);
+        let (result, report) = merge_claude_config(existing).unwrap();
 
         // Existing settings preserved
         assert_eq!(result["permissions"]["allow"][0], "Bash");
@@ -885,10 +908,10 @@ mod tests {
     #[test]
     fn test_merge_skips_duplicate_hooks() {
         // First apply
-        let (after_first, _) = merge_claude_config(empty());
+        let (after_first, _) = merge_claude_config(empty()).unwrap();
 
         // Second apply — should skip everything
-        let (after_second, report) = merge_claude_config(after_first.clone());
+        let (after_second, report) = merge_claude_config(after_first.clone()).unwrap();
 
         assert!(report.mcp_server_skipped);
         assert!(report.session_start_skipped);
@@ -910,7 +933,7 @@ mod tests {
 
     #[test]
     fn test_merge_skips_existing_veclayer_mcp() {
-        let (_, report) = merge_claude_config(with_veclayer_mcp());
+        let (_, report) = merge_claude_config(with_veclayer_mcp()).unwrap();
         assert!(report.mcp_server_skipped);
         assert!(!report.mcp_server_added);
     }
@@ -920,7 +943,7 @@ mod tests {
     #[test]
     fn test_merge_adds_missing_hooks() {
         // Config has Stop and SessionStart; PostToolUse and PreCompact are missing.
-        let (result, report) = merge_claude_config(with_partial_hooks());
+        let (result, report) = merge_claude_config(with_partial_hooks()).unwrap();
 
         // Stop and SessionStart were already there → skipped
         assert!(report.stop_skipped);
@@ -941,7 +964,7 @@ mod tests {
 
     #[test]
     fn test_merge_detects_existing_stop_hook() {
-        let (_, report) = merge_claude_config(with_existing_stop_hook());
+        let (_, report) = merge_claude_config(with_existing_stop_hook()).unwrap();
         assert!(report.stop_skipped);
         assert!(!report.stop_added);
     }
@@ -950,7 +973,7 @@ mod tests {
 
     #[test]
     fn test_merge_adds_veclayer_to_existing_mcp() {
-        let (result, report) = merge_claude_config(with_existing_mcp());
+        let (result, report) = merge_claude_config(with_existing_mcp()).unwrap();
         assert!(
             result["mcpServers"]["other-tool"].is_object(),
             "other tool preserved"
@@ -1109,6 +1132,64 @@ mod tests {
         assert!(content.contains("auth_required = true"));
         assert!(content.contains("[embedder]"));
         assert!(content.contains("type = \"ollama\""));
+    }
+
+    // --- merge_claude_config: reject non-object/non-array fields (RED → GREEN) ---
+
+    #[test]
+    fn test_merge_claude_config_rejects_null_mcp_servers() {
+        // "mcpServers": null is valid JSON but not an object — must return Err, not panic.
+        let result = merge_claude_config(json!({"mcpServers": serde_json::Value::Null}));
+        assert!(result.is_err(), "expected Err for mcpServers: null, got Ok");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("mcpServers"),
+            "error should mention the field, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_merge_claude_config_rejects_string_hooks() {
+        // "hooks": "disabled" is valid JSON but not an object — must return Err, not panic.
+        let result = merge_claude_config(json!({"hooks": "disabled"}));
+        assert!(
+            result.is_err(),
+            "expected Err for hooks: \"disabled\", got Ok"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("hooks"),
+            "error should mention the field, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_merge_claude_config_rejects_array_mcp_servers() {
+        // "mcpServers": [] is valid JSON but not an object.
+        let result = merge_claude_config(json!({"mcpServers": []}));
+        assert!(result.is_err(), "expected Err for mcpServers: [], got Ok");
+    }
+
+    #[test]
+    fn test_merge_claude_config_rejects_non_array_hook_event() {
+        // A hook event value that is a string (not an array) — merge_hook must Err.
+        let result = merge_claude_config(json!({"hooks": {"Stop": "disabled"}}));
+        assert!(
+            result.is_err(),
+            "expected Err for hooks.Stop: \"disabled\", got Ok"
+        );
+    }
+
+    // --- merge_claude_config: happy-path still works after fix ---
+
+    #[test]
+    fn test_merge_claude_config_succeeds_with_valid_object_fields() {
+        // "mcpServers": {} and "hooks": {} are both valid objects → should succeed.
+        let result = merge_claude_config(json!({"mcpServers": {}, "hooks": {}}));
+        assert!(result.is_ok(), "expected Ok for valid object fields");
+        let (value, report) = result.unwrap();
+        assert!(value["mcpServers"]["veclayer"].is_object());
+        assert!(report.mcp_server_added);
     }
 
     // --- openclaw config structure ---
