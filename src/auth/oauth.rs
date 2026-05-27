@@ -705,14 +705,17 @@ async fn token_handler(
         "urn:ietf:params:oauth:grant-type:device_code" => {
             handle_device_code_grant(state, form).await
         }
-        other => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "unsupported_grant_type",
-                "error_description": format!("unsupported grant_type: {other}")
-            })),
-        )
-            .into_response(),
+        other => {
+            warn!("Token request with unsupported grant_type: {other}");
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "unsupported_grant_type",
+                    "error_description": "unsupported grant_type"
+                })),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -3555,5 +3558,38 @@ mod tests {
                 "error_description must not contain {forbidden:?}, got: {desc:?}"
             );
         }
+    }
+
+    /// Unsupported grant_type: the error_description must be a stable generic
+    /// string and must NOT reflect the caller-supplied grant_type value back
+    /// into the response body.
+    #[tokio::test]
+    async fn test_unsupported_grant_type_does_not_reflect_input() {
+        let (state, _dir) = make_state(true);
+        let app = oauth_router(state);
+
+        // A distinctive, caller-controlled grant_type value.
+        let injected = "INJECTED_MARKER_xyzzy";
+        let body = format!("grant_type={injected}");
+        let resp = app
+            .clone()
+            .oneshot(post_form("/oauth/token", &body))
+            .await
+            .expect("token");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "unsupported_grant_type");
+
+        let desc = json["error_description"].as_str().unwrap_or("");
+        // Must equal the generic message — not echo the caller's value.
+        assert_eq!(
+            desc, "unsupported grant_type",
+            "error_description must be generic, got: {desc:?}"
+        );
+        // The caller-supplied value must not appear anywhere in the response.
+        assert!(
+            !desc.contains(injected),
+            "error_description must not reflect caller input {injected:?}, got: {desc:?}"
+        );
     }
 }
