@@ -187,6 +187,20 @@ pub fn load(passphrase: &str, path: &Path) -> Result<SigningKey, CryptoError> {
         .decode(&envelope.ciphertext)
         .map_err(|e| CryptoError::Keystore(format!("base64 decode (ciphertext): {e}")))?;
 
+    if salt.len() != SALT_LEN {
+        return Err(CryptoError::Keystore(format!(
+            "salt wrong length: expected {SALT_LEN}, got {}",
+            salt.len()
+        )));
+    }
+
+    if nonce_bytes.len() != NONCE_LEN {
+        return Err(CryptoError::Keystore(format!(
+            "nonce wrong length: expected {NONCE_LEN}, got {}",
+            nonce_bytes.len()
+        )));
+    }
+
     let cipher = derive_and_make_cipher(passphrase, &salt)?;
     let nonce = Nonce::from_slice(&nonce_bytes);
 
@@ -361,6 +375,62 @@ mod tests {
         assert!(
             matches!(err, CryptoError::Keystore(_)),
             "expected Keystore error for unknown version, got: {err:?}"
+        );
+    }
+
+    // ── length-validation tests ───────────────────────────────────────────────
+
+    /// Nonce field decodes to fewer bytes than NONCE_LEN → clean Err, not panic.
+    #[test]
+    fn test_load_rejects_wrong_length_nonce() {
+        let (_dir, path) = setup();
+        let signing_key = generate_signing_key();
+        save(&signing_key, "pass", &path).unwrap();
+
+        // Replace nonce with 6-byte value (too short).
+        let short_nonce = B64.encode([0u8; 6]);
+        tamper_with_field(&path, "nonce", serde_json::Value::String(short_nonce));
+
+        let err = load("pass", &path).unwrap_err();
+        assert!(
+            matches!(err, CryptoError::Keystore(_)),
+            "expected Keystore error for wrong-length nonce, got: {err:?}"
+        );
+    }
+
+    /// Nonce field decodes to more bytes than NONCE_LEN → clean Err, not panic.
+    #[test]
+    fn test_load_rejects_too_long_nonce() {
+        let (_dir, path) = setup();
+        let signing_key = generate_signing_key();
+        save(&signing_key, "pass", &path).unwrap();
+
+        // Replace nonce with 24-byte value (too long).
+        let long_nonce = B64.encode([0u8; 24]);
+        tamper_with_field(&path, "nonce", serde_json::Value::String(long_nonce));
+
+        let err = load("pass", &path).unwrap_err();
+        assert!(
+            matches!(err, CryptoError::Keystore(_)),
+            "expected Keystore error for too-long nonce, got: {err:?}"
+        );
+    }
+
+    /// Salt field decodes to the wrong number of bytes → clean Err.
+    #[test]
+    fn test_load_rejects_wrong_length_salt() {
+        let (_dir, path) = setup();
+        let signing_key = generate_signing_key();
+        save(&signing_key, "pass", &path).unwrap();
+
+        // Replace salt with 8-byte value (too short).
+        let short_salt = B64.encode([0u8; 8]);
+        tamper_with_field(&path, "salt", serde_json::Value::String(short_salt));
+
+        let err = load("pass", &path).unwrap_err();
+        assert!(
+            matches!(err, CryptoError::Keystore(_)),
+            "expected Keystore error for wrong-length salt, got: {err:?}"
         );
     }
 

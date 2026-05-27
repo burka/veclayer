@@ -78,6 +78,9 @@ struct OllamaResponse {
 }
 
 impl Summarizer for OllamaSummarizer {
+    /// Summarize the given text chunks using the Ollama `/api/generate` endpoint.
+    ///
+    /// Empty input returns `Ok("")` immediately without making any HTTP request.
     async fn summarize(&self, texts: &[&str]) -> Result<String> {
         if texts.is_empty() {
             return Ok(String::new());
@@ -126,7 +129,44 @@ impl Summarizer for OllamaSummarizer {
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
     use super::*;
+
+    // ── mock server helpers ───────────────────────────────────────────────────
+
+    async fn mock_listener() -> (TcpListener, String) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        (listener, format!("http://127.0.0.1:{port}"))
+    }
+
+    fn serve_once(listener: TcpListener, status: u16, body: &'static str) {
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: {len}\r\nContent-Type: application/json\r\n\r\n{body}",
+                status = status,
+                reason = if status == 200 { "OK" } else { "Error" },
+                len = body.len(),
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("mock write failed");
+        });
+    }
+
+    fn summarizer_at(base_url: &str) -> OllamaSummarizer {
+        OllamaSummarizer::new()
+            .expect("client build should succeed")
+            .with_base_url(base_url)
+    }
+
+    // ── existing unit tests ───────────────────────────────────────────────────
 
     #[test]
     fn test_prompt_building() {
@@ -142,5 +182,71 @@ mod tests {
         let result = OllamaSummarizer::new();
         assert!(result.is_ok(), "OllamaSummarizer::new() should return Ok");
         assert_eq!(result.unwrap().name(), "llama3.2");
+    }
+
+    // ── mock-server tests ─────────────────────────────────────────────────────
+
+    /// (a) Happy path: 200 + valid JSON → returns trimmed response text.
+    #[tokio::test]
+    async fn summarize_returns_text_on_200() {
+        let (listener, base_url) = mock_listener().await;
+        serve_once(listener, 200, r#"{"response":"  A concise summary.  "}"#);
+
+        let summarizer = summarizer_at(&base_url);
+        let result = summarizer.summarize(&["doc one", "doc two"]).await;
+
+        assert_eq!(result.unwrap(), "A concise summary.");
+    }
+
+    /// (b) Server error: non-2xx → Err containing the status code.
+    #[tokio::test]
+    async fn summarize_returns_err_on_500() {
+        let (listener, base_url) = mock_listener().await;
+        serve_once(listener, 500, r#"{"error":"model overloaded"}"#);
+
+        let summarizer = summarizer_at(&base_url);
+        let result = summarizer.summarize(&["some text"]).await;
+
+        assert!(result.is_err(), "expected Err on 500, got Ok");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("500"), "error should mention 500; got: {msg}");
+    }
+
+    /// (c) Malformed JSON body with 200 status → Err (not a panic).
+    #[tokio::test]
+    async fn summarize_returns_err_on_malformed_json() {
+        let (listener, base_url) = mock_listener().await;
+        serve_once(listener, 200, "not json at all");
+
+        let summarizer = summarizer_at(&base_url);
+        let result = summarizer.summarize(&["some text"]).await;
+
+        assert!(
+            result.is_err(),
+            "expected parse Err on malformed JSON, got Ok"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("parse") || msg.contains("JSON") || msg.contains("json"),
+            "error should mention parse failure; got: {msg}"
+        );
+    }
+
+    /// (d) Empty texts slice returns Ok("") without making any HTTP request.
+    #[tokio::test]
+    async fn summarize_empty_texts_returns_empty_string() {
+        // Drop the listener immediately — any HTTP attempt would fail, proving
+        // no request is sent for empty input.
+        let (listener, base_url) = mock_listener().await;
+        drop(listener);
+
+        let summarizer = summarizer_at(&base_url);
+        let result = summarizer.summarize(&[]).await;
+
+        assert_eq!(
+            result.unwrap(),
+            "",
+            "empty input should return empty string"
+        );
     }
 }

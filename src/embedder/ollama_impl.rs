@@ -122,6 +122,16 @@ impl OllamaEmbedder {
 
         let parsed: OllamaResponse = serde_json::from_slice(&bytes)
             .map_err(|e| Error::embedding(format!("Failed to parse Ollama response: {e}")))?;
+
+        let got = parsed.embeddings.len();
+        if got != texts.len() {
+            return Err(Error::embedding(format!(
+                "embedding service returned {} vectors for {} inputs",
+                got,
+                texts.len()
+            )));
+        }
+
         Ok(Some(parsed.embeddings))
     }
 
@@ -148,7 +158,18 @@ impl OllamaEmbedder {
             .map_err(|e| Error::embedding(format!("Failed to parse OpenAI response: {e}")))?;
 
         parsed.data.sort_by_key(|e| e.index);
-        Ok(parsed.data.into_iter().map(|e| e.embedding).collect())
+        let embeddings: Vec<Vec<f32>> = parsed.data.into_iter().map(|e| e.embedding).collect();
+
+        let got = embeddings.len();
+        if got != texts.len() {
+            return Err(Error::embedding(format!(
+                "embedding service returned {} vectors for {} inputs",
+                got,
+                texts.len()
+            )));
+        }
+
+        Ok(embeddings)
     }
 
     /// Dispatch a single chunk (already ≤ MAX_BATCH) to the right endpoint,
@@ -590,6 +611,118 @@ mod tests {
             .expect("embed must not panic on current_thread");
         assert_eq!(result.len(), 2);
         assert_eq!(log.lock().unwrap().len(), 1);
+    }
+
+    // ── OpenAI-format mock helpers ────────────────────────────────────────────
+
+    /// Build an OpenAI-format JSON response with `n` embeddings of dimension 1.
+    fn openai_response_json(n: usize) -> String {
+        let data: Vec<String> = (0..n)
+            .map(|i| format!(r#"{{"embedding":[{}.0],"index":{}}}"#, i, i))
+            .collect();
+        format!(r#"{{"data":[{}]}}"#, data.join(","))
+    }
+
+    /// Spawn a mock that accepts one TCP connection and replies with the given
+    /// status + body, then closes.
+    fn serve_once_raw(listener: TcpListener, status: u16, body: String) {
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: {len}\r\nContent-Type: application/json\r\n\r\n{body}",
+                status = status,
+                reason = if status == 200 { "OK" } else { "Error" },
+                len = body.len(),
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+    }
+
+    fn embedder_openai_at(base_url: &str) -> OllamaEmbedder {
+        let e = OllamaEmbedder::new("test-model", base_url, 1).unwrap();
+        e.api_format.store(FORMAT_OPENAI, Ordering::Relaxed);
+        e
+    }
+
+    // ── count mismatch: Ollama format ─────────────────────────────────────────
+
+    /// RED→GREEN: server returns 1 embedding for a 2-input request → Err.
+    #[tokio::test]
+    async fn ollama_count_mismatch_returns_err() {
+        let (listener, base_url) = mock_listener().await;
+        // Return only 1 embedding even though we send 2 inputs.
+        serve_once_raw(listener, 200, ollama_response_json(1, 0));
+
+        let embedder = embedder_at(&base_url);
+        let result = embedder.embed_async(&["text1", "text2"]).await;
+
+        assert!(
+            result.is_err(),
+            "expected Err when server returns fewer embeddings than inputs"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("1") && msg.contains("2"),
+            "error should mention counts; got: {msg}"
+        );
+    }
+
+    /// GREEN: server returns exactly 2 embeddings for 2 inputs → Ok.
+    #[tokio::test]
+    async fn ollama_count_match_returns_ok() {
+        let (listener, base_url) = mock_listener().await;
+        serve_once_raw(listener, 200, ollama_response_json(2, 0));
+
+        let embedder = embedder_at(&base_url);
+        let result = embedder.embed_async(&["text1", "text2"]).await;
+
+        assert!(
+            result.is_ok(),
+            "expected Ok on matching count; got: {:?}",
+            result
+        );
+        assert_eq!(result.unwrap().len(), 2);
+    }
+
+    // ── count mismatch: OpenAI format ─────────────────────────────────────────
+
+    /// RED→GREEN: server returns 1 embedding for a 2-input request (OpenAI format) → Err.
+    #[tokio::test]
+    async fn openai_count_mismatch_returns_err() {
+        let (listener, base_url) = mock_listener().await;
+        serve_once_raw(listener, 200, openai_response_json(1));
+
+        let embedder = embedder_openai_at(&base_url);
+        let result = embedder.embed_async(&["text1", "text2"]).await;
+
+        assert!(
+            result.is_err(),
+            "expected Err when OpenAI server returns fewer embeddings than inputs"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("1") && msg.contains("2"),
+            "error should mention counts; got: {msg}"
+        );
+    }
+
+    /// GREEN: server returns exactly 2 embeddings for 2 inputs (OpenAI format) → Ok.
+    #[tokio::test]
+    async fn openai_count_match_returns_ok() {
+        let (listener, base_url) = mock_listener().await;
+        serve_once_raw(listener, 200, openai_response_json(2));
+
+        let embedder = embedder_openai_at(&base_url);
+        let result = embedder.embed_async(&["text1", "text2"]).await;
+
+        assert!(
+            result.is_ok(),
+            "expected Ok on matching count; got: {:?}",
+            result
+        );
+        assert_eq!(result.unwrap().len(), 2);
     }
 
     // ── integration smoke tests (require live server, skipped by default) ──────

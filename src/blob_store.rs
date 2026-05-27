@@ -13,6 +13,37 @@ use crate::entry::StoredBlob;
 /// Monotonic counter for unique temp file names within a process.
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// RAII guard that removes a temp file on drop unless [`disarm`](TmpFileGuard::disarm) is called.
+///
+/// Used by [`BlobStore::put`] to guarantee temp-file cleanup when the
+/// rename (or any subsequent step) fails.
+struct TmpFileGuard {
+    path: PathBuf,
+    disarmed: bool,
+}
+
+impl TmpFileGuard {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            disarmed: false,
+        }
+    }
+
+    /// Cancel cleanup: the temp file was successfully promoted, so leave it in place.
+    fn disarm(mut self) {
+        self.disarmed = true;
+    }
+}
+
+impl Drop for TmpFileGuard {
+    fn drop(&mut self) {
+        if !self.disarmed {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
 /// Git-style content-addressed object store.
 ///
 /// Layout: `{data_dir}/objects/{hash_hex[0..2]}/{hash_hex[2..]}`
@@ -49,7 +80,7 @@ impl BlobStore {
         let hash = blob.blob_hash();
         let final_path = self.path_for(&hash);
 
-        if final_path.exists() {
+        if final_path.is_file() {
             return Ok(hash);
         }
 
@@ -72,7 +103,10 @@ impl BlobStore {
         let tmp_path = PathBuf::from(tmp_name);
 
         fs::write(&tmp_path, &bytes)?;
+        // Guard: remove the temp file if anything after this point fails.
+        let guard = TmpFileGuard::new(tmp_path.clone());
         fs::rename(&tmp_path, &final_path)?;
+        guard.disarm();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -246,6 +280,45 @@ mod tests {
         expected.sort_by_key(|h| h.to_hex().to_string());
 
         assert_eq!(found, expected);
+    }
+
+    /// Force `rename` to fail by pre-creating a directory at the final path.
+    /// On Linux, renaming a regular file onto an existing directory returns
+    /// EISDIR (or ENOTDIR on some kernels), so `put` must return an error.
+    /// The invariant under test: no `.tmp.` file must survive in the shard dir
+    /// after the failure.
+    #[cfg(unix)]
+    #[test]
+    fn temp_file_cleaned_up_on_rename_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlobStore::open(dir.path()).unwrap();
+
+        let blob = test_blob("rename-failure-cleanup");
+        let hash = blob.blob_hash();
+        let final_path = store.path_for(&hash);
+        let shard_dir = final_path.parent().unwrap().to_owned();
+
+        // Ensure the shard directory exists so we can create a blocker inside it.
+        fs::create_dir_all(&shard_dir).unwrap();
+
+        // Block the rename by placing a directory where the final file would land.
+        fs::create_dir_all(&final_path).unwrap();
+
+        // put() must return an error because rename fails.
+        let result = store.put(&blob);
+        assert!(result.is_err(), "put should fail when rename is blocked");
+
+        // No .tmp. file must remain — that is the bug being fixed.
+        let tmp_leftovers: Vec<_> = fs::read_dir(&shard_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(
+            tmp_leftovers.is_empty(),
+            "temp file leaked after rename failure: {:?}",
+            tmp_leftovers.iter().map(|e| e.path()).collect::<Vec<_>>()
+        );
     }
 
     #[test]

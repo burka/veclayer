@@ -72,12 +72,6 @@ impl FastEmbedder {
     }
 }
 
-impl Default for FastEmbedder {
-    fn default() -> Self {
-        Self::new().expect("Failed to create default FastEmbedder")
-    }
-}
-
 impl Embedder for FastEmbedder {
     fn embed<'a>(
         &'a self,
