@@ -105,6 +105,13 @@ impl Entry {
 }
 
 /// A cached embedding produced by a specific model.
+///
+/// Invariant: `dimensions == vector.len() as u16` for every normally-produced
+/// instance. The sole exception is the saturation guard in
+/// [`StoredBlob::from_chunk_and_embedding`]: if a vector somehow exceeds
+/// `u16::MAX` dimensions, `dimensions` saturates to `u16::MAX` (with a logged
+/// error) while `vector` keeps its true length. For correctness always derive
+/// the dimension count from `vector.len()`, not from this field.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EmbeddingCache {
     pub model: String,
@@ -139,14 +146,19 @@ impl StoredBlob {
         let entry = Entry::from_chunk(chunk);
         let embeddings = match chunk.embedding.as_ref() {
             Some(vec) => {
-                debug_assert!(
-                    vec.len() <= u16::MAX as usize,
-                    "embedding dimension {} exceeds u16::MAX (65535) — silent truncation would occur",
-                    vec.len()
-                );
+                let dimensions = u16::try_from(vec.len()).unwrap_or_else(|_| {
+                    // Unreachable with real models (largest realistic embedding ~4096 dims;
+                    // u16::MAX is 65535). Saturate instead of silently truncating via `as`,
+                    // and log loudly so a misconfiguration surfaces.
+                    tracing::error!(
+                        "embedding dimension {} exceeds u16::MAX (65535); saturating dimensions field",
+                        vec.len()
+                    );
+                    u16::MAX
+                });
                 vec![EmbeddingCache {
                     model: model_name.to_string(),
-                    dimensions: vec.len() as u16,
+                    dimensions,
                     vector: vec.clone(),
                 }]
             }
@@ -598,14 +610,13 @@ mod tests {
         assert_eq!(blob.embeddings[0].dimensions as usize, embedding.len());
     }
 
-    /// Edge: a vector exceeding u16::MAX dimensions trips the `debug_assert`.
-    /// Gated on `debug_assertions` because the assert is a no-op under
-    /// `--release` (and `cargo test --release` therefore skips this test).
+    /// Edge: a vector exceeding u16::MAX dimensions must saturate the `dimensions`
+    /// field to u16::MAX while preserving the full vector — never silently truncate.
+    /// This test is intentionally ungated (runs in both debug and release) because
+    /// the fix must hold in release builds where `debug_assert!` is compiled out.
     #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "embedding dimension")]
-    fn test_dimensions_exceeding_u16_max_panics_in_debug() {
-        // Allocate a 65536-element (256 KiB) vector — acceptable in a test.
+    fn test_from_chunk_and_embedding_saturates_oversized_dimensions() {
+        // Allocate a 65536-element (one past u16::MAX) vector — acceptable in a test.
         let oversized: Vec<f32> = vec![0.0_f32; (u16::MAX as usize) + 1];
         let chunk = crate::chunk::HierarchicalChunk::new(
             "oversize dim test".to_string(),
@@ -614,9 +625,21 @@ mod tests {
             String::new(),
             "test.md".to_string(),
         )
-        .with_embedding(oversized);
+        .with_embedding(oversized.clone());
 
-        // In debug builds this must panic; in release it would silently truncate.
-        StoredBlob::from_chunk_and_embedding(&chunk, "model");
+        let blob = StoredBlob::from_chunk_and_embedding(&chunk, "model");
+
+        // dimensions must saturate to u16::MAX, not wrap to 0
+        assert_eq!(
+            blob.embeddings[0].dimensions,
+            u16::MAX,
+            "expected dimensions to saturate to u16::MAX, not truncate"
+        );
+        // full vector must be preserved unchanged
+        assert_eq!(
+            blob.embeddings[0].vector.len(),
+            oversized.len(),
+            "expected full vector to be preserved"
+        );
     }
 }
