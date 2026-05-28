@@ -303,6 +303,14 @@ Aliases: `add` = `store`, `search`/`s` = `recall`, `f` = `focus`, `id` = `reflec
 
 Run `veclayer --help` or `veclayer <command> --help` for the full flag reference.
 
+### Maintenance
+
+The store prunes itself automatically (bounded, non-blocking compaction on
+write + a daily pass in `serve`). To reclaim space on demand, run
+`veclayer reflect prune`. For unattended cleanup with a disk-space guard, use
+`scripts/veclayer-prune.sh` (loop it with `/loop 30m scripts/veclayer-prune.sh`
+or a cron timer). See [docs/maintenance.md](docs/maintenance.md).
+
 ## Building from Source
 
 ### Prerequisites
