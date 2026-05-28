@@ -178,4 +178,29 @@ mod tests {
             "expected request-failed error, got: {err}"
         );
     }
+
+    // --- trait method: name() ---
+
+    #[test]
+    fn name_returns_model_string() {
+        let llm = ollama_at("http://unused");
+        assert_eq!(llm.name(), "llama3.2");
+    }
+
+    // --- edge path: 200 with malformed body ---
+
+    #[tokio::test]
+    async fn complete_returns_err_on_malformed_json_body() {
+        let (listener, base_url) = mock_listener().await;
+        serve_once(listener, 200, "not json{");
+
+        let llm = ollama_at(&base_url);
+        let result = llm.complete(&[Message::user("ping")]).await;
+
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("Ollama response parse failed"),
+            "got: {err}"
+        );
+    }
 }
