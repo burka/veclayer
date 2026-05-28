@@ -359,6 +359,8 @@ mod tests {
         batch_update_error: Option<String>,
         /// Records how many times `batch_update_embeddings` was called.
         batch_update_calls: Mutex<usize>,
+        /// Captures the updates passed to `batch_update_embeddings` for assertion.
+        recorded_updates: Mutex<Vec<(String, Vec<f32>)>>,
     }
 
     impl MockStore {
@@ -367,6 +369,7 @@ mod tests {
                 pending: chunks,
                 batch_update_error: None,
                 batch_update_calls: Mutex::new(0),
+                recorded_updates: Mutex::new(vec![]),
             }
         }
 
@@ -378,11 +381,17 @@ mod tests {
                 pending: chunks,
                 batch_update_error: Some(msg.into()),
                 batch_update_calls: Mutex::new(0),
+                recorded_updates: Mutex::new(vec![]),
             }
         }
 
         fn batch_update_call_count(&self) -> usize {
             *self.batch_update_calls.lock().unwrap()
+        }
+
+        /// Returns a clone of all update pairs recorded across all calls.
+        fn recorded_update_pairs(&self) -> Vec<(String, Vec<f32>)> {
+            self.recorded_updates.lock().unwrap().clone()
         }
     }
 
@@ -498,9 +507,10 @@ mod tests {
 
         async fn batch_update_embeddings(
             &self,
-            _updates: Vec<(String, Vec<f32>)>,
+            updates: Vec<(String, Vec<f32>)>,
         ) -> crate::Result<()> {
             *self.batch_update_calls.lock().unwrap() += 1;
+            self.recorded_updates.lock().unwrap().extend(updates);
             match &self.batch_update_error {
                 Some(msg) => Err(crate::Error::store(msg.clone())),
                 None => Ok(()),
@@ -591,5 +601,164 @@ mod tests {
             "partial-batch write failure must propagate as Err"
         );
         assert_eq!(store.batch_update_call_count(), 1);
+    }
+
+    // ── process_batch: embedder error path ──────────────────────────────────
+
+    /// If `embedder.embed()` itself returns `Err`, process_batch must propagate
+    /// that error before ever touching the store. Verifies the `?` on the embed
+    /// call actually short-circuits (batch_update_embeddings must not be called).
+    #[tokio::test]
+    async fn process_batch_returns_err_when_embedder_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = Arc::new(BlobStore::open(dir.path()).unwrap());
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> =
+            Arc::new(crate::test_helpers::MockEmbedder::failing(384));
+
+        let pending = make_pending_chunks(1, "embfail");
+        let store = MockStore::with_pending(pending);
+
+        let result = process_batch(&store, &embedder, &blob_store).await;
+
+        assert!(
+            result.is_err(),
+            "embedder error must propagate as Err from process_batch"
+        );
+        assert_eq!(
+            store.batch_update_call_count(),
+            0,
+            "batch_update_embeddings must not be called when embed() errors"
+        );
+    }
+
+    // ── process_batch: happy path via MockStore ──────────────────────────────
+
+    /// Partial batch (< BATCH_SIZE): the count returned equals the number of
+    /// pending entries, and batch_update_embeddings is called exactly once.
+    #[tokio::test]
+    async fn process_batch_partial_batch_returns_correct_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = Arc::new(BlobStore::open(dir.path()).unwrap());
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+
+        const N: usize = 7;
+        let pending = make_pending_chunks(N, "partial");
+        let store = MockStore::with_pending(pending);
+
+        let count = process_batch(&store, &embedder, &blob_store).await.unwrap();
+
+        assert_eq!(
+            count, N,
+            "returned count must equal number of pending entries"
+        );
+        assert_eq!(
+            store.batch_update_call_count(),
+            1,
+            "exactly one atomic batch_update_embeddings call regardless of batch size"
+        );
+    }
+
+    /// Exactly BATCH_SIZE pending entries: the full batch is processed in one
+    /// call, count == BATCH_SIZE, update pairs have the expected embedding length.
+    #[tokio::test]
+    async fn process_batch_exact_batch_size_returns_batch_size_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = Arc::new(BlobStore::open(dir.path()).unwrap());
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+
+        let pending = make_pending_chunks(BATCH_SIZE, "exact");
+        let store = MockStore::with_pending(pending);
+
+        let count = process_batch(&store, &embedder, &blob_store).await.unwrap();
+
+        assert_eq!(count, BATCH_SIZE);
+        assert_eq!(store.batch_update_call_count(), 1);
+    }
+
+    /// The update pairs passed to batch_update_embeddings must carry the chunk IDs
+    /// that were fetched from get_pending_embeddings, in the same order.
+    #[tokio::test]
+    async fn process_batch_update_pairs_carry_correct_ids_and_dimensions() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = Arc::new(BlobStore::open(dir.path()).unwrap());
+        // FixedEmbedder returns 384-dim vectors of 0.5
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+
+        const N: usize = 3;
+        let pending = make_pending_chunks(N, "idcheck");
+        let expected_ids: Vec<String> = pending.iter().map(|c| c.id.clone()).collect();
+        let store = MockStore::with_pending(pending);
+
+        process_batch(&store, &embedder, &blob_store).await.unwrap();
+
+        let updates = store.recorded_update_pairs();
+        assert_eq!(updates.len(), N, "one update pair per pending chunk");
+
+        let actual_ids: Vec<&str> = updates.iter().map(|(id, _)| id.as_str()).collect();
+        let expected_refs: Vec<&str> = expected_ids.iter().map(|s| s.as_str()).collect();
+        assert_eq!(
+            actual_ids, expected_refs,
+            "update pairs must use the chunk IDs from get_pending_embeddings in order"
+        );
+
+        for (_, emb) in &updates {
+            assert_eq!(
+                emb.len(),
+                384,
+                "FixedEmbedder produces 384-dim vectors; update must preserve that dimension"
+            );
+            // FixedEmbedder fills all values with 0.5
+            assert!(
+                emb.iter().all(|&v| (v - 0.5f32).abs() < 1e-6),
+                "embedding values must match FixedEmbedder output (0.5)"
+            );
+        }
+    }
+
+    // ── process_batch: blob-store soft-failure ───────────────────────────────
+
+    /// When blob_store.put() fails (e.g. permission denied), process_batch must
+    /// still return Ok(count). Blob persistence is best-effort; the store is the
+    /// source of truth and the failure is only logged.
+    ///
+    /// Implemented by pointing the BlobStore at a read-only directory so that
+    /// shard creation fails with EACCES. Skipped when running as root (uid == 0)
+    /// because root ignores directory permissions.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn process_batch_blob_put_failure_does_not_propagate() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = Arc::new(BlobStore::open(dir.path()).unwrap());
+
+        // Make the objects directory read-only so blob shard creation fails.
+        let objects_dir = dir.path().join("objects");
+        std::fs::set_permissions(&objects_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        // Probe: if we can still write (running as root), restore and skip.
+        let probe = objects_dir.join(".probe");
+        let running_as_root = std::fs::write(&probe, b"x").is_ok();
+        if running_as_root {
+            let _ = std::fs::remove_file(&probe);
+            std::fs::set_permissions(&objects_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            // Root bypasses permissions — the soft-failure path cannot be exercised.
+            return;
+        }
+
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+        let pending = make_pending_chunks(1, "blobfail");
+        let store = MockStore::with_pending(pending);
+
+        let result = process_batch(&store, &embedder, &blob_store).await;
+
+        // Restore permissions so tempdir cleanup does not fail.
+        std::fs::set_permissions(&objects_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert_eq!(
+            result.unwrap(),
+            1,
+            "blob put failure must not propagate — process_batch returns Ok(count)"
+        );
     }
 }
