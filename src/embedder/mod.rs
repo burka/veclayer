@@ -63,44 +63,6 @@ impl<T: Embedder + ?Sized> Embedder for std::sync::Arc<T> {
     }
 }
 
-#[cfg(all(test, feature = "embedding-local"))]
-mod tests {
-    use super::resolve_fastembed_model;
-    use fastembed::EmbeddingModel;
-
-    #[test]
-    fn known_model_name_resolves_without_fallback() {
-        // fastembed's FromStr matches the model_code; Display emits that same
-        // code, so a Display round-trip yields a name parse() accepts.
-        let name = EmbeddingModel::BGESmallENV15.to_string();
-        let (model, fell_back) = resolve_fastembed_model(&name);
-        assert!(!fell_back, "known name must not trigger fallback");
-        assert!(
-            matches!(model, EmbeddingModel::BGESmallENV15),
-            "must resolve to the correct variant"
-        );
-    }
-
-    #[test]
-    fn unrecognised_model_name_falls_back_to_default() {
-        // fastembed's model_code for BGESmallENV15 is "Xenova/bge-small-en-v1.5",
-        // so the BAAI-prefixed legacy name misses FromStr and must fall back.
-        let (model, fell_back) = resolve_fastembed_model("BAAI/bge-small-en-v1.5");
-        assert!(fell_back, "unrecognised name must trigger fallback");
-        assert!(
-            matches!(model, EmbeddingModel::BGESmallENV15),
-            "fallback must be BGESmallENV15"
-        );
-    }
-
-    #[test]
-    fn empty_model_name_falls_back_to_default() {
-        let (model, fell_back) = resolve_fastembed_model("");
-        assert!(fell_back);
-        assert!(matches!(model, EmbeddingModel::BGESmallENV15));
-    }
-}
-
 impl<T: Embedder + ?Sized> Embedder for Box<T> {
     fn embed<'a>(
         &'a self,
@@ -162,5 +124,82 @@ pub fn from_config(config: &EmbedderConfig) -> Result<Box<dyn Embedder + Send + 
         EmbedderConfig::Ollama { .. } => Err(crate::Error::config(
             "Ollama embedder requires the 'llm' feature flag. Build with default features or `--features llm`",
         )),
+    }
+}
+
+#[cfg(all(test, feature = "embedding-local"))]
+mod tests {
+    use super::resolve_fastembed_model;
+    use fastembed::EmbeddingModel;
+
+    #[test]
+    fn known_model_name_resolves_without_fallback() {
+        // fastembed's FromStr matches the model_code; Display emits that same
+        // code, so a Display round-trip yields a name parse() accepts.
+        let name = EmbeddingModel::BGESmallENV15.to_string();
+        let (model, fell_back) = resolve_fastembed_model(&name);
+        assert!(!fell_back, "known name must not trigger fallback");
+        assert!(
+            matches!(model, EmbeddingModel::BGESmallENV15),
+            "must resolve to the correct variant"
+        );
+    }
+
+    #[test]
+    fn unrecognised_model_name_falls_back_to_default() {
+        // fastembed's model_code for BGESmallENV15 is "Xenova/bge-small-en-v1.5",
+        // so the BAAI-prefixed legacy name misses FromStr and must fall back.
+        let (model, fell_back) = resolve_fastembed_model("BAAI/bge-small-en-v1.5");
+        assert!(fell_back, "unrecognised name must trigger fallback");
+        assert!(
+            matches!(model, EmbeddingModel::BGESmallENV15),
+            "fallback must be BGESmallENV15"
+        );
+    }
+
+    #[test]
+    fn empty_model_name_falls_back_to_default() {
+        let (model, fell_back) = resolve_fastembed_model("");
+        assert!(fell_back);
+        assert!(matches!(model, EmbeddingModel::BGESmallENV15));
+    }
+}
+
+// Blanket-impl tests for Arc<T> and Box<T>: feature-gate-free because the
+// blankets themselves are unconditional and MockEmbedder is plain #[cfg(test)].
+#[cfg(test)]
+mod blanket_tests {
+    use crate::test_helpers::MockEmbedder;
+    use crate::Embedder;
+
+    #[test]
+    fn arc_embedder_forwards_dimension_and_name() {
+        let arc: std::sync::Arc<MockEmbedder> = std::sync::Arc::new(MockEmbedder::new(7));
+        assert_eq!(Embedder::dimension(&arc), 7);
+        assert_eq!(Embedder::name(&arc), "mock");
+    }
+
+    #[tokio::test]
+    async fn arc_embedder_embed_forwards_to_inner() {
+        let arc = std::sync::Arc::new(MockEmbedder::new(4));
+        let result = arc.embed(&["a", "b"]).await.expect("embed should succeed");
+        assert_eq!(result, vec![vec![1.0_f32; 4]; 2]);
+    }
+
+    #[test]
+    fn box_embedder_forwards_dimension_and_name() {
+        let boxed: Box<MockEmbedder> = Box::new(MockEmbedder::new(9));
+        assert_eq!(Embedder::dimension(&boxed), 9);
+        assert_eq!(Embedder::name(&boxed), "mock");
+    }
+
+    #[tokio::test]
+    async fn box_embedder_embed_forwards_to_inner() {
+        let boxed: Box<MockEmbedder> = Box::new(MockEmbedder::new(5));
+        let result = boxed
+            .embed(&["x", "y", "z"])
+            .await
+            .expect("embed should succeed");
+        assert_eq!(result, vec![vec![1.0_f32; 5]; 3]);
     }
 }
