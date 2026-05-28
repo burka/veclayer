@@ -197,35 +197,13 @@ mod tests {
 
     // ── process_batch ─────────────────────────────────────────────────────
 
-    struct FixedEmbedder;
-
-    impl crate::Embedder for FixedEmbedder {
-        fn embed<'a>(
-            &'a self,
-            texts: &'a [&'a str],
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = crate::Result<Vec<Vec<f32>>>> + Send + 'a>,
-        > {
-            let result: Vec<Vec<f32>> = texts.iter().map(|_| vec![0.5f32; 384]).collect();
-            Box::pin(async move { Ok(result) })
-        }
-
-        fn dimension(&self) -> usize {
-            384
-        }
-
-        fn name(&self) -> &str {
-            "fixed-embedder"
-        }
-    }
-
     async fn make_store_and_blobs(dir: &std::path::Path) -> (Arc<StoreBackend>, Arc<BlobStore>) {
         let store = StoreBackend::open(dir, 384, false).await.unwrap();
         let blob_store = BlobStore::open(dir).unwrap();
         (Arc::new(store), Arc::new(blob_store))
     }
 
-    /// Shared harness for process_batch tests with FixedEmbedder.
+    /// Shared harness for process_batch tests with the shared MockEmbedder.
     async fn batch_harness_fixed(
         dir: &std::path::Path,
     ) -> (
@@ -234,7 +212,8 @@ mod tests {
         Arc<dyn crate::Embedder + Send + Sync>,
     ) {
         let (store, blob_store) = make_store_and_blobs(dir).await;
-        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> =
+            Arc::new(crate::test_helpers::MockEmbedder::new(384));
         (store, blob_store, embedder)
     }
 
@@ -350,9 +329,9 @@ mod tests {
 
     use std::sync::Mutex;
 
-    /// In-memory VectorStore whose `batch_update_embeddings` can be configured
-    /// to fail, letting us prove the bug: the old code returned `Ok(0)` (looks
-    /// like "queue empty"), the fixed code returns `Err`.
+    /// In-memory `VectorStore` whose `batch_update_embeddings` can be configured
+    /// to fail, for testing error propagation and recorded-call assertions in
+    /// `process_batch`.
     struct MockStore {
         pending: Vec<crate::HierarchicalChunk>,
         /// When `Some(msg)`, `batch_update_embeddings` returns `Err(Store(msg))`.
@@ -532,7 +511,8 @@ mod tests {
     async fn process_batch_returns_err_when_batch_update_fails() {
         let dir = tempfile::tempdir().unwrap();
         let blob_store = Arc::new(BlobStore::open(dir.path()).unwrap());
-        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> =
+            Arc::new(crate::test_helpers::MockEmbedder::new(384));
 
         let pending = make_pending_chunks(1, "wfail");
         let store = MockStore::with_pending_and_write_error(pending, "simulated write failure");
@@ -562,7 +542,8 @@ mod tests {
     async fn process_batch_returns_ok_zero_on_empty_queue() {
         let dir = tempfile::tempdir().unwrap();
         let blob_store = Arc::new(BlobStore::open(dir.path()).unwrap());
-        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> =
+            Arc::new(crate::test_helpers::MockEmbedder::new(384));
 
         let store = MockStore::with_pending(vec![]);
 
@@ -586,7 +567,8 @@ mod tests {
     async fn process_batch_returns_err_on_partial_batch_write_failure() {
         let dir = tempfile::tempdir().unwrap();
         let blob_store = Arc::new(BlobStore::open(dir.path()).unwrap());
-        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> =
+            Arc::new(crate::test_helpers::MockEmbedder::new(384));
 
         // Use a partial batch (< BATCH_SIZE) to confirm the code path is not
         // gated on batch fullness.
@@ -639,7 +621,8 @@ mod tests {
     async fn process_batch_partial_batch_returns_correct_count() {
         let dir = tempfile::tempdir().unwrap();
         let blob_store = Arc::new(BlobStore::open(dir.path()).unwrap());
-        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> =
+            Arc::new(crate::test_helpers::MockEmbedder::new(384));
 
         const N: usize = 7;
         let pending = make_pending_chunks(N, "partial");
@@ -664,7 +647,8 @@ mod tests {
     async fn process_batch_exact_batch_size_returns_batch_size_count() {
         let dir = tempfile::tempdir().unwrap();
         let blob_store = Arc::new(BlobStore::open(dir.path()).unwrap());
-        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> =
+            Arc::new(crate::test_helpers::MockEmbedder::new(384));
 
         let pending = make_pending_chunks(BATCH_SIZE, "exact");
         let store = MockStore::with_pending(pending);
@@ -681,8 +665,8 @@ mod tests {
     async fn process_batch_update_pairs_carry_correct_ids_and_dimensions() {
         let dir = tempfile::tempdir().unwrap();
         let blob_store = Arc::new(BlobStore::open(dir.path()).unwrap());
-        // FixedEmbedder returns 384-dim vectors of 0.5
-        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> =
+            Arc::new(crate::test_helpers::MockEmbedder::new(384));
 
         const N: usize = 3;
         let pending = make_pending_chunks(N, "idcheck");
@@ -705,12 +689,11 @@ mod tests {
             assert_eq!(
                 emb.len(),
                 384,
-                "FixedEmbedder produces 384-dim vectors; update must preserve that dimension"
+                "MockEmbedder produces 384-dim vectors; update must preserve that dimension"
             );
-            // FixedEmbedder fills all values with 0.5
             assert!(
-                emb.iter().all(|&v| (v - 0.5f32).abs() < 1e-6),
-                "embedding values must match FixedEmbedder output (0.5)"
+                emb.iter().any(|&v| v != 0.0),
+                "update must carry the embedder's output, not a default zero vector"
             );
         }
     }
@@ -746,7 +729,8 @@ mod tests {
             return;
         }
 
-        let embedder: Arc<dyn crate::Embedder + Send + Sync> = Arc::new(FixedEmbedder);
+        let embedder: Arc<dyn crate::Embedder + Send + Sync> =
+            Arc::new(crate::test_helpers::MockEmbedder::new(384));
         let pending = make_pending_chunks(1, "blobfail");
         let store = MockStore::with_pending(pending);
 
