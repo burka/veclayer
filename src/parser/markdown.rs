@@ -382,4 +382,183 @@ Deep content here.
             "root heading should have no parent"
         );
     }
+
+    // --- Builder: with_min_chunk_size ---
+
+    #[test]
+    fn min_chunk_size_filters_short_content() {
+        let parser = MarkdownParser::new().with_min_chunk_size(100);
+        // Body is well under 100 chars after trim.
+        let chunks = parser.parse("# Title\n\nshort body.\n", "f.md").unwrap();
+        let content_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.level == ChunkLevel::CONTENT)
+            .collect();
+        assert_eq!(
+            content_chunks.len(),
+            0,
+            "expected no CONTENT chunk when body < min_chunk_size"
+        );
+    }
+
+    #[test]
+    fn min_chunk_size_keeps_at_threshold() {
+        // min_chunk_size(5): body "hello" is exactly 5 chars after trim.
+        let parser = MarkdownParser::new().with_min_chunk_size(5);
+        let chunks = parser.parse("# T\n\nhello\n", "f.md").unwrap();
+        let content_chunk = chunks
+            .iter()
+            .find(|c| c.level == ChunkLevel::CONTENT)
+            .expect("expected a CONTENT chunk at the 5-char threshold");
+        assert_eq!(content_chunk.content, "hello");
+    }
+
+    // --- Default::default() ---
+
+    #[test]
+    fn default_equals_new() {
+        let doc = "# Heading\n\nSome body text here.\n";
+        let with_new = MarkdownParser::new().parse(doc, "f.md").unwrap();
+        let with_default = MarkdownParser::default().parse(doc, "f.md").unwrap();
+
+        assert_eq!(with_new.len(), with_default.len(), "chunk count must match");
+        for (a, b) in with_new.iter().zip(with_default.iter()) {
+            assert_eq!(a.content, b.content);
+            assert_eq!(a.level, b.level);
+            assert_eq!(a.path, b.path);
+        }
+    }
+
+    // --- supported_extensions() + can_parse ---
+
+    #[test]
+    fn supported_extensions_are_md_and_markdown() {
+        let parser = MarkdownParser::new();
+        assert_eq!(parser.supported_extensions(), &["md", "markdown"]);
+    }
+
+    #[test]
+    fn can_parse_recognises_md_extensions_case_insensitively() {
+        use std::path::Path;
+        let parser = MarkdownParser::new();
+
+        assert!(parser.can_parse(Path::new("file.md")));
+        assert!(parser.can_parse(Path::new("file.markdown")));
+        assert!(parser.can_parse(Path::new("file.MD")));
+        assert!(parser.can_parse(Path::new("file.Markdown")));
+
+        assert!(!parser.can_parse(Path::new("file.txt")));
+        assert!(!parser.can_parse(Path::new("file.rs")));
+        assert!(!parser.can_parse(Path::new("README")));
+    }
+
+    // --- Code blocks ---
+
+    #[test]
+    fn fenced_code_block_emits_content_chunk_with_fences() {
+        let parser = MarkdownParser::new();
+        let doc = "# T\n\n```rust\nfn main() {}\n```\n";
+        let chunks = parser.parse(doc, "f.md").unwrap();
+        let content_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.level == ChunkLevel::CONTENT)
+            .collect();
+        assert_eq!(
+            content_chunks.len(),
+            1,
+            "expected exactly one CONTENT chunk"
+        );
+        assert_eq!(content_chunks[0].content, "```\nfn main() {}");
+    }
+
+    // --- SoftBreak / HardBreak ---
+
+    #[test]
+    fn soft_break_in_body_inserts_space() {
+        // Single newline between words = SoftBreak in pulldown-cmark.
+        // The parser replaces SoftBreak with a space, so the two lines join
+        // with whitespace. Each Text event also pushes a trailing ' ', so
+        // "one" and "line" end up separated by two spaces.
+        let parser = MarkdownParser::new();
+        let doc = "# T\n\nline one\nline two has enough words\n";
+        let chunks = parser.parse(doc, "f.md").unwrap();
+        let content_chunk = chunks
+            .iter()
+            .find(|c| c.level == ChunkLevel::CONTENT)
+            .expect("expected a CONTENT chunk");
+        assert_eq!(content_chunk.content, "line one  line two has enough words");
+    }
+
+    #[test]
+    fn hard_break_in_body_inserts_space() {
+        // Two trailing spaces before a newline = HardBreak in pulldown-cmark.
+        // Behaviour matches SoftBreak end-to-end: a single ' ' is pushed.
+        let parser = MarkdownParser::new();
+        let doc = "# T\n\nline one  \nline two has enough words\n";
+        let chunks = parser.parse(doc, "f.md").unwrap();
+        let content_chunk = chunks
+            .iter()
+            .find(|c| c.level == ChunkLevel::CONTENT)
+            .expect("expected a CONTENT chunk");
+        assert_eq!(content_chunk.content, "line one  line two has enough words");
+    }
+
+    // --- Heading text accumulator ---
+
+    #[test]
+    fn heading_with_emphasis_joins_text_events() {
+        // pulldown-cmark emits separate Text events for bold content and the
+        // surrounding text; the parser concatenates them without separator.
+        let parser = MarkdownParser::new();
+        let doc = "# **Bold** title here long enough\n";
+        let chunks = parser.parse(doc, "f.md").unwrap();
+        let heading = chunks
+            .iter()
+            .find(|c| c.level == ChunkLevel::H1)
+            .expect("expected an H1 chunk");
+        assert_eq!(heading.content, "Bold title here long enough");
+    }
+
+    #[test]
+    fn heading_with_inline_code_joins_with_code() {
+        // Event::Code inside a heading is appended the same way as Event::Text.
+        let parser = MarkdownParser::new();
+        let doc = "# Use `foo` carefully today\n";
+        let chunks = parser.parse(doc, "f.md").unwrap();
+        let heading = chunks
+            .iter()
+            .find(|c| c.level == ChunkLevel::H1)
+            .expect("expected an H1 chunk");
+        assert_eq!(heading.content, "Use foo carefully today");
+    }
+
+    #[test]
+    fn h6_heading_parses_to_chunk_level_h6() {
+        let parser = MarkdownParser::new();
+        let chunks = parser.parse("###### Deepest\n", "f.md").unwrap();
+        let heading = chunks
+            .iter()
+            .find(|c| c.content == "Deepest")
+            .expect("expected a chunk with content 'Deepest'");
+        assert_eq!(heading.level, ChunkLevel::H6);
+    }
+
+    // --- Paragraph separation ---
+
+    #[test]
+    fn two_paragraphs_in_body_joined_with_newline() {
+        // Each paragraph end pushes '\n', so the two paragraphs are separated
+        // by `\n` after a trailing space from the Text event.
+        let parser = MarkdownParser::new();
+        let doc = "# T\n\nfirst para long enough.\n\nsecond para long enough.\n";
+        let chunks = parser.parse(doc, "f.md").unwrap();
+        let content_chunk = chunks
+            .iter()
+            .find(|c| c.level == ChunkLevel::CONTENT)
+            .expect("expected a CONTENT chunk");
+        assert_eq!(
+            content_chunk.content,
+            "first para long enough. \nsecond para long enough."
+        );
+    }
 }
