@@ -44,6 +44,9 @@ fn no_scopes_error(all_scopes: &[ResolvedScope], filter_name: &str) -> crate::Er
             available.join(", ")
         ))
     } else {
+        // The `init --share` hint only belongs here: it applies when no scopes exist
+        // at all. On the scope-not-found branch above, scopes already exist, so
+        // suggesting `init` would be misleading — list the available names instead.
         crate::Error::InvalidOperation(
             "No scopes configured. Add scopes to your config:\n  \
              veclayer init --share    # enable git memory for this project"
@@ -940,5 +943,294 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("remote storage not yet supported"));
+    }
+
+    // ── is_remote_git_url: boundary / edge cases ─────────────────────────────
+
+    #[test]
+    fn test_is_remote_git_url_empty_string() {
+        assert!(!is_remote_git_url(""));
+    }
+
+    #[test]
+    fn test_is_remote_git_url_git_at_infix_not_prefix() {
+        // Contains "git@" as substring — qualifies as remote.
+        assert!(is_remote_git_url("something git@host.com:repo"));
+    }
+
+    // ── no_scopes_error: direct unit tests ───────────────────────────────────
+
+    /// When filter_name is non-empty and scopes are non-empty, the error names
+    /// the missing scope and lists available ones.
+    #[test]
+    fn test_no_scopes_error_scope_not_found_names_missing_and_available() {
+        let scopes = vec![make_scope("alpha", "git"), make_scope("beta", "git")];
+        let err = no_scopes_error(&scopes, "gamma");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("gamma"),
+            "error must name the missing scope, got: {msg}"
+        );
+        assert!(
+            msg.contains("alpha"),
+            "error must list available scope 'alpha', got: {msg}"
+        );
+        assert!(
+            msg.contains("beta"),
+            "error must list available scope 'beta', got: {msg}"
+        );
+        assert!(
+            !msg.contains("No scopes configured"),
+            "scope-not-found branch must NOT say 'No scopes configured', got: {msg}"
+        );
+    }
+
+    /// When filter_name is empty (regardless of scope list), the fallback
+    /// error message is the "No scopes configured" hint.
+    #[test]
+    fn test_no_scopes_error_empty_filter_returns_no_scopes_message() {
+        let err = no_scopes_error(&[], "");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("No scopes configured"),
+            "empty-filter branch must say 'No scopes configured', got: {msg}"
+        );
+    }
+
+    /// When filter_name is empty but scopes ARE present (the user passed an
+    /// empty `--scope ''` that does not match any configured name), the error
+    /// must still list the available scopes — telling the user "No scopes
+    /// configured" while scopes do exist is misleading.
+    #[test]
+    fn test_no_scopes_error_empty_filter_with_existing_scopes_lists_available() {
+        let scopes = vec![make_scope("alpha", "git"), make_scope("beta", "git")];
+        let err = no_scopes_error(&scopes, "");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not found"),
+            "empty filter with scopes must report the missing-scope branch, got: {msg}"
+        );
+        assert!(
+            msg.contains("alpha") && msg.contains("beta"),
+            "must list every configured scope when scopes exist, got: {msg}"
+        );
+    }
+
+    // ── MigrateFilters: since boundary ────────────────────────────────────────
+    //
+    // The production predicate rejects only when `created_at < since_ts`, so
+    // `since` is an inclusive lower bound: every entry with
+    // `created_at >= since_ts` passes. Three tests pin both sides of the bound
+    // and the equality point.
+
+    /// Equality with the boundary passes (inclusive lower bound).
+    #[test]
+    fn test_migrate_filters_since_boundary_equality_passes() {
+        let mut chunk = test_chunk();
+        chunk.access_profile.created_at = 1_000_000;
+
+        assert!(
+            filters_with_since(Some(1_000_000)).accepts(&chunk),
+            "created_at == since must be accepted (since is an inclusive lower bound)"
+        );
+    }
+
+    /// One tick above the boundary passes.
+    #[test]
+    fn test_migrate_filters_since_one_above_boundary_passes() {
+        let mut chunk = test_chunk();
+        chunk.access_profile.created_at = 1_000_001;
+
+        assert!(
+            filters_with_since(Some(1_000_000)).accepts(&chunk),
+            "created_at > since must be accepted"
+        );
+    }
+
+    /// One tick below the boundary is rejected.
+    #[test]
+    fn test_migrate_filters_since_one_below_boundary_rejected() {
+        let mut chunk = test_chunk();
+        chunk.access_profile.created_at = 999_999;
+
+        assert!(
+            !filters_with_since(Some(1_000_000)).accepts(&chunk),
+            "created_at < since must be rejected"
+        );
+    }
+
+    // ── MigrateFilters: multi-perspective matching ────────────────────────────
+
+    /// Include filter uses `any` — chunk only needs one matching perspective.
+    #[test]
+    fn test_migrate_filters_include_matches_any_perspective_on_chunk() {
+        let chunk =
+            test_chunk_with_perspectives(vec!["decisions".to_string(), "learnings".to_string()]);
+
+        // filter requires "learnings" — chunk has it alongside "decisions"
+        assert!(
+            filters_with_perspectives(vec!["learnings".to_string()]).accepts(&chunk),
+            "include filter must accept when any chunk perspective matches"
+        );
+    }
+
+    /// Include filter with multiple allowed perspectives — chunk has one of them.
+    #[test]
+    fn test_migrate_filters_include_multiple_allowed_any_match_accepted() {
+        let chunk = test_chunk_with_perspectives(vec!["knowledge".to_string()]);
+
+        let filters =
+            filters_with_perspectives(vec!["decisions".to_string(), "knowledge".to_string()]);
+        assert!(
+            filters.accepts(&chunk),
+            "include filter with two allowed perspectives must accept when chunk has one"
+        );
+    }
+
+    /// Include filter with multiple allowed perspectives — chunk has NONE of them.
+    #[test]
+    fn test_migrate_filters_include_multiple_allowed_no_match_rejected() {
+        let chunk = test_chunk_with_perspectives(vec!["intentions".to_string()]);
+
+        let filters =
+            filters_with_perspectives(vec!["decisions".to_string(), "knowledge".to_string()]);
+        assert!(
+            !filters.accepts(&chunk),
+            "include filter must reject when chunk has none of the allowed perspectives"
+        );
+    }
+
+    // ── MigrateFilters: exclude with multi-perspective chunks ─────────────────
+
+    /// Exclude rejects a chunk even when it has other perspectives beyond the excluded one.
+    #[test]
+    fn test_migrate_filters_exclude_rejects_multi_perspective_chunk() {
+        let chunk =
+            test_chunk_with_perspectives(vec!["decisions".to_string(), "learnings".to_string()]);
+
+        assert!(
+            !filters_with_exclude(Some("learnings")).accepts(&chunk),
+            "exclude must reject chunk that has the excluded perspective alongside others"
+        );
+    }
+
+    /// Exclude does not reject when the excluded perspective is absent, even with others.
+    #[test]
+    fn test_migrate_filters_exclude_accepts_when_excluded_perspective_absent() {
+        let chunk =
+            test_chunk_with_perspectives(vec!["decisions".to_string(), "knowledge".to_string()]);
+
+        assert!(
+            filters_with_exclude(Some("learnings")).accepts(&chunk),
+            "exclude must accept chunk that does NOT have the excluded perspective"
+        );
+    }
+
+    // ── MigrateFilters: all three filters combined ────────────────────────────
+
+    /// All three filters active: include passes, exclude not present, since passes.
+    #[test]
+    fn test_migrate_filters_all_three_all_pass() {
+        let mut chunk = test_chunk_with_perspectives(vec!["decisions".to_string()]);
+        chunk.access_profile.created_at = 1_000_000;
+
+        let filters = MigrateFilters {
+            perspectives: vec!["decisions".to_string()],
+            exclude_perspective: Some("learnings".to_string()),
+            since: Some(500_000),
+        };
+        assert!(filters.accepts(&chunk));
+    }
+
+    /// All three filters active: include passes, exclude is PRESENT on chunk → reject.
+    #[test]
+    fn test_migrate_filters_all_three_exclude_present_rejects() {
+        let mut chunk =
+            test_chunk_with_perspectives(vec!["decisions".to_string(), "learnings".to_string()]);
+        chunk.access_profile.created_at = 1_000_000;
+
+        let filters = MigrateFilters {
+            perspectives: vec!["decisions".to_string()],
+            exclude_perspective: Some("learnings".to_string()),
+            since: Some(500_000),
+        };
+        assert!(!filters.accepts(&chunk));
+    }
+
+    /// All three filters active: include passes, exclude absent, since FAILS → reject.
+    #[test]
+    fn test_migrate_filters_all_three_since_fails_rejects() {
+        let mut chunk = test_chunk_with_perspectives(vec!["decisions".to_string()]);
+        chunk.access_profile.created_at = 100;
+
+        let filters = MigrateFilters {
+            perspectives: vec!["decisions".to_string()],
+            exclude_perspective: Some("learnings".to_string()),
+            since: Some(500_000),
+        };
+        assert!(!filters.accepts(&chunk));
+    }
+
+    // ── print_entry_list: edge cases ─────────────────────────────────────────
+
+    /// Entry with no heading and empty content falls back to "(empty)".
+    #[test]
+    fn test_print_entry_list_empty_content_no_heading() {
+        use crate::entry::Entry;
+
+        // Build a chunk with empty content; heading defaults to None.
+        let chunk = HierarchicalChunk::new(
+            String::new(),
+            ChunkLevel::H1,
+            None,
+            String::new(),
+            "src.md".to_string(),
+        );
+        let entry = Entry::from_chunk(&chunk);
+        // Should not panic — the "(empty)" fallback in print_entry_list must fire.
+        print_entry_list(&[entry]);
+    }
+
+    /// Entry with no heading: content's first line is used as the heading preview.
+    #[test]
+    fn test_print_entry_list_no_heading_uses_first_content_line() {
+        use crate::entry::Entry;
+
+        let chunk = HierarchicalChunk::new(
+            "First line\nSecond line".to_string(),
+            ChunkLevel::H1,
+            None,
+            String::new(),
+            "src.md".to_string(),
+        );
+        let entry = Entry::from_chunk(&chunk);
+        // Should not panic.
+        print_entry_list(&[entry]);
+    }
+
+    // ── sync: scope_filter = Some("") with non-empty scopes ─────────────────
+
+    /// When scope_filter is `Some("")` and scopes are configured, no scope
+    /// matches "" so we route through the scope-not-found branch — the error
+    /// must list the available scopes rather than claim no scopes exist.
+    #[tokio::test]
+    async fn test_sync_empty_string_scope_filter_lists_available_scopes() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let scopes = vec![make_scope("alpha", "git"), make_scope("beta", "git")];
+
+        let result = sync(temp_dir.path(), &scopes, Some(""), false).await;
+        assert!(
+            result.is_err(),
+            "empty-string scope filter with no matching scope must return Err"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not found"),
+            "empty scope filter must report the missing-scope branch, got: {msg}"
+        );
+        assert!(
+            msg.contains("alpha") && msg.contains("beta"),
+            "must list every configured scope when scopes exist, got: {msg}"
+        );
     }
 }
