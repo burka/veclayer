@@ -229,4 +229,84 @@ mod tests {
             "Expected missing-content error, got: {err}"
         );
     }
+
+    // 4. name() accessor returns the model string from config
+    #[test]
+    fn name_returns_model_string() {
+        let llm = OpenAiLlm::new(&make_config(0, None)).expect("client build");
+        assert_eq!(llm.name(), "gpt-test");
+    }
+
+    // 5. api_key: None sends an empty bearer token (header present, value is "Bearer ")
+    #[tokio::test]
+    async fn complete_with_no_api_key_sends_empty_bearer() {
+        let body = r#"{"choices":[{"message":{"content":"ok"}}]}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (port, mock) = spawn_mock(response).await;
+
+        let llm = OpenAiLlm::new(&make_config(port, None)).expect("client build");
+        let result = llm.complete(&[Message::user("hi")]).await;
+
+        let request = mock.await.unwrap();
+        assert_eq!(result.unwrap(), "ok");
+        let request_lower = request.to_lowercase();
+        let needle = "authorization: bearer ";
+        let idx = request_lower
+            .find(needle)
+            .unwrap_or_else(|| panic!("Authorization header missing in request:\n{request}"));
+        let after = &request_lower[idx + needle.len()..];
+        let token: String = after.chars().take_while(|c| !c.is_whitespace()).collect();
+        assert_eq!(
+            token, "",
+            "Expected empty bearer token, got '{token}' in request:\n{request}"
+        );
+    }
+
+    // 6. Malformed JSON 200 body → Err containing "parse failed"
+    #[tokio::test]
+    async fn complete_errors_on_malformed_json_body() {
+        let body = "not json{";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (port, mock) = spawn_mock(response).await;
+
+        let llm = OpenAiLlm::new(&make_config(port, Some("sk-test"))).expect("client build");
+        let result = llm.complete(&[Message::user("hi")]).await;
+
+        mock.await.unwrap();
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("OpenAI response parse failed"),
+            "Expected 'OpenAI response parse failed' in error, got: {err}"
+        );
+    }
+
+    // 7. Empty messages slice serialises to "messages":[] and returns content
+    #[tokio::test]
+    async fn complete_with_empty_messages_sends_empty_array() {
+        let body = r#"{"choices":[{"message":{"content":"empty-ok"}}]}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (port, mock) = spawn_mock(response).await;
+
+        let llm = OpenAiLlm::new(&make_config(port, Some("sk-test"))).expect("client build");
+        let result = llm.complete(&[]).await;
+
+        let request = mock.await.unwrap();
+        assert_eq!(result.unwrap(), "empty-ok");
+        assert!(
+            request.contains(r#""messages":[]"#),
+            "Expected empty messages array in request body, got:\n{request}"
+        );
+    }
 }
