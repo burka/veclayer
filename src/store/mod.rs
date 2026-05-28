@@ -262,6 +262,21 @@ impl StoreBackend {
             Self::Sqlite(_) => Ok(CompactStats::default()),
         }
     }
+
+    /// Force a compact + prune, invoking `progress` after each bounded pass.
+    /// Lets callers stream progress while a large backlog drains incrementally.
+    /// No-op for non-Lance backends (the closure is never called).
+    #[cfg(feature = "store-lance")]
+    pub async fn force_compact_with_progress<F>(&self, progress: F) -> Result<CompactStats>
+    where
+        F: FnMut(CompactStats),
+    {
+        match self {
+            Self::Lance(s) => s.force_compact_with_progress(progress).await,
+            #[cfg(feature = "store-sqlite")]
+            Self::Sqlite(_) => Ok(CompactStats::default()),
+        }
+    }
 }
 
 /// Dispatch a method call to the active backend variant.

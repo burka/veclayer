@@ -20,8 +20,22 @@ use crate::{ChunkLevel, ClusterMembership, Error, HierarchicalChunk, Result};
 
 pub(crate) const TABLE_NAME: &str = "chunks";
 
-/// Auto-compaction threshold: prune old versions when version count exceeds this.
-const MAX_VERSIONS: usize = 50;
+/// Versions retained on every prune pass — a safety margin for readers and
+/// concurrent access. Never pruned away.
+const KEEP_VERSIONS: usize = 3;
+
+/// Upper bound on how many old versions a single auto-compact pass removes.
+/// Bounding the pass keeps it fast enough to finish inside a short-lived process
+/// (e.g. the `observe` PostToolUse hook). An unbounded pass on a large backlog
+/// runs for minutes; when the host process is killed mid-flight it leaves the
+/// store fragmented, which is the failure mode behind the multi-GB version
+/// blowup. Bounded passes always complete, so the backlog drains over time.
+const MAX_PRUNE_PER_PASS: usize = 50;
+
+/// Auto-compaction fires once the number of *old* versions (those beyond the
+/// kept safety margin) exceeds this. Low so backlog never accumulates: a write
+/// triggers a cheap bounded compaction instead of waiting for a large one.
+const AUTO_COMPACT_MAX_OLD_VERSIONS: usize = 3;
 
 /// Byte offset into the source document at which this chunk starts.
 /// `start_offset` and `end_offset` are not persisted in LanceDB; they are
@@ -233,8 +247,12 @@ impl LanceStore {
         Ok((table, versions))
     }
 
-    /// Compact fragments + prune old versions if version count exceeds MAX_VERSIONS.
-    /// Keeps the last 3 versions as a safety margin for concurrent access.
+    /// Compact fragments + prune old versions when more than
+    /// `AUTO_COMPACT_MAX_OLD_VERSIONS` old versions have accumulated (those
+    /// beyond the `KEEP_VERSIONS` safety margin). Triggering early keeps each
+    /// pass cheap. The pass is *bounded* to `MAX_PRUNE_PER_PASS` removals so it
+    /// always finishes inside a short-lived process; a large backlog drains over
+    /// successive writes rather than in one unbounded (and killable) pass.
     /// Below the threshold this is a near-free `list_versions()` check.
     pub(crate) async fn auto_compact_if_needed(&self) -> Result<CompactStats> {
         if self.is_read_only() {
@@ -243,24 +261,70 @@ impl LanceStore {
 
         let (table, versions) = self.open_table_and_versions().await?;
 
-        if versions.len() <= MAX_VERSIONS {
+        let old_versions = versions.len().saturating_sub(KEEP_VERSIONS);
+        if old_versions <= AUTO_COMPACT_MAX_OLD_VERSIONS {
             return Ok(CompactStats::default());
         }
 
-        Self::run_compact(&table, versions).await
+        let keep = Self::bounded_prune_keep(versions.len(), KEEP_VERSIONS, MAX_PRUNE_PER_PASS);
+        Self::run_compact(&table, versions, keep).await
     }
 
-    /// Run compact + prune unconditionally, returning detailed stats.
+    /// Effective number of versions to keep for a single bounded prune pass.
+    ///
+    /// Pruning removes `total - keep_for_pass` versions. To cap a pass at
+    /// `max_per_pass` removals we keep *more* than the final `keep` when the
+    /// backlog is large, draining it over several passes. Once the remaining
+    /// backlog fits in one pass we keep exactly `keep`. `max_per_pass == 0`
+    /// disables pruning (keeps everything).
+    fn bounded_prune_keep(total: usize, keep: usize, max_per_pass: usize) -> usize {
+        keep.max(total.saturating_sub(max_per_pass))
+    }
+
+    /// Run compact + prune unconditionally, returning aggregate stats.
     /// Used by the user-invoked `veclayer reflect prune` command and the daily
-    /// background timer in the MCP server, where we want progress regardless of
-    /// the version-count threshold.
+    /// background timer in the MCP server, where we want to drain the whole
+    /// backlog regardless of the version-count threshold.
     pub(crate) async fn force_compact(&self) -> Result<CompactStats> {
+        self.force_compact_with_progress(|_| {}).await
+    }
+
+    /// Like [`Self::force_compact`] but invokes `progress` after each bounded
+    /// pass with that pass's stats. Drains the backlog in `MAX_PRUNE_PER_PASS`
+    /// slices so a large store reclaims space incrementally and the caller can
+    /// surface progress. Loops until a pass removes no further versions.
+    pub(crate) async fn force_compact_with_progress<F>(
+        &self,
+        mut progress: F,
+    ) -> Result<CompactStats>
+    where
+        F: FnMut(CompactStats),
+    {
         if self.is_read_only() {
             return Err(Error::store("Cannot compact a read-only store".to_string()));
         }
 
-        let (table, versions) = self.open_table_and_versions().await?;
-        Self::run_compact(&table, versions).await
+        let mut total = CompactStats::default();
+        loop {
+            let (table, versions) = self.open_table_and_versions().await?;
+            let keep = Self::bounded_prune_keep(versions.len(), KEEP_VERSIONS, MAX_PRUNE_PER_PASS);
+            let stats = Self::run_compact(&table, versions, keep).await?;
+
+            total.versions_removed += stats.versions_removed;
+            total.bytes_reclaimed += stats.bytes_reclaimed;
+            total.fragments_removed += stats.fragments_removed;
+            total.fragments_added += stats.fragments_added;
+            total.files_removed += stats.files_removed;
+            total.files_added += stats.files_added;
+
+            // A pass that removed nothing means the backlog is drained (only the
+            // kept safety margin remains) — stop to avoid looping forever.
+            if stats.versions_removed == 0 {
+                break;
+            }
+            progress(stats);
+        }
+        Ok(total)
     }
 
     /// Compute the prune cutoff: the age (duration before `now`) of the
@@ -283,7 +347,11 @@ impl LanceStore {
         (now - cutoff).max(chrono::TimeDelta::zero())
     }
 
-    /// Compact fragments and prune old versions, keeping the last `KEEP_VERSIONS`.
+    /// Compact fragments and prune old versions, keeping the newest `keep`.
+    ///
+    /// `keep` is the effective retention for this pass — callers pass
+    /// [`Self::bounded_prune_keep`] to cap how many versions a single pass
+    /// removes, or `KEEP_VERSIONS` directly to drain everything in one go.
     ///
     /// Returns an error if either the fragment compaction or the version prune
     /// fails. This is deliberate: a silently swallowed failure on the only
@@ -292,23 +360,22 @@ impl LanceStore {
     async fn run_compact(
         table: &Table,
         versions: Vec<lancedb::table::Version>,
+        keep: usize,
     ) -> Result<CompactStats> {
-        const KEEP_VERSIONS: usize = 3;
-
-        // Cutoff = age of the KEEP_VERSIONS-th most recent version, so prune
-        // removes everything older than that (keeping the newest KEEP_VERSIONS).
+        // Cutoff = age of the `keep`-th most recent version, so prune removes
+        // everything older than that (keeping the newest `keep`).
         let mut sorted = versions;
         sorted.sort_by_key(|b| std::cmp::Reverse(b.version));
         let total_versions = sorted.len();
         let timestamps: Vec<chrono::DateTime<chrono::Utc>> =
             sorted.iter().map(|v| v.timestamp).collect();
-        let older_than = Self::compute_prune_cutoff(&timestamps, KEEP_VERSIONS, chrono::Utc::now());
+        let older_than = Self::compute_prune_cutoff(&timestamps, keep, chrono::Utc::now());
 
         tracing::info!(
             "Auto-compact: {} versions, compacting fragments and pruning older than {:?} (keep {})",
             total_versions,
             older_than,
-            KEEP_VERSIONS
+            keep
         );
 
         use lancedb::table::OptimizeAction;
@@ -427,10 +494,20 @@ impl LanceStore {
                     if let Ok(versions) = table.list_versions().await {
                         if versions.len() > 500 {
                             tracing::warn!(
-                                "Store has {} old versions -- running one-time aggressive compact+prune",
+                                "Store has {} old versions -- running one-time bounded compact+prune",
                                 versions.len()
                             );
-                            match Self::run_compact(&table, versions).await {
+                            // Bounded pass: even detached in a background task that
+                            // may be killed when a short-lived process exits, a single
+                            // pass finishes fast and makes safe forward progress. The
+                            // >3-old-versions auto-compact on subsequent writes drains
+                            // the rest.
+                            let keep = Self::bounded_prune_keep(
+                                versions.len(),
+                                KEEP_VERSIONS,
+                                MAX_PRUNE_PER_PASS,
+                            );
+                            match Self::run_compact(&table, versions, keep).await {
                                 Ok(s) => tracing::info!(
                                     "One-time compact done: {} versions, {} fragments merged, {} bytes reclaimed",
                                     s.versions_removed, s.fragments_removed, s.bytes_reclaimed
@@ -1181,14 +1258,20 @@ impl VectorStore for LanceStore {
                 .await
                 .map_err(|e| Error::store(format!("Failed to insert chunks: {}", e)))?;
 
-            // Fire-and-forget auto-compaction after writes
-            if let Err(e) = self.auto_compact_if_needed().await {
-                tracing::warn!("Auto-compact after insert failed (non-fatal): {}", e);
-            }
-
             Ok(())
         })
-        .await
+        .await?;
+
+        // Auto-compaction runs *after* the write lock is released so the insert
+        // returns without waiting on it. The bounded pass reacquires the lock
+        // briefly; keeping it off the write path means a slow compaction never
+        // stalls the caller's write. Failures are non-fatal — the next write
+        // retries.
+        if let Err(e) = self.auto_compact_if_needed().await {
+            tracing::warn!("Auto-compact after insert failed (non-fatal): {}", e);
+        }
+
+        Ok(())
     }
 
     async fn search(
@@ -3948,12 +4031,13 @@ mod tests {
         assert_eq!(stats.versions_removed, 0);
     }
 
-    /// auto_compact_if_needed on a fresh store (versions <= MAX_VERSIONS) must
+    /// auto_compact_if_needed on a fresh store (few versions, ≤3 old) must
     /// return Ok(default) — the below-threshold early return must still work.
     #[tokio::test]
     async fn test_auto_compact_noop_below_threshold() {
         let (store, _dir) = create_test_store().await;
-        // Only the initial table version exists — well below MAX_VERSIONS.
+        // Only the initial table version exists — well below the old-version
+        // trigger (AUTO_COMPACT_MAX_OLD_VERSIONS).
         let result = store.auto_compact_if_needed().await;
         assert!(
             result.is_ok(),
@@ -3963,6 +4047,44 @@ mod tests {
         let stats = result.unwrap();
         assert_eq!(stats.fragments_removed, 0);
         assert_eq!(stats.versions_removed, 0);
+    }
+
+    /// Regression guard for the version blowup: with auto-compaction firing on
+    /// the write path (>3 old versions), a long run of inserts must keep the
+    /// version count bounded instead of accumulating one manifest per write.
+    /// Before the fix, 60 inserts left 60+ versions; now it self-trims.
+    #[tokio::test]
+    async fn test_auto_compact_keeps_versions_bounded_across_many_inserts() {
+        let (store, _dir) = create_test_store().await;
+
+        for i in 0..60u32 {
+            store
+                .insert_chunks(vec![create_test_chunk(
+                    &format!("bound{i:03}"),
+                    &format!("content {i}"),
+                    ChunkLevel::CONTENT,
+                )])
+                .await
+                .unwrap();
+        }
+
+        let table = store
+            .connection
+            .open_table(TABLE_NAME)
+            .execute()
+            .await
+            .unwrap();
+        let versions = table.list_versions().await.unwrap().len();
+
+        // Each insert adds a version, but auto-compaction prunes once >3 old
+        // versions accumulate. The steady state stays far below the insert count
+        // (it cannot prune the just-written newest few, so allow generous slack).
+        assert!(
+            versions < 30,
+            "auto-compaction must keep versions bounded; got {versions} after 60 inserts"
+        );
+        // All data must survive the repeated auto-compaction.
+        assert_eq!(store.stats().await.unwrap().total_chunks, 60);
     }
 
     // NOTE: the open_table/list_versions error paths in auto_compact_if_needed
@@ -4058,6 +4180,129 @@ mod tests {
             ro.force_compact().await.is_err(),
             "force_compact on a read-only store must return an error"
         );
+    }
+
+    /// force_compact_with_progress must invoke the callback at least once when
+    /// there is a backlog to drain, the per-pass stats it reports must sum to the
+    /// returned aggregate, and the store must end at or below the kept margin.
+    #[tokio::test]
+    async fn test_force_compact_with_progress_reports_and_drains() {
+        let (store, _dir) = create_test_store().await;
+
+        // 20 inserts → 20 old versions, comfortably over KEEP_VERSIONS so the
+        // first pass prunes and the callback fires.
+        for i in 0..20u32 {
+            store
+                .insert_chunks(vec![create_test_chunk(
+                    &format!("prog{i:03}"),
+                    &format!("content {i}"),
+                    ChunkLevel::CONTENT,
+                )])
+                .await
+                .unwrap();
+        }
+
+        let mut passes = 0u32;
+        let mut summed_versions = 0u64;
+        let total = store
+            .force_compact_with_progress(|s| {
+                passes += 1;
+                summed_versions += s.versions_removed;
+            })
+            .await
+            .unwrap();
+
+        assert!(passes >= 1, "callback must fire at least once on a backlog");
+        assert!(
+            total.versions_removed > 0,
+            "a 20-version backlog must prune something"
+        );
+        assert_eq!(
+            summed_versions, total.versions_removed,
+            "per-pass callback stats must sum to the returned aggregate"
+        );
+
+        // Backlog drained: only the kept safety margin remains.
+        let table = store
+            .connection
+            .open_table(TABLE_NAME)
+            .execute()
+            .await
+            .unwrap();
+        let remaining = table.list_versions().await.unwrap().len();
+        assert!(
+            remaining <= KEEP_VERSIONS + 1,
+            "force_compact must drain to ~KEEP_VERSIONS, got {remaining}"
+        );
+
+        // Data survives.
+        assert_eq!(store.stats().await.unwrap().total_chunks, 20);
+    }
+
+    /// A second force_compact pass on an already-drained store is a clean no-op:
+    /// the callback never fires and the aggregate is zeroed. Guards against the
+    /// drain loop spinning forever.
+    #[tokio::test]
+    async fn test_force_compact_with_progress_noop_when_drained() {
+        let (store, _dir) = create_test_store().await;
+        for i in 0..6u32 {
+            store
+                .insert_chunks(vec![create_test_chunk(
+                    &format!("drain{i:03}"),
+                    "x",
+                    ChunkLevel::CONTENT,
+                )])
+                .await
+                .unwrap();
+        }
+        // First drain.
+        store.force_compact().await.unwrap();
+
+        // Second drain must do nothing and never invoke the callback.
+        let mut passes = 0u32;
+        let total = store
+            .force_compact_with_progress(|_| passes += 1)
+            .await
+            .unwrap();
+        assert_eq!(passes, 0, "drained store must not invoke progress callback");
+        assert_eq!(total.versions_removed, 0, "nothing left to prune");
+    }
+
+    // ── bounded_prune_keep ────────────────────────────────────────────────────
+
+    /// Green path: a large backlog keeps more than the final margin so the pass
+    /// removes exactly `max_per_pass` versions (total - keep_for_pass == 50).
+    #[test]
+    fn test_bounded_prune_keep_large_backlog_caps_removals() {
+        // 100 versions, keep 3, cap 50 → keep 50 this pass (removes 50).
+        assert_eq!(LanceStore::bounded_prune_keep(100, 3, 50), 50);
+        assert_eq!(100 - LanceStore::bounded_prune_keep(100, 3, 50), 50);
+    }
+
+    /// Edge: when the remaining backlog fits within one pass, keep exactly the
+    /// final margin so the last pass drains down to `keep`.
+    #[test]
+    fn test_bounded_prune_keep_small_backlog_keeps_final_margin() {
+        // 40 versions, keep 3, cap 50 → 40-50 saturates to 0, max(3,0) = 3.
+        assert_eq!(LanceStore::bounded_prune_keep(40, 3, 50), 3);
+        // Exactly keep+cap: 53 - 50 = 3 == keep, the boundary where the last
+        // bounded pass and the final margin coincide.
+        assert_eq!(LanceStore::bounded_prune_keep(53, 3, 50), 3);
+        // One above the boundary still caps the pass at 50 removals.
+        assert_eq!(LanceStore::bounded_prune_keep(54, 3, 50), 4);
+    }
+
+    /// Edge/error: fewer versions than the margin keeps everything (no removal),
+    /// and `max_per_pass == 0` disables pruning entirely.
+    #[test]
+    fn test_bounded_prune_keep_degenerate_inputs() {
+        // total <= keep → keep them all (saturating_sub floors at 0, max(3,0)=3,
+        // but total is 2 so the cutoff math downstream prunes nothing).
+        assert_eq!(LanceStore::bounded_prune_keep(2, 3, 50), 3);
+        // max_per_pass == 0 → keep == total, so nothing is pruned.
+        assert_eq!(LanceStore::bounded_prune_keep(100, 3, 0), 100);
+        // keep == 0 with a cap still keeps (total - cap), never collapses below 0.
+        assert_eq!(LanceStore::bounded_prune_keep(10, 0, 50), 0);
     }
 
     #[test]

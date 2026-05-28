@@ -51,12 +51,28 @@ async fn compact_rotate(data_dir: &Path) -> Result<()> {
 
 /// Compact LanceDB: merge fragments, materialize deletions, prune old versions.
 /// Always runs (ignores the auto-compact threshold) and reports what was reclaimed.
+///
+/// A large backlog is drained in bounded passes; each pass prints a progress
+/// line so the user sees forward motion instead of a multi-minute silent wait.
 async fn compact_prune(data_dir: &Path) -> Result<()> {
     let (_config, _embedder, store, _blob_store) = open_store(data_dir).await?;
 
-    let stats = store.force_compact().await?;
-
     println!("Compact: fragments + versions");
+
+    let mut pass = 0u32;
+    let stats = store
+        .force_compact_with_progress(|s| {
+            pass += 1;
+            println!(
+                "  pass {pass}: {} versions pruned, {} reclaimed ({} fragments merged)",
+                s.versions_removed,
+                crate::util::format_bytes(s.bytes_reclaimed),
+                s.fragments_removed,
+            );
+        })
+        .await?;
+
+    println!("Done after {pass} pass(es):");
     println!(
         "  Fragments: {} merged → {} ({} files removed, {} added)",
         stats.fragments_removed, stats.fragments_added, stats.files_removed, stats.files_added
