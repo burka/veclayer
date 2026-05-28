@@ -182,13 +182,33 @@ impl OllamaEmbedder {
             FORMAT_OPENAI => self.try_openai(texts).await,
             _ => {
                 // Unknown: probe Ollama first, then fall back to OpenAI.
-                if let Some(result) = self.try_ollama(texts).await? {
-                    self.api_format.store(FORMAT_OLLAMA, Ordering::Relaxed);
-                    Ok(result)
-                } else {
-                    let result = self.try_openai(texts).await?;
-                    self.api_format.store(FORMAT_OPENAI, Ordering::Relaxed);
-                    Ok(result)
+                // Any failure (404 → None, or non-2xx → Err) is treated as
+                // "Ollama not available here" so we always attempt OpenAI next.
+                let ollama_err = match self.try_ollama(texts).await {
+                    Ok(Some(result)) => {
+                        self.api_format.store(FORMAT_OLLAMA, Ordering::Relaxed);
+                        return Ok(result);
+                    }
+                    Ok(None) => None,
+                    Err(e) => Some(e),
+                };
+
+                match self.try_openai(texts).await {
+                    Ok(result) => {
+                        self.api_format.store(FORMAT_OPENAI, Ordering::Relaxed);
+                        Ok(result)
+                    }
+                    Err(openai_err) => {
+                        let msg = match ollama_err {
+                            Some(e) => format!(
+                                "auto-detect failed — Ollama: {e}; OpenAI-compatible: {openai_err}"
+                            ),
+                            None => format!(
+                                "auto-detect failed — Ollama: endpoint not found; OpenAI-compatible: {openai_err}"
+                            ),
+                        };
+                        Err(Error::embedding(msg))
+                    }
                 }
             }
         }
@@ -687,6 +707,108 @@ mod tests {
             result
         );
         assert_eq!(result.unwrap().len(), 2);
+    }
+
+    // ── FORMAT_UNKNOWN discovery / auto-detect probe coverage ────────────────
+
+    /// Accept exactly two sequential connections, replying to each with the
+    /// supplied (status, body) pair, in the order the discovery code probes:
+    /// Ollama first, then the OpenAI-compatible endpoint.
+    fn serve_probe_pair(listener: TcpListener, first: (u16, String), second: (u16, String)) {
+        tokio::spawn(async move {
+            for (status, body) in [first, second] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Length: {len}\r\nContent-Type: application/json\r\n\r\n{body}",
+                    reason = if (200..300).contains(&status) { "OK" } else { "Error" },
+                    len = body.len(),
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+    }
+
+    fn embedder_unknown_at(base_url: &str) -> OllamaEmbedder {
+        OllamaEmbedder::new("test-model", base_url, 1).unwrap()
+    }
+
+    /// Ollama returns 404 (endpoint not found) → falls through to OpenAI succeeds.
+    /// api_format must be cached as FORMAT_OPENAI afterward.
+    #[tokio::test]
+    async fn probe_ollama_404_falls_through_to_openai() {
+        let (listener, base_url) = mock_listener().await;
+        serve_probe_pair(
+            listener,
+            (404, r#"{"error":"not found"}"#.to_string()),
+            (200, openai_response_json(1)),
+        );
+
+        let embedder = embedder_unknown_at(&base_url);
+        let result = embedder.embed_async(&["text"]).await;
+
+        assert!(
+            result.is_ok(),
+            "expected Ok after Ollama 404 fallthrough; got: {result:?}"
+        );
+        assert_eq!(result.unwrap().len(), 1);
+        assert_eq!(
+            embedder.api_format.load(Ordering::Relaxed),
+            FORMAT_OPENAI,
+            "api_format must be cached as FORMAT_OPENAI"
+        );
+    }
+
+    /// Ollama returns 500 (reachable but erroring) → falls through to OpenAI succeeds.
+    /// This is the case that the old `?` propagation broke entirely.
+    #[tokio::test]
+    async fn probe_ollama_500_falls_through_to_openai() {
+        let (listener, base_url) = mock_listener().await;
+        serve_probe_pair(
+            listener,
+            (500, r#"{"error":"internal error"}"#.to_string()),
+            (200, openai_response_json(1)),
+        );
+
+        let embedder = embedder_unknown_at(&base_url);
+        let result = embedder.embed_async(&["text"]).await;
+
+        assert!(
+            result.is_ok(),
+            "expected Ok after Ollama 500 fallthrough; got: {result:?}"
+        );
+        assert_eq!(result.unwrap().len(), 1);
+        assert_eq!(
+            embedder.api_format.load(Ordering::Relaxed),
+            FORMAT_OPENAI,
+            "api_format must be cached as FORMAT_OPENAI"
+        );
+    }
+
+    /// Both probes fail → Err whose message references both failures.
+    #[tokio::test]
+    async fn probe_both_fail_returns_combined_error() {
+        let (listener, base_url) = mock_listener().await;
+        serve_probe_pair(
+            listener,
+            (500, r#"{"error":"ollama down"}"#.to_string()),
+            (401, r#"{"error":"unauthorized"}"#.to_string()),
+        );
+
+        let embedder = embedder_unknown_at(&base_url);
+        let result = embedder.embed_async(&["text"]).await;
+
+        assert!(result.is_err(), "expected Err when both probes fail");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("Ollama") || msg.contains("ollama") || msg.contains("auto-detect"),
+            "error should mention Ollama; got: {msg}"
+        );
+        assert!(
+            msg.contains("OpenAI") || msg.contains("openai") || msg.contains("401"),
+            "error should mention OpenAI failure; got: {msg}"
+        );
     }
 
     // ── integration smoke tests (require live server, skipped by default) ──────

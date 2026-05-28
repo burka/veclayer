@@ -89,17 +89,20 @@ struct EmbeddingsResponse {
     data: Vec<EmbeddingEntry>,
 }
 
-/// Strip a trailing `/` and optional `/v1` suffix so known paths can be appended.
+/// Strip a trailing `/` and optional `/v1/embeddings`, `/v1/models`, or `/v1`
+/// suffix so known paths can be appended without duplication.
 ///
-/// vLLM's `OPENAI_API_BASE` is conventionally `http://host:8000/v1`; this lets a
-/// user paste that value and still get a correct `{base}/v1/models` URL.
+/// vLLM docs show both `http://host:8000/v1` and full endpoint URLs like
+/// `http://host:8000/v1/models` as valid `OPENAI_API_BASE` values. Longest
+/// match is checked first to avoid leaving a stray `/v1` behind.
 fn normalize_base(url: &str) -> String {
     let trimmed = url.trim_end_matches('/');
-    trimmed
-        .strip_suffix("/v1")
-        .unwrap_or(trimmed)
-        .trim_end_matches('/')
-        .to_string()
+    let stripped = trimmed
+        .strip_suffix("/v1/embeddings")
+        .or_else(|| trimmed.strip_suffix("/v1/models"))
+        .or_else(|| trimmed.strip_suffix("/v1"))
+        .unwrap_or(trimmed);
+    stripped.trim_end_matches('/').to_string()
 }
 
 /// Return `true` when the lowercased model id contains any `CHAT_MODEL_TOKENS`
@@ -112,14 +115,25 @@ fn is_chat_model(id_lower: &str) -> bool {
 
 /// Pick the first model id that looks like an embedding model, or `None`.
 ///
-/// A model qualifies when it matches an `EMBED_MODEL_SUBSTRINGS` entry AND is
-/// not identified as a chat/generation model by `is_chat_model`.
+/// First pass: name matches an `EMBED_MODEL_SUBSTRINGS` entry AND is not
+/// flagged by `is_chat_model`. Second pass (fallback): any model matching an
+/// embed substring, regardless of chat tokens. The fallback exists because
+/// models like `intfloat/e5-mistral-7b-instruct` are legitimate embedding
+/// models whose names share tokens with generation models — `probe_dimension`
+/// will verify the winner via a real embeddings call either way.
 fn pick_embed_model(model_ids: &[String]) -> Option<&str> {
+    let has_embed_substr = |lower: &str| EMBED_MODEL_SUBSTRINGS.iter().any(|s| lower.contains(s));
+
     model_ids
         .iter()
         .find(|id| {
             let lower = id.to_lowercase();
-            !is_chat_model(&lower) && EMBED_MODEL_SUBSTRINGS.iter().any(|s| lower.contains(s))
+            !is_chat_model(&lower) && has_embed_substr(&lower)
+        })
+        .or_else(|| {
+            model_ids
+                .iter()
+                .find(|id| has_embed_substr(&id.to_lowercase()))
         })
         .map(String::as_str)
 }
@@ -253,6 +267,38 @@ mod tests {
         );
     }
 
+    #[test]
+    fn normalize_base_strips_v1_models_suffix() {
+        assert_eq!(
+            normalize_base("http://localhost:8000/v1/models"),
+            "http://localhost:8000"
+        );
+    }
+
+    #[test]
+    fn normalize_base_strips_v1_models_with_trailing_slash() {
+        assert_eq!(
+            normalize_base("http://localhost:8000/v1/models/"),
+            "http://localhost:8000"
+        );
+    }
+
+    #[test]
+    fn normalize_base_strips_v1_embeddings_suffix() {
+        assert_eq!(
+            normalize_base("http://localhost:8000/v1/embeddings"),
+            "http://localhost:8000"
+        );
+    }
+
+    #[test]
+    fn normalize_base_strips_v1_embeddings_with_trailing_slash() {
+        assert_eq!(
+            normalize_base("http://localhost:8000/v1/embeddings/"),
+            "http://localhost:8000"
+        );
+    }
+
     // --- pick_embed_model ---
 
     fn ids(v: &[&str]) -> Vec<String> {
@@ -301,11 +347,17 @@ mod tests {
     }
 
     #[test]
-    fn pick_embed_model_does_not_select_gte_instruct_chat_model() {
-        // "gte" is an embed substring, but "instruct" is a generation token —
-        // the whole token "instruct" (not a substring) must disqualify it.
+    fn pick_embed_model_falls_back_to_gte_instruct_for_verification() {
+        // "gte" is an embed substring; "instruct" would disqualify on the first
+        // pass, but the fallback returns the candidate anyway so probe_dimension
+        // can make the final call via a real embeddings request. A generation
+        // server will reject the embeddings call; an embedding server will
+        // succeed — the heuristic is no longer the hard gate.
         let models = ids(&["Alibaba-NLP/gte-Qwen2-7B-instruct"]);
-        assert_eq!(pick_embed_model(&models), None);
+        assert_eq!(
+            pick_embed_model(&models),
+            Some("Alibaba-NLP/gte-Qwen2-7B-instruct")
+        );
     }
 
     #[test]
@@ -328,6 +380,27 @@ mod tests {
         // chat model first → skipped; bge embed model second → selected.
         let models = ids(&["meta-llama/Llama-3-8B-chat", "BAAI/bge-small-en"]);
         assert_eq!(pick_embed_model(&models), Some("BAAI/bge-small-en"));
+    }
+
+    #[test]
+    fn pick_embed_model_falls_back_to_e5_mistral_instruct() {
+        // e5-mistral-7b-instruct carries "instruct" but IS a real embedding
+        // model. When it is the only served model, the fallback must return it
+        // rather than yielding None and suppressing auto-detection entirely.
+        // probe_dimension will verify it via an actual embeddings call.
+        let models = ids(&["intfloat/e5-mistral-7b-instruct"]);
+        assert_eq!(
+            pick_embed_model(&models),
+            Some("intfloat/e5-mistral-7b-instruct")
+        );
+    }
+
+    #[test]
+    fn pick_embed_model_prefers_clean_embed_over_instruct_fallback() {
+        // When a clean embedding model exists alongside an instruct-flavoured
+        // one, the clean model must be chosen on the first pass.
+        let models = ids(&["intfloat/e5-mistral-7b-instruct", "intfloat/e5-large-v2"]);
+        assert_eq!(pick_embed_model(&models), Some("intfloat/e5-large-v2"));
     }
 
     // --- first_embedding_len + JSON parsing ---
@@ -359,6 +432,14 @@ mod tests {
     fn first_embedding_len_none_for_empty_data() {
         let parsed = EmbeddingsResponse { data: vec![] };
         assert_eq!(first_embedding_len(&parsed), None);
+    }
+
+    #[test]
+    fn first_embedding_len_zero_for_empty_vector() {
+        let parsed = EmbeddingsResponse {
+            data: vec![EmbeddingEntry { embedding: vec![] }],
+        };
+        assert_eq!(first_embedding_len(&parsed), Some(0));
     }
 
     // --- candidate_base_urls ---
