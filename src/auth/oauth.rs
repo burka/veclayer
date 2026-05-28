@@ -1097,7 +1097,11 @@ async fn handle_device_code_grant(state: OAuthState, form: TokenRequest) -> Resp
         };
 
         // Reject a mismatched client_id first, before disclosing expiry/denial
-        // state — a wrong client must not learn the device code's status.
+        // state — a wrong client must not learn the device code's status. This
+        // path deliberately returns before the last_polled stamp below: the
+        // response is cheap and stateless, and stamping here would let anyone
+        // who guessed the device_code pin the real client in perpetual
+        // slow_down by polling with a bogus client_id.
         if form_client_id != bound_cid {
             return token_error("invalid_client", "client_id mismatch");
         }
