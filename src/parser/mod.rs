@@ -117,4 +117,39 @@ mod tests {
         let result = parser.parse_file(Path::new("/nonexistent/file.txt"));
         assert!(result.is_err());
     }
+
+    // --- Arc<T> blanket-impl delegation (covers arc_impl! macro expansion) ---
+
+    #[test]
+    fn arc_parser_forwards_parse() {
+        let arc = std::sync::Arc::new(TestParser);
+        let chunks = DocumentParser::parse(&arc, "hello", "src.txt").unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].content, "hello");
+        assert_eq!(chunks[0].source_file, "src.txt");
+    }
+
+    #[test]
+    fn arc_parser_forwards_supported_extensions() {
+        let arc = std::sync::Arc::new(TestParser);
+        assert_eq!(DocumentParser::supported_extensions(&arc), &["txt", "test"]);
+    }
+
+    #[test]
+    fn arc_parser_forwards_can_parse() {
+        let arc = std::sync::Arc::new(TestParser);
+        assert!(DocumentParser::can_parse(&arc, Path::new("file.txt")));
+        assert!(!DocumentParser::can_parse(&arc, Path::new("file.md")));
+    }
+
+    #[test]
+    fn arc_parser_forwards_parse_file() {
+        let arc = std::sync::Arc::new(TestParser);
+        let mut temp = NamedTempFile::new().unwrap();
+        write!(temp, "arc file body").unwrap();
+        temp.flush().unwrap();
+        let chunks = DocumentParser::parse_file(&arc, temp.path()).unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].content, "arc file body");
+    }
 }
