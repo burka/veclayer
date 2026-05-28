@@ -36,7 +36,7 @@ async fn open_stores(data_dir: &Path) -> crate::Result<(MemoryStore, crate::stor
 
 /// Build an error message for when no scopes are configured, or a named scope was not found.
 fn no_scopes_error(all_scopes: &[ResolvedScope], filter_name: &str) -> crate::Error {
-    if !filter_name.is_empty() && !all_scopes.is_empty() {
+    if !all_scopes.is_empty() {
         let available: Vec<&str> = all_scopes.iter().map(|s| s.name.as_str()).collect();
         crate::Error::InvalidOperation(format!(
             "Scope '{}' not found. Available scopes: {}",
@@ -44,9 +44,6 @@ fn no_scopes_error(all_scopes: &[ResolvedScope], filter_name: &str) -> crate::Er
             available.join(", ")
         ))
     } else {
-        // The `init --share` hint only belongs here: it applies when no scopes exist
-        // at all. On the scope-not-found branch above, scopes already exist, so
-        // suggesting `init` would be misleading — list the available names instead.
         crate::Error::InvalidOperation(
             "No scopes configured. Add scopes to your config:\n  \
              veclayer init --share    # enable git memory for this project"
