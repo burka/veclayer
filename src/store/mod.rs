@@ -417,6 +417,110 @@ impl VectorStore for StoreBackend {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// When both backends are compiled (the default test configuration),
+    /// `StoreBackend::open` must prefer LanceDB. This locks in the documented
+    /// dispatch policy at lines 209-210.
+    #[cfg(all(feature = "store-lance", feature = "store-sqlite"))]
+    #[tokio::test]
+    async fn open_prefers_lance_when_both_features_compiled() {
+        let dir = TempDir::new().unwrap();
+        let backend = StoreBackend::open(dir.path(), 384, false).await.unwrap();
+        assert!(
+            matches!(backend, StoreBackend::Lance(_)),
+            "open() must pick Lance when both backends are compiled"
+        );
+    }
+
+    /// `open_sqlite` is the explicit escape hatch when callers want SQLite even
+    /// though Lance is compiled. Verify it actually produces the Sqlite variant.
+    #[cfg(feature = "store-sqlite")]
+    #[tokio::test]
+    async fn open_sqlite_returns_sqlite_variant() {
+        let dir = TempDir::new().unwrap();
+        let backend = StoreBackend::open_sqlite(dir.path(), 384, false)
+            .await
+            .unwrap();
+        assert!(
+            matches!(backend, StoreBackend::Sqlite(_)),
+            "open_sqlite must produce the Sqlite variant"
+        );
+    }
+
+    /// `auto_compact_if_needed` is a Lance-only optimisation. When both
+    /// backends are compiled, callers can call it on either variant; on the
+    /// SQLite arm it must succeed as a no-op (zeroed `CompactStats`).
+    #[cfg(all(feature = "store-lance", feature = "store-sqlite"))]
+    #[tokio::test]
+    async fn auto_compact_if_needed_is_noop_on_sqlite() {
+        let dir = TempDir::new().unwrap();
+        let backend = StoreBackend::open_sqlite(dir.path(), 384, false)
+            .await
+            .unwrap();
+        let stats = backend.auto_compact_if_needed().await.unwrap();
+        assert_eq!(stats.versions_removed, 0);
+        assert_eq!(stats.bytes_reclaimed, 0);
+        assert_eq!(stats.fragments_removed, 0);
+        assert_eq!(stats.fragments_added, 0);
+        assert_eq!(stats.files_removed, 0);
+        assert_eq!(stats.files_added, 0);
+    }
+
+    /// `force_compact` follows the same no-op-on-SQLite contract when both
+    /// backends are compiled.
+    #[cfg(all(feature = "store-lance", feature = "store-sqlite"))]
+    #[tokio::test]
+    async fn force_compact_is_noop_on_sqlite() {
+        let dir = TempDir::new().unwrap();
+        let backend = StoreBackend::open_sqlite(dir.path(), 384, false)
+            .await
+            .unwrap();
+        let stats = backend.force_compact().await.unwrap();
+        assert_eq!(stats.versions_removed, 0);
+        assert_eq!(stats.bytes_reclaimed, 0);
+        assert_eq!(stats.fragments_removed, 0);
+        assert_eq!(stats.fragments_added, 0);
+        assert_eq!(stats.files_removed, 0);
+        assert_eq!(stats.files_added, 0);
+    }
+
+    /// `auto_compact_if_needed` on a fresh Lance store should succeed and
+    /// return zero stats (no versions to prune, no fragments to compact yet).
+    /// Asserts all six fields so a regression in any one of them surfaces.
+    #[cfg(feature = "store-lance")]
+    #[tokio::test]
+    async fn auto_compact_if_needed_on_fresh_lance_returns_zero_stats() {
+        let dir = TempDir::new().unwrap();
+        let backend = StoreBackend::open(dir.path(), 384, false).await.unwrap();
+        let stats = backend.auto_compact_if_needed().await.unwrap();
+        assert_eq!(stats.versions_removed, 0);
+        assert_eq!(stats.bytes_reclaimed, 0);
+        assert_eq!(stats.fragments_removed, 0);
+        assert_eq!(stats.fragments_added, 0);
+        assert_eq!(stats.files_removed, 0);
+        assert_eq!(stats.files_added, 0);
+    }
+
+    /// `open_metadata` opens an existing Lance table for metadata-only reads
+    /// (e.g. listing scopes during sync). The pre-`open` + `drop` is
+    /// load-bearing: `open_metadata` does not create the table, so the table
+    /// must already exist on disk. Removing the pre-open would make this test
+    /// fail for the wrong reason.
+    #[cfg(feature = "store-lance")]
+    #[tokio::test]
+    async fn open_metadata_returns_lance_variant() {
+        let dir = TempDir::new().unwrap();
+        let _full = StoreBackend::open(dir.path(), 384, false).await.unwrap();
+        drop(_full);
+        let backend = StoreBackend::open_metadata(dir.path(), true).await.unwrap();
+        assert!(matches!(backend, StoreBackend::Lance(_)));
+    }
+}
+
 // Implement VectorStore for Arc<T> where T: VectorStore
 crate::arc_impl!(VectorStore {
     fn insert_chunks(&self, chunks: Vec<HierarchicalChunk>) -> impl Future<Output = Result<()>> + Send;
