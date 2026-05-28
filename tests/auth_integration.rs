@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -27,7 +27,9 @@ use tempfile::TempDir;
 use tokio::net::TcpListener;
 use veclayer::auth::capability::Capability;
 use veclayer::auth::middleware::AuthState;
-use veclayer::auth::oauth::OAuthState;
+use veclayer::auth::oauth::{
+    FifoMap, FifoSet, OAuthState, PendingDeviceAuth, MAX_DEVICE_CSRF_TOKENS, MAX_PENDING_CONSENTS,
+};
 use veclayer::auth::token::{self, Claims};
 use veclayer::auth::token_store::TokenStore;
 use veclayer::mcp::http::{AppState, AuthSetup};
@@ -71,7 +73,9 @@ fn mint_jwt(key: &SigningKey, cap: Capability, iat: u64, exp: u64) -> String {
 ///
 /// `auto_approve` controls whether the authorization endpoint immediately
 /// redirects with a code (true) or shows a consent page (false).
-async fn spawn_auth_server(auto_approve: bool) -> (String, TempDir, SigningKey) {
+type DeviceCodeMap = Arc<Mutex<HashMap<String, PendingDeviceAuth>>>;
+
+async fn spawn_auth_server(auto_approve: bool) -> (String, TempDir, SigningKey, DeviceCodeMap) {
     let tmp = TempDir::new().unwrap();
     let key = SigningKey::generate(&mut OsRng);
 
@@ -101,9 +105,11 @@ async fn spawn_auth_server(auto_approve: bool) -> (String, TempDir, SigningKey) 
         refresh_expiry_secs: 86_400,
         auto_approve,
         device_codes: Arc::new(Mutex::new(HashMap::new())),
-        pending_consents: Arc::new(Mutex::new(HashMap::new())),
-        device_csrf_tokens: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        pending_consents: Arc::new(Mutex::new(FifoMap::new(MAX_PENDING_CONSENTS))),
+        device_csrf_tokens: Arc::new(Mutex::new(FifoSet::new(MAX_DEVICE_CSRF_TOKENS))),
     };
+
+    let device_codes = oauth_state.device_codes.clone();
 
     let state = AppState {
         store,
@@ -124,7 +130,7 @@ async fn spawn_auth_server(auto_approve: bool) -> (String, TempDir, SigningKey) 
     let app = veclayer::mcp::http::build_app(state);
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
-    (server_url, tmp, key)
+    (server_url, tmp, key, device_codes)
 }
 
 // ── Shared client that does NOT follow redirects ──────────────────────────────
@@ -268,7 +274,7 @@ async fn auth_code_flow(
 #[tokio::test]
 #[serial_test::serial]
 async fn test_health_is_public() {
-    let (base, _tmp, _key) = spawn_auth_server(false).await;
+    let (base, _tmp, _key, _codes) = spawn_auth_server(false).await;
     let resp = reqwest::get(format!("{base}/health")).await.unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().await.unwrap(), "OK");
@@ -279,7 +285,7 @@ async fn test_health_is_public() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_api_requires_auth_when_enabled() {
-    let (base, _tmp, _key) = spawn_auth_server(false).await;
+    let (base, _tmp, _key, _codes) = spawn_auth_server(false).await;
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("{base}/api/recall"))
@@ -300,7 +306,7 @@ async fn test_api_requires_auth_when_enabled() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_valid_bearer_grants_access() {
-    let (base, _tmp, key) = spawn_auth_server(false).await;
+    let (base, _tmp, key, _codes) = spawn_auth_server(false).await;
     let t = now();
     let jwt = mint_jwt(&key, Capability::Read, t, t + 3600);
 
@@ -319,7 +325,7 @@ async fn test_valid_bearer_grants_access() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_read_token_cannot_write() {
-    let (base, _tmp, key) = spawn_auth_server(false).await;
+    let (base, _tmp, key, _codes) = spawn_auth_server(false).await;
     let t = now();
     let jwt = mint_jwt(&key, Capability::Read, t, t + 3600);
 
@@ -338,7 +344,7 @@ async fn test_read_token_cannot_write() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_oauth_metadata_discoverable() {
-    let (base, _tmp, _key) = spawn_auth_server(false).await;
+    let (base, _tmp, _key, _codes) = spawn_auth_server(false).await;
     let resp = reqwest::get(format!("{base}/.well-known/oauth-authorization-server"))
         .await
         .unwrap();
@@ -406,7 +412,7 @@ async fn test_oauth_metadata_discoverable() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_oauth_full_authorization_code_flow() {
-    let (base, _tmp, _key) = spawn_auth_server(true /* auto_approve */).await;
+    let (base, _tmp, _key, _codes) = spawn_auth_server(true /* auto_approve */).await;
 
     // Register a client.
     let client_id = register_client(&base, REDIRECT_URI).await;
@@ -441,7 +447,7 @@ async fn test_oauth_full_authorization_code_flow() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_oauth_token_refresh() {
-    let (base, _tmp, _key) = spawn_auth_server(true).await;
+    let (base, _tmp, _key, _codes) = spawn_auth_server(true).await;
     let client_id = register_client(&base, REDIRECT_URI).await;
     let (access_token_1, refresh_token_1) =
         auth_code_flow(&base, &client_id, REDIRECT_URI, "read").await;
@@ -520,7 +526,7 @@ async fn test_oauth_token_refresh() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_oauth_device_flow() {
-    let (base, _tmp, _key) = spawn_auth_server(false).await;
+    let (base, _tmp, _key, device_codes) = spawn_auth_server(false).await;
     let client = reqwest::Client::new();
 
     // Register a client (device flow requires a known client_id).
@@ -596,6 +602,15 @@ async fn test_oauth_device_flow() {
         html.contains("Authorized"),
         "success page must contain 'Authorized'"
     );
+
+    // A real client waits the poll interval between requests; simulate that by
+    // back-dating last_polled so this poll isn't throttled as slow_down.
+    {
+        let mut map = device_codes.lock().unwrap();
+        if let Some(entry) = map.get_mut(&device_code) {
+            entry.last_polled = Some(Instant::now() - Duration::from_secs(3600));
+        }
+    }
 
     // Step 4: poll again — must get tokens.
     let resp = client
@@ -700,7 +715,7 @@ async fn test_backward_compat_no_auth() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_expired_token_rejected() {
-    let (base, _tmp, key) = spawn_auth_server(false).await;
+    let (base, _tmp, key, _codes) = spawn_auth_server(false).await;
     let t = now();
     // exp in the past.
     let expired_jwt = mint_jwt(&key, Capability::Read, t - 7200, t - 3600);
@@ -726,7 +741,7 @@ async fn test_expired_token_rejected() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_oauth_scope_write_token_permits_store() {
-    let (base, _tmp, _key) = spawn_auth_server(true).await;
+    let (base, _tmp, _key, _codes) = spawn_auth_server(true).await;
     let client_id = register_client(&base, REDIRECT_URI).await;
     let (access_token, _) = auth_code_flow(&base, &client_id, REDIRECT_URI, "write").await;
 
@@ -753,7 +768,7 @@ async fn test_oauth_scope_write_token_permits_store() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_oauth_scope_read_token_blocks_store() {
-    let (base, _tmp, _key) = spawn_auth_server(true).await;
+    let (base, _tmp, _key, _codes) = spawn_auth_server(true).await;
     let client_id = register_client(&base, REDIRECT_URI).await;
     let (access_token, _) = auth_code_flow(&base, &client_id, REDIRECT_URI, "read").await;
 
@@ -778,7 +793,7 @@ async fn test_oauth_scope_read_token_blocks_store() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_oauth_registration_empty_name_rejected() {
-    let (base, _tmp, _key) = spawn_auth_server(false).await;
+    let (base, _tmp, _key, _codes) = spawn_auth_server(false).await;
 
     let resp = reqwest::Client::new()
         .post(format!("{base}/oauth/register"))
@@ -806,7 +821,7 @@ async fn test_oauth_registration_empty_name_rejected() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_oauth_registration_empty_redirect_uris_rejected() {
-    let (base, _tmp, _key) = spawn_auth_server(false).await;
+    let (base, _tmp, _key, _codes) = spawn_auth_server(false).await;
 
     let resp = reqwest::Client::new()
         .post(format!("{base}/oauth/register"))
@@ -838,7 +853,7 @@ async fn test_oauth_registration_empty_redirect_uris_rejected() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_consent_form_deny_path() {
-    let (base, _tmp, _key) = spawn_auth_server(false /* auto_approve=false */).await;
+    let (base, _tmp, _key, _codes) = spawn_auth_server(false /* auto_approve=false */).await;
     let client_id = register_client(&base, REDIRECT_URI).await;
     let (_, challenge) = pkce_pair();
 

@@ -9,8 +9,9 @@
 //! Build the router with [`oauth_router`] and merge it into the main
 //! application router when ready.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::extract::{Form, Query, State};
 use axum::http::header::{CACHE_CONTROL, PRAGMA};
@@ -21,7 +22,6 @@ use axum::{Json, Router};
 use base64::Engine;
 use ed25519_dalek::SigningKey;
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
-use rand::Rng;
 use rand_core::{OsRng, RngCore};
 use serde::Deserialize;
 
@@ -35,6 +35,11 @@ use crate::util::unix_now;
 // ─── Device expiry ────────────────────────────────────────────────────────────
 
 const DEVICE_CODE_TTL_SECS: u64 = 600;
+
+/// Minimum seconds between consecutive token-endpoint polls for the same
+/// device code (RFC 8628 §3.5 `slow_down` interval).  Must match the
+/// `"interval"` value advertised in the device-code response.
+const DEVICE_POLL_INTERVAL_SECS: u64 = 5;
 
 // ─── Security helpers ─────────────────────────────────────────────────────────
 
@@ -165,6 +170,117 @@ fn is_loopback_host(host: &str) -> bool {
         .is_ok_and(|ip| ip.is_loopback())
 }
 
+// ─── Bounded FIFO collections ────────────────────────────────────────────────
+
+/// An insertion-ordered map with a hard capacity cap.
+///
+/// On each insert, if `len >= cap`, the single oldest entry is evicted before
+/// the new one is added.  This is strictly better than `.clear()`: in-flight
+/// sessions survive a burst; only the very oldest entry is displaced.
+///
+/// Eviction is FIFO by *first* insertion, not LRU: re-inserting an existing key
+/// updates its value but keeps its original eviction position.
+pub struct FifoMap<K, V> {
+    map: HashMap<K, V>,
+    order: VecDeque<K>,
+    cap: usize,
+}
+
+impl<K: std::hash::Hash + Eq + Clone, V> FifoMap<K, V> {
+    pub fn new(cap: usize) -> Self {
+        assert!(cap > 0, "FifoMap capacity must be non-zero");
+        Self {
+            map: HashMap::new(),
+            order: VecDeque::new(),
+            cap,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    pub fn insert(&mut self, key: K, value: V) {
+        if let Some(slot) = self.map.get_mut(&key) {
+            *slot = value;
+            return;
+        }
+        if self.map.len() >= self.cap {
+            if let Some(oldest) = self.order.pop_front() {
+                self.map.remove(&oldest);
+            }
+        }
+        self.order.push_back(key.clone());
+        self.map.insert(key, value);
+    }
+
+    pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: std::hash::Hash + Eq + ?Sized,
+    {
+        if let Some(pos) = self.order.iter().position(|k| k.borrow() == key) {
+            self.order.remove(pos);
+        }
+        self.map.remove(key)
+    }
+
+    pub fn get<Q>(&self, key: &Q) -> Option<&V>
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: std::hash::Hash + Eq + ?Sized,
+    {
+        self.map.get(key)
+    }
+}
+
+/// An insertion-ordered set with a hard capacity cap.
+///
+/// On each insert, if `len >= cap`, the single oldest entry is evicted.
+pub struct FifoSet<K> {
+    inner: FifoMap<K, ()>,
+}
+
+impl<K: std::hash::Hash + Eq + Clone> FifoSet<K> {
+    pub fn new(cap: usize) -> Self {
+        Self {
+            inner: FifoMap::new(cap),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    pub fn insert(&mut self, key: K) {
+        self.inner.insert(key, ());
+    }
+
+    pub fn remove<Q>(&mut self, key: &Q) -> bool
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: std::hash::Hash + Eq + ?Sized,
+    {
+        self.inner.remove(key).is_some()
+    }
+
+    pub fn contains<Q>(&self, key: &Q) -> bool
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: std::hash::Hash + Eq + ?Sized,
+    {
+        self.inner.get(key).is_some()
+    }
+}
+
 // ─── Shared state ─────────────────────────────────────────────────────────────
 
 /// Shared state for all OAuth endpoints.
@@ -180,15 +296,16 @@ pub struct OAuthState {
     /// Pending device authorizations (in-memory, short-lived).
     pub device_codes: Arc<Mutex<HashMap<String, PendingDeviceAuth>>>,
     /// Pending consent page sessions keyed by CSRF token.
-    pub pending_consents: Arc<Mutex<HashMap<String, PendingConsent>>>,
+    pub pending_consents: Arc<Mutex<FifoMap<String, PendingConsent>>>,
     /// One-time CSRF tokens issued by the device verification page (GET),
     /// validated and consumed on the device approval POST.
-    pub device_csrf_tokens: Arc<Mutex<HashSet<String>>>,
+    pub device_csrf_tokens: Arc<Mutex<FifoSet<String>>>,
 }
 
-/// Upper bound on outstanding device-page CSRF tokens; when exceeded the set is
-/// cleared (a stale page simply needs reloading) so it cannot grow unbounded.
-const MAX_DEVICE_CSRF_TOKENS: usize = 1024;
+/// Upper bound on outstanding device-page CSRF tokens.  When the cap is hit,
+/// the oldest entry is evicted before the new one is inserted, so a stale
+/// page simply needs reloading without disrupting all other in-flight sessions.
+pub const MAX_DEVICE_CSRF_TOKENS: usize = 1024;
 
 /// Upper bound on outstanding (unconsumed, unexpired) device authorization
 /// codes. Expired entries are purged before this cap is checked, so it only
@@ -207,10 +324,10 @@ const MAX_USER_CODE_LENGTH: usize = 64;
 /// limit but unbounded values are a DoS/injection risk).
 const MAX_STATE_LEN: usize = 512;
 
-/// Upper bound on outstanding consent sessions; when exceeded the map is
-/// cleared (a stale consent page simply needs reloading) so it cannot grow
-/// unbounded under a flood of `GET /oauth/authorize` renders.
-const MAX_PENDING_CONSENTS: usize = 1024;
+/// Upper bound on outstanding consent sessions.  When the cap is hit, the
+/// oldest entry is evicted before the new one is inserted, so a burst of
+/// authorizations displaces only the very oldest session rather than all of them.
+pub const MAX_PENDING_CONSENTS: usize = 1024;
 
 /// Short-lived record created when the consent page is rendered.
 ///
@@ -232,6 +349,9 @@ pub struct PendingDeviceAuth {
     /// `None` = pending, `Some(cap)` = approved with that capability.
     pub approved: Option<Capability>,
     pub denied: bool,
+    /// When this code was last polled at the token endpoint.  `None` on first
+    /// poll.  Used to enforce RFC 8628 §3.5 `slow_down` rate limiting.
+    pub last_polled: Option<Instant>,
 }
 
 // ─── Router ───────────────────────────────────────────────────────────────────
@@ -631,9 +751,6 @@ async fn authorize_get_handler(
             .pending_consents
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if consents.len() >= MAX_PENDING_CONSENTS {
-            consents.clear();
-        }
         consents.insert(
             csrf_token.clone(),
             PendingConsent {
@@ -954,34 +1071,67 @@ async fn handle_device_code_grant(state: OAuthState, form: TokenRequest) -> Resp
     };
 
     let now = unix_now();
+    let poll_interval = Duration::from_secs(DEVICE_POLL_INTERVAL_SECS);
 
     let (client_id, capability) = {
         let mut map = state.device_codes.lock().unwrap_or_else(|e| e.into_inner());
 
-        let entry = match map.get(device_code_str) {
-            Some(e) => e,
-            None => {
-                return token_error("invalid_grant", "unknown device_code");
-            }
+        // Validate before mutating; collect what we need and drop the reference
+        // before any `map.remove` call (avoids two simultaneous mutable borrows).
+        let (bound_cid, expires_at, denied, approved, too_fast) = {
+            let entry = match map.get(device_code_str) {
+                Some(e) => e,
+                None => return token_error("invalid_grant", "unknown device_code"),
+            };
+            let too_fast = entry
+                .last_polled
+                .map(|t| t.elapsed() < poll_interval)
+                .unwrap_or(false);
+            (
+                entry.client_id.clone(),
+                entry.expires_at,
+                entry.denied,
+                entry.approved,
+                too_fast,
+            )
         };
 
         // Reject a mismatched client_id first, before disclosing expiry/denial
         // state — a wrong client must not learn the device code's status.
-        if form_client_id != entry.client_id {
+        if form_client_id != bound_cid {
             return token_error("invalid_client", "client_id mismatch");
         }
 
-        if now > entry.expires_at {
+        if now > expires_at {
             map.remove(device_code_str);
             return token_error("expired_token", "device authorization expired");
         }
 
-        if entry.denied {
+        if denied {
             map.remove(device_code_str);
             return token_error("access_denied", "user denied access");
         }
 
-        match entry.approved {
+        // RFC 8628 §3.5: stamp last_polled on every poll, even one that will be
+        // rejected as slow_down below. The throttle window restarts from each
+        // request, so a client that keeps polling under the interval keeps
+        // getting slow_down until it actually waits the full interval.
+        if let Some(entry) = map.get_mut(device_code_str) {
+            entry.last_polled = Some(Instant::now());
+        }
+
+        if too_fast {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "slow_down",
+                    "error_description": "polling too fast; wait at least 5 seconds between requests"
+                })),
+            )
+                .into_response();
+        }
+
+        match approved {
             None => {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -993,9 +1143,8 @@ async fn handle_device_code_grant(state: OAuthState, form: TokenRequest) -> Resp
                     .into_response();
             }
             Some(cap) => {
-                let client_id = entry.client_id.clone();
                 map.remove(device_code_str);
-                (client_id, cap)
+                (bound_cid, cap)
             }
         }
     };
@@ -1127,6 +1276,7 @@ async fn device_code_handler(
         expires_at,
         approved: None,
         denied: false,
+        last_polled: None,
     };
 
     {
@@ -1175,9 +1325,6 @@ async fn device_page_handler(
             .device_csrf_tokens
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if tokens.len() >= MAX_DEVICE_CSRF_TOKENS {
-            tokens.clear();
-        }
         tokens.insert(csrf_token.clone());
     }
 
@@ -1466,12 +1613,26 @@ fn generate_opaque_token() -> String {
 ///
 /// Uses an unambiguous character set to avoid transcription errors.
 /// 8 characters from a 32-symbol alphabet gives ~40 bits of entropy.
+///
+/// Draws from `OsRng` with rejection sampling to eliminate modulo bias.  The
+/// alphabet is exactly 32 symbols (256 / 32 == 8 with remainder 0), so in
+/// practice no bytes are ever rejected — but the code is correct for any
+/// power-of-two alphabet size.
 fn generate_user_code() -> String {
-    const CHARS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // unambiguous chars
-    let mut rng = rand::rng();
-    (0..8)
-        .map(|_| CHARS[rng.random_range(0..CHARS.len())] as char)
-        .collect()
+    const CHARS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 32 unambiguous chars
+                                                              // Largest multiple of CHARS.len() that fits in a u8.  Bytes >= this value
+                                                              // would introduce bias and are rejected.  For len=32 this equals 256 (mod
+                                                              // 256 → 0), meaning the condition `byte >= threshold` is never true.
+    let threshold = (256u16 - (256u16 % CHARS.len() as u16)) as u8;
+    let mut code = Vec::with_capacity(8);
+    let mut byte = [0u8; 1];
+    while code.len() < 8 {
+        OsRng.fill_bytes(&mut byte);
+        if threshold == 0 || byte[0] < threshold {
+            code.push(CHARS[(byte[0] as usize) % CHARS.len()] as char);
+        }
+    }
+    code.into_iter().collect()
 }
 
 /// Format an 8-char user code as "ABCD-EFGH" (4+4 split).
@@ -1576,8 +1737,8 @@ mod tests {
             refresh_expiry_secs: 86400,
             auto_approve,
             device_codes: Arc::new(Mutex::new(HashMap::new())),
-            pending_consents: Arc::new(Mutex::new(HashMap::new())),
-            device_csrf_tokens: Arc::new(Mutex::new(HashSet::new())),
+            pending_consents: Arc::new(Mutex::new(FifoMap::new(MAX_PENDING_CONSENTS))),
+            device_csrf_tokens: Arc::new(Mutex::new(FifoSet::new(MAX_DEVICE_CSRF_TOKENS))),
         };
         (oauth_state, dir)
     }
@@ -1931,6 +2092,7 @@ mod tests {
         let (state, _dir) = make_state(false);
         let signing_key = state.signing_key.clone();
         let server_did = state.server_did.clone();
+        let codes = state.device_codes.clone();
         let app = oauth_router(state);
 
         let redirect_uri = "https://app.example.com/cb";
@@ -1979,6 +2141,16 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let html = body_vec(resp).await;
         assert!(String::from_utf8_lossy(&html).contains("Authorized"));
+
+        // A real client waits the poll interval between requests; simulate that
+        // by back-dating last_polled so this poll isn't throttled as slow_down.
+        {
+            let mut map = codes.lock().unwrap();
+            if let Some(entry) = map.get_mut(&device_code) {
+                entry.last_polled =
+                    Some(Instant::now() - Duration::from_secs(DEVICE_POLL_INTERVAL_SECS + 1));
+            }
+        }
 
         // Step 4: Poll again — expect tokens.
         let body = format!(
@@ -2424,9 +2596,9 @@ mod tests {
     }
 
     /// The consent-session map is bounded: once it reaches MAX_PENDING_CONSENTS
-    /// the next consent-page render clears it before inserting, so it cannot
-    /// grow without bound under a flood of `GET /oauth/authorize` renders.
-    /// Discriminating: without the cap the map would stay at MAX + 1.
+    /// the next consent-page render evicts the oldest entry (FIFO) and inserts
+    /// the new one, keeping the map exactly at the cap.
+    /// Discriminating: without the cap the map would grow to MAX + 1.
     #[tokio::test]
     async fn test_pending_consents_map_is_bounded() {
         let (state, _dir) = make_state(false);
@@ -2451,11 +2623,11 @@ mod tests {
         let resp = app.oneshot(get_req(&authorize_uri)).await.expect("request");
         assert_eq!(resp.status(), StatusCode::OK);
 
-        // Cleared at the cap, then the fresh session inserted: bounded.
+        // FIFO eviction: oldest entry displaced, new one inserted — map stays at cap.
         let len = consents.lock().unwrap().len();
         assert_eq!(
-            len, 1,
-            "consent map must be cleared+reinserted at cap, got {len}"
+            len, MAX_PENDING_CONSENTS,
+            "FIFO eviction must keep map at cap, got {len}"
         );
     }
 
@@ -3489,6 +3661,7 @@ mod tests {
                         expires_at: live_until,
                         approved: None,
                         denied: false,
+                        last_polled: None,
                     },
                 );
             }
@@ -3530,6 +3703,7 @@ mod tests {
                         expires_at: 0, // long expired
                         approved: None,
                         denied: false,
+                        last_polled: None,
                     },
                 );
             }
@@ -3745,6 +3919,7 @@ mod tests {
                 expires_at: 0,
                 approved: None,
                 denied: false,
+                last_polled: None,
             },
         );
 
@@ -3979,8 +4154,8 @@ mod tests {
             refresh_expiry_secs: 86400,
             auto_approve: true,
             device_codes: Arc::new(Mutex::new(HashMap::new())),
-            pending_consents: Arc::new(Mutex::new(HashMap::new())),
-            device_csrf_tokens: Arc::new(Mutex::new(HashSet::new())),
+            pending_consents: Arc::new(Mutex::new(FifoMap::new(MAX_PENDING_CONSENTS))),
+            device_csrf_tokens: Arc::new(Mutex::new(FifoSet::new(MAX_DEVICE_CSRF_TOKENS))),
         };
 
         let _ = oauth_router(state);
@@ -4642,6 +4817,239 @@ mod tests {
         assert_eq!(
             pragma, "no-cache",
             "token error must have Pragma: no-cache, got: {pragma:?}"
+        );
+    }
+
+    // ── generate_user_code ────────────────────────────────────────────────────
+
+    /// User codes must be 8 uppercase chars from the unambiguous alphabet and
+    /// two successive calls must produce distinct codes (collision probability
+    /// ~1e-12; a flaky failure here would indicate a broken RNG).
+    #[test]
+    fn test_generate_user_code_format_and_uniqueness() {
+        const ALPHABET: &str = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        let code1 = generate_user_code();
+        let code2 = generate_user_code();
+
+        assert_eq!(code1.len(), 8, "user code must be 8 chars, got: {code1}");
+        for ch in code1.chars() {
+            assert!(
+                ALPHABET.contains(ch),
+                "char {ch:?} not in unambiguous alphabet: {code1}"
+            );
+        }
+        assert_ne!(code1, code2, "two successive codes must differ");
+    }
+
+    /// format_user_code must produce the XXXX-XXXX form from an 8-char raw code.
+    #[test]
+    fn test_format_user_code_inserts_dash() {
+        let raw = generate_user_code();
+        assert_eq!(raw.len(), 8);
+        let formatted = format_user_code(&raw);
+        assert_eq!(
+            formatted.len(),
+            9,
+            "formatted code must be 9 chars: {formatted}"
+        );
+        assert_eq!(
+            &formatted[4..5],
+            "-",
+            "dash must be at position 4: {formatted}"
+        );
+        assert_eq!(&formatted[..4], &raw[..4]);
+        assert_eq!(&formatted[5..], &raw[4..]);
+    }
+
+    // ── Device poll rate limiting (RFC 8628 §3.5) ────────────────────────────
+
+    /// Polling the same device code twice in rapid succession must yield
+    /// `slow_down` on the second call, enforcing the 5-second interval.
+    #[tokio::test]
+    async fn test_device_poll_rate_limit_slow_down() {
+        let (state, _dir) = make_state(false);
+        let app = oauth_router(state);
+        let client_id = register_client(&app, "https://app.example.com/cb").await;
+
+        let resp = app
+            .clone()
+            .oneshot(post_form(
+                "/oauth/device/code",
+                &format!("client_id={client_id}&scope=read"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        let device_code = json["device_code"].as_str().unwrap().to_owned();
+
+        let poll_body = format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code={device_code}&client_id={client_id}"
+        );
+
+        // First poll: no last_polled set → authorization_pending.
+        let resp1 = app
+            .clone()
+            .oneshot(post_form("/oauth/token", &poll_body))
+            .await
+            .unwrap();
+        assert_eq!(resp1.status(), StatusCode::BAD_REQUEST);
+        let json1 = body_json(resp1).await;
+        assert_eq!(
+            json1["error"], "authorization_pending",
+            "first poll must return authorization_pending, got: {json1}"
+        );
+
+        // Second poll immediately: last_polled was just set → slow_down.
+        let resp2 = app
+            .clone()
+            .oneshot(post_form("/oauth/token", &poll_body))
+            .await
+            .unwrap();
+        assert_eq!(resp2.status(), StatusCode::BAD_REQUEST);
+        let json2 = body_json(resp2).await;
+        assert_eq!(
+            json2["error"], "slow_down",
+            "rapid second poll must return slow_down, got: {json2}"
+        );
+    }
+
+    /// After the poll interval has elapsed, a pending code must return
+    /// `authorization_pending` again (not `slow_down`).  Injects a backdated
+    /// `last_polled` directly into the map to avoid sleeping in the test.
+    #[tokio::test]
+    async fn test_device_poll_after_interval_returns_authorization_pending() {
+        let (state, _dir) = make_state(false);
+        let codes = state.device_codes.clone();
+        let app = oauth_router(state);
+        let client_id = register_client(&app, "https://app.example.com/cb").await;
+
+        let resp = app
+            .clone()
+            .oneshot(post_form(
+                "/oauth/device/code",
+                &format!("client_id={client_id}&scope=read"),
+            ))
+            .await
+            .unwrap();
+        let json = body_json(resp).await;
+        let device_code = json["device_code"].as_str().unwrap().to_owned();
+
+        // Back-date last_polled so the interval check passes.
+        {
+            let mut map = codes.lock().unwrap();
+            if let Some(entry) = map.get_mut(&device_code) {
+                entry.last_polled =
+                    Some(Instant::now() - Duration::from_secs(DEVICE_POLL_INTERVAL_SECS + 1));
+            }
+        }
+
+        let poll_body = format!(
+            "grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code={device_code}&client_id={client_id}"
+        );
+        let resp = app
+            .oneshot(post_form("/oauth/token", &poll_body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(resp).await;
+        assert_eq!(
+            json["error"], "authorization_pending",
+            "poll after interval must return authorization_pending, got: {json}"
+        );
+    }
+
+    // ── FifoMap / FifoSet bounded eviction ────────────────────────────────────
+
+    /// Inserting cap+N entries into FifoMap must evict exactly the N oldest,
+    /// keeping the map size at cap with the most recent entries present.
+    #[test]
+    fn test_fifo_map_evicts_oldest_at_cap() {
+        const CAP: usize = 4;
+        let mut map: FifoMap<String, u32> = FifoMap::new(CAP);
+        for i in 0..CAP + 2 {
+            map.insert(format!("key-{i}"), i as u32);
+        }
+        assert_eq!(map.len(), CAP, "map must stay at cap after overflow");
+        // Oldest two ("key-0", "key-1") must have been evicted.
+        assert!(map.get("key-0").is_none(), "oldest entry must be evicted");
+        assert!(
+            map.get("key-1").is_none(),
+            "second-oldest entry must be evicted"
+        );
+        // Most recent entries must still be present.
+        assert_eq!(map.get("key-4"), Some(&4));
+        assert_eq!(map.get("key-5"), Some(&5));
+    }
+
+    /// FifoSet bounded eviction mirrors FifoMap: oldest tokens evicted first.
+    #[test]
+    fn test_fifo_set_evicts_oldest_at_cap() {
+        const CAP: usize = 3;
+        let mut set: FifoSet<String> = FifoSet::new(CAP);
+        for i in 0..CAP + 2 {
+            set.insert(format!("tok-{i}"));
+        }
+        assert_eq!(set.len(), CAP, "set must stay at cap after overflow");
+        assert!(!set.contains("tok-0"), "oldest token must be evicted");
+        assert!(
+            !set.contains("tok-1"),
+            "second-oldest token must be evicted"
+        );
+        assert!(set.contains("tok-2"));
+        assert!(set.contains("tok-3"));
+        assert!(set.contains("tok-4"));
+    }
+
+    /// Inserting a key that already exists must update the value without
+    /// affecting insertion order or growing the map.
+    #[test]
+    fn test_fifo_map_update_existing_key_no_eviction() {
+        const CAP: usize = 3;
+        let mut map: FifoMap<String, u32> = FifoMap::new(CAP);
+        map.insert("a".to_owned(), 1);
+        map.insert("b".to_owned(), 2);
+        map.insert("a".to_owned(), 99); // update existing
+        assert_eq!(map.len(), 2, "update must not grow the map");
+        assert_eq!(map.get("a"), Some(&99), "value must be updated");
+        assert_eq!(map.get("b"), Some(&2));
+
+        // FIFO is by first insertion: "a" keeps its original slot, so inserting
+        // a third distinct key fills the map without evicting anything.
+        map.insert("c".to_owned(), 3);
+        assert_eq!(map.len(), CAP);
+    }
+
+    /// device_csrf_tokens must stay bounded under a burst of device-page renders.
+    #[tokio::test]
+    async fn test_device_csrf_tokens_bounded_under_burst() {
+        let (state, _dir) = make_state(false);
+        let csrf_tokens = state.device_csrf_tokens.clone();
+        let app = oauth_router(state);
+
+        // Pre-fill to one below the cap.
+        {
+            let mut tokens = csrf_tokens.lock().unwrap();
+            for i in 0..MAX_DEVICE_CSRF_TOKENS - 1 {
+                tokens.insert(format!("old-csrf-{i}"));
+            }
+            assert_eq!(tokens.len(), MAX_DEVICE_CSRF_TOKENS - 1);
+        }
+
+        // Two more GET /oauth/device renders should keep the set at the cap.
+        for _ in 0..2 {
+            let resp = app
+                .clone()
+                .oneshot(get_req("/oauth/device"))
+                .await
+                .expect("device page");
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+
+        let len = csrf_tokens.lock().unwrap().len();
+        assert_eq!(
+            len, MAX_DEVICE_CSRF_TOKENS,
+            "device CSRF set must stay at cap, got {len}"
         );
     }
 }

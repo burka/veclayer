@@ -262,7 +262,9 @@ mod auth {
     use tokio::net::TcpListener;
     use veclayer::auth::capability::Capability;
     use veclayer::auth::middleware::AuthState;
-    use veclayer::auth::oauth::OAuthState;
+    use veclayer::auth::oauth::{
+        FifoMap, FifoSet, OAuthState, MAX_DEVICE_CSRF_TOKENS, MAX_PENDING_CONSENTS,
+    };
     use veclayer::auth::token::{self, Claims};
     use veclayer::auth::token_store::TokenStore;
     use veclayer::mcp::http::{AppState, AuthSetup};
@@ -319,8 +321,8 @@ mod auth {
             refresh_expiry_secs: 86_400,
             auto_approve: false,
             device_codes: Arc::new(Mutex::new(HashMap::new())),
-            pending_consents: Arc::new(Mutex::new(HashMap::new())),
-            device_csrf_tokens: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            pending_consents: Arc::new(Mutex::new(FifoMap::new(MAX_PENDING_CONSENTS))),
+            device_csrf_tokens: Arc::new(Mutex::new(FifoSet::new(MAX_DEVICE_CSRF_TOKENS))),
         };
 
         let state = AppState {

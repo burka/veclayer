@@ -46,7 +46,6 @@ pub struct AuthCode {
     pub code_challenge: String,
     pub code_challenge_method: String, // always "S256"
     pub expires_at: u64,
-    pub used: bool,
 }
 
 /// Long-lived refresh token record.
@@ -181,7 +180,6 @@ impl TokenStore {
             code_challenge: code_challenge.to_owned(),
             code_challenge_method: "S256".to_owned(),
             expires_at: unix_now() + CODE_TTL_SECS,
-            used: false,
         };
         self.codes.insert(code.clone(), auth_code);
         self.save()?;
@@ -190,27 +188,26 @@ impl TokenStore {
 
     /// Consume an authorization code after PKCE verification.
     ///
-    /// Marks the code as used (prevents replay) and persists.  Returns the
-    /// consumed [`AuthCode`] so the caller can issue tokens.
+    /// Removes the entry from the store on success (prevents replay without
+    /// relying on a `used` sentinel) and persists.  Returns the consumed
+    /// [`AuthCode`] so the caller can issue tokens.
+    ///
+    /// Validation failures do NOT remove the entry — a failed PKCE attempt
+    /// must not burn a valid code, which would let an attacker deny service
+    /// to the legitimate owner.
     ///
     /// Errors:
-    /// - `NotFound` — unknown code
-    /// - `InvalidOperation` — expired, already used, or PKCE mismatch
+    /// - `NotFound` — unknown or already-consumed code
+    /// - `InvalidOperation` — expired or PKCE mismatch
     pub fn consume_code(&mut self, code: &str, code_verifier: &str) -> Result<AuthCode> {
         let record = self
             .codes
-            .get_mut(code)
+            .get(code)
             // Do NOT include the raw code in this message — authorization codes
             // are short-lived secrets and must not appear in logs or error
             // responses.  "not found / expired" is intentionally generic so
             // callers cannot distinguish the two cases (oracle-attack hardening).
             .ok_or_else(|| Error::not_found("authorization code not found / expired"))?;
-
-        if record.used {
-            return Err(Error::InvalidOperation(
-                "authorization code already used".to_owned(),
-            ));
-        }
 
         if unix_now() > record.expires_at {
             return Err(Error::InvalidOperation(
@@ -231,8 +228,11 @@ impl TokenStore {
             ));
         }
 
-        record.used = true;
-        let consumed = record.clone();
+        // All checks passed: remove atomically and persist.
+        let consumed = self
+            .codes
+            .remove(code)
+            .expect("entry present: checked above");
         self.save()?;
         Ok(consumed)
     }
@@ -351,11 +351,11 @@ impl TokenStore {
 
     // ─── Cleanup ──────────────────────────────────────────────────────────────
 
-    /// Remove expired or used authorization codes and expired/revoked refresh
-    /// tokens.  Call periodically to keep the file small.
+    /// Remove expired authorization codes and expired/revoked refresh tokens.
+    /// Call periodically to keep the file small.
     pub fn purge_expired(&mut self) -> Result<()> {
         let now = unix_now();
-        self.codes.retain(|_, c| !c.used && now <= c.expires_at);
+        self.codes.retain(|_, c| now <= c.expires_at);
         self.refresh_tokens
             .retain(|_, r| !r.revoked && now <= r.expires_at);
         self.save()
@@ -462,7 +462,11 @@ mod tests {
         assert_eq!(consumed.code, code);
         assert_eq!(consumed.did, "did:key:zAlice");
         assert_eq!(consumed.capability, Capability::Read);
-        assert!(consumed.used);
+        // Entry must be gone after a successful consume.
+        assert!(
+            !store.codes.contains_key(&code),
+            "consumed code must be removed from store"
+        );
     }
 
     /// Shared setup for code-consumption tests: store + client + PKCE pair + issued code.
@@ -479,10 +483,32 @@ mod tests {
         let (_dir, mut store, verifier, code) = code_test_harness();
 
         store.consume_code(&code, &verifier).expect("first consume");
+        // After remove-on-consume the entry is gone, so a second attempt must
+        // fail with not-found rather than "already used".
         let err = store.consume_code(&code, &verifier).unwrap_err();
         assert!(
-            err.to_string().contains("already used"),
-            "expected 'already used' error, got: {err}"
+            err.to_string().contains("not found"),
+            "expected 'not found' error on replay, got: {err}"
+        );
+    }
+
+    /// Consuming a code removes it from the in-memory map AND from the
+    /// persisted file, so a server restart cannot replay a consumed code.
+    #[test]
+    fn test_consume_removes_entry_from_store_and_disk() {
+        let (dir, mut store, verifier, code) = code_test_harness();
+
+        store.consume_code(&code, &verifier).expect("consume");
+        assert!(
+            !store.codes.contains_key(&code),
+            "code must be absent from in-memory map after consume"
+        );
+
+        // Reload from disk: the consumed code must not reappear.
+        let reloaded = TokenStore::open(dir.path()).expect("reopen");
+        assert!(
+            !reloaded.codes.contains_key(&code),
+            "consumed code must not survive a reload from disk"
         );
     }
 
@@ -591,10 +617,10 @@ mod tests {
     }
 
     #[test]
-    fn test_pkce_wrong_verifier_rejected() {
+    fn test_pkce_wrong_verifier_rejected_and_does_not_burn_code() {
         let (_dir, mut store) = tmp_store();
         let client = store.register_client("App", vec![]).expect("register");
-        let (_verifier, challenge) = pkce_pair();
+        let (correct_verifier, challenge) = pkce_pair();
 
         let code = store
             .create_code(
@@ -613,6 +639,16 @@ mod tests {
             err.to_string().contains("PKCE"),
             "expected PKCE error, got: {err}"
         );
+
+        // A failed PKCE attempt must NOT burn the code — the legitimate holder
+        // must still be able to consume it with the correct verifier.
+        assert!(
+            store.codes.contains_key(&code),
+            "code must still exist after a failed PKCE attempt"
+        );
+        store
+            .consume_code(&code, &correct_verifier)
+            .expect("correct verifier must succeed after a failed attempt");
     }
 
     /// `consume_code` returns a not-found error when called with a code string
@@ -674,7 +710,10 @@ mod tests {
 
         let consumed = store.consume_code(&code, &verifier).expect("consume");
         assert_eq!(consumed.did, "did:key:zAlice");
-        assert!(consumed.used, "consumed code must be marked used");
+        assert!(
+            !store.codes.contains_key(&code),
+            "consumed code must be removed"
+        );
     }
 
     /// An expired code must NOT embed the raw code in its error path.
@@ -781,7 +820,7 @@ mod tests {
         let client = store.register_client("App", vec![]).expect("register");
         let (_verifier, challenge) = pkce_pair();
 
-        // Create one live code and one used code.
+        // Create one live code and one already-expired code.
         let live_code = store
             .create_code(
                 &client.client_id,
@@ -800,7 +839,8 @@ mod tests {
                 &challenge,
             )
             .expect("create_code");
-        store.codes.get_mut(&dead_code).unwrap().used = true;
+        // Simulate a code that expired without being consumed (e.g. user abandoned flow).
+        store.codes.get_mut(&dead_code).unwrap().expires_at = 0;
 
         // Create one live refresh token and one expired one.
         let live_token = "live-token";
@@ -814,21 +854,24 @@ mod tests {
 
         store.purge_expired().expect("purge_expired");
 
-        assert!(store.codes.contains_key(&live_code), "live code removed");
+        assert!(
+            store.codes.contains_key(&live_code),
+            "live code must survive purge"
+        );
         assert!(
             !store.codes.contains_key(&dead_code),
-            "used code not removed"
+            "expired code must be removed by purge"
         );
 
         let live_hash = sha256_hex(live_token);
         let dead_hash = sha256_hex(dead_token);
         assert!(
             store.refresh_tokens.contains_key(&live_hash),
-            "live token removed"
+            "live token must survive purge"
         );
         assert!(
             !store.refresh_tokens.contains_key(&dead_hash),
-            "expired token not removed"
+            "expired token must be removed by purge"
         );
     }
 

@@ -24,7 +24,9 @@ use tracing::info;
 
 use crate::auth::capability::Capability;
 use crate::auth::middleware::{auth_middleware, AuthState};
-use crate::auth::oauth::{oauth_router, OAuthState};
+use crate::auth::oauth::{
+    oauth_router, FifoMap, FifoSet, OAuthState, MAX_DEVICE_CSRF_TOKENS, MAX_PENDING_CONSENTS,
+};
 use crate::auth::token_store::TokenStore;
 use crate::blob_store::BlobStore;
 use crate::embedder;
@@ -479,6 +481,31 @@ pub async fn run_http(config: Config) -> Result<()> {
     Ok(())
 }
 
+/// Spawn a background task that calls [`TokenStore::purge_expired`] hourly.
+///
+/// Expired `AuthCode` and `RefreshRecord` entries accumulate until either
+/// consumed or restarted without this task.  The lock is held only for the
+/// synchronous purge call and dropped before the next `await`, so it never
+/// blocks async work.
+fn spawn_purge_worker(store: Arc<Mutex<TokenStore>>) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        interval.tick().await; // skip the immediate first tick
+        loop {
+            interval.tick().await;
+            let result = {
+                store
+                    .lock()
+                    .expect("token store lock poisoned")
+                    .purge_expired()
+            };
+            if let Err(e) = result {
+                tracing::warn!("periodic token store purge failed: {e}");
+            }
+        }
+    });
+}
+
 /// Load the keystore and build auth state, or return `None` when auth is
 /// disabled and no keystore exists.
 ///
@@ -523,8 +550,11 @@ fn build_auth_setup(config: &Config) -> Result<Option<AuthSetup>> {
         .purge_expired()
         .map_err(|e| crate::Error::Config(format!("Failed to purge token store: {e}")))?;
 
+    let token_store = Arc::new(Mutex::new(token_store));
+    spawn_purge_worker(Arc::clone(&token_store));
+
     let oauth_state = OAuthState {
-        token_store: Arc::new(Mutex::new(token_store)),
+        token_store,
         signing_key: Arc::new(signing_key),
         server_did: did.clone(),
         server_url,
@@ -532,8 +562,8 @@ fn build_auth_setup(config: &Config) -> Result<Option<AuthSetup>> {
         refresh_expiry_secs: config.auth.refresh_expiry_secs,
         auto_approve: config.auth.auto_approve,
         device_codes: Arc::new(Mutex::new(HashMap::new())),
-        pending_consents: Arc::new(Mutex::new(HashMap::new())),
-        device_csrf_tokens: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        pending_consents: Arc::new(Mutex::new(FifoMap::new(MAX_PENDING_CONSENTS))),
+        device_csrf_tokens: Arc::new(Mutex::new(FifoSet::new(MAX_DEVICE_CSRF_TOKENS))),
     };
 
     let auth_state = AuthState {
