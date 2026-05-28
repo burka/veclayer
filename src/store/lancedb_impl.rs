@@ -1198,6 +1198,13 @@ impl VectorStore for LanceStore {
         level_filter: Option<ChunkLevel>,
         perspectives: &[&str],
     ) -> Result<Vec<SearchResult>> {
+        // LanceDB's nearest-neighbour query rejects k == 0 ("k must be
+        // positive"); SQLite's LIMIT 0 yields an empty set. Short-circuit so
+        // both backends honour the same contract: limit 0 means "no results".
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
         let table = self.get_table().await?;
 
         let query_vec: Vec<f32> = query_embedding.to_vec();
