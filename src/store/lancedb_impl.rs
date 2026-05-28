@@ -1974,6 +1974,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_search_limit_zero_returns_empty_without_querying() {
+        // Contract: limit == 0 short-circuits to Ok(empty) without hitting
+        // LanceDB (whose nearest-neighbour rejects k == 0). The guard must hold
+        // even when the store is non-empty, so a buggy regression that lets the
+        // limit reach the backend would surface as a panic / error here.
+        let (store, _temp) = create_test_store().await;
+
+        let chunk = create_test_chunk("limit-zero", "anything", ChunkLevel::H1);
+        store.insert_chunks(vec![chunk]).await.unwrap();
+
+        let results = store
+            .search(&vec![0.1; 384], 0, None, &[])
+            .await
+            .expect("limit==0 must succeed, not error from LanceDB k==0 rejection");
+        assert!(
+            results.is_empty(),
+            "limit==0 must return no results, got {} results",
+            results.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_limit_zero_on_empty_store_returns_empty() {
+        let (store, _temp) = create_test_store().await;
+
+        let results = store.search(&vec![0.1; 384], 0, None, &[]).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
     async fn test_search_with_level_filter() {
         let (store, _temp) = create_test_store().await;
 
