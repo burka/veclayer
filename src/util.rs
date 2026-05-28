@@ -279,4 +279,96 @@ mod tests {
             assert_eq!(mode, 0o600);
         }
     }
+
+    // ── preview ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn preview_empty_string_returns_empty() {
+        assert_eq!(preview("", 10), "");
+    }
+
+    #[test]
+    fn preview_shorter_than_max_returned_unchanged() {
+        assert_eq!(preview("hi", 10), "hi");
+    }
+
+    #[test]
+    fn preview_exactly_at_max_returned_unchanged() {
+        assert_eq!(preview("0123456789", 10), "0123456789");
+    }
+
+    #[test]
+    fn preview_longer_than_max_truncates_and_appends_ellipsis() {
+        assert_eq!(preview("0123456789abc", 10), "0123456789...");
+    }
+
+    #[test]
+    fn preview_replaces_newlines_with_spaces() {
+        assert_eq!(preview("line1\nline2", 100), "line1 line2");
+    }
+
+    #[test]
+    fn preview_multibyte_utf8_at_boundary_not_split() {
+        // "héllo": h=1 byte, é=2 bytes (bytes 1-2), l=byte 3.
+        // floor_char_boundary(2) == 1, so prefix is "h".
+        assert_eq!(preview("héllo", 2), "h...");
+    }
+
+    // ── write_file_0600 ───────────────────────────────────────────────────────
+
+    #[cfg(unix)]
+    #[test]
+    fn write_file_0600_creates_new_file_with_contents_and_mode() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("secret");
+        write_file_0600(&path, b"secret").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "secret");
+        let mode = std::fs::metadata(&path).unwrap().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_file_0600_resets_loose_perms_on_pre_existing_file() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("loose");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_file_0600(&path, b"new").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_file_0600_truncates_existing_larger_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("shrink");
+        write_file_0600(&path, b"this is a long content").unwrap();
+        write_file_0600(&path, b"short").unwrap();
+        let contents = std::fs::read(&path).unwrap();
+        assert_eq!(contents, b"short");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_file_0600_empty_contents_writes_zero_byte_file() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("empty");
+        write_file_0600(&path, b"").unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
+        assert_eq!(meta.size(), 0);
+        assert_eq!(meta.mode() & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_file_0600_returns_err_when_parent_dir_missing() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("does-not-exist").join("file");
+        assert!(write_file_0600(&path, b"data").is_err());
+    }
 }
