@@ -556,6 +556,11 @@ impl FileConfig {
             if p.exists() {
                 return Self::load(p);
             }
+            warn!(
+                "VECLAYER_CONFIG is set to '{}' but the file does not exist — using defaults",
+                path
+            );
+            return Self::default();
         }
 
         // 2. Inside data_dir
@@ -863,7 +868,16 @@ impl Config {
                     .unwrap_or_else(|| DEFAULT_OLLAMA_URL.to_string());
                 let dimension = std::env::var("VECLAYER_OLLAMA_DIMENSION")
                     .ok()
-                    .and_then(|v| v.parse().ok())
+                    .and_then(|v| match v.parse() {
+                        Ok(d) => Some(d),
+                        Err(_) => {
+                            warn!(
+                                "VECLAYER_OLLAMA_DIMENSION is set to '{v}' which is not a valid \
+                                 integer — ignoring, using default"
+                            );
+                            None
+                        }
+                    })
                     .or_else(|| file_embedder.as_ref().and_then(|e| e.dimension))
                     .or(detected_dimension)
                     .unwrap_or(DEFAULT_OLLAMA_DIMENSION);
@@ -1317,12 +1331,30 @@ fn env_or(key: &str, file_val: Option<String>, default: String) -> String {
 
 #[cfg(feature = "config")]
 fn env_parse<T: std::str::FromStr>(key: &str) -> Option<T> {
-    std::env::var(key).ok().and_then(|v| v.parse().ok())
+    let raw = std::env::var(key).ok()?;
+    match raw.parse() {
+        Ok(v) => Some(v),
+        Err(_) => {
+            warn!("{key} is set to '{raw}' which could not be parsed — ignoring, using default");
+            None
+        }
+    }
 }
 
 #[cfg(feature = "config")]
 fn env_bool(key: &str) -> Option<bool> {
-    std::env::var(key).ok().map(|v| v == "true" || v == "1")
+    let raw = std::env::var(key).ok()?;
+    match raw.as_str() {
+        "true" | "1" => Some(true),
+        "false" | "0" => Some(false),
+        other => {
+            warn!(
+                "{key} is set to '{other}' which is not a recognised boolean \
+                 (expected true/1/false/0) — treating as false"
+            );
+            Some(false)
+        }
+    }
 }
 
 #[cfg(all(test, feature = "config"))]
@@ -1426,10 +1458,12 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_resolve_embedder_ollama_from_env() {
+        // Use values DISTINCT from the defaults so the test proves env wins over default,
+        // not that it accidentally equals the default.
         std::env::set_var("VECLAYER_EMBEDDER", "ollama");
-        std::env::set_var("VECLAYER_OLLAMA_MODEL", "nomic-embed-text");
-        std::env::set_var("VECLAYER_OLLAMA_URL", "http://localhost:11434");
-        std::env::set_var("VECLAYER_OLLAMA_DIMENSION", "768");
+        std::env::set_var("VECLAYER_OLLAMA_MODEL", "custom-model");
+        std::env::set_var("VECLAYER_OLLAMA_URL", "http://gpu:11434");
+        std::env::set_var("VECLAYER_OLLAMA_DIMENSION", "1024");
 
         let embedder = Config::resolve_embedder(None, None, None);
 
@@ -1444,9 +1478,9 @@ mod tests {
                 ref model,
                 ref base_url,
                 dimension
-            } if model == DEFAULT_OLLAMA_MODEL
-                && base_url == DEFAULT_OLLAMA_URL
-                && dimension == DEFAULT_OLLAMA_DIMENSION
+            } if model == "custom-model"
+                && base_url == "http://gpu:11434"
+                && dimension == 1024
         ));
     }
 
@@ -2639,6 +2673,152 @@ storage = "git"
             parsed["value"].as_str().unwrap(),
             input,
             "escaped control characters must round-trip to the original string"
+        );
+    }
+
+    // --- env_bool tests ---
+
+    #[test]
+    #[serial_test::serial]
+    fn test_env_bool_true_values() {
+        let saved = std::env::var("VECLAYER_TEST_BOOL_X9Z").ok();
+        std::env::set_var("VECLAYER_TEST_BOOL_X9Z", "true");
+        assert_eq!(env_bool("VECLAYER_TEST_BOOL_X9Z"), Some(true));
+        std::env::set_var("VECLAYER_TEST_BOOL_X9Z", "1");
+        assert_eq!(env_bool("VECLAYER_TEST_BOOL_X9Z"), Some(true));
+        match saved {
+            Some(v) => std::env::set_var("VECLAYER_TEST_BOOL_X9Z", v),
+            None => std::env::remove_var("VECLAYER_TEST_BOOL_X9Z"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_env_bool_false_values() {
+        let saved = std::env::var("VECLAYER_TEST_BOOL_X9Z").ok();
+        std::env::set_var("VECLAYER_TEST_BOOL_X9Z", "false");
+        assert_eq!(env_bool("VECLAYER_TEST_BOOL_X9Z"), Some(false));
+        std::env::set_var("VECLAYER_TEST_BOOL_X9Z", "0");
+        assert_eq!(env_bool("VECLAYER_TEST_BOOL_X9Z"), Some(false));
+        match saved {
+            Some(v) => std::env::set_var("VECLAYER_TEST_BOOL_X9Z", v),
+            None => std::env::remove_var("VECLAYER_TEST_BOOL_X9Z"),
+        }
+    }
+
+    // Unrecognized value falls back to Some(false) — the existing contract — not None.
+    // This test pins that contract so it cannot silently regress to a panic or None.
+    #[test]
+    #[serial_test::serial]
+    fn test_env_bool_unrecognized_value_returns_some_false() {
+        let saved = std::env::var("VECLAYER_TEST_BOOL_X9Z").ok();
+        std::env::set_var("VECLAYER_TEST_BOOL_X9Z", "yes");
+        assert_eq!(
+            env_bool("VECLAYER_TEST_BOOL_X9Z"),
+            Some(false),
+            "unrecognized boolean string must return Some(false), not None or panic"
+        );
+        match saved {
+            Some(v) => std::env::set_var("VECLAYER_TEST_BOOL_X9Z", v),
+            None => std::env::remove_var("VECLAYER_TEST_BOOL_X9Z"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_env_bool_unset_returns_none() {
+        // A unique key guaranteed never to be set in the test environment.
+        std::env::remove_var("VECLAYER_TEST_BOOL_UNSET_X9Z9");
+        assert_eq!(env_bool("VECLAYER_TEST_BOOL_UNSET_X9Z9"), None);
+    }
+
+    // --- env_parse tests ---
+
+    #[test]
+    #[serial_test::serial]
+    fn test_env_parse_bad_integer_returns_none_no_panic() {
+        let saved = std::env::var("VECLAYER_TEST_PARSE_INT_X9Z").ok();
+        std::env::set_var("VECLAYER_TEST_PARSE_INT_X9Z", "not-a-number");
+        let result: Option<u16> = env_parse("VECLAYER_TEST_PARSE_INT_X9Z");
+        assert_eq!(
+            result, None,
+            "unparseable integer env var must return None without panicking"
+        );
+        match saved {
+            Some(v) => std::env::set_var("VECLAYER_TEST_PARSE_INT_X9Z", v),
+            None => std::env::remove_var("VECLAYER_TEST_PARSE_INT_X9Z"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_env_parse_bad_float_returns_none_no_panic() {
+        let saved = std::env::var("VECLAYER_TEST_PARSE_FLOAT_X9Z").ok();
+        std::env::set_var("VECLAYER_TEST_PARSE_FLOAT_X9Z", "not-a-float");
+        let result: Option<f32> = env_parse("VECLAYER_TEST_PARSE_FLOAT_X9Z");
+        assert_eq!(
+            result, None,
+            "unparseable float env var must return None without panicking"
+        );
+        match saved {
+            Some(v) => std::env::set_var("VECLAYER_TEST_PARSE_FLOAT_X9Z", v),
+            None => std::env::remove_var("VECLAYER_TEST_PARSE_FLOAT_X9Z"),
+        }
+    }
+
+    // --- VECLAYER_OLLAMA_DIMENSION invalid value test ---
+
+    #[test]
+    #[serial_test::serial]
+    fn test_resolve_embedder_invalid_dimension_falls_back_to_default() {
+        std::env::set_var("VECLAYER_EMBEDDER", "ollama");
+        std::env::remove_var("VECLAYER_OLLAMA_MODEL");
+        std::env::remove_var("VECLAYER_OLLAMA_URL");
+        std::env::set_var("VECLAYER_OLLAMA_DIMENSION", "not-a-number");
+
+        let embedder = Config::resolve_embedder(None, None, None);
+
+        std::env::remove_var("VECLAYER_EMBEDDER");
+        std::env::remove_var("VECLAYER_OLLAMA_DIMENSION");
+
+        assert!(
+            matches!(
+                embedder,
+                EmbedderConfig::Ollama { dimension, .. } if dimension == DEFAULT_OLLAMA_DIMENSION
+            ),
+            "invalid VECLAYER_OLLAMA_DIMENSION must fall back to DEFAULT_OLLAMA_DIMENSION"
+        );
+    }
+
+    // --- VECLAYER_CONFIG missing file test ---
+
+    #[test]
+    #[serial_test::serial]
+    fn test_file_config_discover_nonexistent_env_returns_defaults() {
+        let saved = std::env::var("VECLAYER_CONFIG").ok();
+
+        std::env::set_var(
+            "VECLAYER_CONFIG",
+            "/nonexistent/path/that/does/not/exist/veclayer.toml",
+        );
+        let fc = FileConfig::discover(None);
+
+        match saved {
+            Some(v) => std::env::set_var("VECLAYER_CONFIG", v),
+            None => std::env::remove_var("VECLAYER_CONFIG"),
+        }
+
+        assert!(
+            fc.host.is_none(),
+            "missing VECLAYER_CONFIG path must return defaults (host == None)"
+        );
+        assert!(
+            fc.port.is_none(),
+            "missing VECLAYER_CONFIG path must return defaults (port == None)"
+        );
+        assert!(
+            fc.data_dir.is_none(),
+            "missing VECLAYER_CONFIG path must return defaults (data_dir == None)"
         );
     }
 }
