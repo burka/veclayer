@@ -258,7 +258,12 @@ impl<'de> Deserialize<'de> for MatchOverride {
 
         let git_remote = raw
             .git_remote
-            .map(|p| regex::Regex::new(&p).map_err(serde::de::Error::custom))
+            .map(|p| {
+                regex::RegexBuilder::new(&p)
+                    .size_limit(256 * 1024)
+                    .build()
+                    .map_err(serde::de::Error::custom)
+            })
             .transpose()?;
 
         let data_dir = raw.data_dir.map(|d| shellexpand::tilde(&d).into_owned());
@@ -2092,7 +2097,7 @@ project = "catch-all"
     fn test_match_or_logic_both_matchers() {
         let toml_str = r#"
 [[match]]
-path = "/home/flob/work/damalo*"
+path = "/tmp/damalo*"
 git-remote = "(?i)damalo"
 project = "damalo"
 "#;
@@ -2100,7 +2105,7 @@ project = "damalo"
         assert_eq!(config.matches.len(), 1);
 
         // Path matches, no remote
-        let resolved = config.resolve(Path::new("/home/flob/work/damalo-app"), None);
+        let resolved = config.resolve(Path::new("/tmp/damalo-app"), None);
         assert_eq!(resolved.project.as_deref(), Some("damalo"));
 
         // Remote matches, different path
@@ -2108,10 +2113,7 @@ project = "damalo"
         assert_eq!(resolved.project.as_deref(), Some("damalo"));
 
         // Both match
-        let resolved = config.resolve(
-            Path::new("/home/flob/work/damalo-app"),
-            Some("github.com/Damalo/repo"),
-        );
+        let resolved = config.resolve(Path::new("/tmp/damalo-app"), Some("github.com/Damalo/repo"));
         assert_eq!(resolved.project.as_deref(), Some("damalo"));
 
         // Neither matches

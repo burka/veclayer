@@ -61,7 +61,7 @@ pub async fn auth_middleware(
                     next.run(request).await
                 }
                 Err(e) => {
-                    warn!("Auth rejected: {e}");
+                    warn!("Auth rejected: {}", e.category());
                     (StatusCode::UNAUTHORIZED, "invalid_token").into_response()
                 }
             }

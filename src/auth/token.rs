@@ -32,6 +32,23 @@ pub enum AuthError {
     Signing(String),
 }
 
+impl AuthError {
+    /// Returns a coarse, non-sensitive category label for logging.
+    ///
+    /// The label contains no dynamic values (no DIDs, no inner error strings),
+    /// so it is safe to emit in structured logs without leaking caller identity
+    /// or internal library details.
+    pub fn category(&self) -> &'static str {
+        match self {
+            AuthError::TokenExpired => "expired",
+            AuthError::InvalidToken(_) => "invalid_token",
+            AuthError::AudienceMismatch { .. } => "audience_mismatch",
+            AuthError::InsufficientCapability { .. } => "insufficient_capability",
+            AuthError::Signing(_) => "signing_error",
+        }
+    }
+}
+
 // ─── Claims ───────────────────────────────────────────────────────────────────
 
 /// JWT claims carried by a VecLayer auth token.

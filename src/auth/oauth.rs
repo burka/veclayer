@@ -599,22 +599,20 @@ async fn authorize_get_handler(
     let client_id = match &params.client_id {
         Some(id) => id.clone(),
         None => {
-            return (
+            return secure_html_response_with_status(
                 StatusCode::BAD_REQUEST,
-                Html(error_page("Missing client_id parameter")),
+                error_page("Missing client_id parameter"),
             )
-                .into_response()
         }
     };
 
     let redirect_uri = match &params.redirect_uri {
         Some(uri) => uri.clone(),
         None => {
-            return (
+            return secure_html_response_with_status(
                 StatusCode::BAD_REQUEST,
-                Html(error_page("Missing redirect_uri parameter")),
+                error_page("Missing redirect_uri parameter"),
             )
-                .into_response()
         }
     };
 
@@ -626,20 +624,18 @@ async fn authorize_get_handler(
         match store.get_client(&client_id) {
             Some(client) => {
                 if !client.redirect_uris.contains(&redirect_uri) {
-                    return (
+                    return secure_html_response_with_status(
                         StatusCode::BAD_REQUEST,
-                        Html(error_page("redirect_uri does not match registered URIs")),
-                    )
-                        .into_response();
+                        error_page("redirect_uri does not match registered URIs"),
+                    );
                 }
                 client.client_name.clone()
             }
             None => {
-                return (
+                return secure_html_response_with_status(
                     StatusCode::BAD_REQUEST,
-                    Html(error_page("Unknown client_id")),
-                )
-                    .into_response();
+                    error_page("Unknown client_id"),
+                );
             }
         }
     };
@@ -760,7 +756,7 @@ async fn authorize_get_handler(
     }
 
     // Show consent page.
-    Html(consent_page(
+    secure_html_response(consent_page(
         &client_name,
         &client_id,
         &redirect_uri,
@@ -769,7 +765,6 @@ async fn authorize_get_handler(
         params.state.as_deref().unwrap_or(""),
         &csrf_token,
     ))
-    .into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -800,11 +795,10 @@ async fn authorize_post_handler(
         let csrf_key = match form.csrf_token.as_deref() {
             Some(k) if !k.is_empty() => k.to_owned(),
             _ => {
-                return (
+                return secure_html_response_with_status(
                     StatusCode::BAD_REQUEST,
-                    Html(error_page("Invalid or missing CSRF token")),
-                )
-                    .into_response();
+                    error_page("Invalid or missing CSRF token"),
+                );
             }
         };
         let mut consents = state
@@ -812,11 +806,10 @@ async fn authorize_post_handler(
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if consents.remove(&csrf_key).is_none() {
-            return (
+            return secure_html_response_with_status(
                 StatusCode::BAD_REQUEST,
-                Html(error_page("Invalid or missing CSRF token")),
-            )
-                .into_response();
+                error_page("Invalid or missing CSRF token"),
+            );
         }
     }
 
@@ -827,19 +820,17 @@ async fn authorize_post_handler(
         match store.get_client(&form.client_id) {
             Some(client) => {
                 if !client.redirect_uris.contains(&form.redirect_uri) {
-                    return (
+                    return secure_html_response_with_status(
                         StatusCode::BAD_REQUEST,
-                        Html(error_page("redirect_uri does not match registered URIs")),
-                    )
-                        .into_response();
+                        error_page("redirect_uri does not match registered URIs"),
+                    );
                 }
             }
             None => {
-                return (
+                return secure_html_response_with_status(
                     StatusCode::BAD_REQUEST,
-                    Html(error_page("Unknown client_id")),
-                )
-                    .into_response();
+                    error_page("Unknown client_id"),
+                );
             }
         }
     }
@@ -851,11 +842,10 @@ async fn authorize_post_handler(
     // arbitrarily long state through the POST body.
     if let Some(s) = form.state.as_deref() {
         if s.len() > MAX_STATE_LEN {
-            return (
+            return secure_html_response_with_status(
                 StatusCode::BAD_REQUEST,
-                Html(error_page("state parameter too long")),
-            )
-                .into_response();
+                error_page("state parameter too long"),
+            );
         }
     }
 
@@ -920,7 +910,7 @@ async fn authorize_post_handler(
 
 // ─── Token Endpoint ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct TokenRequest {
     pub grant_type: String,
     // authorization_code fields
@@ -932,6 +922,29 @@ pub struct TokenRequest {
     pub refresh_token: Option<String>,
     // device_code fields
     pub device_code: Option<String>,
+}
+
+impl std::fmt::Debug for TokenRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenRequest")
+            .field("grant_type", &self.grant_type)
+            .field("client_id", &self.client_id)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("code", &self.code.as_ref().map(|_| "<redacted>"))
+            .field(
+                "code_verifier",
+                &self.code_verifier.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "device_code",
+                &self.device_code.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 /// POST /oauth/token
@@ -1318,7 +1331,7 @@ async fn device_code_handler(
 async fn device_page_handler(
     State(state): State<OAuthState>,
     Query(params): Query<HashMap<String, String>>,
-) -> Html<String> {
+) -> Response {
     let prefill = params.get("user_code").cloned().unwrap_or_default();
 
     // Issue a one-time CSRF token so a forged cross-site POST cannot submit a
@@ -1332,7 +1345,7 @@ async fn device_page_handler(
         tokens.insert(csrf_token.clone());
     }
 
-    Html(device_verification_page(&prefill, &csrf_token))
+    secure_html_response(device_verification_page(&prefill, &csrf_token))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1354,7 +1367,7 @@ pub struct DeviceApproveForm {
 async fn device_approve_handler(
     State(state): State<OAuthState>,
     Form(form): Form<DeviceApproveForm>,
-) -> Html<String> {
+) -> Response {
     // Validate and consume the one-time CSRF token before acting on the form,
     // so a forged cross-site POST is rejected.
     let csrf_ok = form
@@ -1370,7 +1383,7 @@ async fn device_approve_handler(
         .unwrap_or(false);
     if !csrf_ok {
         warn!("Device approval rejected: missing or invalid CSRF token");
-        return Html(error_page(
+        return secure_html_response(error_page(
             "Invalid or expired request. Reload the device authorization page and try again.",
         ));
     }
@@ -1382,7 +1395,7 @@ async fn device_approve_handler(
             "Device approval rejected: user_code too long ({} bytes)",
             form.user_code.len()
         );
-        return Html(error_page("Invalid device code"));
+        return secure_html_response(error_page("Invalid device code"));
     }
 
     // Normalize user_code: strip dashes, uppercase.
@@ -1396,11 +1409,13 @@ async fn device_approve_handler(
         .find(|e| normalize_user_code(&e.user_code) == normalized);
 
     match entry {
-        None => Html(error_page("Unknown or expired user code")),
-        Some(entry) if unix_now() > entry.expires_at => Html(error_page("Code has expired")),
+        None => secure_html_response(error_page("Unknown or expired user code")),
+        Some(entry) if unix_now() > entry.expires_at => {
+            secure_html_response(error_page("Code has expired"))
+        }
         Some(entry) if entry.approved.is_some() || entry.denied => {
             // Already decided — a second POST must not flip or re-confirm it.
-            Html(error_page("This code has already been processed"))
+            secure_html_response(error_page("This code has already been processed"))
         }
         Some(entry) => {
             if form.approved.as_deref() == Some("true") {
@@ -1413,17 +1428,45 @@ async fn device_approve_handler(
                     "Device authorization approved for user code {} with scope {:?}",
                     form.user_code, granted_scope
                 );
-                Html(device_success_page())
+                secure_html_response(device_success_page())
             } else {
                 entry.denied = true;
                 info!(
                     "Device authorization denied for user code {}",
                     form.user_code
                 );
-                Html(device_denied_page())
+                secure_html_response(device_denied_page())
             }
         }
     }
+}
+
+// ─── Secure HTML response helper ─────────────────────────────────────────────
+
+/// Wraps an HTML page string into a `Response` with anti-clickjacking and
+/// content-security headers.
+///
+/// Every HTML response served by auth endpoints must use this helper so that
+/// browsers refuse to embed the page in a frame (`X-Frame-Options: DENY`) and
+/// restrict which resources the page may load (`Content-Security-Policy`).
+fn secure_html_response(html: String) -> Response {
+    secure_html_response_with_status(StatusCode::OK, html)
+}
+
+fn secure_html_response_with_status(status: StatusCode, html: String) -> Response {
+    let mut resp = (status, Html(html)).into_response();
+    let headers = resp.headers_mut();
+    headers.insert(
+        axum::http::header::HeaderName::from_static("x-frame-options"),
+        HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        axum::http::header::HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_static(
+            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
+        ),
+    );
+    resp
 }
 
 // ─── HTML templates ───────────────────────────────────────────────────────────

@@ -496,7 +496,7 @@ fn spawn_purge_worker(store: Arc<Mutex<TokenStore>>) {
             let result = {
                 store
                     .lock()
-                    .expect("token store lock poisoned")
+                    .unwrap_or_else(|e| e.into_inner())
                     .purge_expired()
             };
             if let Err(e) = result {
@@ -529,7 +529,8 @@ fn build_auth_setup(config: &Config) -> Result<Option<AuthSetup>> {
         return Ok(None);
     }
 
-    let passphrase = std::env::var("VECLAYER_PASSPHRASE").unwrap_or_default();
+    let passphrase =
+        zeroize::Zeroizing::new(std::env::var("VECLAYER_PASSPHRASE").unwrap_or_default());
     keystore::require_passphrase(auth_required, &passphrase)
         .map_err(|e| crate::Error::Config(format!("Failed to start server: {e}")))?;
     let signing_key = keystore::load(&passphrase, &keystore_path)
