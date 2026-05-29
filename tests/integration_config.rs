@@ -427,7 +427,7 @@ fn test_match_combined_path_and_git_remote() {
         &toml_path,
         r#"
 [[match]]
-path = "/home/flob/work/damalo*"
+path = "/tmp/damalo*"
 git-remote = "(?i)damalo"
 project = "damalo"
 data_dir = "/damalo/data"
@@ -438,7 +438,7 @@ data_dir = "/damalo/data"
     let config = UserConfig::load(&toml_path);
 
     // Path match only
-    let resolved = config.resolve(Path::new("/home/flob/work/damalo-app"), None);
+    let resolved = config.resolve(Path::new("/tmp/damalo-app"), None);
     assert_eq!(resolved.project.as_deref(), Some("damalo"));
     assert_eq!(resolved.data_dir.as_deref(), Some("/damalo/data"));
 

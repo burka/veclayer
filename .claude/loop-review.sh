@@ -1,6 +1,6 @@
 #!/bin/bash
 # Review loop — every 30m, review + fix + commit
-cd /home/flob/work/veclayer
+cd "$(git rev-parse --show-toplevel)" || exit 1
 
 ITER=0
 while true; do

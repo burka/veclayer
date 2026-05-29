@@ -483,7 +483,7 @@ None of the 23 UX issues (UX01–UX23) were fixed. They are usability improvemen
 
 ## Test Environment
 
-- Binary: `/home/flob/work/veclayer/target/debug/veclayer`
+- Binary: `./target/debug/veclayer`
 - Git: local bare repos as remotes
 - OS: Linux 6.17.0-14-generic
 - 5 parallel test agents, ~60 test scenarios
