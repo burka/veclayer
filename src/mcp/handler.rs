@@ -279,7 +279,12 @@ impl McpHandler {
     // prematurely.
 }
 
-#[tool_handler]
+// Use the per-instance `self.tool_router` (with project/branch context patched
+// into descriptions) rather than the macro default `Self::tool_router()`, which
+// would rebuild a fresh router from the static `#[tool]` attributes and discard
+// our per-session description patches. (rmcp 1.7 changed the default to call
+// `Self::tool_router()`; 1.1 read the instance field implicitly.)
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for McpHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(

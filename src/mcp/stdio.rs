@@ -150,7 +150,7 @@ mod tests {
     ) -> JsonRpcMessage<ServerRequest, ServerResult, ServerNotification> {
         JsonRpcMessage::error(
             ErrorData::new(ErrorCode(0), "test error", None),
-            NumberOrString::Number(id),
+            Some(NumberOrString::Number(id)),
         )
     }
 
@@ -269,26 +269,35 @@ mod tests {
         );
     }
 
-    /// A malformed first line followed by a valid second line: the transport
-    /// stops at the first error (returns None after the bad line), consistent
-    /// with rmcp's `.ok()` swallowing strategy — the transport does not
-    /// silently skip and continue.  This test documents the ACTUAL behaviour.
+    /// A malformed first line followed by a valid second line: rmcp's codec
+    /// skips the unparseable line and continues, so the first `receive()`
+    /// yields the *next* valid message rather than stopping at the error.
+    /// This documents the ACTUAL behaviour as of rmcp 1.7 (in earlier versions
+    /// the bad line surfaced as a terminal `None`; the codec now resyncs on the
+    /// newline boundary and recovers, which is strictly more robust).
     #[tokio::test]
-    async fn bad_then_good_line_transport_stops_at_error() {
+    async fn bad_then_good_line_transport_skips_to_next_valid() {
         let data: &'static [u8] = b"not-json\n{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"ping\"}\n";
         let mut transport = server_transport_from_bytes(data);
-        // First receive: hits the malformed line → None (error swallowed)
+        // First receive: the malformed line is skipped and the following valid
+        // request is returned.
         let first = transport.receive().await;
         assert!(
-            first.is_none(),
-            "bad first line should yield None (error swallowed by rmcp)"
+            first.is_some(),
+            "rmcp 1.7 skips the bad line and returns the next valid message"
         );
-        // After the bad-line None, the transport is considered closed; a
-        // second receive also returns None.
+        // The recovered message is the ping request with id 4.
+        let msg = first.unwrap();
+        let dbg = format!("{msg:?}");
+        assert!(
+            dbg.contains("PingRequest") && dbg.contains("Number(4)"),
+            "recovered message should be the valid ping request with id 4, got: {dbg}"
+        );
+        // After the single valid message the stream is exhausted (EOF) → None.
         let second = transport.receive().await;
         assert!(
             second.is_none(),
-            "after an error/None the transport yields None again"
+            "after the only valid message the transport reaches EOF and yields None"
         );
     }
 
