@@ -399,6 +399,16 @@ impl LanceStore {
                     stats.files_added = c.files_added as u64;
                 }
             }
+            // A commit conflict means a concurrent compactor (e.g. the MCP
+            // server's daily worker racing a manual `reflect prune`) already
+            // rewrote these fragments. That is benign — the work got done by
+            // the other party — so we skip it rather than failing the whole
+            // pass. Non-conflict errors are real and still surfaced.
+            Err(e) if is_commit_conflict(&e) => {
+                tracing::info!(
+                    "Auto-compact: fragment compaction skipped — concurrent compactor: {e}"
+                );
+            }
             Err(e) => {
                 tracing::warn!("Auto-compact: fragment compaction failed: {}", e);
                 errors.push(format!("fragment compaction failed: {e}"));
@@ -419,6 +429,10 @@ impl LanceStore {
                     stats.versions_removed = p.old_versions;
                     stats.bytes_reclaimed = p.bytes_removed;
                 }
+            }
+            // Same benign-conflict handling as the compact step above.
+            Err(e) if is_commit_conflict(&e) => {
+                tracing::info!("Auto-compact: version prune skipped — concurrent compactor: {e}");
             }
             Err(e) => {
                 tracing::warn!("Auto-compact: version prune failed: {}", e);
@@ -3463,6 +3477,24 @@ mod tests {
         assert!(
             is_commit_conflict(&e),
             "All-caps 'COMMIT CONFLICT' must match (case-insensitive)"
+        );
+    }
+
+    /// Regression: the exact message lance emits when a concurrent compactor
+    /// preempts an optimize() (observed when the MCP daily worker raced a
+    /// manual `reflect prune`). run_compact treats this as benign, so the
+    /// classifier must recognise the "Retryable commit conflict" wording.
+    #[test]
+    fn test_is_commit_conflict_concurrent_rewrite_message() {
+        let e = lancedb::Error::Runtime {
+            message: "lance error: Retryable commit conflict for version 148554: \
+                      This Rewrite transaction was preempted by concurrent \
+                      transaction Rewrite at version 148554. Please retry."
+                .to_string(),
+        };
+        assert!(
+            is_commit_conflict(&e),
+            "real concurrent-rewrite conflict message must be recognised as benign"
         );
     }
 
