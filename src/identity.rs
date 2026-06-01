@@ -241,11 +241,9 @@ fn compute_centroids(
                 .filter(|c| c.perspectives.iter().any(|cp| cp == &p.id) && c.embedding.is_some())
                 .collect();
 
-            if members.is_empty() {
-                return None;
-            }
-
-            let dim = members[0].embedding.as_ref().unwrap().len();
+            let first = members.first()?;
+            let first_embedding = first.embedding.as_ref()?;
+            let dim = first_embedding.len();
             let mut centroid = vec![0.0f32; dim];
             let mut total_weight = 0.0f32;
             let mut total_salience = 0.0f32;
@@ -347,7 +345,7 @@ fn discover_clusters(
 
     let embeddings: Vec<Vec<f32>> = embedded
         .iter()
-        .map(|c| c.embedding.as_ref().unwrap().clone())
+        .filter_map(|c| c.embedding.as_ref().cloned())
         .collect();
 
     let clusterer = SoftClusterer::new().with_cluster_range(2, 8);

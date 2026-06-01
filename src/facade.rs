@@ -54,7 +54,7 @@ use crate::{ChunkRelation, HierarchicalChunk, Result};
 ///
 /// Wraps a store + embedder pair and provides convenient methods for
 /// common operations. For advanced use, access the underlying store
-/// and embedder directly via [`store()`](VecLayer::store_backend) and
+/// and embedder directly via [`store_backend()`](VecLayer::store_backend) and
 /// [`embedder()`](VecLayer::embedder).
 pub struct VecLayer<E: Embedder = Box<dyn Embedder>> {
     data_dir: PathBuf,
