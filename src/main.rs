@@ -38,6 +38,21 @@ impl std::fmt::Display for EntryKind {
     }
 }
 
+#[derive(Clone, Debug, clap::ValueEnum)]
+enum StaleOutput {
+    Text,
+    LlmNudge,
+}
+
+impl std::fmt::Display for StaleOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StaleOutput::Text => write!(f, "text"),
+            StaleOutput::LlmNudge => write!(f, "llm-nudge"),
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "veclayer")]
 #[command(about = "Persistent memory for AI agents — recall, store, focus, think, share")]
@@ -268,8 +283,13 @@ enum Commands {
             help = "Staleness window (e.g. 15min, 1h, 1d)"
         )]
         since: String,
-        #[arg(long, default_value = "text", help = "Output mode: text or llm-nudge")]
-        output: String,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = StaleOutput::Text,
+            help = "Output mode"
+        )]
+        output: StaleOutput,
     },
 
     /// List all indexed source files
@@ -342,7 +362,6 @@ enum Commands {
     },
 
     /// Reflect — identity snapshot, salience ranking, archive candidates
-    #[command(alias = "id")]
     Reflect {
         #[command(subcommand)]
         action: Option<ReflectAction>,
@@ -714,7 +733,17 @@ fn lance_io_threads_for_prune(current: Option<&str>) -> Option<&'static str> {
     }
 }
 
-fn main() -> Result<()> {
+fn main() {
+    if let Err(e) = run_cli() {
+        // Use the Display impls of the Error enum (plus its source chain via
+        // `:#`), not Debug — users should see "IO error: No such file..." rather
+        // than the raw `Io(Os { code: 2, ... })` Debug form.
+        eprintln!("Error: {e:#}");
+        std::process::exit(1);
+    }
+}
+
+fn run_cli() -> Result<()> {
     // Disable ANSI escape codes when stdout is not a TTY (e.g. piped output)
     if !std::io::stdout().is_terminal() {
         owo_colors::set_override(false);
@@ -1039,7 +1068,7 @@ async fn run(cli: Cli) -> Result<()> {
                 return Ok(());
             }
             let hooks_enabled = veclayer::config::Config::new().hooks_enabled;
-            let exit_code = stale(&data_dir, &since, &output, hooks_enabled).await?;
+            let exit_code = stale(&data_dir, &since, &output.to_string(), hooks_enabled).await?;
             if exit_code != 0 {
                 std::process::exit(exit_code);
             }

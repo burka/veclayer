@@ -215,7 +215,12 @@ fn read_jsonl_lines(path: &str) -> Result<Vec<String>> {
         let reader = BufReader::new(io::stdin());
         collect_non_empty_lines(reader)
     } else {
-        let file = std::fs::File::open(path)?;
+        let file = std::fs::File::open(path).map_err(|e| {
+            crate::Error::Io(std::io::Error::new(
+                e.kind(),
+                format!("could not open '{path}': {e}"),
+            ))
+        })?;
         let reader = BufReader::new(file);
         collect_non_empty_lines(reader)
     }
