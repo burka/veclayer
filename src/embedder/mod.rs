@@ -98,6 +98,20 @@ fn resolve_fastembed_model(name: &str) -> (fastembed::EmbeddingModel, bool) {
 
 /// Create an embedder from configuration.
 pub fn from_config(config: &EmbedderConfig) -> Result<Box<dyn Embedder + Send + Sync>> {
+    // Fail fast and friendly when the binary was built without any embedder
+    // backend. Without this, the default Ollama path would only surface a
+    // generic connection error on first use against a server that can never
+    // exist, hiding the real cause (a missing compile-time feature). Name both
+    // features so the fix is obvious.
+    #[cfg(not(any(feature = "embedding-local", feature = "llm")))]
+    {
+        let _ = config;
+        return Err(crate::Error::config(
+            "No embedder backend compiled — enable the 'embedding-local' or 'llm' feature",
+        ));
+    }
+
+    #[cfg(any(feature = "embedding-local", feature = "llm"))]
     match config {
         #[cfg(feature = "embedding-local")]
         EmbedderConfig::FastEmbed { model } => {

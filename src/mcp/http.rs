@@ -381,6 +381,11 @@ fn build_cors(server_url: Option<String>) -> CorsLayer {
     CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(move |origin, _| {
             let s = origin.as_bytes();
+            // Allow any https://*.claude.ai subdomain (e.g. regional/preview
+            // hosts) in addition to the apex. This wildcard is safe here: the
+            // API authenticates via bearer token and never sets
+            // allow_credentials, so no cookies/credentials ride on cross-origin
+            // requests and a spoofed subdomain origin gains nothing.
             if is_loopback_origin(s)
                 || s == b"https://claude.ai"
                 || (s.starts_with(b"https://") && s.ends_with(b".claude.ai"))
@@ -457,6 +462,12 @@ pub async fn run_http(config: Config) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(crate::Error::Io)?;
+
+    // Single source of the startup confirmation. The info! above is hidden at
+    // the default WARN log level, so print the listening URL unconditionally to
+    // stderr once the bind succeeds — this is the line users look for to know
+    // the server is up. (Do NOT duplicate this in serve.rs.)
+    eprintln!("VecLayer HTTP server listening on http://{addr}");
 
     // Warn loudly when binding to a non-loopback address without authentication.
     // Emitted after bind succeeds so a bind failure (e.g. port in use) does not

@@ -87,10 +87,38 @@ impl FastEmbedder {
     fn get_or_init_model(&self) -> Result<Arc<TextEmbedding>> {
         self.model.get_or_try_init(|| {
             tracing::debug!("Initializing FastEmbed model {}", self.model_name);
-            let options =
-                InitOptions::new(self.model_type.clone()).with_cache_dir(self.cache_dir.clone());
+            // The first run downloads the ONNX weights (~130 MB) into the cache
+            // dir. That download is otherwise silent at the default WARN log
+            // level, leaving the user staring at a frozen process. Print a
+            // one-line stderr notice only when the model isn't already cached,
+            // so we don't spam on every subsequent startup.
+            let needs_download = !self.is_model_cached();
+            if needs_download {
+                eprintln!("Downloading embedding model (~130 MB, first run only)…");
+            }
+            let options = InitOptions::new(self.model_type.clone())
+                .with_cache_dir(self.cache_dir.clone())
+                .with_show_download_progress(needs_download);
             TextEmbedding::try_new(options)
                 .map_err(|e| Error::embedding(format!("Failed to initialize FastEmbed: {e}")))
+        })
+    }
+
+    /// Best-effort check for whether the model weights are already present in
+    /// the cache dir. fastembed stores each model under a
+    /// `models--<org>--<repo>` directory (HuggingFace hub layout); a non-empty
+    /// such directory means the download already happened. A false negative
+    /// only costs an extra notice line, so this errs toward quiet rather than
+    /// reaching into fastembed's private cache internals.
+    fn is_model_cached(&self) -> bool {
+        let Ok(entries) = std::fs::read_dir(&self.cache_dir) else {
+            return false;
+        };
+        entries.flatten().any(|entry| {
+            entry.file_name().to_string_lossy().starts_with("models--")
+                && std::fs::read_dir(entry.path())
+                    .map(|mut d| d.next().is_some())
+                    .unwrap_or(false)
         })
     }
 
