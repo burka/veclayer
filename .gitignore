@@ -13,3 +13,5 @@ veclayer.toml
 report/
 .claude/scheduled_tasks.json
 .claude/scheduled_tasks.lock
+.claude/loop-review.*
+/auto/

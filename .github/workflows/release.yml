@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (full history for changelog)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain (MSRV 1.93)
+        uses: dtolnay/rust-toolchain@1.93
+
+      - name: Install protoc (needed by lance-encoding via prost-build)
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Cache cargo registry and target dir
+        uses: Swatinem/rust-cache@v2
+
+      - name: Generate release notes from cliff.toml
+        uses: orhun/git-cliff-action@v4
+        id: changelog
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: RELEASE_NOTES.md
+
+      - name: Build release binary
+        run: cargo build --release --features cli
+
+      - name: Verify packaging (dry-run, no publish)
+        run: cargo publish --dry-run --features cli
+        # NOTE: actual publishing is intentionally a manual step. Once the
+        # dry-run and release look correct, publish consciously with:
+        #   cargo publish --features cli
+        # (or wire a manually-approved environment-gated job here).
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: RELEASE_NOTES.md
+          files: target/release/veclayer
+          fail_on_unmatched_files: true

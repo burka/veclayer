@@ -7,7 +7,7 @@
 
 **Long-term memory for AI agents. Hierarchical, perspectival, aging knowledge.**
 
-> Status: 0.1.0 alpha / pre-release — MCP tool & CLI for local use. APIs are evolving and may change without notice.
+> Status: 0.2.0 alpha / pre-release — MCP tool & CLI for local use. APIs are evolving and may change without notice.
 > Author: Florian Burka, developed in dialogue with Claude
 
 ## What is VecLayer?
@@ -355,16 +355,26 @@ The think cycle and cluster summarization require a running Ollama instance. The
 
 | Feature | Default | What it enables |
 |---------|---------|-----------------|
-| `llm` | Yes | LLM-powered summarization, clustering, think/consolidation cycle |
-| `sync` | No | Cross-store synchronization (experimental) |
+| `cli` | Yes | The `veclayer` binary and all CLI subcommands (pulls in `store-lance`, `mcp`, `config`, `parser`) |
+| `store-lance` | Yes | LanceDB vector store backend (requires `protoc` at build time) |
+| `store-sqlite` | Yes | SQLite vector store backend (bundled, no system deps) |
+| `parser` | Yes | Markdown ingestion via pulldown-cmark |
+| `config` | Yes | TOML + ENV config loading and project resolution |
+| `mcp` | Yes | MCP server (`veclayer serve --mcp-stdio`) for Claude Code / Opencode |
+| `embedding-local` | No | Local CPU embeddings via fastembed (ONNX) |
+| `llm` | Yes | LLM-powered summarization, clustering, and the `think`/`summarize` commands |
+| `http` | Yes | **Experimental (WIP)** — HTTP server (`veclayer serve`, default mode); implies `auth` and `mcp`. Not yet exercised in production; APIs may change |
+| `auth` | Yes | **Experimental (WIP)** — Identity and `auth` commands, JWT tokens, and `--auth-required` for the HTTP server. Not yet exercised in production; APIs may change |
+| `full` | — | Convenience set: `cli`, `store-sqlite`, `llm`, `http`, `auth` (the default) |
+| `full-local` | — | `full` plus `embedding-local` |
 
-Build without LLM dependencies:
+Build a library-only crate without the default feature set:
 
 ```bash
-cargo build --no-default-features
+cargo build --no-default-features --features "store-sqlite mcp parser config"
 ```
 
-All core functionality (store, recall, focus, perspectives, aging, identity) works without the `llm` feature. Only summarization and the `think` command require it.
+The `veclayer` binary requires at least `--features cli` (`[[bin]] required-features = ["cli"]`); `--no-default-features` alone yields the library only, with no executable. Core library functionality (store, recall, focus, perspectives, aging, identity) works without the `llm` feature — only summarization and the `think` command require it.
 
 ## Tech Stack
 
@@ -386,7 +396,8 @@ Phases 1–5.5 complete: core model, perspectives, aging/salience, identity, thi
 
 The following are known issues tracked for future releases:
 
-- **HTTP server has no authentication** — The REST API (`veclayer serve --http`) binds to localhost with restricted CORS but has no auth tokens. Do not expose to untrusted networks. Auth is planned for a future release.
+- **HTTP server + auth are experimental (WIP)** — The HTTP REST API and the token-auth layer are functional and tested but **not yet exercised in real-world use by the maintainer**; treat them as work-in-progress, expect API changes, and do not rely on them for production. The stable, supported surface for v0.2 is the **CLI + MCP-stdio server + local embeddings**.
+- **HTTP server is unauthenticated by default** — The REST API (`veclayer serve`, HTTP is the default mode) binds to localhost with restricted CORS and runs without auth tokens unless you pass `--auth-required`. Token-based auth ships in the `auth`/`http` features; enable it (and bind beyond localhost only) once you have provisioned tokens. Do not expose the default localhost-only, unauthenticated mode to untrusted networks.
 - **API keys stored as plain strings** — LLM API keys (for OpenAI-compatible providers) are held in memory as `String` without zeroing on drop. Acceptable for CLI use; not suitable for long-running shared server deployments without additional safeguards.
 - **Test env var manipulation** — Some tests use `std::env::set_var` which became `unsafe` in Rust 1.83+. These tests use `serial_test` for isolation but will need `unsafe` blocks in a future Rust edition.
 - **chunk.rs scope** — The core `chunk` module (1000+ lines) is planned for decomposition before v0.2: `ChunkRelation` and relation constants will move to the `relations` module.

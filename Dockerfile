@@ -1,5 +1,5 @@
 # Stage 1: Build
-FROM rust:1.82-slim-bookworm AS builder
+FROM rust:1.93-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config libssl-dev protobuf-compiler libprotobuf-dev libstdc++-12-dev && rm -rf /var/lib/apt/lists/*

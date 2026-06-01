@@ -1,6 +1,6 @@
 [package]
 name = "veclayer"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Hierarchical vector memory for AI agents — perspectives, salience, aging, identity"
 license = "MIT"
@@ -20,7 +20,10 @@ include = [
 rust-version = "1.93"
 
 [package.metadata.docs.rs]
-all-features = true
+# docs.rs has no protoc; store-lance (LanceDB) needs protoc at build time and cli
+# pulls store-lance, so document a protoc-free feature set covering the public API.
+no-default-features = true
+features = ["store-sqlite", "mcp", "http", "auth", "llm", "embedding-local", "parser", "config"]
 
 [features]
 default = ["full"]
