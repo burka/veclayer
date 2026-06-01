@@ -10,12 +10,17 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::chunk::{ChunkRelation, EntryType, HierarchicalChunk};
+#[cfg(feature = "llm")]
+use crate::chunk::ChunkRelation;
+use crate::chunk::{EntryType, HierarchicalChunk};
 use crate::identity::{self, IdentitySnapshot};
+#[cfg(feature = "llm")]
 use crate::llm::{DynLlmProvider, LlmProvider, Message};
 use crate::store::StoreBackend;
 use crate::util::preview;
-use crate::{Embedder, Result, VectorStore};
+#[cfg(feature = "llm")]
+use crate::Embedder;
+use crate::{Result, VectorStore};
 
 /// Result of a think cycle.
 #[derive(Debug, Default)]
@@ -54,6 +59,7 @@ pub struct ThinkEntry {
 // --- LLM response structures ---
 
 /// What the LLM produces (parsed from JSON).
+#[cfg(feature = "llm")]
 #[derive(Debug, serde::Deserialize)]
 struct ThinkPlan {
     #[serde(default)]
@@ -64,6 +70,7 @@ struct ThinkPlan {
     learnings: Vec<Learning>,
 }
 
+#[cfg(feature = "llm")]
 #[derive(Debug, serde::Deserialize)]
 struct Consolidation {
     content: String,
@@ -72,6 +79,7 @@ struct Consolidation {
     perspectives: Vec<String>,
 }
 
+#[cfg(feature = "llm")]
 #[derive(Debug, serde::Deserialize)]
 struct Learning {
     content: String,
@@ -79,6 +87,7 @@ struct Learning {
     perspectives: Vec<String>,
 }
 
+#[cfg(feature = "llm")]
 fn default_learnings_perspective() -> Vec<String> {
     vec!["learnings".to_string()]
 }
@@ -181,6 +190,7 @@ pub async fn prepare(
 ///
 /// When `project` is `Some`, only entries tagged with that project are
 /// considered for consolidation. When `None`, all entries are included.
+#[cfg(feature = "llm")]
 pub async fn execute<L: LlmProvider>(
     store: &impl VectorStore,
     embedder: &dyn Embedder,
@@ -213,6 +223,7 @@ pub async fn execute<L: LlmProvider>(
 ///
 /// Same as [`execute`] but accepts `&dyn DynLlmProvider` for use from
 /// the facade where the LLM is stored as a trait object.
+#[cfg(feature = "llm")]
 pub async fn execute_dyn(
     store: &impl VectorStore,
     embedder: &dyn Embedder,
@@ -244,6 +255,7 @@ pub async fn execute_dyn(
 // --- Helpers ---
 
 /// Parse LLM response and write entries (narrative, consolidations, learnings) to the store.
+#[cfg(feature = "llm")]
 async fn write_think_results(
     store: &impl VectorStore,
     embedder: &dyn Embedder,
@@ -389,6 +401,7 @@ fn build_prompt(priming: &str, snapshot: &IdentitySnapshot) -> String {
 }
 
 /// Write a single entry to the store with embedding.
+#[cfg(feature = "llm")]
 #[allow(clippy::too_many_arguments)]
 async fn write_entry(
     store: &impl VectorStore,
@@ -431,6 +444,7 @@ async fn write_entry(
 }
 
 /// Validate that entry IDs actually exist in the store.
+#[cfg(feature = "llm")]
 async fn validate_entry_ids(store: &impl VectorStore, ids: &[String]) -> Vec<String> {
     let mut valid = Vec::new();
     for id in ids {
@@ -601,6 +615,7 @@ fn format_discovered_pairs(pairs: &[DiscoveredPair]) -> Result<String> {
 }
 
 /// Parse LLM response as JSON ThinkPlan.
+#[cfg(feature = "llm")]
 fn parse_response(response: &str) -> Result<ThinkPlan> {
     let json_str = extract_json(response);
     serde_json::from_str(&json_str).map_err(|e| {
@@ -613,6 +628,7 @@ fn parse_response(response: &str) -> Result<ThinkPlan> {
 }
 
 /// Extract JSON from a response that might be wrapped in markdown fences.
+#[cfg(any(feature = "llm", test))]
 fn extract_json(s: &str) -> String {
     let trimmed = s.trim();
 
@@ -663,6 +679,7 @@ mod tests {
         assert_eq!(extract_json(input), r#"{"narrative": "test"}"#);
     }
 
+    #[cfg(feature = "llm")]
     #[test]
     fn test_parse_response_valid() {
         let json = r#"{
@@ -691,6 +708,7 @@ mod tests {
         assert_eq!(plan.learnings.len(), 1);
     }
 
+    #[cfg(feature = "llm")]
     #[test]
     fn test_parse_response_minimal() {
         let json = r#"{"narrative": null, "consolidations": [], "learnings": []}"#;
@@ -700,6 +718,7 @@ mod tests {
         assert!(plan.learnings.is_empty());
     }
 
+    #[cfg(feature = "llm")]
     #[test]
     fn test_parse_response_empty_object() {
         let json = r#"{}"#;
@@ -709,6 +728,7 @@ mod tests {
         assert!(plan.learnings.is_empty());
     }
 
+    #[cfg(feature = "llm")]
     #[test]
     fn test_parse_response_learning_default_perspective() {
         let json = r#"{"learnings": [{"content": "something"}]}"#;
@@ -740,13 +760,17 @@ mod tests {
 
     // ── execute() integration tests with mock LLM ─────────────────────────────
 
+    #[cfg(feature = "llm")]
     use crate::embedder::Embedder;
+    #[cfg(feature = "llm")]
     use crate::llm::{LlmProvider, Message};
 
+    #[cfg(feature = "llm")]
     struct MockLlm {
         response: String,
     }
 
+    #[cfg(feature = "llm")]
     impl LlmProvider for MockLlm {
         fn name(&self) -> &str {
             "mock-llm"
@@ -756,7 +780,9 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "llm")]
     struct FailingLlm;
+    #[cfg(feature = "llm")]
     impl LlmProvider for FailingLlm {
         fn name(&self) -> &str {
             "failing-llm"
@@ -766,10 +792,12 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "llm")]
     struct FixedEmbedder {
         dim: usize,
     }
 
+    #[cfg(feature = "llm")]
     impl Embedder for FixedEmbedder {
         fn embed<'a>(
             &'a self,
@@ -789,6 +817,7 @@ mod tests {
     }
 
     // Use 384-dim to match make_test_chunk which creates 384-dim embeddings.
+    #[cfg(feature = "llm")]
     fn make_embedder() -> FixedEmbedder {
         FixedEmbedder { dim: 384 }
     }
@@ -806,6 +835,7 @@ mod tests {
         chunk
     }
 
+    #[cfg(feature = "llm")]
     #[tokio::test]
     async fn test_execute_empty_store_returns_empty_result() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -826,6 +856,7 @@ mod tests {
         assert!(result.entries_created.is_empty());
     }
 
+    #[cfg(feature = "llm")]
     #[tokio::test]
     async fn test_execute_with_entries_creates_narrative_and_learning() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -856,6 +887,7 @@ mod tests {
         assert_eq!(result.entries_created.len(), 2); // narrative + learning
     }
 
+    #[cfg(feature = "llm")]
     #[tokio::test]
     async fn test_execute_consolidation_with_valid_ids() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -896,6 +928,7 @@ mod tests {
             .contains(&"decisions".to_string()));
     }
 
+    #[cfg(feature = "llm")]
     #[tokio::test]
     async fn test_execute_consolidation_with_invalid_ids_skipped() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -929,6 +962,7 @@ mod tests {
         assert_eq!(result.consolidations_added, 0);
     }
 
+    #[cfg(feature = "llm")]
     #[tokio::test]
     async fn test_execute_skips_empty_narrative() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -953,6 +987,7 @@ mod tests {
         assert!(result.entries_created.is_empty());
     }
 
+    #[cfg(feature = "llm")]
     #[tokio::test]
     async fn test_execute_skips_empty_learning_content() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -978,6 +1013,7 @@ mod tests {
         assert_eq!(result.learnings_added, 0);
     }
 
+    #[cfg(feature = "llm")]
     #[tokio::test]
     async fn test_execute_skips_empty_consolidation_content() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -1001,6 +1037,7 @@ mod tests {
         assert_eq!(result.consolidations_added, 0);
     }
 
+    #[cfg(feature = "llm")]
     #[tokio::test]
     async fn test_execute_llm_failure_returns_error() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -1021,6 +1058,7 @@ mod tests {
             .contains("simulated LLM failure"));
     }
 
+    #[cfg(feature = "llm")]
     #[tokio::test]
     async fn test_execute_invalid_llm_json_returns_error() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -1045,6 +1083,7 @@ mod tests {
             .contains("Failed to parse think response"));
     }
 
+    #[cfg(feature = "llm")]
     #[tokio::test]
     async fn test_validate_entry_ids_returns_only_existing() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -1062,6 +1101,7 @@ mod tests {
         assert_eq!(valid, vec![real_id.to_owned()]);
     }
 
+    #[cfg(feature = "llm")]
     #[tokio::test]
     async fn test_validate_entry_ids_all_missing() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -1076,6 +1116,7 @@ mod tests {
         assert!(valid.is_empty());
     }
 
+    #[cfg(feature = "llm")]
     #[tokio::test]
     async fn test_validate_entry_ids_empty_input() {
         let dir = tempfile::TempDir::new().unwrap();

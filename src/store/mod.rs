@@ -253,10 +253,11 @@ impl StoreBackend {
     }
 
     /// Force a compact + prune pass regardless of thresholds. Returns stats.
-    /// No-op for non-Lance backends.
-    #[cfg(feature = "store-lance")]
+    /// No-op for non-Lance backends. Always available (the MCP compact worker
+    /// invokes it regardless of which backend is compiled).
     pub async fn force_compact(&self) -> Result<CompactStats> {
         match self {
+            #[cfg(feature = "store-lance")]
             Self::Lance(s) => s.force_compact().await,
             #[cfg(feature = "store-sqlite")]
             Self::Sqlite(_) => Ok(CompactStats::default()),
@@ -266,15 +267,18 @@ impl StoreBackend {
     /// Force a compact + prune, invoking `progress` after each bounded pass.
     /// Lets callers stream progress while a large backlog drains incrementally.
     /// No-op for non-Lance backends (the closure is never called).
-    #[cfg(feature = "store-lance")]
     pub async fn force_compact_with_progress<F>(&self, progress: F) -> Result<CompactStats>
     where
         F: FnMut(CompactStats),
     {
         match self {
+            #[cfg(feature = "store-lance")]
             Self::Lance(s) => s.force_compact_with_progress(progress).await,
             #[cfg(feature = "store-sqlite")]
-            Self::Sqlite(_) => Ok(CompactStats::default()),
+            Self::Sqlite(_) => {
+                let _ = progress;
+                Ok(CompactStats::default())
+            }
         }
     }
 }

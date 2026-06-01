@@ -97,7 +97,7 @@ pub mod store;
 pub mod summarizer;
 #[cfg(test)]
 pub(crate) mod test_helpers;
-#[cfg(feature = "llm")]
+#[cfg(any(feature = "llm", feature = "mcp"))]
 #[doc(hidden)]
 pub mod think;
 pub mod util;
