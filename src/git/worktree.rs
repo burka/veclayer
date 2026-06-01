@@ -4,8 +4,10 @@
 //! write operations (create, delete, commit) that operate via a dedicated
 //! git worktree — the user's working directory is never touched.
 
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
+use fs2::FileExt;
 use sha2::{Digest, Sha256};
 
 use super::{check_output, run_git_in, run_git_with_gitdir, GitError, GitMemoryBranch};
@@ -50,12 +52,19 @@ impl GitMemoryBranch {
     /// If the directory already exists and is a valid git worktree, returns
     /// immediately. Otherwise, adds a new worktree via `git worktree add`.
     ///
-    /// NOTE: This method has a TOCTOU race: two concurrent callers could both pass the
-    /// is_valid_worktree check and race on removal/creation. This is acceptable because:
-    /// 1. MemoryStore is used single-threaded in practice (one MCP request at a time)
-    /// 2. The failure mode is a git error (not silent data corruption)
-    /// 3. If multi-process access becomes needed, add an advisory file lock here.
+    /// Concurrency: the check-and-create is guarded by an advisory file lock on
+    /// a dedicated `<branch>.lock` sibling of the worktree directory. This closes
+    /// the TOCTOU race where two concurrent callers (e.g. HTTP requests sharing a
+    /// single `MemoryStore`) both pass `is_valid_worktree` and then race on
+    /// removal / `git worktree add`. The lock is intentionally a *different* path
+    /// than the store's `FileLock` (`<data_dir>/.lock`, see [`crate::store::lock`])
+    /// to avoid lock-ordering deadlocks, and is released on every exit path —
+    /// including errors — via RAII when the guard is dropped.
     pub fn ensure_worktree(&self) -> Result<&Path, GitError> {
+        // Hold the worktree lock across the entire check-and-create. The guard
+        // releases the advisory lock on drop, on both the success and error paths.
+        let _guard = self.lock_worktree()?;
+
         if is_valid_worktree(&self.worktree_path) {
             // Verify the worktree actually works (catches stale .git pointers
             // from deleted repos that shared the same cache hash).
@@ -86,6 +95,52 @@ impl GitMemoryBranch {
         check_output(&output, "worktree add")?;
 
         Ok(&self.worktree_path)
+    }
+
+    /// Acquire the advisory worktree lock, blocking until available.
+    ///
+    /// The lock file is `<worktree_parent>/<branch>.lock` — a sibling of the
+    /// worktree directory, never the worktree directory itself (locking the dir
+    /// we are about to `remove_dir_all` would be self-defeating). The parent
+    /// directory (`~/.cache/veclayer/<hash>/`) is created if missing so the lock
+    /// file can be opened even on a cold cache.
+    fn lock_worktree(&self) -> Result<WorktreeLock, GitError> {
+        let parent = self.worktree_path.parent().ok_or_else(|| {
+            GitError::WorktreeError("worktree path has no parent directory".to_string())
+        })?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            GitError::WorktreeError(format!("failed to create worktree cache directory: {e}"))
+        })?;
+
+        let lock_name = match self.worktree_path.file_name() {
+            Some(name) => name.to_string_lossy().into_owned(),
+            None => self.branch.clone(),
+        };
+        let lock_path = parent.join(format!("{lock_name}.lock"));
+
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|e| {
+                GitError::WorktreeError(format!(
+                    "failed to open worktree lock {}: {e}",
+                    lock_path.display()
+                ))
+            })?;
+
+        // Block until the lock is available. flock is released automatically when
+        // the file descriptor is closed (process exit or crash), so a dead holder
+        // never wedges the lock permanently.
+        file.lock_exclusive().map_err(|e| {
+            GitError::WorktreeError(format!(
+                "failed to acquire worktree lock {}: {e}",
+                lock_path.display()
+            ))
+        })?;
+
+        Ok(WorktreeLock { _file: file })
     }
 
     /// Create an orphan memory branch if it does not already exist.
@@ -172,6 +227,14 @@ impl GitMemoryBranch {
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
+
+/// Advisory lock guarding the check-and-create in [`GitMemoryBranch::ensure_worktree`].
+///
+/// Holds an exclusive `fs2` flock on a `<branch>.lock` file for its lifetime;
+/// the lock is released automatically when the inner `File` is dropped.
+struct WorktreeLock {
+    _file: std::fs::File,
+}
 
 /// Validate that a relative path stays within the worktree root.
 ///

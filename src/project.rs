@@ -245,6 +245,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_env_var_overrides_git_remote() {
         clear_project_env();
         std::env::set_var("VECLAYER_PROJECT", "env-project");
@@ -323,6 +324,7 @@ mod tests {
     /// (priority 4).
     #[cfg(feature = "config")]
     #[test]
+    #[serial_test::serial]
     fn test_env_var_wins_over_local_config() {
         clear_project_env();
         let (_guard, root) = make_local_veclayer_dir(Some(r#"project = "local-project""#));
@@ -339,6 +341,7 @@ mod tests {
     /// directory (priority 4) when no git remote is present.
     #[cfg(feature = "config")]
     #[test]
+    #[serial_test::serial]
     fn test_openclaw_agent_wins_over_local_config() {
         clear_project_env();
         let (_guard, root) = make_local_veclayer_dir(Some(r#"project = "local-project""#));
@@ -356,6 +359,7 @@ mod tests {
     /// An empty `VECLAYER_PROJECT` env var must be treated as unset, so
     /// detection falls through to the next method.
     #[test]
+    #[serial_test::serial]
     fn test_empty_env_var_is_ignored() {
         clear_project_env();
         std::env::set_var("VECLAYER_PROJECT", "");
@@ -370,6 +374,7 @@ mod tests {
     /// An `VECLAYER_AGENT_ID` that does not begin with `agent_` must be
     /// ignored — only the canonical OpenClaw format is accepted.
     #[test]
+    #[serial_test::serial]
     fn test_openclaw_agent_id_without_prefix_is_ignored() {
         clear_project_env();
 
@@ -382,6 +387,7 @@ mod tests {
 
     /// An empty `VECLAYER_AGENT_ID` env var must be treated as unset.
     #[test]
+    #[serial_test::serial]
     fn test_empty_openclaw_agent_id_is_ignored() {
         clear_project_env();
 
@@ -400,6 +406,7 @@ mod tests {
     /// When VECLAYER_DATA_DIR is set, EnvVar source must return that path
     /// exactly, without creating any directories.
     #[test]
+    #[serial_test::serial]
     fn test_resolve_data_dir_env_var_respects_explicit_data_dir() {
         clear_project_env();
         let tmp = tempfile::TempDir::new().unwrap();
