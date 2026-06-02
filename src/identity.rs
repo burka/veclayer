@@ -161,10 +161,10 @@ pub async fn compute_identity<S: VectorStore>(
         .take(10)
         .collect();
 
-    // Discover emergent clusters from embeddings (requires llm feature for SoftClusterer)
-    #[cfg(feature = "llm")]
+    // Discover emergent clusters from embeddings (requires clustering feature for SoftClusterer)
+    #[cfg(feature = "clustering")]
     let emergent_clusters = discover_clusters(&hot, &weights);
-    #[cfg(not(feature = "llm"))]
+    #[cfg(not(feature = "clustering"))]
     let emergent_clusters = Vec::new();
 
     // Detect other branches' activity
@@ -284,7 +284,7 @@ fn compute_centroids(
 }
 
 /// Build an `EmergentCluster` from a group of member indices and their probabilities.
-#[cfg(feature = "llm")]
+#[cfg(feature = "clustering")]
 fn build_cluster_info(
     cluster_id: String,
     members: Vec<(usize, f32)>,
@@ -329,7 +329,7 @@ fn build_cluster_info(
 }
 
 /// Discover emergent clusters by running k-means on hot chunk embeddings.
-#[cfg(feature = "llm")]
+#[cfg(feature = "clustering")]
 fn discover_clusters(
     chunks: &[HierarchicalChunk],
     weights: &SalienceWeights,

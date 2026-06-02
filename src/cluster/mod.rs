@@ -1,6 +1,8 @@
+#[cfg(feature = "llm")]
 mod pipeline;
 mod soft_cluster;
 
+#[cfg(feature = "llm")]
 pub use pipeline::ClusterPipeline;
 pub use soft_cluster::SoftClusterer;
 

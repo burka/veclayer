@@ -115,7 +115,7 @@ async fn add_files(
     #[allow(unused_mut)]
     let mut summary_entries = 0;
 
-    #[cfg(feature = "llm")]
+    #[cfg(all(feature = "clustering", feature = "llm"))]
     if options.summarize && !all_chunks.is_empty() {
         info!(
             "Starting cluster summarization with model '{}'...",

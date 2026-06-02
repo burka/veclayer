@@ -56,7 +56,7 @@ pub mod aging;
 pub mod auth;
 pub mod blob_store;
 pub mod chunk;
-#[cfg(feature = "llm")]
+#[cfg(feature = "clustering")]
 #[doc(hidden)]
 pub mod cluster;
 #[cfg(feature = "cli")]
@@ -131,8 +131,10 @@ pub use chunk::{
     content_hash, relation, short_id, visibility, AccessProfile, ChunkLevel, ChunkRelation,
     ClusterMembership, EntryType, HierarchicalChunk, RecencyWindow, STANDARD_VISIBLE,
 };
-#[cfg(feature = "llm")]
-pub use cluster::{ClusterPipeline, SoftClusterer};
+#[cfg(all(feature = "clustering", feature = "llm"))]
+pub use cluster::ClusterPipeline;
+#[cfg(feature = "clustering")]
+pub use cluster::SoftClusterer;
 pub use config::Config;
 pub use embedder::Embedder;
 #[cfg(feature = "embedding-local")]

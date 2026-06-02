@@ -7,19 +7,19 @@ use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use owo_colors::{OwoColorize, Stream};
-#[cfg(feature = "llm")]
+#[cfg(all(feature = "clustering", feature = "llm"))]
 use tracing::info;
 use tracing::{debug, warn};
 
 use crate::blob_store::BlobStore;
 use crate::chunk::{short_id, EntryType};
-#[cfg(feature = "llm")]
+#[cfg(all(feature = "clustering", feature = "llm"))]
 use crate::cluster::ClusterPipeline;
 use crate::embedder;
 use crate::parser::MarkdownParser;
 use crate::search::{HierarchicalSearch, SearchConfig};
 use crate::store::StoreBackend;
-#[cfg(feature = "llm")]
+#[cfg(all(feature = "clustering", feature = "llm"))]
 use crate::summarizer::OllamaSummarizer;
 use crate::{Config, Embedder, Result, VectorStore};
 

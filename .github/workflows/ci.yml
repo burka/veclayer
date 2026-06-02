@@ -74,6 +74,9 @@ jobs:
           - ""
           - "--no-default-features --features store-sqlite"
           - "--no-default-features --features store-lance"
+          - "--no-default-features --features server"
+          - "--no-default-features --features cli,store-sqlite,embedding-local,clustering"
+          - "--all-features"
 
     steps:
       - name: Checkout
@@ -100,9 +103,21 @@ jobs:
         run: cargo check --all-targets
 
       - name: Check (sqlite-only)
-        if: matrix.features != '' && contains(matrix.features, 'sqlite')
+        if: matrix.features != '' && contains(matrix.features, 'sqlite') && !contains(matrix.features, 'clustering') && !contains(matrix.features, 'server') && !contains(matrix.features, 'all-features')
         run: cargo check --all-targets ${{ matrix.features }}
 
       - name: Check (lance-only)
         if: matrix.features != '' && contains(matrix.features, 'lance')
+        run: cargo check --all-targets ${{ matrix.features }}
+
+      - name: Check (server bundle)
+        if: matrix.features != '' && contains(matrix.features, 'server')
+        run: cargo check --all-targets ${{ matrix.features }}
+
+      - name: Check (clustering without llm)
+        if: matrix.features != '' && contains(matrix.features, 'clustering')
+        run: cargo check --all-targets ${{ matrix.features }}
+
+      - name: Check (all features)
+        if: matrix.features == '--all-features'
         run: cargo check --all-targets ${{ matrix.features }}

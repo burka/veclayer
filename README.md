@@ -361,12 +361,15 @@ The think cycle and cluster summarization require a running Ollama instance. The
 | `parser` | Yes | Markdown ingestion via pulldown-cmark |
 | `config` | Yes | TOML + ENV config loading and project resolution |
 | `mcp` | Yes | MCP server (`veclayer serve --mcp-stdio`) for Claude Code / Opencode |
-| `embedding-local` | No | Local CPU embeddings via fastembed (ONNX) |
-| `llm` | Yes | LLM-powered summarization, clustering, and the `think`/`summarize` commands |
-| `http` | Yes | **Experimental (WIP)** — HTTP server (`veclayer serve`, default mode); implies `auth` and `mcp`. Not yet exercised in production; APIs may change |
-| `auth` | Yes | **Experimental (WIP)** — Identity and `auth` commands, JWT tokens, and `--auth-required` for the HTTP server. Not yet exercised in production; APIs may change |
-| `full` | — | Convenience set: `cli`, `store-sqlite`, `llm`, `http`, `auth` (the default) |
-| `full-local` | — | `full` plus `embedding-local` |
+| `embedding-local` | Yes | Local CPU embeddings via fastembed (ONNX). Downloads the model (~130 MB) on first use. CPU-only; for GPU, point the remote embedder at a GPU-backed Ollama or TEI instance. |
+| `llm` | Yes | Ollama/OpenAI-compatible embeddings and LLM summarization (`reqwest` only — lightweight). Enables the `think`/`summarize` commands. |
+| `clustering` | No | Soft k-means clustering for emergent identity clusters (pulls in `linfa`, `linfa-clustering`, `ndarray` — heavy opt-in). Used by `SoftClusterer` and `ClusterPipeline` (the latter also requires `llm`). |
+| `http` | No | **Experimental (WIP)** — HTTP server (`veclayer serve`, default mode); implies `auth` and `mcp`. Not yet exercised in production; APIs may change |
+| `auth` | No | **Experimental (WIP)** — Identity and `auth` commands, JWT tokens, and `--auth-required` for the HTTP server. Not yet exercised in production; APIs may change |
+| `full` | — | Everything: `cli`, `store-sqlite`, `embedding-local`, `llm`, `clustering`, `http`, `auth` |
+| `server` | — | Remote-embed server bundle (no fastembed / clustering): `cli`, `store-sqlite`, `llm`, `http`, `auth`. Use this for Docker/GPU-Ollama deployments where you don't want local ONNX. |
+
+**Default feature set** (`cli`, `store-sqlite`, `embedding-local`, `llm`): works fully offline with local CPU embeddings. No heavy clustering stack, no HTTP server.
 
 Build a library-only crate without the default feature set:
 
@@ -374,7 +377,7 @@ Build a library-only crate without the default feature set:
 cargo build --no-default-features --features "store-sqlite mcp parser config"
 ```
 
-The `veclayer` binary requires at least `--features cli` (`[[bin]] required-features = ["cli"]`); `--no-default-features` alone yields the library only, with no executable. Core library functionality (store, recall, focus, perspectives, aging, identity) works without the `llm` feature — only summarization and the `think` command require it.
+The `veclayer` binary requires at least `--features cli` (`[[bin]] required-features = ["cli"]`); `--no-default-features` alone yields the library only, with no executable. Core library functionality (store, recall, focus, perspectives, aging, identity) works without the `llm` or `clustering` features — only summarization and the `think` command require `llm`, and emergent-cluster discovery requires `clustering`.
 
 ## Tech Stack
 
