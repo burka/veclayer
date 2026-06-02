@@ -5,7 +5,6 @@
 //! need to wire up the rmcp service machinery.
 
 use std::borrow::Cow;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmcp::{
@@ -15,11 +14,9 @@ use rmcp::{
 };
 
 use crate::auth::capability::Capability;
-use crate::blob_store::BlobStore;
 use crate::git::branch_config::PushMode;
-use crate::store::StoreBackend;
-use crate::Embedder;
 
+use super::core::ServerCore;
 use super::tools::{impl_tool_context, ToolContext};
 use super::types::*;
 use super::{format, tools};
@@ -38,13 +35,10 @@ fn tool_error(e: crate::Error) -> Result<CallToolResult, McpError> {
 /// For stdio there is a single handler for the process lifetime.
 #[derive(Clone)]
 pub struct McpHandler {
-    store: Arc<StoreBackend>,
-    embedder: Arc<dyn Embedder + Send + Sync>,
-    embedder_config: crate::config::EmbedderConfig,
-    blob_store: Arc<BlobStore>,
-    data_dir: PathBuf,
-    project: Option<String>,
-    branch: Option<String>,
+    /// Session-invariant dependencies (store, embedder, blob_store, data_dir).
+    pub core: Arc<ServerCore>,
+    pub project: Option<String>,
+    pub branch: Option<String>,
     /// Instruction text returned in `get_info` (MCP `initialize` response).
     /// Computed from static instructions + identity priming at session creation.
     instructions: String,
@@ -78,11 +72,7 @@ impl McpHandler {
         capability: Capability,
     ) -> Self {
         Self::new(
-            Arc::clone(&state.store),
-            Arc::clone(&state.embedder),
-            state.embedder_config.clone(),
-            Arc::clone(&state.blob_store),
-            state.data_dir.clone(),
+            Arc::clone(&state.core),
             state.project.clone(),
             state.branch.clone(),
             instructions,
@@ -92,13 +82,8 @@ impl McpHandler {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        store: Arc<StoreBackend>,
-        embedder: Arc<dyn Embedder + Send + Sync>,
-        embedder_config: crate::config::EmbedderConfig,
-        blob_store: Arc<BlobStore>,
-        data_dir: PathBuf,
+        core: Arc<ServerCore>,
         project: Option<String>,
         branch: Option<String>,
         instructions: String,
@@ -156,11 +141,7 @@ impl McpHandler {
         }
 
         Self {
-            store,
-            embedder,
-            embedder_config,
-            blob_store,
-            data_dir,
+            core,
             project,
             branch,
             instructions,
@@ -328,11 +309,11 @@ impl ServerHandler for McpHandler {
     ) -> Result<ReadResourceResult, McpError> {
         super::resources::read(
             &request.uri,
-            &self.store,
-            &self.data_dir,
+            &self.core.store,
+            &self.core.data_dir,
             self.project.as_deref(),
             self.branch.as_deref(),
-            &self.embedder_config,
+            &self.core.embedder_config,
         )
         .await
     }
@@ -349,6 +330,7 @@ mod tests {
     use crate::auth::capability::Capability;
     use crate::blob_store::BlobStore;
     use crate::git::branch_config::PushMode;
+    use crate::mcp::core::ServerCore;
     use crate::store::StoreBackend;
     use crate::{Embedder, Result};
 
@@ -386,12 +368,16 @@ mod tests {
         let embedder: Arc<dyn Embedder + Send + Sync> = Arc::new(StubEmbedder);
         let blob_store = Arc::new(BlobStore::open(data_dir).unwrap());
 
-        McpHandler::new(
+        let core = Arc::new(ServerCore {
             store,
             embedder,
-            crate::config::EmbedderConfig::default(),
+            embedder_config: crate::config::EmbedderConfig::default(),
             blob_store,
-            data_dir.to_path_buf(),
+            data_dir: data_dir.to_path_buf(),
+        });
+
+        McpHandler::new(
+            core,
             project,
             branch,
             "test instructions".to_string(),

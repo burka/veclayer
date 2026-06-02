@@ -112,11 +112,13 @@ async fn spawn_auth_server(auto_approve: bool) -> (String, TempDir, SigningKey, 
     let device_codes = oauth_state.device_codes.clone();
 
     let state = AppState {
-        store,
-        embedder,
-        embedder_config: veclayer::config::EmbedderConfig::default(),
-        blob_store,
-        data_dir: tmp.path().to_path_buf(),
+        core: Arc::new(veclayer::mcp::core::ServerCore {
+            store,
+            embedder,
+            embedder_config: veclayer::config::EmbedderConfig::default(),
+            blob_store,
+            data_dir: tmp.path().to_path_buf(),
+        }),
         project: None,
         branch: None,
         auth: Some(AuthSetup {
@@ -662,11 +664,13 @@ async fn test_backward_compat_no_auth() {
     let blob_store = Arc::new(BlobStore::open(tmp.path()).unwrap());
 
     let state = AppState {
-        store,
-        embedder,
-        embedder_config: veclayer::config::EmbedderConfig::default(),
-        blob_store,
-        data_dir: tmp.path().to_path_buf(),
+        core: Arc::new(veclayer::mcp::core::ServerCore {
+            store,
+            embedder,
+            embedder_config: veclayer::config::EmbedderConfig::default(),
+            blob_store,
+            data_dir: tmp.path().to_path_buf(),
+        }),
         project: None,
         branch: None,
         auth: None,

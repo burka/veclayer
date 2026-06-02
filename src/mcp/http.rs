@@ -33,6 +33,7 @@ use crate::embedder;
 use crate::store::StoreBackend;
 use crate::{Config, Embedder, Result, VectorStore};
 
+use super::core::ServerCore;
 use super::handler::McpHandler;
 use super::tools::{self, impl_tool_context, ToolContext};
 use super::types::*;
@@ -52,11 +53,8 @@ pub struct AuthSetup {
 /// Shared application state for both REST API handlers and MCP session factory.
 #[derive(Clone)]
 pub struct AppState {
-    pub store: Arc<StoreBackend>,
-    pub embedder: Arc<dyn Embedder + Send + Sync>,
-    pub embedder_config: crate::config::EmbedderConfig,
-    pub blob_store: Arc<BlobStore>,
-    pub data_dir: std::path::PathBuf,
+    /// Session-invariant dependencies (store, embedder, blob_store, data_dir).
+    pub core: Arc<ServerCore>,
     pub project: Option<String>,
     pub branch: Option<String>,
     /// Present when authentication is enabled.
@@ -225,8 +223,8 @@ fn build_router(state: AppState, rate_limit_burst: Option<u32>) -> Router {
         move || {
             let instructions = tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(super::compute_instructions(
-                    mcp_state.store.as_ref(),
-                    &mcp_state.data_dir,
+                    mcp_state.core.store.as_ref(),
+                    &mcp_state.core.data_dir,
                     mcp_state.project.as_deref(),
                     mcp_state.branch.as_deref(),
                     None,
@@ -440,12 +438,16 @@ pub async fn run_http(config: Config) -> Result<()> {
         .parse()
         .map_err(|e| crate::Error::config(format!("Invalid address: {}", e)))?;
 
-    let state = AppState {
+    let core = Arc::new(ServerCore {
         store,
         embedder,
         embedder_config: config.embedder.clone(),
         blob_store,
         data_dir: config.data_dir.clone(),
+    });
+
+    let state = AppState {
+        core,
         project: config.project.clone(),
         branch: config.branch.clone(),
         auth,
@@ -701,6 +703,7 @@ async fn api_stats(
 ) -> StdResult<Json<serde_json::Value>, AppError> {
     require_read_capability(&required_capability)?;
     let stats = state
+        .core
         .store
         .stats()
         .await
@@ -720,8 +723,8 @@ async fn api_identity(
 ) -> StdResult<Json<serde_json::Value>, AppError> {
     require_read_capability(&required_capability)?;
     let snapshot = crate::identity::compute_identity(
-        state.store.as_ref(),
-        &state.data_dir,
+        state.core.store.as_ref(),
+        &state.core.data_dir,
         state.project.as_deref(),
         state.branch.as_deref(),
     )
@@ -754,8 +757,8 @@ async fn api_priming(
         return (StatusCode::FORBIDDEN, "Insufficient permission: need read").into_response();
     }
     match crate::identity::compute_identity(
-        state.store.as_ref(),
-        &state.data_dir,
+        state.core.store.as_ref(),
+        &state.core.data_dir,
         state.project.as_deref(),
         state.branch.as_deref(),
     )
@@ -907,12 +910,16 @@ mod tests {
         let store = StoreBackend::open(dir.path(), 384, false).await.unwrap();
         let blob_store = BlobStore::open(dir.path()).unwrap();
 
-        let state = AppState {
+        let core = Arc::new(ServerCore {
             store: Arc::new(store),
             embedder: Arc::new(FixedEmbedder),
             embedder_config: crate::config::EmbedderConfig::default(),
             blob_store: Arc::new(blob_store),
             data_dir: dir.path().to_path_buf(),
+        });
+
+        let state = AppState {
+            core,
             project: None,
             branch: None,
             auth: None,

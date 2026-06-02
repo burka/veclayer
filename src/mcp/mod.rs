@@ -8,6 +8,7 @@
 //! - `http` -- HTTP REST API + Streamable HTTP MCP transport (rmcp)
 
 pub mod compact_worker;
+pub mod core;
 pub mod embed_worker;
 pub mod format;
 pub mod handler;

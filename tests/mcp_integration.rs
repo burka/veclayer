@@ -32,11 +32,13 @@ async fn spawn_server_with_state(
     let blob_store = Arc::new(BlobStore::open(tmp.path()).unwrap());
 
     let state = AppState {
-        store,
-        embedder,
-        embedder_config: veclayer::config::EmbedderConfig::default(),
-        blob_store,
-        data_dir: tmp.path().to_path_buf(),
+        core: Arc::new(veclayer::mcp::core::ServerCore {
+            store,
+            embedder,
+            embedder_config: veclayer::config::EmbedderConfig::default(),
+            blob_store,
+            data_dir: tmp.path().to_path_buf(),
+        }),
         project,
         branch,
         auth: None,
@@ -313,9 +315,9 @@ async fn mcp_store_and_recall_roundtrip() {
     // This avoids the idle-poll sleep that fires when no entries are pending
     // on the worker's first iteration.
     let _worker = veclayer::mcp::embed_worker::spawn(
-        Arc::clone(&state.store),
-        Arc::clone(&state.embedder),
-        Arc::clone(&state.blob_store),
+        Arc::clone(&state.core.store),
+        Arc::clone(&state.core.embedder),
+        Arc::clone(&state.core.blob_store),
     );
 
     // Poll recall until the background worker has embedded the entry and it

@@ -15,11 +15,13 @@ async fn open_state(tmp: &TempDir) -> AppState {
     let store = Arc::new(StoreBackend::open(tmp.path(), dim, false).await.unwrap());
     let blob_store = Arc::new(BlobStore::open(tmp.path()).unwrap());
     AppState {
-        store,
-        embedder,
-        embedder_config: veclayer::config::EmbedderConfig::default(),
-        blob_store,
-        data_dir: tmp.path().to_path_buf(),
+        core: Arc::new(veclayer::mcp::core::ServerCore {
+            store,
+            embedder,
+            embedder_config: veclayer::config::EmbedderConfig::default(),
+            blob_store,
+            data_dir: tmp.path().to_path_buf(),
+        }),
         project: None,
         branch: None,
         auth: None,
@@ -94,9 +96,9 @@ async fn store_and_recall_roundtrip() {
     // Starting it after the store avoids the worker's 10-second idle sleep
     // (which triggers when the first pass finds nothing).
     let _worker = veclayer::mcp::embed_worker::spawn(
-        Arc::clone(&state.store),
-        Arc::clone(&state.embedder),
-        Arc::clone(&state.blob_store),
+        Arc::clone(&state.core.store),
+        Arc::clone(&state.core.embedder),
+        Arc::clone(&state.core.blob_store),
     );
 
     // Poll recall until the background worker has embedded the entry and it
@@ -326,11 +328,13 @@ mod auth {
         };
 
         let state = AppState {
-            store,
-            embedder,
-            embedder_config: veclayer::config::EmbedderConfig::default(),
-            blob_store,
-            data_dir: tmp.path().to_path_buf(),
+            core: Arc::new(veclayer::mcp::core::ServerCore {
+                store,
+                embedder,
+                embedder_config: veclayer::config::EmbedderConfig::default(),
+                blob_store,
+                data_dir: tmp.path().to_path_buf(),
+            }),
             project: None,
             branch: None,
             auth: Some(AuthSetup {
@@ -574,11 +578,13 @@ mod rate_limit {
         let blob_store = Arc::new(BlobStore::open(tmp.path()).unwrap());
 
         let state = AppState {
-            store,
-            embedder,
-            embedder_config: veclayer::config::EmbedderConfig::default(),
-            blob_store,
-            data_dir: tmp.path().to_path_buf(),
+            core: Arc::new(veclayer::mcp::core::ServerCore {
+                store,
+                embedder,
+                embedder_config: veclayer::config::EmbedderConfig::default(),
+                blob_store,
+                data_dir: tmp.path().to_path_buf(),
+            }),
             project: None,
             branch: None,
             auth: None,

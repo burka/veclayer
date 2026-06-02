@@ -11,6 +11,7 @@ use crate::embedder;
 use crate::store::StoreBackend;
 use crate::{Config, Embedder, Result};
 
+use super::core::ServerCore;
 use super::handler::McpHandler;
 
 /// Run the MCP server on stdio.
@@ -54,12 +55,16 @@ pub async fn run_stdio(config: Config) -> Result<()> {
 
     // Create handler and serve via rmcp stdio transport.
     // Stdio transport is trusted (local process), so it always gets Admin capability.
-    let handler = McpHandler::new(
+    let core = Arc::new(ServerCore {
         store,
         embedder,
-        config.embedder.clone(),
+        embedder_config: config.embedder.clone(),
         blob_store,
-        config.data_dir.clone(),
+        data_dir: config.data_dir.clone(),
+    });
+
+    let handler = McpHandler::new(
+        core,
         config.project.clone(),
         config.branch.clone(),
         instructions,

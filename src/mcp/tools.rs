@@ -137,13 +137,18 @@ impl ToolContext {
 
 /// Macro to generate a `tool_context()` method that calls `ToolContext::from_parts`
 /// with Arc-cloned fields. Eliminates copy-paste between McpHandler and AppState.
+///
+/// Both `McpHandler` and `AppState` expose a `.core` field of type
+/// `Arc<ServerCore>` holding the session-invariant deps, and keep per-session
+/// fields (`project`, `branch`, `git_store`, `push_mode`) directly on the
+/// outer struct.
 macro_rules! impl_tool_context {
     ($self:expr) => {
         ToolContext::from_parts(
-            Arc::clone(&$self.store),
-            Arc::clone(&$self.embedder),
-            Arc::clone(&$self.blob_store),
-            $self.data_dir.clone(),
+            Arc::clone(&$self.core.store),
+            Arc::clone(&$self.core.embedder),
+            Arc::clone(&$self.core.blob_store),
+            $self.core.data_dir.clone(),
             $self.project.clone(),
             $self.branch.clone(),
             $self.git_store.clone(),
