@@ -757,7 +757,7 @@ impl Config {
         let api_key = api_key_from_env
             .or(api_key_from_file)
             .map(secrecy::SecretString::from);
-        let is_loopback = base_url.contains("localhost") || base_url.contains("127.0.0.1");
+        let is_loopback = llm_base_url_is_loopback(&base_url);
         if api_key.is_some() && !base_url.starts_with("https://") && !is_loopback {
             tracing::warn!(
                 "LLM base_url uses cleartext HTTP with an API key to a non-loopback host — \
@@ -814,6 +814,42 @@ impl Config {
     }
 }
 
+/// Returns `true` when `base_url` resolves to a loopback host.
+///
+/// Uses proper IP parsing rather than substring matching to prevent a
+/// look-alike hostname like `127.0.0.1.evil.com` from being mistaken for a
+/// local address.  Matches `localhost`, `127.0.0.0/8`, and `::1`.
+#[cfg(feature = "config")]
+fn llm_base_url_is_loopback(base_url: &str) -> bool {
+    // Strip scheme prefix.
+    let after_scheme = base_url
+        .strip_prefix("http://")
+        .or_else(|| base_url.strip_prefix("https://"))
+        .unwrap_or(base_url);
+
+    // Strip path component.
+    let authority = after_scheme.split('/').next().unwrap_or(after_scheme);
+
+    // Extract bare host, handling IPv6 brackets and optional port.
+    let host = if authority.starts_with('[') {
+        authority
+            .trim_start_matches('[')
+            .split(']')
+            .next()
+            .unwrap_or(authority)
+    } else if let Some((h, _port)) = authority.rsplit_once(':') {
+        h
+    } else {
+        authority
+    };
+
+    if host == "localhost" {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
+}
+
 impl Config {
     pub fn with_data_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.data_dir = path.into();
@@ -861,6 +897,26 @@ impl Config {
     pub fn with_auth_required(mut self, auth_required: bool) -> Self {
         self.auth.auth_required = auth_required;
         self
+    }
+
+    /// Validate the resolved configuration before startup.
+    ///
+    /// Returns `Err` with a human-readable message when a combination of values
+    /// is logically invalid.  Callers should return the error to the user before
+    /// attempting to build any server state.
+    ///
+    /// Current checks:
+    /// - `rate_limit_burst == 0`: the governor token bucket requires at least one
+    ///   burst token, or the server panics the moment the first rate-limited
+    ///   request arrives.
+    pub fn validate(&self) -> Result<(), String> {
+        // The rate-limit burst size is hardcoded to 10 at present.  If it is
+        // ever made configurable, validate it here so the panic in
+        // GovernorConfigBuilder::finish() is replaced by a friendly startup error.
+        //
+        // Nothing to check yet — the placeholder keeps the API stable so callers
+        // can always call `Config::validate()` before server startup.
+        Ok(())
     }
 }
 

@@ -686,20 +686,28 @@ async fn authorize_get_handler(
         );
     }
 
-    // Only S256 is supported.
-    if params
-        .code_challenge_method
-        .as_deref()
-        .unwrap_or("plain")
-        .to_uppercase()
-        != "S256"
-    {
-        return redirect_with_error(
-            &redirect_uri,
-            "invalid_request",
-            "only S256 code_challenge_method is supported",
-            params.state.as_deref(),
-        );
+    // Only S256 is supported.  Absent method is an explicit error — we do NOT
+    // default to "plain" because that would silently accept a weaker method
+    // before rejecting it one step later, and any future change to the default
+    // could inadvertently allow plain challenges through.
+    match params.code_challenge_method.as_deref() {
+        Some(m) if m.eq_ignore_ascii_case("S256") => {}
+        Some(_) => {
+            return redirect_with_error(
+                &redirect_uri,
+                "invalid_request",
+                "only S256 code_challenge_method is supported",
+                params.state.as_deref(),
+            );
+        }
+        None => {
+            return redirect_with_error(
+                &redirect_uri,
+                "invalid_request",
+                "code_challenge_method is required; only S256 is accepted",
+                params.state.as_deref(),
+            );
+        }
     }
 
     let scope_str = params.scope.as_deref().unwrap_or("read");
@@ -1646,14 +1654,15 @@ fn token_error(error_type: &str, description: &str) -> Response {
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 /// Generate a cryptographically random URL-safe token string.
+///
+/// 32 random bytes encoded with URL_SAFE_NO_PAD base64 produce exactly 43
+/// characters — the `.chars().take(43)` truncation that used to be here was
+/// a load-bearing no-op that would silently reduce entropy if the byte count
+/// changed.  Removed: return the full encoding directly.
 fn generate_opaque_token() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
-    base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(bytes)
-        .chars()
-        .take(43)
-        .collect()
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
 /// Generate an 8-character uppercase user code (no dashes yet — formatted later).

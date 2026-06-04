@@ -127,6 +127,7 @@ async fn spawn_auth_server(auto_approve: bool) -> (String, TempDir, SigningKey, 
         }),
         git_store: None,
         push_mode: veclayer::git::branch_config::PushMode::Off,
+        instructions: Arc::new(String::new()),
     };
 
     let app = veclayer::mcp::http::build_app(state);
@@ -676,6 +677,7 @@ async fn test_backward_compat_no_auth() {
         auth: None,
         git_store: None,
         push_mode: veclayer::git::branch_config::PushMode::Off,
+        instructions: Arc::new(String::new()),
     };
 
     let app = veclayer::mcp::http::build_app(state);

@@ -63,6 +63,10 @@ pub struct AppState {
     pub git_store: Option<Arc<crate::git::memory_store::MemoryStore>>,
     /// Push mode for git storage.
     pub push_mode: crate::git::branch_config::PushMode,
+    /// MCP instructions string precomputed at startup and shared across all
+    /// sessions via `Arc`.  Avoids `block_in_place(block_on(...))` per session.
+    /// Use `Arc::new(String::new())` in tests; populated by [`run_http`].
+    pub instructions: Arc<String>,
 }
 
 impl AppState {
@@ -148,16 +152,16 @@ fn insufficient(required: Capability) -> AppError {
 
 // ─── Router builder ───────────────────────────────────────────────────────────
 
-/// Returns `true` when the server should emit an open-bind security warning.
+/// Returns `true` when the configuration is an insecure open-bind.
 ///
-/// The footgun is binding to a non-loopback address while `auth_required` is
-/// `false` — any host on the network then has implicit Admin access.
+/// An insecure open-bind is: non-loopback address + `auth_required = false`.
+/// Any host that can reach the port would then have implicit Admin access.
 ///
 /// Truth table:
 /// - loopback + open → `false` (safe: only local processes can reach it)
 /// - non-loopback + open → `true` (dangerous: network Admin access)
 /// - non-loopback + auth  → `false` (safe: tokens required)
-pub fn should_warn_open_bind(addr: std::net::SocketAddr, auth_required: bool) -> bool {
+pub fn is_insecure_open_bind(addr: std::net::SocketAddr, auth_required: bool) -> bool {
     !auth_required && !addr.ip().is_loopback()
 }
 
@@ -202,13 +206,39 @@ pub fn build_app_rate_limited(state: AppState, burst_size: u32) -> Router {
 /// `rate_limit_burst = None` disables the per-IP rate limiter (safe for unit
 /// tests that use `.oneshot()` without `ConnectInfo`).  `Some(n)` enables it
 /// with the given burst capacity.
+///
+/// `state.instructions` must be a precomputed MCP instructions string shared
+/// via `Arc` so the session factory closure clones the pointer cheaply on each
+/// new connection instead of blocking a worker thread.
+///
+/// # Panics
+///
+/// Panics if `rate_limit_burst` is `Some(0)` — the governor token bucket
+/// requires at least one burst token.  Callers must validate this in the
+/// config layer (see [`Config::validate`]) before reaching this function.
 fn build_router(state: AppState, rate_limit_burst: Option<u32>) -> Router {
+    if let Some(0) = rate_limit_burst {
+        panic!(
+            "rate_limit_burst must be > 0; GovernorConfigBuilder requires a non-zero burst \
+             size. Validate burst_size in Config::validate() before calling build_router."
+        );
+    }
     let cors = build_cors(state.auth.as_ref().and_then(|a| {
         let url = &a.oauth_state.server_url;
-        if url.starts_with("http://localhost") || url.starts_with("http://127.0.0.1") {
-            None
-        } else {
+        // Pass the server_url as an extra CORS origin only when it is either
+        // a loopback http:// address or an https:// URL.  Plain http:// to a
+        // non-loopback host is rejected: CORS for a remote deployment must use
+        // TLS, otherwise a network attacker can intercept the preflight and the
+        // subsequent credentialed request.
+        if url.starts_with("https://") || crate::auth::oauth::is_localhost(url) {
             Some(url.clone())
+        } else {
+            tracing::warn!(
+                server_url = %url,
+                "CORS: server_url uses non-TLS http:// for a non-loopback host — \
+                 skipping as CORS origin. Use https:// for remote deployments."
+            );
+            None
         }
     }));
 
@@ -218,21 +248,17 @@ fn build_router(state: AppState, rate_limit_burst: Option<u32>) -> Router {
     // already acts as the enforcement boundary for /mcp/*.
     let mcp_capability = Capability::Admin;
 
+    // Clone the precomputed instructions Arc once; each session factory closure
+    // call clones the Arc again (cheap) instead of blocking a worker thread to
+    // recompute the identity briefing per connection.
     let mcp_state = state.clone();
+    let mcp_instructions = Arc::clone(&state.instructions);
     let mcp_service = StreamableHttpService::new(
         move || {
-            let instructions = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(super::compute_instructions(
-                    mcp_state.core.store.as_ref(),
-                    &mcp_state.core.data_dir,
-                    mcp_state.project.as_deref(),
-                    mcp_state.branch.as_deref(),
-                    None,
-                ))
-            });
+            let session_instructions = (*mcp_instructions).clone();
             Ok(McpHandler::from_state(
                 &mcp_state,
-                instructions,
+                session_instructions,
                 mcp_capability,
             ))
         },
@@ -331,7 +357,14 @@ fn build_router(state: AppState, rate_limit_burst: Option<u32>) -> Router {
     };
 
     app.layer(TraceLayer::new_for_http())
-        .layer(RequestBodyLimitLayer::new(4 * 1024 * 1024)) // 4 MiB
+        // NOTE: RequestBodyLimitLayer caps individual HTTP request bodies at 4 MiB.
+        // This covers JSON REST API payloads (/api/*) and regular MCP JSON-RPC
+        // requests, but does NOT cover the nested rmcp Streamable HTTP transport's
+        // streaming bodies: once a session SSE stream is established, rmcp drives
+        // the streaming IO layer directly and that path bypasses this limit.
+        // If streaming body limits become necessary, they must be configured at
+        // the rmcp StreamableHttpServerConfig level, not here.
+        .layer(RequestBodyLimitLayer::new(4 * 1024 * 1024))
         .layer(cors)
         .with_state(state)
 }
@@ -372,22 +405,18 @@ fn is_loopback_origin(origin: &[u8]) -> bool {
 /// Build the CORS layer.
 ///
 /// Always allows localhost origins.  When a remote `server_url` is provided
-/// it is added as an allowed origin alongside `claude.ai` origins.
+/// it is added as an allowed origin alongside `https://claude.ai`.
 /// The `Authorization` header is always included in allowed headers.
 fn build_cors(server_url: Option<String>) -> CorsLayer {
     let extra_origin = server_url.clone();
     CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(move |origin, _| {
             let s = origin.as_bytes();
-            // Allow any https://*.claude.ai subdomain (e.g. regional/preview
-            // hosts) in addition to the apex. This wildcard is safe here: the
-            // API authenticates via bearer token and never sets
-            // allow_credentials, so no cookies/credentials ride on cross-origin
-            // requests and a spoofed subdomain origin gains nothing.
-            if is_loopback_origin(s)
-                || s == b"https://claude.ai"
-                || (s.starts_with(b"https://") && s.ends_with(b".claude.ai"))
-            {
+            // Exact match for https://claude.ai only.  The previous wildcard
+            // that also matched *.claude.ai subdomains was broader than needed:
+            // Claude only sends requests from the apex.  If Anthropic ever uses
+            // a different origin, this list can be extended explicitly.
+            if is_loopback_origin(s) || s == b"https://claude.ai" {
                 return true;
             }
             if let Some(url) = &extra_origin {
@@ -446,6 +475,20 @@ pub async fn run_http(config: Config) -> Result<()> {
         data_dir: config.data_dir.clone(),
     });
 
+    // Precompute the MCP instructions once at startup and share via Arc so that
+    // each new MCP session just clones the pointer instead of blocking a worker
+    // thread to recompute the identity briefing on every connection.
+    let instructions = Arc::new(
+        super::compute_instructions(
+            core.store.as_ref(),
+            &core.data_dir,
+            config.project.as_deref(),
+            config.branch.as_deref(),
+            None,
+        )
+        .await,
+    );
+
     let state = AppState {
         core,
         project: config.project.clone(),
@@ -453,6 +496,7 @@ pub async fn run_http(config: Config) -> Result<()> {
         auth,
         git_store,
         push_mode,
+        instructions,
     };
 
     // Production default: burst of 10 then 2 req/s (500 ms/token).
@@ -471,17 +515,31 @@ pub async fn run_http(config: Config) -> Result<()> {
     // the server is up. (Do NOT duplicate this in serve.rs.)
     eprintln!("VecLayer HTTP server listening on http://{addr}");
 
-    // Warn loudly when binding to a non-loopback address without authentication.
-    // Emitted after bind succeeds so a bind failure (e.g. port in use) does not
-    // produce a misleading "already exposed" warning before the process exits.
-    if should_warn_open_bind(addr, config.auth.auth_required) {
-        tracing::warn!(
-            bind_addr = %addr,
-            "SECURITY: server is bound to a non-loopback address ({addr}) with \
-             auth_required=false — any host that can reach this port has full \
-             Admin access. Set auth_required=true or restrict the bind address \
-             to 127.0.0.1 to silence this warning."
-        );
+    // Hard-fail when binding to a non-loopback address without authentication,
+    // unless the operator has explicitly set VECLAYER_ALLOW_INSECURE_BIND=1.
+    // Checked after bind() so a port-in-use failure doesn't produce a misleading
+    // "security error" before the real bind error is surfaced.
+    if is_insecure_open_bind(addr, config.auth.auth_required) {
+        let override_set = std::env::var("VECLAYER_ALLOW_INSECURE_BIND")
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false);
+        if override_set {
+            tracing::warn!(
+                bind_addr = %addr,
+                "VECLAYER_ALLOW_INSECURE_BIND=1 is set: server is running on a \
+                 non-loopback address ({addr}) without authentication — any host \
+                 that can reach this port has full Admin access."
+            );
+        } else {
+            return Err(crate::Error::Config(format!(
+                "SECURITY ERROR: refusing to bind to non-loopback address {addr} \
+                 without authentication. This would expose the server with full Admin \
+                 access to any network host.\n\
+                 Fix one of:\n\
+                 1. Enable authentication: set auth_required=true (recommended)\n\
+                 2. Override (UNSAFE): set env var VECLAYER_ALLOW_INSECURE_BIND=1"
+            )));
+        }
     }
 
     axum::serve(
@@ -925,6 +983,7 @@ mod tests {
             auth: None,
             git_store: None,
             push_mode: crate::git::branch_config::PushMode::Off,
+            instructions: Arc::new(String::new()),
         };
         (state, dir)
     }
