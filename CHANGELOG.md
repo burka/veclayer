@@ -2,18 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.2.0] - 2026-03-31
+## [0.2.0] - 2026-06-04
+
+> First public release. The CLI, MCP stdio server, local/Ollama embeddings, git-backed
+> memory, and both storage backends (LanceDB + SQLite) are stable. The HTTP server and
+> authentication stack are **experimental / work-in-progress** - see the dedicated section
+> at the end and the Known Limitations in the README.
 
 ### Security
-- [`9f6ce37`](https://github.com/burka/veclayer/commit/9f6ce37b27aef488cb780ca7e3a0fa6fb0210fb4) Harden OAuth consent CSRF, state length cap, and JWT iss/nbf claims
 - [`5584b71`](https://github.com/burka/veclayer/commit/5584b7147240dcaf80e89b17a52c97dec5947a1b) Fix SQL injection, harden error handling, improve UX
+- [`8748ae0`](https://github.com/burka/veclayer/commit/8748ae02d437d57408a39d44b35cd7ff648bc9fb) *(security,store)* Zeroize LLM API key; fail loud on corrupt embedding blobs
+- [`d64c2da`](https://github.com/burka/veclayer/commit/d64c2daf784076c481d8a45110d4cfb920888b03) *(security)* Harden secret handling, auth logging, and input bounds
+- [`f200ddb`](https://github.com/burka/veclayer/commit/f200ddb8ee356e98725ef2fe33a495325055a95c) *(git)* Validate memory branch name against option injection
+- [`b646df6`](https://github.com/burka/veclayer/commit/b646df65705586d0fbfe357ef595990970d9cbef) *(git)* Strip embedded credentials from remote URLs in normalize_remote ([#98](https://github.com/burka/veclayer/issues/98))
+- [`f281438`](https://github.com/burka/veclayer/commit/f2814383b93039d364101e2d66daca0229b2bdbe) *(config)* Escape TOML string values in user-config serialization ([#114](https://github.com/burka/veclayer/issues/114))
+- [`7574a30`](https://github.com/burka/veclayer/commit/7574a3052b270bfcf6103728b4ce2b05376a0a4e) *(http)* Harden outbound clients against SSRF redirects and OOM bodies
+- [`c23f773`](https://github.com/burka/veclayer/commit/c23f773598ba4ae82991c3e77dfba4391c339fb8) Resolve RUSTSEC CVEs and drop the rsa crate tree
+- [`91bff2d`](https://github.com/burka/veclayer/commit/91bff2d144a1d7871a38912dcbe158546f09c308) *(privacy)* Remove hardcoded home paths and untrack local settings
 
 ### Added
-- [`c992561`](https://github.com/burka/veclayer/commit/c992561bae8d85e6d90ffd6bed0a702ece1607a0) *(auth)* Ed25519 identity, OAuth 2.0, JWT tokens, HTTP auth
 - [`ff7957c`](https://github.com/burka/veclayer/commit/ff7957cf9e48b4561cd6837aac4837151956d83c) *(git)* Implement workspace-safe git memory storage and review workflow
 - [`9b24e53`](https://github.com/burka/veclayer/commit/9b24e53ab0d0a400ee4579853b8cb3ab93b5a905) *(git)* Sync indexes into LanceDB, think(sync/status), error handling
 - [`1fe2e56`](https://github.com/burka/veclayer/commit/1fe2e56bfa5e163782bb7487258d17bf310ddb38) *(git)* Pre-recall pull, sync CLI polish, conflict guidance
-- [`d7eebd9`](https://github.com/burka/veclayer/commit/d7eebd9ae5ba2ad19ceb5337f8d5ff9e34f34158) *(mcp)* rmcp SDK migration, resources, priming, HTTP improvements
+- [`d7eebd9`](https://github.com/burka/veclayer/commit/d7eebd9ae5ba2ad19ceb5337f8d5ff9e34f34158) *(mcp)* Rmcp SDK migration, resources, priming, HTTP improvements
 - [`a48704c`](https://github.com/burka/veclayer/commit/a48704cbf75b9ae45fa58c351f5ec67ecddf7e6c) *(facade)* Add think cycle API with DynLlmProvider type erasure
 - [`e471445`](https://github.com/burka/veclayer/commit/e471445d7d301ec6de6c167e9c64dbf791ccc19f) Add VecLayer facade: high-level API with embedder injection
 - [`a2ff645`](https://github.com/burka/veclayer/commit/a2ff645904737c6c28026b54c4fc2fdb0c0c94de) Add SQLite storage backend and simplify VectorStore trait
@@ -31,6 +42,21 @@ All notable changes to this project will be documented in this file.
 - [`8645329`](https://github.com/burka/veclayer/commit/86453296170dcda7ac6dd914828b9ee4037767d5) Add --brief flag to context command for compact session injection
 - [`08b7b57`](https://github.com/burka/veclayer/commit/08b7b5744a5a43c55ab502cc01a6be170cd88e5f) Add graceful think fallback when LLM is unavailable
 - [`fca41c5`](https://github.com/burka/veclayer/commit/fca41c5a3cbc90eb90da54d2c662044f6b07d2b5) Add comprehensive tests across all modules - 1189 tests, 85% coverage
+- [`37e6d36`](https://github.com/burka/veclayer/commit/37e6d36b4b5790576d2a89b1a8a33570b028f6e3) Ollama auto-discovery, async embedding, CI matrix, changelog
+- [`7cb0255`](https://github.com/burka/veclayer/commit/7cb025551640fb45a5e44260e65d363d73bc6a03) Make embedding-local opt-in, add keyword search fallback
+- [`d66dec1`](https://github.com/burka/veclayer/commit/d66dec137c7675e99aa38ba9b7a9d4e642faf602) Improve UX for Ollama-first embedding setup
+- [`6dbcdca`](https://github.com/burka/veclayer/commit/6dbcdca4e517136324567d4522d6e87c539b3e01) *(embedder)* Auto-detect OpenAI-compatible embed services for all providers
+- [`186108b`](https://github.com/burka/veclayer/commit/186108b79272bf506ecfd3423ef18df099d32b26) *(mcp)* Add embedding provider health to veclayer://status resource
+- [`f2c3718`](https://github.com/burka/veclayer/commit/f2c3718fb175a6b67379d54a87f2bfb2d4ba3011) *(mcp)* Surface relations, impressions, and result-cap hints
+- [`2f04185`](https://github.com/burka/veclayer/commit/2f04185b332579f3fc3221bb5f99d18dbe0b8c4a) Add `veclayer setup openclaw` for OpenClaw MCP integration
+- [`ab7c769`](https://github.com/burka/veclayer/commit/ab7c769f1658df1763e05d0a4a87bb36e27e3676) *(store)* Enforce sqlite read-only and embedding dimension
+- [`905f4df`](https://github.com/burka/veclayer/commit/905f4df0a9ccc55dff828b3642d05b2cbd828bbd) *(lance)* Auto-compact LanceDB versions after writes
+- [`100e404`](https://github.com/burka/veclayer/commit/100e4047bd5201f23dd40bfcc4f858b834216cbe) *(lance)* One-time aggressive prune on first open if >500 versions
+- [`d205cc9`](https://github.com/burka/veclayer/commit/d205cc91cf1e1e1ffaf2bafdd98d7f1e7566141b) *(store)* Bounded, non-blocking auto-prune to stop version blowup
+- [`ff1a8ad`](https://github.com/burka/veclayer/commit/ff1a8adfda01162ef65ba8d58938a39519f97d5c) *(mcp)* Daily background compactor in long-running MCP server
+- [`c14acdb`](https://github.com/burka/veclayer/commit/c14acdb35bd8d3c1c63f826badeb809611779311) Add reflect prune CLI command for manual LanceDB version compaction
+- [`887744d`](https://github.com/burka/veclayer/commit/887744d643bf2192469ddf994bf5d43f95b565c1) *(reflect)* Humanize prune byte counts (MB/GB, ~4 sig digits)
+- [`21f058f`](https://github.com/burka/veclayer/commit/21f058f7faf154b1315fefee8ab9fa765402c888) *(ux)* Surface model download, server URL, and missing-embedder fast-fail
 
 ### Changed
 - [`33eba31`](https://github.com/burka/veclayer/commit/33eba316c2cdddbbb97d96555d93e4cd9f0b47e6) Make library slim by default via feature flags
@@ -42,19 +68,130 @@ All notable changes to this project will be documented in this file.
 - [`0f4131e`](https://github.com/burka/veclayer/commit/0f4131e70f56beb837d045b4be0409d3f52c2931) Extract ToolContext to replace repeated parameters in MCP tool functions
 - [`de5f95b`](https://github.com/burka/veclayer/commit/de5f95bffa89590c863b5c6b7beb41ec434bafa6) Replace PreCompact warning with PostCompact context re-injection
 - [`c1b971c`](https://github.com/burka/veclayer/commit/c1b971c3e44a1022ea8fa2c5806c031d00f04620) Update rust-version, upgrade rand to 0.9, fix release profile
+- [`75541a4`](https://github.com/burka/veclayer/commit/75541a4b437f94906f9499dda7771c386c150c01) *(features)* Split clustering from llm, fix bundles, local-first default
+- [`005333d`](https://github.com/burka/veclayer/commit/005333de4e300a83be622921cdd98a1e1b188b29) *(mcp)* Extract ServerCore, decompose McpHandler god-object
+- [`df37c94`](https://github.com/burka/veclayer/commit/df37c9474705b6499fa3a6081ceb711ffad58bd6) *(config)* Split 2826-line god-module into config/ submodule
+- [`2c5de13`](https://github.com/burka/veclayer/commit/2c5de136c2b39cd045c9058f32cea292b617dd96) *(identity)* Couple embedding access to its guard; fix doc link
+- [`565c5de`](https://github.com/burka/veclayer/commit/565c5de1fa2cb0cebfaca5128bec33af739ef2b5) *(sync)* Remove dead sync feature scaffolding
+- [`6a9914d`](https://github.com/burka/veclayer/commit/6a9914d9d6147b8ea2f359af9eb90b07d0d369a4) *(git)* Drop the unimplemented pull-request push mode and dead error ([#103](https://github.com/burka/veclayer/issues/103))
+- [`f659fff`](https://github.com/burka/veclayer/commit/f659fff952c4a21ade0f29efd25ade2ba163ae94) *(project)* Make resolve_project_data_dir source exclusion type-level ([#115](https://github.com/burka/veclayer/issues/115))
+- [`330a3fe`](https://github.com/burka/veclayer/commit/330a3fe49a60820c858bf223d1838df983db1fd7) *(embedder)* Make Embedder::embed async to end the block_in_place panic
+- [`60d8e1b`](https://github.com/burka/veclayer/commit/60d8e1b29a5f38058285b964311477fbecbbee06) *(llm)* Propagate client-build errors instead of panicking
+- [`5b0d38b`](https://github.com/burka/veclayer/commit/5b0d38b7dae3435eedf11748b1f8c7ae83eeaa37) DRY consolidation, security hardening, and 3 robustness fixes
+- [`62c6856`](https://github.com/burka/veclayer/commit/62c6856083ef05721e672e6443fb2a6e9e8eeb4a) DRY consolidation of duplicate constants and functions
+- [`ccba0bf`](https://github.com/burka/veclayer/commit/ccba0bf4c5d4038e96a41de9c03429d2c68f21a7) *(store)* Drop the orphaned non-blocking FileLock::acquire
+- [`154a5c9`](https://github.com/burka/veclayer/commit/154a5c93f473d8bcda72a91e0e32a11332cc10a7) Allowlist packaged files and add docs.rs metadata
+- [`7f31e3e`](https://github.com/burka/veclayer/commit/7f31e3e13c127f4b077dfad79a25f956bd65fbb6) Update dependencies; adapt to rmcp 1.7 API/behavior changes
+- [`4c7c72b`](https://github.com/burka/veclayer/commit/4c7c72b4e58ee3b8683c494e28e5e9099d535f3a) Update rusqlite 0.37→0.40 and toml 0.8→1.0
+- [`319fbde`](https://github.com/burka/veclayer/commit/319fbdef4a49966025919b3a7db2c98b2a084cc8) Update 17 semver-compatible dependencies
+- [`9e5413d`](https://github.com/burka/veclayer/commit/9e5413ddb0561631d3b8605d10f4133afd5ae2c0) Migrate serde_yml to maintained serde_norway (RUSTSEC-2025-0067/0068)
+- [`fbb0abe`](https://github.com/burka/veclayer/commit/fbb0abef32b048f883a7dd560d0fbf78ee5c7bbe) Correct README CLI table, status, and feature-flag accuracy
+- [`0488aff`](https://github.com/burka/veclayer/commit/0488affd73e9d46b8201243ca7ece135396aadd9) Add crates.io, docs.rs, CI, and license badges to README
+- [`c69704e`](https://github.com/burka/veclayer/commit/c69704e504197450d89ef1337ae8afc81f29e602) *(maintenance)* Self-healing prune script with disk guard + docs
+- [`678cc25`](https://github.com/burka/veclayer/commit/678cc25b54a21e9c7c98d921dbbbc61cae40c65f) *(entry)* Document blob_hash two-stage derivation and pin the contract ([#90](https://github.com/burka/veclayer/issues/90))
+- [`0a516b5`](https://github.com/burka/veclayer/commit/0a516b57d67f3fee664f1829a230c02d80f2b7e3) Fix feature docs, secure Docker default, broaden CI
 
 ### Fixed
 - [`dc64ee4`](https://github.com/burka/veclayer/commit/dc64ee45514785d089e670a4d3fb32a8ee7233e9) 12 bugs from git memory feature testing
 - [`42d4ae3`](https://github.com/burka/veclayer/commit/42d4ae3045fcb1fac754fb06481de5710daa33b7) *(git)* Wave 2 - 8 more bugs from git memory feature testing
 - [`2e370b7`](https://github.com/burka/veclayer/commit/2e370b74845d6ecb5e86eca934e3f074b0453698) *(git)* Review fixes - security, correctness, robustness, and test coverage
-- [`7d27858`](https://github.com/burka/veclayer/commit/7d27858dff7732a4abf0eb85b8a9d551602565fc) *(git)* Review fixes - security, correctness, robustness, and test coverage
 - [`f07472d`](https://github.com/burka/veclayer/commit/f07472de51fcc4ef02b23586bf23826400372c35) *(think)* Pass project parameter to think_consolidate
 - [`61c1ef1`](https://github.com/burka/veclayer/commit/61c1ef175efac4a1a582cdf60d498039eecee4d0) *(search)* Stabilize blend_score tests after recency boost addition
 - [`ba9d1e8`](https://github.com/burka/veclayer/commit/ba9d1e807c729527a6003da959cd9ccd8887ffd2) Fix LanceDB commit conflicts on concurrent store access
 - [`588e054`](https://github.com/burka/veclayer/commit/588e054b9da164979d7b36376d81b658388ea5df) Fix code review findings: dup2 error handling and missing test coverage
 - [`3571884`](https://github.com/burka/veclayer/commit/3571884e9f01132942b1da20823cdd5ae0befdb9) *(ci)* Pin Rust toolchain to 1.93.1 via rust-toolchain.toml
-- [`5fafaf8`](https://github.com/burka/veclayer/commit/5fafaf8a9d75a41c83c5fa68ab16c2733bc7a06e) Fix feature-gate compilation issues in MCP tools and integration tests
-- [`8a79295`](https://github.com/burka/veclayer/commit/8a79295ee65fda87301cc3fedf4b4bedc628a0c0) Fix feature-gate compilation across all feature flag combinations
+- [`1e2b6d8`](https://github.com/burka/veclayer/commit/1e2b6d805d392308b7a3129dfd38b8fc1c751fde) Detect LanceDB dimension on open and improve error messages
+- [`be9d81d`](https://github.com/burka/veclayer/commit/be9d81de2ed352dc6c0d06c0a477a482b4f281a2) *(import)* Distinguish parse errors from import failures
+- [`abda541`](https://github.com/burka/veclayer/commit/abda541b5cdf6d8e7f28070c18d91151030b309b) Bound scoring math to documented ranges
+- [`af6b6d7`](https://github.com/burka/veclayer/commit/af6b6d7122a293f9606530ce3e23f54e1fbde5c1) *(mcp)* Clamp caller-supplied result limits
+- [`2847cb6`](https://github.com/burka/veclayer/commit/2847cb6cd2af3fa21682535c847d780ea76ff1ab) *(config)* Actually fall back when LLM base_url is invalid
+- [`1c04ecf`](https://github.com/burka/veclayer/commit/1c04ecf71e0aac2064b78bca2d80dc45ca18e415) *(mcp)* Reject unknown store scope instead of widening visibility
+- [`200e987`](https://github.com/burka/veclayer/commit/200e987c4b4bd50c950922ae16d2bd51c154e7e8) *(git)* Preserve impression_strength without an impression hint
+- [`85b3072`](https://github.com/burka/veclayer/commit/85b3072a296ff8f68d45ba4dba2842aa7db016cb) *(store)* Typed lock contention; reject out-of-range SQLite values
+- [`a9c202f`](https://github.com/burka/veclayer/commit/a9c202fd044228245885b5eba3d7ddb052e4cbfd) *(store)* Align LanceDB search score and result ordering
+- [`8549bef`](https://github.com/burka/veclayer/commit/8549bef62f555ab16cdceb40c137575d0d3c460e) *(git)* Close worktree TOCTOU with an advisory lock; serialize env tests
+- [`c90a6f3`](https://github.com/burka/veclayer/commit/c90a6f311a567204166f411b8c1d725bd0b626ee) *(mcp)* Retry embed worker on error instead of idle-throttling
+- [`4007483`](https://github.com/burka/veclayer/commit/400748360420dc9bd52d7b3d397339ac0fcbfae8) *(embedder)* Chunk large embed batches into sub-batches
+- [`3d8fae6`](https://github.com/burka/veclayer/commit/3d8fae637f6ce8785641e099830869136d8e274c) *(sync)* Return error for unsupported remote git URLs
+- [`86723b6`](https://github.com/burka/veclayer/commit/86723b6be5482f59feecd7e3fca3b9d869ce9f23) *(mcp)* Keep think tool description in sync with THINK_ACTIONS
+- [`b58d71d`](https://github.com/burka/veclayer/commit/b58d71d9a13a5f2b8edb2b9f920edd75f644f55d) *(mcp)* Stop advertising the unimplemented share tool ([#105](https://github.com/burka/veclayer/issues/105))
+- [`7ef84bd`](https://github.com/burka/veclayer/commit/7ef84bd39ce84e82ed1cc85e1c86c71a8ba2ddff) *(store)* Surface swallowed compaction errors that let the store grow unbounded ([#92](https://github.com/burka/veclayer/issues/92))
+- [`933dadc`](https://github.com/burka/veclayer/commit/933dadcfa7db152c96e6ca3594ea7546cfd84a5f) *(cli)* Cap LANCE_IO_THREADS for reflect prune to enable recovery at scale ([#92](https://github.com/burka/veclayer/issues/92))
+- [`369661c`](https://github.com/burka/veclayer/commit/369661c339bf7b5cdedda51362ec75d3de124ff6) *(store)* Surface open_table/list_versions errors in auto_compact
+- [`c12cbbb`](https://github.com/burka/veclayer/commit/c12cbbbd125fc00161f21e45c13f62703a7a1fb4) *(lance)* Compact fragments + materialize deletions, not just version manifests
+- [`f8ee78e`](https://github.com/burka/veclayer/commit/f8ee78eff80f7d828d138036b5aa0b2edf78ed7b) *(store)* Tolerate concurrent-compactor commit conflicts in prune
+- [`8a7e19d`](https://github.com/burka/veclayer/commit/8a7e19d88cfd893cfe1dc56b9548202f00f2555c) *(embedder)* Derive embedding dimension from fastembed metadata
+- [`f0b248c`](https://github.com/burka/veclayer/commit/f0b248c7f26ee44d455a8aba5017a96b0bba6953) *(search)* Clamp blend_score to [0,1] on the recency_alpha==0 path ([#112](https://github.com/burka/veclayer/issues/112))
+- [`44e8add`](https://github.com/burka/veclayer/commit/44e8addb2127ffb2a95793c95cd90e91d446773c) *(salience)* Clamp impression_strength and bound aging batch size ([#113](https://github.com/burka/veclayer/issues/113))
+- [`e1eb90c`](https://github.com/burka/veclayer/commit/e1eb90cf0d60297d065d7ea00a7a95643dca3261) *(mcp)* Reject unresolvable parent_id instead of silently re-rooting ([#106](https://github.com/burka/veclayer/issues/106))
+- [`17fafca`](https://github.com/burka/veclayer/commit/17fafca25ac6983a618a77322bf247fc7ada9ec0) *(relations)* Create forward link for summarizes relation ([#109](https://github.com/burka/veclayer/issues/109))
+- [`e5f661b`](https://github.com/burka/veclayer/commit/e5f661b4dbb579e22d9b815287a9b07784197a83) *(cluster)* Implement num_clusters() instead of returning 0 stub ([#110](https://github.com/burka/veclayer/issues/110))
+- [`e4c2af4`](https://github.com/burka/veclayer/commit/e4c2af43c45ae7109f820aa85caeb70d0419337b) *(sync)* Return error exit code when no scopes are configured ([#104](https://github.com/burka/veclayer/issues/104))
+- [`3d11f44`](https://github.com/burka/veclayer/commit/3d11f44a9a0036bca4ee16041c81579bcd1d3d5f) *(init)* Clearer --share progress and canonical command hint ([#107](https://github.com/burka/veclayer/issues/107))
+- [`47b00dd`](https://github.com/burka/veclayer/commit/47b00ddf2c1c86aeb73f70cf599be3b20cf19def) *(mcp)* Make think(discover) unconditional and drop dead llm gate
+- [`e5362fa`](https://github.com/burka/veclayer/commit/e5362fa0d279df10cf5936093a37ea16ede2a9a7) *(store)* Reject writes on read-only lancedb stores
+- [`b0450ae`](https://github.com/burka/veclayer/commit/b0450ae1684bf627c0dc5bcd29c98128661dc34a) *(store)* Skip migration writes on read-only lancedb opens
+- [`d8ec583`](https://github.com/burka/veclayer/commit/d8ec5832df73d2419355d6e5b99416e4104a75e5) *(embedder)* Robust OpenAI-compatible auto-detection
+- [`e682e71`](https://github.com/burka/veclayer/commit/e682e715790d95d4f2a229360a0c44cdba3f2685) *(config)* Warn on invalid env-var values; fix tautological test
+- [`ebc5ad7`](https://github.com/burka/veclayer/commit/ebc5ad776f6f9a0df69c7a29b273e4f85137005d) *(store)* Return empty on limit==0 in LanceDB search
+- [`e7ea5ee`](https://github.com/burka/veclayer/commit/e7ea5ee3075c96bf492cb73494120c30731f89cf) *(sync)* List scopes when filter is empty but scopes exist
+- [`9f0bb4b`](https://github.com/burka/veclayer/commit/9f0bb4bf7aaa632ea1b7437930f186d3497ac5fd) Surface think demotion failure, fail-loud sqlite stats level cast, guard embedding dim bound
+- [`0d672be`](https://github.com/burka/veclayer/commit/0d672beb4e3e8095521da55a3cca7eac4e135f3d) *(chunk)* Saturate ChunkLevel child to prevent u8 overflow wrap
+- [`33bed63`](https://github.com/burka/veclayer/commit/33bed63b28f94332d68eb174d6f61f6f2ba4c06e) *(config)* Tolerate non-UTF-8 cwd in resolve instead of panicking
+- [`518b3f0`](https://github.com/burka/veclayer/commit/518b3f06a0cf17bca1eff30a867ed1c509d1a65d) *(cli)* Return a clean error on undeterminable cwd instead of panicking
+- [`1001c93`](https://github.com/burka/veclayer/commit/1001c9384c137154846f750e477cd33fb8d4ecb7) *(setup)* Error instead of panic on non-object mcpServers/hooks config
+- [`700afd9`](https://github.com/burka/veclayer/commit/700afd9d919e37fb87c49130a516f232e21b5059) *(entry)* Saturate oversized embedding dimensions instead of truncating
+- [`7571799`](https://github.com/burka/veclayer/commit/7571799a9a72fbfc387aa1807f6dacded66897b5) *(memory)* Log aging and access-profile errors instead of discarding
+- [`e41502f`](https://github.com/burka/veclayer/commit/e41502fdc8daa8ec1fda95f3c1efabddfca4aab9) *(store)* Error on missing chunk in update_visibility across backends
+- [`c7131fe`](https://github.com/burka/veclayer/commit/c7131fe5c1e7dcaa116fb99f8fc7fc7aa716ad37) *(commands)* Skip empty re-embedding result in rebuild_index
+- [`8d5fa94`](https://github.com/burka/veclayer/commit/8d5fa94c4016217bb13a9eec5cb52dc0332d7549) *(mcp)* Reject empty per-item content in batch store path
+- [`31fcf36`](https://github.com/burka/veclayer/commit/31fcf369d5ed93df1562b455fb311cc78a3c3adf) *(relations)* Write forward supersedes/version_of link on source
+- [`7fc6311`](https://github.com/burka/veclayer/commit/7fc63116e69ccbbfe0065abd250779b59bed4639) *(access)* Preserve accumulated count in roll_up year bucket
+- [`fe169f4`](https://github.com/burka/veclayer/commit/fe169f4bd06e8039baec09beb5b7eb70ccbc648e) *(blob)* Treat a directory at the hash path as absent
+- [`c482f60`](https://github.com/burka/veclayer/commit/c482f60284cab008f0cb4b31de4dde72993cdbbb) *(embedder)* Exclude chat models from embed-model auto-pick
+- [`9061379`](https://github.com/burka/veclayer/commit/906137904a6db49325dc2160064af4dbfff0713f) *(store)* Align sqlite get_by_id_prefix empty/non-hex with LanceDB
+- [`80c0680`](https://github.com/burka/veclayer/commit/80c06802ef85bd73c716885b1ccc7f30a2a16716) *(embedder)* Use char-array split in is_chat_model
+- [`c61d30a`](https://github.com/burka/veclayer/commit/c61d30a65986a59ae61a910835bff174d9eaf60f) *(embedder)* Retry FastEmbed model init instead of caching failure
+- [`2025dd3`](https://github.com/burka/veclayer/commit/2025dd3f12991070d214d09172dc2646832a1cf4) *(cli)* Print errors via Display, validate --output, name failed import path
+- [`9b8079c`](https://github.com/burka/veclayer/commit/9b8079c57ccefb7b57cfe5c03688e0e10128920b) *(ux)* Polish init messaging, think-relate kind arg, and auth error leakage
+- [`12ef1cd`](https://github.com/burka/veclayer/commit/12ef1cd63984d44fd49b75348a703ca8e07363b0) *(store)* Make batch_update_embeddings atomic (add-then-delete)
+
+### Testing
+- Expanded test coverage to ~1,940 assertions across all modules: storage backends,
+  git sync/conflict resolution, MCP dispatch & workers, embedder/LLM providers, config
+  discovery, salience/aging, and crypto - including hermetic fixtures and injected
+  embedders to remove network/model-download flakiness.
+
+### Experimental - HTTP & Auth (WIP)
+> These ship in the published crate behind the `http`/`auth` features but are not yet
+> considered stable. Interfaces and on-disk formats may still change.
+
+- [`c992561`](https://github.com/burka/veclayer/commit/c992561bae8d85e6d90ffd6bed0a702ece1607a0) *(auth)* Ed25519 identity, OAuth 2.0, JWT tokens, HTTP auth
+- [`9f6ce37`](https://github.com/burka/veclayer/commit/9f6ce37b27aef488cb780ca7e3a0fa6fb0210fb4) Harden OAuth consent CSRF, state length cap, and JWT iss/nbf claims
+- [`31697fb`](https://github.com/burka/veclayer/commit/31697fb94f9dd8bcaf37ca064219b8eb35ee57ef) *(serve)* Wire --auth-required flag through to Config
+- [`28b1a57`](https://github.com/burka/veclayer/commit/28b1a57580dd0b21da4923b13dd3e958a6a180c4) *(http)* Rate-limit unauthenticated oauth surface and warn on open bind
+- [`fa8ce53`](https://github.com/burka/veclayer/commit/fa8ce5343b36770331dbb258fd00a7f2cffa7a08) *(auth)* Harden JWT, PKCE, and token-store file handling
+- [`2b35de4`](https://github.com/burka/veclayer/commit/2b35de4f722364a831bc2bf0ce4606ef228b9bf4) *(auth)* Harden OAuth flows, JWT issuer enforcement, and open-mode capability (#95, #96, #97)
+- [`5364349`](https://github.com/burka/veclayer/commit/5364349b18eaa638f487b36eb54ebac3dc3d7f2e) *(auth)* Harden oauth registration, device, and token endpoints
+- [`7cb87f0`](https://github.com/burka/veclayer/commit/7cb87f071b53acf41099082c97d226c8f3cfc136) *(auth)* Harden OAuth device & consent flows against silent scope default and unbounded map growth
+- [`a80a8eb`](https://github.com/burka/veclayer/commit/a80a8eb78849cf0b52b36650dd21535e344ffeaa) *(auth)* Harden OAuth token lifecycle and device flow
+- [`895b106`](https://github.com/burka/veclayer/commit/895b10667e1923d103037e9a674924ad954cd551) *(auth)* Require redirect_uri on token exchange; block re-approval
+- [`d91b595`](https://github.com/burka/veclayer/commit/d91b5953e0997e2a20f8c85dc85be2feb542575a) *(auth)* CSRF-protect the device authorization page
+- [`5d7ec95`](https://github.com/burka/veclayer/commit/5d7ec9593c1611d7c223416fc504eb3e0e4cfcfd) *(auth)* Bind client_id at device-code token exchange
+- [`bd2487b`](https://github.com/burka/veclayer/commit/bd2487bd711ae30612e471e01563d2e665e7018e) *(auth)* Enforce max state length in POST consent handler
+- [`300b717`](https://github.com/burka/veclayer/commit/300b71777b4381e4537c0e2717266576cbf67d7b) *(auth)* Bound PKCE code_challenge length on the consent POST path
+- [`35d5b52`](https://github.com/burka/veclayer/commit/35d5b5298623ab1fa483f1f4e1d4dceee3e19c5b) *(auth)* Propagate token-store persistence failures
+- [`de96384`](https://github.com/burka/veclayer/commit/de96384c6819a3a15358e3782ee52d720fe9b064) *(auth)* Return generic error_description for invalid grant and mint failure
+- [`84a3744`](https://github.com/burka/veclayer/commit/84a374486e3bf55c0bdb06c8ef203e044abe0ca3) *(auth)* Stop reflecting caller grant_type into unsupported_grant_type body
+- [`2018a15`](https://github.com/burka/veclayer/commit/2018a15addad8e23fe372f206203a76266f9a1c8) *(security)* Fail loud on unsigned share and empty auth passphrase
+- [`66902dc`](https://github.com/burka/veclayer/commit/66902dcb9e5692ce902aa70af1500c8899848a82) *(crypto)* Reject DID with trailing bytes in from_did
+- [`f530b87`](https://github.com/burka/veclayer/commit/f530b8715cb3a56210b07f8f929938f7cb2cafe9) Harden keystore length validation, embedder count check, blob temp cleanup
+- [`ad3dc5c`](https://github.com/burka/veclayer/commit/ad3dc5c28c82eccf7aaac49ea8774c179757420c) *(mcp)* Reject CORS look-alike loopback origins
+- [`27e3f3d`](https://github.com/burka/veclayer/commit/27e3f3da37af908d3199475a0fa61c2c59f8425f) *(auth)* Explain deliberate slow_down throttle exemption
+- [`6aa6a19`](https://github.com/burka/veclayer/commit/6aa6a19673e294628252306e356f99974ce5dc17) Bump 0.2.0, fix MSRV/docs.rs/CI, mark auth+http WIP
+- [`d8068fe`](https://github.com/burka/veclayer/commit/d8068fe802f3c15884475682ab77af557b155884) *(cli)* Gate WIP http/auth surface, validate enums, race-free --quiet
+- [`ae62ceb`](https://github.com/burka/veclayer/commit/ae62cebf8a03caa71a5c4fde44c2a92f74522fe3) *(auth)* Zeroize passphrases, hash OAuth codes, RFC7519 aud, argon2 p=4
+- [`04b0029`](https://github.com/burka/veclayer/commit/04b0029d3636c74b460731e5639e86ff46a7234c) *(http)* Fail-closed open-bind, tighten CORS, fix PKCE, drop block_in_place
 
 ## [0.1.0] - 2026-03-03
 
