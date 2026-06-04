@@ -1437,6 +1437,158 @@ fn test_resolve_embedder_invalid_dimension_falls_back_to_default() {
     );
 }
 
+// ── resolve_scopes: all-unknown names ────────────────────────────────────────
+
+// When every scope name in both project_scopes and match_scopes is absent from
+// self.scopes, resolve_scopes must return an empty vec (no panic, no partial result).
+#[test]
+fn test_resolve_scopes_all_unknown_returns_empty() {
+    let config: UserConfig = toml::from_str(
+        r#"
+[scopes.real-scope]
+storage = "git@github.com:flob/real.git"
+"#,
+    )
+    .unwrap();
+
+    let project_scopes = vec!["ghost".to_string(), "phantom".to_string()];
+    let match_scopes = vec!["specter".to_string()];
+    let resolved = config.resolve_scopes(&project_scopes, &match_scopes);
+
+    assert!(
+        resolved.is_empty(),
+        "all-unknown scope names must produce an empty result, got: {resolved:?}"
+    );
+}
+
+// When both project_scopes and match_scopes are empty, the result must be empty
+// even when scopes are defined in the config.
+#[test]
+fn test_resolve_scopes_empty_inputs_returns_empty() {
+    let config: UserConfig = toml::from_str(
+        r#"
+[scopes.personal]
+storage = "git@github.com:flob/my-memory.git"
+"#,
+    )
+    .unwrap();
+
+    let resolved = config.resolve_scopes(&[], &[]);
+    assert!(
+        resolved.is_empty(),
+        "empty scope inputs must produce an empty result, got: {resolved:?}"
+    );
+}
+
+// ── UserConfig::discover: loads a valid file pointed to by env var ────────────
+
+// Regression guard: discover() must load the file when VECLAYER_USER_CONFIG
+// points at an existing, valid TOML config — not silently return defaults.
+#[test]
+#[serial_test::serial]
+fn test_discover_user_config_valid_env_loads_file() {
+    let original = std::env::var("VECLAYER_USER_CONFIG").ok();
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let toml_path = dir.path().join("user.toml");
+    std::fs::write(
+        &toml_path,
+        r#"
+project = "env-loaded-project"
+data_dir = "/tmp/env-loaded-data"
+"#,
+    )
+    .unwrap();
+
+    std::env::set_var("VECLAYER_USER_CONFIG", toml_path.to_str().unwrap());
+    let config = UserConfig::discover();
+
+    match original {
+        Some(v) => std::env::set_var("VECLAYER_USER_CONFIG", v),
+        None => std::env::remove_var("VECLAYER_USER_CONFIG"),
+    }
+
+    assert_eq!(
+        config.project.as_deref(),
+        Some("env-loaded-project"),
+        "discover() must load the file when env var points at a valid path"
+    );
+    assert_eq!(
+        config.data_dir.as_deref(),
+        Some("/tmp/env-loaded-data"),
+        "discover() must populate data_dir from the env-var-pointed file"
+    );
+}
+
+// ── discover_project: stops walk-up at $HOME boundary ─────────────────────────
+
+// discover_project must NOT walk through $HOME looking for a .veclayer/
+// directory. A .veclayer/ sitting exactly at $HOME must be invisible.
+#[test]
+fn test_discover_project_stops_at_home_boundary() {
+    // We cannot reliably create a .veclayer/ at the real $HOME, so we use an
+    // isolated tempdir tree and set HOME to a directory that has .veclayer/.
+    // discover_project stops when it would enter the home dir, so starting the
+    // search *at* home should return None even if .veclayer/ is present there.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let fake_home = tmp.path().join("home");
+    std::fs::create_dir_all(&fake_home).unwrap();
+
+    // Place .veclayer/ at fake_home — the walk-up guard must skip it.
+    let veclayer_at_home = fake_home.join(".veclayer");
+    std::fs::create_dir_all(&veclayer_at_home).unwrap();
+
+    // A subdirectory below fake_home that we start the search from.
+    let work_dir = fake_home.join("work").join("project");
+    std::fs::create_dir_all(&work_dir).unwrap();
+
+    // Override HOME so directories::BaseDirs resolves to fake_home.
+    let original_home = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &fake_home);
+
+    let result = discover_project(&work_dir);
+
+    // Restore HOME.
+    match original_home {
+        Some(v) => std::env::set_var("HOME", v),
+        None => std::env::remove_var("HOME"),
+    }
+
+    assert!(
+        result.is_none(),
+        "discover_project must stop at $HOME and not find .veclayer/ placed there"
+    );
+}
+
+// ── UserConfig::load: tilde in data_dir is expanded ──────────────────────────
+// (Already tested by test_user_config_global_data_dir_tilde_expanded above;
+// this companion test verifies the expansion survives the discover() path too.)
+#[test]
+#[serial_test::serial]
+fn test_discover_user_config_tilde_in_data_dir_is_expanded() {
+    let original = std::env::var("VECLAYER_USER_CONFIG").ok();
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let toml_path = dir.path().join("user.toml");
+    std::fs::write(&toml_path, "data_dir = \"~/.veclayer-discover-test\"\n").unwrap();
+
+    std::env::set_var("VECLAYER_USER_CONFIG", toml_path.to_str().unwrap());
+    let config = UserConfig::discover();
+
+    match original {
+        Some(v) => std::env::set_var("VECLAYER_USER_CONFIG", v),
+        None => std::env::remove_var("VECLAYER_USER_CONFIG"),
+    }
+
+    let data_dir = config
+        .data_dir
+        .expect("data_dir must be populated from the env-var file");
+    assert!(
+        !data_dir.starts_with('~'),
+        "discover() must expand tilde in data_dir — got: {data_dir}"
+    );
+}
+
 // --- VECLAYER_CONFIG missing file test ---
 
 #[test]

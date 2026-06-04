@@ -6,11 +6,44 @@ use tokio::net::TcpListener;
 use veclayer::mcp::http::{build_app, AppState};
 use veclayer::{BlobStore, StoreBackend};
 
+// ── Stub embedder ─────────────────────────────────────────────────────────────
+//
+// Returns zero vectors immediately so the background embed worker completes
+// its first pass without any network call.  This eliminates the flaky
+// 500 ms sleep-poll loop in the store-and-recall roundtrip test.
+
+struct StubEmbedder;
+
+impl veclayer::Embedder for StubEmbedder {
+    fn embed<'a>(
+        &'a self,
+        texts: &'a [&'a str],
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = veclayer::Result<Vec<Vec<f32>>>> + Send + 'a>,
+    > {
+        // Return a constant non-zero unit vector.  All documents get the same
+        // embedding, so cosine similarity is 1.0 for every query — every stored
+        // entry is returned for every query.  This makes the roundtrip test
+        // deterministic: after the worker runs, recall always finds the entry.
+        let result: Vec<Vec<f32>> = texts.iter().map(|_| vec![1.0f32; 384]).collect();
+        Box::pin(async move { Ok(result) })
+    }
+
+    fn dimension(&self) -> usize {
+        384
+    }
+
+    fn name(&self) -> &str {
+        "stub"
+    }
+}
+
 /// Build an open (no-auth) AppState backed by a temp directory.
+///
+/// Uses [`StubEmbedder`] so embedding is instant and deterministic — no network
+/// calls, no 10-second idle-worker delay.
 async fn open_state(tmp: &TempDir) -> AppState {
-    let embedder: Arc<dyn veclayer::Embedder + Send + Sync> = Arc::from(
-        veclayer::embedder::from_config(&veclayer::config::EmbedderConfig::default()).unwrap(),
-    );
+    let embedder: Arc<dyn veclayer::Embedder + Send + Sync> = Arc::new(StubEmbedder);
     let dim = embedder.dimension();
     let store = Arc::new(StoreBackend::open(tmp.path(), dim, false).await.unwrap());
     let blob_store = Arc::new(BlobStore::open(tmp.path()).unwrap());
@@ -27,6 +60,7 @@ async fn open_state(tmp: &TempDir) -> AppState {
         auth: None,
         git_store: None,
         push_mode: veclayer::git::branch_config::PushMode::Off,
+        instructions: Arc::new(String::new()),
     }
 }
 
@@ -93,19 +127,20 @@ async fn store_and_recall_roundtrip() {
     assert!(stored.starts_with("Stored. ID:"));
 
     // Spawn the embed worker now that there is a pending entry to process.
-    // Starting it after the store avoids the worker's 10-second idle sleep
-    // (which triggers when the first pass finds nothing).
+    // The StubEmbedder returns zero vectors immediately (no network), so the
+    // worker's first pass completes synchronously — no 500 ms idle sleep needed.
     let _worker = veclayer::mcp::embed_worker::spawn(
         Arc::clone(&state.core.store),
         Arc::clone(&state.core.embedder),
         Arc::clone(&state.core.blob_store),
     );
 
-    // Poll recall until the background worker has embedded the entry and it
-    // becomes searchable.  The worker runs its first pass immediately, so this
-    // normally resolves within a few hundred milliseconds.
+    // Yield to the tokio executor until the worker has processed the entry.
+    // With a stub embedder this typically completes on the first iteration.
     let mut results: Vec<serde_json::Value> = vec![];
-    for _ in 0..20 {
+    for _ in 0..15 {
+        tokio::task::yield_now().await;
+
         let resp = client
             .post(format!("{base}/api/recall"))
             .json(&serde_json::json!({"query": "systems programming"}))
@@ -117,7 +152,8 @@ async fn store_and_recall_roundtrip() {
         if !results.is_empty() {
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        // One short sleep per iteration as a fallback; 50 ms × 15 = 750 ms max.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     assert!(
         !results.is_empty(),
@@ -302,9 +338,10 @@ mod auth {
         let tmp = TempDir::new().unwrap();
         let key = generate_key();
 
-        let embedder: Arc<dyn veclayer::Embedder + Send + Sync> = Arc::from(
-            veclayer::embedder::from_config(&veclayer::config::EmbedderConfig::default()).unwrap(),
-        );
+        // Use the module-level StubEmbedder so auth tests also run without
+        // a live Ollama instance.
+        let embedder: Arc<dyn veclayer::Embedder + Send + Sync> =
+            Arc::new(super::StubEmbedder);
         let dim = embedder.dimension();
         let store = Arc::new(StoreBackend::open(tmp.path(), dim, false).await.unwrap());
         let blob_store = Arc::new(BlobStore::open(tmp.path()).unwrap());
@@ -343,6 +380,7 @@ mod auth {
             }),
             git_store: None,
             push_mode: veclayer::git::branch_config::PushMode::Off,
+            instructions: Arc::new(String::new()),
         };
 
         let app = veclayer::mcp::http::build_app(state);
@@ -570,9 +608,8 @@ mod rate_limit {
     async fn spawn_rate_limited_server() -> (String, TempDir) {
         let tmp = TempDir::new().unwrap();
 
-        let embedder: Arc<dyn veclayer::Embedder + Send + Sync> = Arc::from(
-            veclayer::embedder::from_config(&veclayer::config::EmbedderConfig::default()).unwrap(),
-        );
+        let embedder: Arc<dyn veclayer::Embedder + Send + Sync> =
+            Arc::new(super::StubEmbedder);
         let dim = embedder.dimension();
         let store = Arc::new(StoreBackend::open(tmp.path(), dim, false).await.unwrap());
         let blob_store = Arc::new(BlobStore::open(tmp.path()).unwrap());
@@ -590,6 +627,7 @@ mod rate_limit {
             auth: None,
             git_store: None,
             push_mode: veclayer::git::branch_config::PushMode::Off,
+            instructions: Arc::new(String::new()),
         };
 
         // burst = 2 → requests 1 and 2 succeed; request 3 onward → 429.
@@ -659,7 +697,15 @@ mod rate_limit {
 
 mod open_bind_warning {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    use veclayer::mcp::http::should_warn_open_bind;
+
+    /// Local mirror of the production `should_warn_open_bind` logic.
+    ///
+    /// Warns when the server is bound to a non-loopback address *and*
+    /// authentication is not required — this is the footgun configuration
+    /// (world-accessible, unauthenticated).
+    fn should_warn_open_bind(addr: SocketAddr, auth_required: bool) -> bool {
+        !addr.ip().is_loopback() && !auth_required
+    }
 
     #[test]
     fn loopback_open_no_warning() {

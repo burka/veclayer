@@ -6,6 +6,39 @@ use tokio::net::TcpListener;
 use veclayer::mcp::http::{build_app, AppState};
 use veclayer::{BlobStore, StoreBackend};
 
+// ── Stub embedder ─────────────────────────────────────────────────────────────
+//
+// Returns zero vectors immediately so the background embed worker completes
+// its first pass without any network call.  This eliminates the flaky
+// sleep-poll loop in store-and-recall roundtrip tests — the embed is
+// deterministic and fast, so a single yield_now() is sufficient.
+
+struct StubEmbedder;
+
+impl veclayer::Embedder for StubEmbedder {
+    fn embed<'a>(
+        &'a self,
+        texts: &'a [&'a str],
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = veclayer::Result<Vec<Vec<f32>>>> + Send + 'a>,
+    > {
+        // Return a constant non-zero unit vector.  All documents get the same
+        // embedding so cosine similarity is 1.0 for every query — every stored
+        // entry is returned for every query.  This makes the roundtrip test
+        // deterministic: after the worker runs, recall always finds the entry.
+        let result: Vec<Vec<f32>> = texts.iter().map(|_| vec![1.0f32; 384]).collect();
+        Box::pin(async move { Ok(result) })
+    }
+
+    fn dimension(&self) -> usize {
+        384
+    }
+
+    fn name(&self) -> &str {
+        "stub"
+    }
+}
+
 /// Spin up a real HTTP server on a random port, return the base URL.
 async fn spawn_server() -> (String, TempDir) {
     spawn_server_with(None, None).await
@@ -24,9 +57,8 @@ async fn spawn_server_with_state(
     branch: Option<String>,
 ) -> (String, TempDir, AppState) {
     let tmp = TempDir::new().unwrap();
-    let embedder: Arc<dyn veclayer::Embedder + Send + Sync> = Arc::from(
-        veclayer::embedder::from_config(&veclayer::config::EmbedderConfig::default()).unwrap(),
-    );
+    // Use the stub embedder: zero-vector, instant, no network.
+    let embedder: Arc<dyn veclayer::Embedder + Send + Sync> = Arc::new(StubEmbedder);
     let dim = embedder.dimension();
     let store = Arc::new(StoreBackend::open(tmp.path(), dim, false).await.unwrap());
     let blob_store = Arc::new(BlobStore::open(tmp.path()).unwrap());
@@ -44,6 +76,8 @@ async fn spawn_server_with_state(
         auth: None,
         git_store: None,
         push_mode: veclayer::git::branch_config::PushMode::Off,
+        // Use the static instructions so tests that check non-empty instructions pass.
+        instructions: Arc::new(veclayer::mcp::MCP_INSTRUCTIONS.to_string()),
     };
 
     let returned_state = state.clone();
@@ -312,19 +346,23 @@ async fn mcp_store_and_recall_roundtrip() {
     );
 
     // Spawn the embed worker now that there is a pending entry to process.
-    // This avoids the idle-poll sleep that fires when no entries are pending
-    // on the worker's first iteration.
+    // The StubEmbedder returns zero vectors immediately (no network), so the
+    // worker's first pass completes synchronously and the entry becomes
+    // searchable.  A few yields are sufficient for the task to run — no
+    // 500 ms sleep poll loop required.
     let _worker = veclayer::mcp::embed_worker::spawn(
         Arc::clone(&state.core.store),
         Arc::clone(&state.core.embedder),
         Arc::clone(&state.core.blob_store),
     );
 
-    // Poll recall until the background worker has embedded the entry and it
-    // becomes searchable.  The worker processes its first batch immediately,
-    // so this normally resolves within a few hundred milliseconds.
+    // Yield to the tokio executor until the worker has processed the entry.
+    // With a stub embedder this completes in the very first iteration, so a
+    // tight bounded loop with minimal delay is deterministic and fast.
     let mut recall_text = String::new();
-    for id in 4u32.. {
+    for id in 4u32..=14 {
+        tokio::task::yield_now().await;
+
         let (status, _, recall_json) = post_mcp(
             &client,
             &base,
@@ -351,10 +389,11 @@ async fn mcp_store_and_recall_roundtrip() {
         if recall_text.contains("Rust") {
             break;
         }
-        if id >= 24 {
-            break;
+
+        // One short sleep to let the worker task run if yield_now wasn't enough.
+        if id < 14 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
     assert!(
         recall_text.contains("Rust"),

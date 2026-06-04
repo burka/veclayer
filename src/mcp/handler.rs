@@ -971,6 +971,220 @@ mod tests {
         );
     }
 
+    // ── store dispatch: empty content AND empty items ────────────────────────
+
+    /// `store` with an empty `content` string AND an empty `items` array must
+    /// return a tool-level error (not a protocol error) indicating the caller
+    /// must supply either field.
+    #[tokio::test]
+    async fn store_empty_content_and_empty_items_returns_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let handler = make_handler(dir.path(), Capability::Write, None, None).await;
+
+        let input = super::super::types::StoreInput {
+            content: "".to_string(),
+            parent_id: None,
+            source_file: "[agent]".to_string(),
+            heading: None,
+            visibility: "normal".to_string(),
+            perspectives: vec![],
+            relations: vec![],
+            items: vec![],
+            entry_type: None,
+            impression_hint: None,
+            impression_strength: None,
+            scope: "project".to_string(),
+        };
+
+        let result = handler
+            .store(Parameters(input))
+            .await
+            .expect("store must return Ok (tool-level error), not a protocol error");
+
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "empty content + empty items must produce is_error=true"
+        );
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            text.contains("content") || text.contains("items"),
+            "error must mention the missing fields — got: {text}"
+        );
+    }
+
+    /// `store` with valid content returns a success result whose text starts
+    /// with "Stored. ID:".  This exercises the full dispatch path through
+    /// `tools::execute_store` and verifies the happy-path response shape.
+    #[tokio::test]
+    async fn store_valid_content_returns_stored_id() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let handler = make_handler(dir.path(), Capability::Write, None, None).await;
+
+        let input = super::super::types::StoreInput {
+            content: "The answer is 42".to_string(),
+            parent_id: None,
+            source_file: "[agent]".to_string(),
+            heading: Some("Answer".to_string()),
+            visibility: "normal".to_string(),
+            perspectives: vec!["knowledge".to_string()],
+            relations: vec![],
+            items: vec![],
+            entry_type: None,
+            impression_hint: None,
+            impression_strength: None,
+            scope: "project".to_string(),
+        };
+
+        let result = handler
+            .store(Parameters(input))
+            .await
+            .expect("store must not return a protocol error");
+
+        assert_ne!(
+            result.is_error,
+            Some(true),
+            "valid store must succeed — is_error must not be true"
+        );
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            text.contains("Stored. ID:"),
+            "success response must start with 'Stored. ID:' — got: {text}"
+        );
+    }
+
+    // ── think dispatch: action=perspectives ──────────────────────────────────
+
+    /// `think` with `action: "perspectives"` dispatches through `execute_think`
+    /// and returns a structured perspectives list.  This closes the gap where
+    /// only the no-action (reflect) path was tested.
+    #[tokio::test]
+    async fn think_perspectives_action_returns_list() {
+        let dir = tempfile::TempDir::new().unwrap();
+        crate::perspective::init(dir.path()).unwrap();
+        let handler = make_handler(dir.path(), Capability::Write, None, None).await;
+
+        let input = super::super::types::ThinkInput {
+            action: Some("perspectives".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+
+        let result = handler
+            .think(Parameters(input))
+            .await
+            .expect("think must not return a protocol error");
+
+        assert_ne!(
+            result.is_error,
+            Some(true),
+            "think(perspectives) must succeed — is_error must not be true"
+        );
+        let text = result.content[0].as_text().unwrap().text.clone();
+        // The perspectives command lists configured perspectives; at minimum the
+        // response is non-empty and references known built-in perspective names.
+        assert!(
+            !text.is_empty(),
+            "think(perspectives) must return non-empty output"
+        );
+        // Built-in perspectives ship with every init
+        assert!(
+            text.contains("decisions") || text.contains("knowledge") || text.contains("Perspective"),
+            "think(perspectives) must mention at least one perspective — got: {text}"
+        );
+    }
+
+    // ── think dispatch: action=status ────────────────────────────────────────
+
+    /// `think` with `action: "status"` dispatches to the status path and returns
+    /// store stats. Verifies the dispatch table maps the action correctly.
+    #[tokio::test]
+    async fn think_status_action_returns_store_stats() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let handler = make_handler(dir.path(), Capability::Write, None, None).await;
+
+        let input = super::super::types::ThinkInput {
+            action: Some("status".to_string()),
+            hot_limit: None,
+            stale_limit: None,
+            id: None,
+            visibility: None,
+            source_id: None,
+            target_id: None,
+            kind: None,
+            degrade_after_days: None,
+            degrade_to: None,
+            degrade_from: None,
+            direction: None,
+        };
+
+        let result = handler
+            .think(Parameters(input))
+            .await
+            .expect("think must not return a protocol error");
+
+        assert_ne!(
+            result.is_error,
+            Some(true),
+            "think(status) must succeed"
+        );
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            !text.is_empty(),
+            "think(status) must return non-empty output"
+        );
+    }
+
+    // ── focus dispatch: read capability sufficient ───────────────────────────
+
+    /// `focus` on a non-existent ID is also blocked by a Read-only capability
+    /// handler — but since focus requires Read (not Write), the Read handler
+    /// must proceed to the execute path and return a domain error, not a
+    /// permission error.
+    #[tokio::test]
+    async fn focus_read_capability_reaches_execute_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let handler = make_handler(dir.path(), Capability::Read, None, None).await;
+
+        let input = super::super::types::FocusInput {
+            id: "no-such-id".to_string(),
+            question: None,
+            limit: 5,
+        };
+
+        let result = handler
+            .focus(Parameters(input))
+            .await
+            .expect("focus must not return a protocol error");
+
+        // Read capability is sufficient for focus; the error is domain-level
+        // (not-found), not a permission error.
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "focus on missing entry must return is_error=true (domain error)"
+        );
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            text.starts_with("Error:"),
+            "error must start with 'Error:' — got: {text}"
+        );
+        // Must NOT be a permission error
+        assert!(
+            !text.contains("permission") && !text.contains("Insufficient"),
+            "Read capability is sufficient for focus — must not produce a permission error: {text}"
+        );
+    }
+
     // ── think description completeness ───────────────────────────────────────
 
     /// Every action in `THINK_ACTIONS` must appear in the live `#[tool]` description.
