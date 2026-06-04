@@ -50,6 +50,39 @@ jobs:
       - name: Run tests
         run: cargo nextest run --all-features
 
+      - name: Check library-only surface (no cli, sqlite only)
+        # Verifies that a sqlite-only library consumer compiles correctly without
+        # the cli feature tree pulling in lancedb, mcp, config, and parser.
+        run: cargo check --no-default-features --features store-sqlite
+
+  ci-macos:
+    name: CI (macOS smoke)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (MSRV 1.93)
+        uses: dtolnay/rust-toolchain@1.93
+
+      - name: Configure git identity
+        run: |
+          git config --global user.email "ci@veclayer.test"
+          git config --global user.name "CI Runner"
+
+      - name: Install protoc (needed by lance-encoding via prost-build)
+        run: brew install protobuf
+
+      - name: Cache cargo registry and target dir
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (default features)
+        run: cargo build --all-targets
+
+      - name: Run tests (default features)
+        run: cargo test
+
   audit:
     name: Security audit
     runs-on: ubuntu-latest

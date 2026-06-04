@@ -23,6 +23,15 @@ The roadmap is tracked as [GitHub Issues](https://github.com/burka/veclayer/issu
   - Connectivity term in salience: incoming relations + neighbor quality as scoring signal
 - **Phase 7:** Polish — aliases, multi-format parsing, alternative backends ([#9](https://github.com/burka/veclayer/issues/9))
 
+## Deferred to 0.3 (intentionally not in 0.2.0)
+
+The following refactors were identified during 0.2.0 development but deferred to keep the release scope bounded. They are tracked as future work, not forgotten:
+
+- **VectorStore trait segregation (ISP)** — The `VectorStore` trait mixes read, write, and admin operations. Split into focused sub-traits (e.g. `VectorRead`, `VectorWrite`) per Interface Segregation Principle.
+- **`VecLayer` facade generic over backend** — The facade currently uses dynamic dispatch (`Box<dyn VectorStore>`). Making it generic over the backend (`VecLayer<S: VectorStore>`) would enable zero-cost abstraction for library consumers.
+- **Decompose `run()` / `execute_recall`** — These functions have grown large (dispatching all CLI subcommands and all recall variants). Decompose into per-command handlers to reduce test surface and cognitive load.
+- **Error source-chain preservation** — Infrastructure error variants currently stringify their sources (`.to_string()`) instead of wrapping them with `#[source]`. This loses the chain for programmatic inspection. Fix when bumping the public error API.
+
 ## Success Criteria
 
 A release is vision-aligned when:

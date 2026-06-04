@@ -6,6 +6,7 @@ description = "Hierarchical vector memory for AI agents — perspectives, salien
 license = "MIT"
 repository = "https://github.com/burka/veclayer"
 homepage = "https://github.com/burka/veclayer"
+documentation = "https://docs.rs/veclayer"
 readme = "README.md"
 authors = ["Florian Burka"]
 keywords = ["vector", "embedding", "memory", "llm", "rag"]

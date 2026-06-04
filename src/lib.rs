@@ -32,11 +32,10 @@
 //! - `http`: Enables HTTP REST API, Streamable HTTP MCP transport, and OAuth; implies `auth` and `mcp`
 //! - `auth`: Enables cryptographic identity (Ed25519), JWT tokens, and keystore
 //! - `full`: Enables `cli`, `store-sqlite`, `llm`, `http`, and `auth`
-//! - `full-local`: Enables `full` plus `embedding-local`
 //!
 //! For lightweight consumers, use `store-sqlite` to avoid ~185 transitive crates from `LanceDB`:
 //! ```toml
-//! veclayer = { version = "0.1", default-features = false, features = ["store-sqlite"] }
+//! veclayer = { version = "0.2", default-features = false, features = ["store-sqlite"] }
 //! ```
 //!
 //! Without `parser`, the `DocumentParser` trait and Markdown parser are unavailable.

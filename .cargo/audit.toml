@@ -5,16 +5,26 @@
 # or aws-sdk upgrade (out of scope). Certificates are from trusted CAs; the
 # name-constraint, CRL, and policy issues are not exploitable in veclayer's usage.
 # Tracked for remediation when lancedb migrates to rustls 0.23.
+# NOTE: cargo-audit does not support an `until` field for timed expiry; use dated
+# comments and review manually. All suppressions below should be re-evaluated at
+# the next lancedb upgrade or on/after 2026-12-01.
 ignore = [
+    # TODO re-evaluate after 2026-12-01 (re-check on lancedb upgrade to rustls 0.23+)
     "RUSTSEC-2026-0099",
+    # TODO re-evaluate after 2026-12-01 (re-check on lancedb upgrade to rustls 0.23+)
     "RUSTSEC-2026-0104",
+    # TODO re-evaluate after 2026-12-01 (re-check on lancedb upgrade to rustls 0.23+)
     "RUSTSEC-2026-0098",
     # lru unsoundness, transitive via tantivy → lance; not directly reachable in veclayer's usage.
+    # TODO re-evaluate after 2026-12-01 (re-check on lancedb/tantivy upgrade)
     "RUSTSEC-2026-0002",
     # rustls-pemfile unmaintained, transitive only; no direct dependency and no exploitable path here.
+    # TODO re-evaluate after 2026-12-01 (re-check if a successor crate is adopted upstream)
     "RUSTSEC-2025-0134",
     # paste unmaintained (proc-macro), transitive via tokenizers/lance; build-time only, not exploitable.
+    # TODO re-evaluate after 2026-12-01 (re-check if tokenizers/lance migrates to a maintained fork)
     "RUSTSEC-2024-0436",
     # number_prefix unmaintained, transitive via indicatif → fastembed; formatting helper, not exploitable.
+    # TODO re-evaluate after 2026-12-01 (re-check if indicatif migrates away from number_prefix)
     "RUSTSEC-2025-0119",
 ]

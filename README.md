@@ -7,7 +7,7 @@
 
 **Long-term memory for AI agents. Hierarchical, perspectival, aging knowledge.**
 
-> Status: 0.2.0 alpha / pre-release — MCP tool & CLI for local use. APIs are evolving and may change without notice.
+> Status: 0.2.0 — MCP tool & CLI for local use. Stable: CLI + MCP-stdio + local embeddings. HTTP/auth features are WIP (experimental) and not ready for production use.
 > Author: Florian Burka, developed in dialogue with Claude
 
 ## What is VecLayer?
@@ -56,8 +56,11 @@ veclayer recall --perspective decisions "backend"
 # Drill down
 veclayer focus abc1234
 
-# Start server (MCP/HTTP)
-veclayer serve
+# Start the MCP server (stdio transport — stable default)
+veclayer serve --mcp-stdio
+
+# HTTP server mode is experimental/WIP — requires `--features http`
+# veclayer serve --host 0.0.0.0 --port 8080
 ```
 
 ## Configuration
@@ -106,6 +109,13 @@ VecLayer supports local and external embedding backends.
 | BAAI/bge-base-en-v1.5 | 768 | `Xenova/bge-base-en-v1.5` |
 | BAAI/bge-large-en-v1.5 | 1024 | `Xenova/bge-large-en-v1.5` |
 | all-MiniLM-L6-v2 | 384 | `Xenova/all-MiniLM-L6-v2` |
+
+To override the default model, set `model` under the `[embedder]` section in your config:
+
+```toml
+[embedder]
+model = "Xenova/bge-base-en-v1.5"   # use the "Config value" from the table above
+```
 
 Models download automatically on first use.
 
@@ -248,6 +258,18 @@ cd ~/projects/backend
 claude mcp add memory -- veclayer -d ~/.veclayer/data serve --mcp-stdio --project backend
 ```
 
+### Git-Backed Memory (team sharing)
+
+To enable git-backed memory storage for a project (stores encrypted memory scopes in the repo):
+
+```bash
+cd ~/projects/myproject
+veclayer init --share   # sets up .veclayer/ git memory directory and registers scopes
+veclayer sync           # sync git scopes into the local index
+```
+
+`init --share` creates the `.veclayer/` directory in the project root, registers git memory scopes, and wires up the sync workflow. Run `veclayer sync` to pull in shared memory from remote collaborators.
+
 ### Cross-Project Knowledge
 
 Store knowledge that follows you across projects with `scope: "personal"`:
@@ -315,7 +337,7 @@ or a cron timer). See [docs/maintenance.md](docs/maintenance.md).
 
 ### Prerequisites
 
-- **Rust** toolchain (stable, edition 2021+)
+- **Rust** toolchain — MSRV **1.93** (stable, edition 2021)
 - **protoc** (Protocol Buffers compiler) — required by LanceDB
   - Debian/Ubuntu: `apt-get install protobuf-compiler`
   - macOS: `brew install protobuf`
@@ -356,7 +378,7 @@ The think cycle and cluster summarization require a running Ollama instance. The
 | Feature | Default | What it enables |
 |---------|---------|-----------------|
 | `cli` | Yes | The `veclayer` binary and all CLI subcommands (pulls in `store-lance`, `mcp`, `config`, `parser`) |
-| `store-lance` | Yes | LanceDB vector store backend (requires `protoc` at build time) |
+| `store-lance` | (via cli) | LanceDB vector store backend (requires `protoc` at build time) — not in `default` directly; activated transitively by `cli` |
 | `store-sqlite` | Yes | SQLite vector store backend (bundled, no system deps) |
 | `parser` | Yes | Markdown ingestion via pulldown-cmark |
 | `config` | Yes | TOML + ENV config loading and project resolution |

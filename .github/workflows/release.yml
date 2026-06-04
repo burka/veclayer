@@ -40,6 +40,10 @@ jobs:
       - name: Build release binary
         run: cargo build --release --features cli
 
+      - name: Check library-only surface (no cli, sqlite only)
+        # A broken library-only build should block the release even if the cli build passes.
+        run: cargo check --no-default-features --features store-sqlite
+
       - name: Verify packaging (dry-run, no publish)
         run: cargo publish --dry-run --features cli
         # NOTE: actual publishing is intentionally a manual step. Once the
