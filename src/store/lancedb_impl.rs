@@ -1437,7 +1437,7 @@ impl VectorStore for LanceStore {
 
         match chunks.len() {
             0 => Ok(None),
-            1 => Ok(Some(chunks.into_iter().next().unwrap())),
+            1 => Ok(Some(chunks.into_iter().next().expect("match arm guarantees len==1"))),
             _ => Err(Error::config(format!(
                 "Ambiguous prefix '{}': matches {} entries. Use a longer prefix.",
                 prefix,
@@ -1816,25 +1816,30 @@ impl VectorStore for LanceStore {
 
     /// Updates the stored embedding vectors for the given chunk IDs.
     ///
-    /// # Atomicity warning — NON-ATOMIC delete-then-add
+    /// # Partial-failure safety — add-then-delete ordering
     ///
-    /// Internally this function performs a `table.delete(filter)` followed by a
-    /// `table.add(...)`.  These two operations are **not** wrapped in a single
-    /// LanceDB transaction:
+    /// Internally this function performs a `table.add(...)` followed by a
+    /// `table.delete(filter)`.  These two operations are **not** wrapped in a
+    /// single LanceDB transaction, but the ordering is chosen to keep old data
+    /// intact on partial failure:
     ///
-    /// * If `delete` succeeds but `add` fails, the affected rows are permanently
-    ///   absent from the LanceDB index for the current session.
-    /// * Callers **must** treat an `Err` return as "index possibly inconsistent".
-    ///   The blob store is the source of truth; a full `rebuild_index` will
-    ///   reconstruct the index from blobs and restore consistency.
-    /// * This limitation is intentional — id-based delete filters make an
-    ///   add-before-delete swap unsafe (duplicate rows) and a proper atomic
-    ///   replace requires a LanceDB-level merge operation.  That rework is
-    ///   tracked separately.
-    /// * The delete-succeeds/add-fails data-loss path is not unit-tested:
-    ///   injecting a post-delete failure would require a fault hook the
-    ///   LanceDB API does not expose. The pinning tests cover the reachable
-    ///   behaviors (partial/unknown-id skips return `Ok`).
+    /// * If `add` fails, the old rows are still present — **no data loss**.
+    ///   The function returns `Err` and the caller may retry.
+    /// * If `add` succeeds but `delete` fails, both old and new rows exist
+    ///   temporarily (duplicate IDs).  The function returns `Err`.  A
+    ///   subsequent `rebuild_index` or manual compaction will restore a clean
+    ///   single-copy state.  This is the safe failure direction: recoverable
+    ///   duplicates are always preferable to permanent data loss.
+    /// * On full success the old rows are deleted after the new ones land,
+    ///   leaving exactly the updated embeddings in the table.
+    /// * Callers **must** treat an `Err` return as "index possibly
+    ///   inconsistent".  The blob store is the source of truth; a full
+    ///   `rebuild_index` will reconstruct the index and restore consistency.
+    ///
+    /// The delete predicate is scoped to `embedding_status = 'pending'` so
+    /// that the newly-added `'embedded'` rows are not matched — only the old
+    /// pending rows are removed.  This function is intended for the embed
+    /// worker, which always processes `pending` rows.
     ///
     /// # Unknown IDs are silently skipped
     ///
@@ -1905,13 +1910,26 @@ impl VectorStore for LanceStore {
                 return Ok(());
             }
 
-            table.delete(&filter).await.map_err(|e| {
-                Error::store(format!(
-                    "Failed to delete for batch embedding update: {}",
-                    e
-                ))
-            })?;
+            // Build the delete filter from IDs that were actually found and
+            // will be re-inserted. The filter also constrains on
+            // `embedding_status = 'pending'` so that the newly-added
+            // 'embedded' rows are not matched — only the old pending rows are
+            // removed after the add succeeds.
+            let updated_id_list: String = updated_chunks
+                .iter()
+                .map(|c| format!("'{}'", sql_escape(&c.id)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let delete_filter = format!(
+                "id IN ({}) AND embedding_status = '{}'",
+                updated_id_list, EMBEDDING_STATUS_PENDING
+            );
 
+            // Add the updated rows FIRST so that a failure here leaves the
+            // original pending rows intact (no data loss). Only delete the
+            // old pending rows once the add has succeeded; a delete failure
+            // at that point leaves recoverable duplicates rather than
+            // permanent data loss.
             let batch = self.chunks_to_batch(&updated_chunks)?;
             table
                 .add(Box::new(RecordBatchIterator::new(
@@ -1922,10 +1940,18 @@ impl VectorStore for LanceStore {
                 .await
                 .map_err(|e| {
                     Error::store(format!(
-                        "Failed to reinsert after batch embedding update: {}",
+                        "Failed to add updated embeddings (old rows preserved): {}",
                         e
                     ))
                 })?;
+
+            table.delete(&delete_filter).await.map_err(|e| {
+                Error::store(format!(
+                    "Failed to delete old pending rows after embedding update \
+                     (duplicates exist, rebuild_index will fix): {}",
+                    e
+                ))
+            })?;
 
             Ok(())
         })

@@ -557,7 +557,7 @@ impl VectorStore for SqliteStore {
 
             match matches.len() {
                 0 => Ok(None),
-                1 => Ok(Some(matches.into_iter().next().unwrap())),
+                1 => Ok(Some(matches.into_iter().next().expect("match arm guarantees len==1"))),
                 _ => Err(Error::store(format!(
                     "ambiguous id prefix '{}': matches multiple chunks",
                     prefix

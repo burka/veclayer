@@ -28,6 +28,15 @@ use crate::{Embedder, Result, VectorStore};
 /// allocation or an integer overflow in downstream fetch-size arithmetic.
 const MAX_RESULT_LIMIT: usize = 1000;
 
+/// Content length above which the embedding quality warning is shown to the
+/// caller. Long entries embed less precisely because the model must compress
+/// more text into a fixed-size vector.
+const MAX_EMBED_CONTENT_CHARS: usize = 2000;
+
+/// Maximum number of characters shown in content previews (e.g. in `focus`
+/// output). Truncated with a trailing `...` when exceeded.
+const CONTENT_PREVIEW_CHARS: usize = 500;
+
 /// Clamp a caller-supplied result limit to [`MAX_RESULT_LIMIT`].
 fn clamp_result_limit(requested: usize) -> usize {
     requested.min(MAX_RESULT_LIMIT)
@@ -652,7 +661,7 @@ pub async fn execute_store(ctx: &ToolContext, input: StoreInput) -> Result<serde
             if let Some(status) = git_status {
                 git_statuses.push(status);
             }
-            if content_len > 2000 {
+            if content_len > MAX_EMBED_CONTENT_CHARS {
                 long_entries += 1;
             }
         }
@@ -675,7 +684,7 @@ pub async fn execute_store(ctx: &ToolContext, input: StoreInput) -> Result<serde
         }
         if long_entries > 0 {
             msg.push_str(&format!(
-                "\n\nNote: {} entr{} exceeded 2000 chars. Long content embeds less precisely — \
+                "\n\nNote: {} entr{} exceeded {MAX_EMBED_CONTENT_CHARS} chars. Long content embeds less precisely — \
                  consider splitting into smaller entries under a shared parent_id.",
                 long_entries,
                 if long_entries == 1 { "y" } else { "ies" }
@@ -710,11 +719,11 @@ pub async fn execute_store(ctx: &ToolContext, input: StoreInput) -> Result<serde
         if let Some(status) = git_status {
             msg.push_str(&format!(" {status}"));
         }
-        if content_len > 2000 {
-            msg.push_str(
-                "\n\nNote: Content exceeded 2000 chars. Long entries embed less precisely — \
+        if content_len > MAX_EMBED_CONTENT_CHARS {
+            msg.push_str(&format!(
+                "\n\nNote: Content exceeded {MAX_EMBED_CONTENT_CHARS} chars. Long entries embed less precisely — \
                  consider splitting into smaller entries under a shared parent_id for better recall.",
-            );
+            ));
         }
         Ok(serde_json::json!(msg))
     }
@@ -1071,8 +1080,8 @@ async fn think_history(store: &Arc<StoreBackend>, input: &ThinkInput) -> Result<
 
     report.push_str(&format!(
         "\n### Content\n\n{}\n",
-        if chunk.content.len() > 500 {
-            let end = chunk.content.floor_char_boundary(500);
+        if chunk.content.len() > CONTENT_PREVIEW_CHARS {
+            let end = chunk.content.floor_char_boundary(CONTENT_PREVIEW_CHARS);
             format!("{}...", &chunk.content[..end])
         } else {
             chunk.content.clone()
