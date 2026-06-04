@@ -187,7 +187,10 @@ async fn add_text(
     let (_config, embedder, store, blob_store) = super::open_store(data_dir).await?;
 
     let entry_type: crate::chunk::EntryType = options.entry_type.parse().map_err(|_| {
-        crate::Error::parse(format!("invalid entry type: '{}'", options.entry_type))
+        crate::Error::parse(format!(
+            "invalid entry type: '{}'. Valid values: raw, summary, meta, impression",
+            options.entry_type
+        ))
     })?;
 
     let (level, path, resolved_parent_id) = if let Some(ref pid) = options.parent_id {

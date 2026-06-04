@@ -27,6 +27,51 @@ enum EntryKind {
     Impression,
 }
 
+/// Well-known visibility values for `think promote`, `think demote`, and `think aging configure`.
+///
+/// Visibility is an open field (custom values like "draft" are valid at the API level),
+/// but the CLI validates against this standard set for early error detection.
+#[derive(Clone, Debug, clap::ValueEnum)]
+enum VisibilityKind {
+    Always,
+    Normal,
+    DeepOnly,
+    Seasonal,
+    Expiring,
+}
+
+impl std::fmt::Display for VisibilityKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VisibilityKind::Always => write!(f, "always"),
+            VisibilityKind::Normal => write!(f, "normal"),
+            VisibilityKind::DeepOnly => write!(f, "deep_only"),
+            VisibilityKind::Seasonal => write!(f, "seasonal"),
+            VisibilityKind::Expiring => write!(f, "expiring"),
+        }
+    }
+}
+
+/// Token capability for `auth token --can`.
+#[cfg(feature = "auth")]
+#[derive(Clone, Debug, clap::ValueEnum)]
+enum CanCapability {
+    Read,
+    Write,
+    Admin,
+}
+
+#[cfg(feature = "auth")]
+impl std::fmt::Display for CanCapability {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CanCapability::Read => write!(f, "read"),
+            CanCapability::Write => write!(f, "write"),
+            CanCapability::Admin => write!(f, "admin"),
+        }
+    }
+}
+
 impl std::fmt::Display for EntryKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -237,13 +282,16 @@ enum Commands {
         limit: usize,
     },
 
-    /// Start the MCP/HTTP server
+    /// Start the MCP server [STABLE: --mcp-stdio | EXPERIMENTAL: HTTP mode]
+    ///
+    /// Use --mcp-stdio for the stable MCP transport (recommended, default for Claude Code).
+    /// HTTP server mode is experimental/WIP and requires the 'http' feature.
     Serve {
-        /// Port to listen on
+        /// Port to listen on (HTTP mode only — experimental)
         #[arg(short, long, env = "VECLAYER_PORT")]
         port: Option<u16>,
 
-        /// Host to bind to
+        /// Host to bind to (HTTP mode only — experimental)
         #[arg(long, env = "VECLAYER_HOST")]
         host: Option<String>,
 
@@ -251,7 +299,7 @@ enum Commands {
         #[arg(long)]
         read_only: bool,
 
-        /// Enable MCP stdio transport
+        /// Use MCP stdio transport (stable, recommended — this is what Claude Code uses)
         #[arg(long)]
         mcp_stdio: bool,
 
@@ -259,15 +307,18 @@ enum Commands {
         #[arg(long)]
         project: Option<String>,
 
-        /// Require authentication for all API access
+        /// Require authentication for all API access (HTTP mode only — experimental)
+        #[cfg(feature = "http")]
         #[arg(long, env = "VECLAYER_AUTH_REQUIRED")]
         auth_required: bool,
 
-        /// Public server URL for OAuth metadata
+        /// Public server URL for OAuth metadata (HTTP mode only — experimental)
+        #[cfg(feature = "http")]
         #[arg(long, env = "VECLAYER_SERVER_URL")]
         server_url: Option<String>,
 
-        /// Auto-approve OAuth requests (testing only)
+        /// INSECURE — never use outside tests. Auto-approve OAuth requests (HTTP mode only — experimental)
+        #[cfg(feature = "http")]
         #[arg(long, env = "VECLAYER_AUTO_APPROVE", hide = true)]
         auto_approve: bool,
     },
@@ -349,13 +400,15 @@ enum Commands {
         force: bool,
     },
 
-    /// Manage cryptographic identity (DID, keypairs)
+    /// Manage cryptographic identity (DID, keypairs) [requires 'auth' feature]
+    #[cfg(feature = "auth")]
     Identity {
         #[command(subcommand)]
         action: IdentityAction,
     },
 
-    /// Manage authentication tokens
+    /// Manage authentication tokens [requires 'auth' feature]
+    #[cfg(feature = "auth")]
     Auth {
         #[command(subcommand)]
         action: AuthAction,
@@ -478,6 +531,7 @@ enum PerspectiveAction {
     },
 }
 
+#[cfg(feature = "auth")]
 #[derive(Subcommand)]
 enum IdentityAction {
     /// Generate a new Ed25519 keypair and store it encrypted
@@ -490,13 +544,14 @@ enum IdentityAction {
     Show,
 }
 
+#[cfg(feature = "auth")]
 #[derive(Subcommand)]
 enum AuthAction {
     /// Mint a JWT access token (for server operators)
     Token {
-        /// Capability: read, write, admin
-        #[arg(long, default_value = "read")]
-        can: String,
+        /// Capability granted by the token
+        #[arg(long, value_enum, default_value_t = CanCapability::Read)]
+        can: CanCapability,
         /// Expiry duration: 1h, 30d, 3600 (seconds)
         #[arg(long, default_value = "1h")]
         expires: String,
@@ -550,8 +605,8 @@ enum ThinkAction {
         id: String,
 
         /// Target visibility (default: always)
-        #[arg(long, default_value = "always")]
-        visibility: String,
+        #[arg(long, value_enum, default_value_t = VisibilityKind::Always)]
+        visibility: VisibilityKind,
     },
 
     /// Demote an entry (set visibility to 'deep_only')
@@ -560,8 +615,8 @@ enum ThinkAction {
         id: String,
 
         /// Target visibility (default: deep_only)
-        #[arg(long, default_value = "deep_only")]
-        visibility: String,
+        #[arg(long, value_enum, default_value_t = VisibilityKind::DeepOnly)]
+        visibility: VisibilityKind,
     },
 
     /// Add a relation between two entries
@@ -612,9 +667,9 @@ enum AgingAction {
         #[arg(long)]
         days: Option<u32>,
 
-        /// Target visibility after degradation (default: deep_only)
-        #[arg(long)]
-        to: Option<String>,
+        /// Target visibility after degradation
+        #[arg(long, value_enum)]
+        to: Option<VisibilityKind>,
     },
 
     /// Rotate: roll access-profile buckets and apply aging
@@ -751,6 +806,31 @@ fn run_cli() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // When --quiet is set, redirect stdout to /dev/null BEFORE the tokio runtime
+    // starts — calling dup2 after worker threads are live is a data race on the
+    // file-descriptor table (other threads may be in write(1, …) concurrently).
+    // We do this here, in the still-single-threaded window after arg parsing.
+    // Errors still surface via stderr (tracing is filtered to error-only by
+    // init_logging further below).
+    #[cfg(unix)]
+    if cli.quiet {
+        use std::os::unix::io::AsRawFd;
+        extern "C" {
+            fn dup2(oldfd: i32, newfd: i32) -> i32;
+        }
+        match std::fs::File::options().write(true).open("/dev/null") {
+            Ok(devnull) => {
+                let ret = unsafe { dup2(devnull.as_raw_fd(), 1) };
+                if ret == -1 {
+                    eprintln!("warning: --quiet: failed to redirect stdout");
+                } else {
+                    std::mem::forget(devnull);
+                }
+            }
+            Err(e) => eprintln!("warning: --quiet: could not open /dev/null: {e}"),
+        }
+    }
+
     // A one-shot `reflect prune` on a large version backlog can OOM if lance
     // reads every manifest concurrently. Cap IO concurrency BEFORE the runtime
     // spawns worker threads — mutating the environment mid-process is a data
@@ -864,27 +944,6 @@ async fn run(cli: Cli) -> Result<()> {
     );
 
     init_logging(cli.verbose, cli.quiet);
-
-    // When --quiet is set, redirect stdout to /dev/null so all println! output is silenced.
-    // Errors still surface via stderr (tracing is already filtered to error-only by init_logging).
-    #[cfg(unix)]
-    if cli.quiet {
-        use std::os::unix::io::AsRawFd;
-        extern "C" {
-            fn dup2(oldfd: i32, newfd: i32) -> i32;
-        }
-        match std::fs::File::options().write(true).open("/dev/null") {
-            Ok(devnull) => {
-                let ret = unsafe { dup2(devnull.as_raw_fd(), 1) };
-                if ret == -1 {
-                    eprintln!("warning: --quiet: failed to redirect stdout");
-                } else {
-                    std::mem::forget(devnull);
-                }
-            }
-            Err(e) => eprintln!("warning: --quiet: could not open /dev/null: {e}"),
-        }
-    }
 
     let suppress_fallback_warning = matches!(
         cli.command,
@@ -1035,8 +1094,11 @@ async fn run(cli: Cli) -> Result<()> {
             read_only,
             mcp_stdio,
             project,
+            #[cfg(feature = "http")]
             auth_required,
+            #[cfg(feature = "http")]
             server_url,
+            #[cfg(feature = "http")]
             auto_approve,
         } => {
             let auth_config = veclayer::config::Config::new().auth;
@@ -1049,9 +1111,18 @@ async fn run(cli: Cli) -> Result<()> {
                 mcp_stdio,
                 project: project.or(discovered_project),
                 branch: discovered_branch,
+                #[cfg(feature = "http")]
                 auth_required: auth_required || auth_config.auth_required,
+                #[cfg(not(feature = "http"))]
+                auth_required: auth_config.auth_required,
+                #[cfg(feature = "http")]
                 server_url: server_url.or(auth_config.server_url),
+                #[cfg(not(feature = "http"))]
+                server_url: auth_config.server_url,
+                #[cfg(feature = "http")]
                 auto_approve: auto_approve || auth_config.auto_approve,
+                #[cfg(not(feature = "http"))]
+                auto_approve: auth_config.auto_approve,
                 token_expiry_secs: auth_config.token_expiry_secs,
                 refresh_expiry_secs: auth_config.refresh_expiry_secs,
                 storage: project_storage.clone(),
@@ -1117,8 +1188,8 @@ async fn run(cli: Cli) -> Result<()> {
             };
             merge(&data_dir, &source, &options).await?;
         }
+        #[cfg(feature = "auth")]
         Commands::Identity { action } => {
-            #[cfg(feature = "auth")]
             match action {
                 IdentityAction::Init { force } => {
                     identity_init(&data_dir, force).await?;
@@ -1127,23 +1198,16 @@ async fn run(cli: Cli) -> Result<()> {
                     identity_show(&data_dir).await?;
                 }
             }
-            #[cfg(not(feature = "auth"))]
-            {
-                let _ = action;
-                return Err(veclayer::Error::InvalidOperation(
-                    "`identity` commands require the 'auth' feature. Build with `cargo build` (default features) or `cargo build --features auth`.".into(),
-                ));
-            }
         }
+        #[cfg(feature = "auth")]
         Commands::Auth { action } => {
-            #[cfg(feature = "auth")]
             match action {
                 AuthAction::Token {
                     can,
                     expires,
                     audience,
                 } => {
-                    auth_token(&data_dir, &can, &expires, audience.as_deref()).await?;
+                    auth_token(&data_dir, &can.to_string(), &expires, audience.as_deref()).await?;
                 }
                 AuthAction::Login { server } => {
                     auth_login(&data_dir, &server).await?;
@@ -1151,13 +1215,6 @@ async fn run(cli: Cli) -> Result<()> {
                 AuthAction::Status => {
                     auth_status(&data_dir).await?;
                 }
-            }
-            #[cfg(not(feature = "auth"))]
-            {
-                let _ = action;
-                return Err(veclayer::Error::InvalidOperation(
-                    "`auth` commands require the 'auth' feature. Build with `cargo build` (default features) or `cargo build --features auth`.".into(),
-                ));
             }
         }
         Commands::Reflect { action } => match action {
@@ -1196,10 +1253,10 @@ async fn run(cli: Cli) -> Result<()> {
                 }
             }
             Some(ThinkAction::Promote { id, visibility }) => {
-                think_promote(&data_dir, &id, &visibility).await?;
+                think_promote(&data_dir, &id, &visibility.to_string()).await?;
             }
             Some(ThinkAction::Demote { id, visibility }) => {
-                think_demote(&data_dir, &id, &visibility).await?;
+                think_demote(&data_dir, &id, &visibility.to_string()).await?;
             }
             Some(ThinkAction::Relate {
                 source,
@@ -1233,7 +1290,8 @@ async fn run(cli: Cli) -> Result<()> {
                     think_aging_apply(&data_dir).await?;
                 }
                 AgingAction::Configure { days, to } => {
-                    think_aging_configure(&data_dir, days, to.as_deref()).await?;
+                    let to_str = to.as_ref().map(|v| v.to_string());
+                    think_aging_configure(&data_dir, days, to_str.as_deref()).await?;
                 }
                 AgingAction::Rotate => {
                     compact(&data_dir, CompactAction::Rotate, &CompactOptions::default()).await?;

@@ -305,7 +305,10 @@ pub async fn status(data_dir: &Path) -> Result<()> {
     println!("  veclayer context --brief");
 
     if result.source_files.is_empty() {
-        println!("\nStore is empty. Run `veclayer setup claude --apply` to get started.");
+        println!("\nStore is empty. Store your first note:");
+        println!("  veclayer store \"Your first piece of knowledge\"");
+        println!("  veclayer store ./notes/");
+        println!("\nTo connect Claude Code:  veclayer setup claude --apply");
     } else {
         println!("\nPersist decisions and learnings as you work. Run think between tasks.");
     }

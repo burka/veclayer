@@ -2,7 +2,11 @@
 
 use super::*;
 
-/// Start the MCP/HTTP server.
+/// Start the MCP server (stdio transport) or the experimental HTTP server.
+///
+/// **Stable:** `--mcp-stdio` (default for Claude Code / MCP clients — use this).
+/// **Experimental / WIP:** HTTP mode (no `--mcp-stdio`) — requires the `http`
+/// feature and is not production-ready.
 pub async fn serve(data_dir: &Path, options: &ServeOptions) -> Result<()> {
     if !data_dir.exists() {
         std::fs::create_dir_all(data_dir)?;
@@ -35,7 +39,9 @@ pub async fn serve(data_dir: &Path, options: &ServeOptions) -> Result<()> {
         {
             let _ = config;
             Err(crate::Error::InvalidOperation(
-                "HTTP server requires the 'http' feature. Build with `cargo build --features http` or use --mcp-stdio.".to_string(),
+                "HTTP server mode is experimental and requires the 'http' feature \
+(not included in the default build). Use --mcp-stdio for the stable MCP transport, \
+or build with `--features http` to enable the HTTP server.".to_string(),
             ))
         }
     }
