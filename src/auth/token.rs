@@ -3,7 +3,7 @@
 use ed25519_dalek::pkcs8::EncodePrivateKey;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
 
 use super::capability::Capability;
@@ -19,8 +19,8 @@ pub enum AuthError {
     #[error("invalid token: {0}")]
     InvalidToken(String),
 
-    #[error("audience mismatch: expected {expected}, got {actual}")]
-    AudienceMismatch { expected: String, actual: String },
+    #[error("audience mismatch: expected {expected}, got {actual:?}")]
+    AudienceMismatch { expected: String, actual: Vec<String> },
 
     #[error("insufficient capability: need {required}, have {actual}")]
     InsufficientCapability {
@@ -49,6 +49,40 @@ impl AuthError {
     }
 }
 
+// ─── Audience serde helpers ───────────────────────────────────────────────────
+
+/// Deserialize the JWT `aud` claim from either a single string or an array of
+/// strings (RFC 7519 §4.1.3 permits both forms).
+fn deserialize_aud<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrVec {
+        One(String),
+        Many(Vec<String>),
+    }
+
+    match StringOrVec::deserialize(deserializer)? {
+        StringOrVec::One(s) => Ok(vec![s]),
+        StringOrVec::Many(v) => Ok(v),
+    }
+}
+
+/// Serialize the `aud` claim: a single-element vec serializes as a bare string
+/// (the common case); multi-element vecs serialize as a JSON array.
+fn serialize_aud<S>(aud: &Vec<String>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    if aud.len() == 1 {
+        serializer.serialize_str(&aud[0])
+    } else {
+        aud.serialize(serializer)
+    }
+}
+
 // ─── Claims ───────────────────────────────────────────────────────────────────
 
 /// JWT claims carried by a VecLayer auth token.
@@ -58,8 +92,13 @@ pub struct Claims {
     pub iss: String,
     /// Subject — the DID of the token holder.
     pub sub: String,
-    /// Audience — the DID of the server (prevents token replay across servers).
-    pub aud: String,
+    /// Audience — the DID(s) of the server(s) this token is valid for
+    /// (RFC 7519 §4.1.3 allows a single string or an array of strings).
+    #[serde(
+        serialize_with = "serialize_aud",
+        deserialize_with = "deserialize_aud"
+    )]
+    pub aud: Vec<String>,
     /// Capability level granted by this token.
     pub cap: Capability,
     /// Not before (Unix timestamp) — same as `iat`; prevents premature use.
@@ -76,11 +115,12 @@ impl Claims {
     /// Create a new Claims value with a generated JTI.
     ///
     /// `iss` should be the server's DID. `nbf` is set equal to `iat`.
+    /// `aud` is stored as a single-element vec and serialized as a bare string.
     pub fn new(iss: String, sub: String, aud: String, cap: Capability, iat: u64, exp: u64) -> Self {
         Self {
             iss,
             sub,
-            aud,
+            aud: vec![aud],
             cap,
             nbf: iat,
             iat,
@@ -157,10 +197,12 @@ pub fn verify_with_issuer(
     let claims = data.claims;
 
     if let Some(expected) = expected_audience {
-        if claims.aud != expected {
+        // RFC 7519 §4.1.3: the `aud` claim may be a single string or an array;
+        // validation passes if the expected audience appears anywhere in the set.
+        if !claims.aud.iter().any(|a| a == expected) {
             return Err(AuthError::AudienceMismatch {
                 expected: expected.to_owned(),
-                actual: claims.aud,
+                actual: claims.aud.clone(),
             });
         }
     }
@@ -280,7 +322,8 @@ mod tests {
             matches!(
                 err,
                 AuthError::AudienceMismatch { ref expected, ref actual }
-                    if expected == "did:key:zOtherServer" && actual == "did:key:zServer"
+                    if expected == "did:key:zOtherServer"
+                       && actual == &["did:key:zServer"]
             ),
             "expected AudienceMismatch, got: {err}"
         );
@@ -300,7 +343,7 @@ mod tests {
         let claims = Claims {
             iss: "did:key:zServer".to_owned(),
             sub: "did:key:zAlice".to_owned(),
-            aud: "did:key:zServer".to_owned(),
+            aud: vec!["did:key:zServer".to_owned()],
             cap: Capability::Write,
             nbf: t,
             iat: t,
@@ -311,6 +354,8 @@ mod tests {
         let json = serde_json::to_string(&claims).expect("serialize");
         assert!(json.contains("\"iss\":\"did:key:zServer\""));
         assert!(json.contains("\"sub\":\"did:key:zAlice\""));
+        // Single-element aud serializes as a bare string (not an array).
+        assert!(json.contains("\"aud\":\"did:key:zServer\""));
         assert!(json.contains("\"cap\":\"write\""));
         assert!(json.contains("\"jti\":\"test-jti-uuid\""));
         assert!(json.contains("\"nbf\""));
@@ -318,9 +363,50 @@ mod tests {
         let recovered: Claims = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(recovered.iss, claims.iss);
         assert_eq!(recovered.sub, claims.sub);
+        assert_eq!(recovered.aud, claims.aud);
         assert_eq!(recovered.cap, claims.cap);
         assert_eq!(recovered.jti, claims.jti);
         assert_eq!(recovered.nbf, claims.nbf);
+    }
+
+    /// A token with an array-valued `aud` containing the expected audience must
+    /// be accepted (RFC 7519 §4.1.3 permits both string and array forms).
+    #[test]
+    fn test_audience_array_containing_expected_is_accepted() {
+        let key = generate_key();
+        let t = now();
+        // Build claims with a multi-value aud array.
+        let mut claims = make_claims(Capability::Read, t, t + 3600);
+        claims.aud = vec![
+            "did:key:zOtherServer".to_owned(),
+            "did:key:zServer".to_owned(),
+        ];
+        let token = mint(&key, &claims).expect("mint");
+
+        // Verifying for "did:key:zServer" must succeed because it's in the array.
+        let recovered = verify(&token, &key.verifying_key(), Some("did:key:zServer"))
+            .expect("multi-value aud containing expected must be accepted");
+        assert!(recovered.aud.contains(&"did:key:zServer".to_owned()));
+    }
+
+    /// A token whose `aud` array does NOT contain the expected audience must be
+    /// rejected regardless of array length.
+    #[test]
+    fn test_audience_array_not_containing_expected_is_rejected() {
+        let key = generate_key();
+        let t = now();
+        let mut claims = make_claims(Capability::Read, t, t + 3600);
+        claims.aud = vec![
+            "did:key:zOtherServerA".to_owned(),
+            "did:key:zOtherServerB".to_owned(),
+        ];
+        let token = mint(&key, &claims).expect("mint");
+
+        let err = verify(&token, &key.verifying_key(), Some("did:key:zServer")).unwrap_err();
+        assert!(
+            matches!(err, AuthError::AudienceMismatch { .. }),
+            "expected AudienceMismatch when expected aud is absent from array, got: {err}"
+        );
     }
 
     #[test]

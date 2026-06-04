@@ -45,10 +45,16 @@ const NONCE_LEN: usize = 12;
 /// Argon2id salt length in bytes.
 const SALT_LEN: usize = 16;
 
-/// Argon2id parameters: 3 iterations, 64 MiB memory, 1 parallelism thread.
+/// Argon2id parameters: 3 iterations, 64 MiB memory, 4 parallelism threads.
+///
+/// m=64 MiB, t=3, p=4 meets OWASP password-hashing guidance (64 MiB / t=3 /
+/// p≥4).  The keystore is only unlocked at startup, so the added latency
+/// (~4× wall-clock time on single-core but amortised across threads) is
+/// acceptable.  Existing keystores encrypted with p=1 will fail to decrypt
+/// — users must re-create their identity with `veclayer identity init --force`.
 const ARGON2_T_COST: u32 = 3;
 const ARGON2_M_COST: u32 = 64 * 1024; // 64 MiB in KiB
-const ARGON2_P_COST: u32 = 1;
+const ARGON2_P_COST: u32 = 4;
 
 /// On-disk JSON envelope for the encrypted signing key.
 #[derive(Serialize, Deserialize)]

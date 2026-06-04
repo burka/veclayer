@@ -4,6 +4,7 @@ use std::io::{self, IsTerminal};
 use std::path::Path;
 
 use owo_colors::{OwoColorize, Stream};
+use zeroize::Zeroizing;
 
 use crate::commands::auth::prompt_passphrase;
 use crate::crypto::{keypair, keystore};
@@ -51,8 +52,8 @@ pub(crate) async fn identity_init_with_passphrase(
         )));
     }
 
-    let passphrase = match passphrase {
-        Some(p) => p.to_string(),
+    let passphrase: Zeroizing<String> = match passphrase {
+        Some(p) => Zeroizing::new(p.to_string()),
         None => resolve_passphrase_for_write()?,
     };
     let signing_key = keypair::generate();
@@ -100,9 +101,12 @@ pub(crate) async fn identity_show_with_passphrase(
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Resolve passphrase for writing (init): confirms twice when prompting.
-fn resolve_passphrase_for_write() -> Result<String> {
+///
+/// Returns a `Zeroizing<String>` so the passphrase bytes are wiped from memory
+/// when the value is dropped.
+fn resolve_passphrase_for_write() -> Result<Zeroizing<String>> {
     if let Ok(pass) = std::env::var("VECLAYER_PASSPHRASE") {
-        return Ok(pass);
+        return Ok(Zeroizing::new(pass));
     }
 
     if io::stdin().is_terminal() {
@@ -117,7 +121,7 @@ fn resolve_passphrase_for_write() -> Result<String> {
     }
 
     eprintln!("Warning: stdin is not a terminal — using empty passphrase for identity keystore.");
-    Ok(String::new())
+    Ok(Zeroizing::new(String::new()))
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

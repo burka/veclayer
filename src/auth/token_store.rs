@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -38,6 +39,7 @@ pub struct RegisteredClient {
 /// Short-lived authorization code (for OAuth code exchange).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthCode {
+    /// SHA-256 hash of the actual authorization code (never store raw).
     pub code: String,
     pub client_id: String,
     pub did: String,
@@ -160,6 +162,11 @@ impl TokenStore {
 
     /// Create a short-lived authorization code and persist.
     ///
+    /// Generates 32 bytes from `OsRng` and base64url-encodes them for 256 bits
+    /// of entropy (significantly stronger than UUIDv4's 122 bits).  Only the
+    /// SHA-256 hash is stored on disk; the plaintext code is returned to the
+    /// caller and never persisted.
+    ///
     /// Returns the raw code string (must be delivered to the client), or an
     /// error if the store could not be persisted.
     pub fn create_code(
@@ -170,9 +177,10 @@ impl TokenStore {
         redirect_uri: &str,
         code_challenge: &str,
     ) -> Result<String> {
-        let code = Uuid::new_v4().to_string();
+        let plaintext_code = generate_auth_code();
+        let code_hash = sha256_hex(&plaintext_code);
         let auth_code = AuthCode {
-            code: code.clone(),
+            code: code_hash.clone(),
             client_id: client_id.to_owned(),
             did: did.to_owned(),
             capability,
@@ -181,9 +189,9 @@ impl TokenStore {
             code_challenge_method: "S256".to_owned(),
             expires_at: unix_now() + CODE_TTL_SECS,
         };
-        self.codes.insert(code.clone(), auth_code);
+        self.codes.insert(code_hash, auth_code);
         self.save()?;
-        Ok(code)
+        Ok(plaintext_code)
     }
 
     /// Consume an authorization code after PKCE verification.
@@ -200,9 +208,12 @@ impl TokenStore {
     /// - `NotFound` — unknown or already-consumed code
     /// - `InvalidOperation` — expired or PKCE mismatch
     pub fn consume_code(&mut self, code: &str, code_verifier: &str) -> Result<AuthCode> {
+        // Hash the incoming plaintext code before lookup — only hashes are stored.
+        let code_hash = sha256_hex(code);
+
         let record = self
             .codes
-            .get(code)
+            .get(&code_hash)
             // Do NOT include the raw code in this message — authorization codes
             // are short-lived secrets and must not appear in logs or error
             // responses.  "not found / expired" is intentionally generic so
@@ -231,8 +242,8 @@ impl TokenStore {
         // All checks passed: remove atomically and persist.
         let consumed = self
             .codes
-            .remove(code)
-            .expect("entry present: checked above");
+            .remove(&code_hash)
+            .ok_or_else(|| Error::InvalidOperation("authorization code store inconsistency".to_owned()))?;
         self.save()?;
         Ok(consumed)
     }
@@ -397,6 +408,16 @@ fn sha256_hex(input: &str) -> String {
     format!("{hash:x}")
 }
 
+/// Generate a cryptographically random authorization code.
+///
+/// Draws 32 bytes from `OsRng` and base64url-encodes them without padding,
+/// yielding 256 bits of entropy (vs. UUIDv4's 122 bits).
+fn generate_auth_code() -> String {
+    let mut bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -459,13 +480,66 @@ mod tests {
         let (_dir, mut store, verifier, code) = code_test_harness();
 
         let consumed = store.consume_code(&code, &verifier).expect("consume");
-        assert_eq!(consumed.code, code);
+        // The stored `code` field holds the SHA-256 hash, not the plaintext.
+        assert_eq!(consumed.code, sha256_hex(&code));
         assert_eq!(consumed.did, "did:key:zAlice");
         assert_eq!(consumed.capability, Capability::Read);
-        // Entry must be gone after a successful consume.
+        // Entry must be gone after a successful consume (keyed by hash).
         assert!(
-            !store.codes.contains_key(&code),
+            !store.codes.contains_key(&sha256_hex(&code)),
             "consumed code must be removed from store"
+        );
+    }
+
+    /// Authorization codes must be stored hashed at rest, never as plaintext.
+    #[test]
+    fn test_auth_code_stored_as_hash_not_plaintext() {
+        let (_dir, mut store) = tmp_store();
+        let client = store.register_client("App", vec![]).expect("register");
+        let (_, challenge) = pkce_pair();
+        let plaintext_code = create_test_code(&mut store, &client, &challenge);
+
+        // The plaintext code must NOT appear as a map key.
+        assert!(
+            !store.codes.contains_key(&plaintext_code),
+            "plaintext code must never be a map key"
+        );
+        // The SHA-256 hash MUST be the map key.
+        let expected_hash = sha256_hex(&plaintext_code);
+        assert!(
+            store.codes.contains_key(&expected_hash),
+            "SHA-256 hash of the code must be the map key"
+        );
+        // The `AuthCode.code` field must hold the hash, not the plaintext.
+        let record = store.codes.get(&expected_hash).unwrap();
+        assert_eq!(
+            record.code, expected_hash,
+            "AuthCode.code must hold the SHA-256 hash"
+        );
+        assert_ne!(
+            record.code, plaintext_code,
+            "AuthCode.code must not hold the plaintext code"
+        );
+    }
+
+    /// `create_code` generates high-entropy codes (≥32 bytes raw / 43 chars
+    /// base64url), not low-entropy UUIDv4 strings.
+    #[test]
+    fn test_auth_code_has_sufficient_entropy() {
+        let (_dir, mut store) = tmp_store();
+        let client = store.register_client("App", vec![]).expect("register");
+        let (_, challenge) = pkce_pair();
+        let code = create_test_code(&mut store, &client, &challenge);
+        // A base64url-encoded 32-byte value is 43 characters without padding.
+        assert!(
+            code.len() >= 43,
+            "code must be at least 43 chars (256 bits base64url), got {} chars",
+            code.len()
+        );
+        // Must be valid URL-safe base64 (no padding, only A-Za-z0-9-_ chars).
+        assert!(
+            code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "code must contain only URL-safe base64 characters, got: {code}"
         );
     }
 
@@ -499,15 +573,16 @@ mod tests {
         let (dir, mut store, verifier, code) = code_test_harness();
 
         store.consume_code(&code, &verifier).expect("consume");
+        let code_hash = sha256_hex(&code);
         assert!(
-            !store.codes.contains_key(&code),
+            !store.codes.contains_key(&code_hash),
             "code must be absent from in-memory map after consume"
         );
 
         // Reload from disk: the consumed code must not reappear.
         let reloaded = TokenStore::open(dir.path()).expect("reopen");
         assert!(
-            !reloaded.codes.contains_key(&code),
+            !reloaded.codes.contains_key(&code_hash),
             "consumed code must not survive a reload from disk"
         );
     }
@@ -516,8 +591,8 @@ mod tests {
     fn test_code_expired_rejected() {
         let (_dir, mut store, verifier, code) = code_test_harness();
 
-        // Force-expire the code.
-        let record = store.codes.get_mut(&code).unwrap();
+        // Force-expire the code (keyed by hash at rest).
+        let record = store.codes.get_mut(&sha256_hex(&code)).unwrap();
         record.expires_at = 0;
 
         let err = store.consume_code(&code, &verifier).unwrap_err();
@@ -643,7 +718,7 @@ mod tests {
         // A failed PKCE attempt must NOT burn the code — the legitimate holder
         // must still be able to consume it with the correct verifier.
         assert!(
-            store.codes.contains_key(&code),
+            store.codes.contains_key(&sha256_hex(&code)),
             "code must still exist after a failed PKCE attempt"
         );
         store
@@ -724,8 +799,8 @@ mod tests {
     fn test_consume_code_expired_does_not_leak_raw_code() {
         let (_dir, mut store, verifier, code) = code_test_harness();
 
-        // Force-expire the code.
-        store.codes.get_mut(&code).unwrap().expires_at = 0;
+        // Force-expire the code (keyed by hash at rest).
+        store.codes.get_mut(&sha256_hex(&code)).unwrap().expires_at = 0;
 
         let err = store.consume_code(&code, &verifier).unwrap_err();
         let msg = err.to_string();
@@ -840,7 +915,7 @@ mod tests {
             )
             .expect("create_code");
         // Simulate a code that expired without being consumed (e.g. user abandoned flow).
-        store.codes.get_mut(&dead_code).unwrap().expires_at = 0;
+        store.codes.get_mut(&sha256_hex(&dead_code)).unwrap().expires_at = 0;
 
         // Create one live refresh token and one expired one.
         let live_token = "live-token";
@@ -855,11 +930,11 @@ mod tests {
         store.purge_expired().expect("purge_expired");
 
         assert!(
-            store.codes.contains_key(&live_code),
+            store.codes.contains_key(&sha256_hex(&live_code)),
             "live code must survive purge"
         );
         assert!(
-            !store.codes.contains_key(&dead_code),
+            !store.codes.contains_key(&sha256_hex(&dead_code)),
             "expired code must be removed by purge"
         );
 

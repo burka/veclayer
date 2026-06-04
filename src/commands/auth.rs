@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use owo_colors::{OwoColorize, Stream};
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::auth::capability::Capability;
 use crate::auth::token::{self, Claims};
@@ -132,8 +133,8 @@ pub(crate) fn load_signing_key_with_passphrase(
             "No identity found. Run `veclayer identity init` first.".to_string(),
         ));
     }
-    let passphrase = match passphrase {
-        Some(p) => p.to_string(),
+    let passphrase: Zeroizing<String> = match passphrase {
+        Some(p) => Zeroizing::new(p.to_string()),
         None => resolve_passphrase_for_read()?,
     };
     keystore::load(&passphrase, &path).map_err(|e| crate::Error::Crypto(e.to_string()))
@@ -179,6 +180,9 @@ pub(crate) async fn auth_token_with_passphrase(
     let jwt =
         token::mint(&signing_key, &claims).map_err(|e| crate::Error::Crypto(e.to_string()))?;
 
+    // SECURITY NOTE: The JWT printed below is a bearer credential.  It is
+    // replayable until expiry and will appear in shell history and CI logs.
+    // Treat it with the same care as a password.
     println!("{jwt}");
     Ok(())
 }
@@ -414,22 +418,30 @@ fn format_expiry(remaining_secs: u64) -> String {
 }
 
 /// Resolve passphrase for reading: checks env var, then prompts once if interactive.
-pub(crate) fn resolve_passphrase_for_read() -> Result<String> {
+///
+/// Returns a `Zeroizing<String>` so the passphrase bytes are wiped from memory
+/// when the value is dropped.
+pub(crate) fn resolve_passphrase_for_read() -> Result<Zeroizing<String>> {
     if let Ok(pass) = std::env::var("VECLAYER_PASSPHRASE") {
-        return Ok(pass);
+        return Ok(Zeroizing::new(pass));
     }
     if io::stdin().is_terminal() {
         return prompt_passphrase("Enter passphrase: ");
     }
-    Ok(String::new())
+    Ok(Zeroizing::new(String::new()))
 }
 
 /// Print `prompt` to stderr and read a passphrase without echoing input.
-pub(crate) fn prompt_passphrase(prompt: &str) -> Result<String> {
+///
+/// Returns a `Zeroizing<String>` so the passphrase bytes are wiped from memory
+/// when the value is dropped.
+pub(crate) fn prompt_passphrase(prompt: &str) -> Result<Zeroizing<String>> {
     eprint!("{prompt}");
     use std::io::Write;
     io::stderr().flush()?;
-    rpassword::read_password().map_err(crate::Error::Io)
+    rpassword::read_password()
+        .map(Zeroizing::new)
+        .map_err(crate::Error::Io)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -516,7 +528,7 @@ mod tests {
         let recovered = token::verify(&jwt, &signing_key.verifying_key(), Some(&own_did)).unwrap();
 
         assert_eq!(recovered.sub, own_did);
-        assert_eq!(recovered.aud, own_did);
+        assert_eq!(recovered.aud, vec![own_did.clone()]);
         assert_eq!(recovered.cap, crate::auth::capability::Capability::Read);
         assert_eq!(recovered.exp, now + 3600);
     }
