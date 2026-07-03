@@ -454,6 +454,8 @@ pub async fn run_http(config: Config) -> Result<()> {
         let _compact = super::compact_worker::spawn(Arc::clone(&store));
     }
 
+    crate::commands::startup_compact(store.as_ref()).await?;
+
     let auth = build_auth_setup(&config)?;
 
     let push_mode = config.push_mode;

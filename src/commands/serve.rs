@@ -47,6 +47,24 @@ or build with `--features http` to enable the HTTP server.".to_string(),
     }
 }
 
+/// Compact LanceDB on startup, draining version backlog before accepting requests.
+/// Non-blocking: completes before the server starts.
+pub async fn startup_compact(store: &crate::store::StoreBackend) -> Result<()> {
+    eprintln!("[veclayer] compaction started");
+    match store.force_compact().await {
+        Ok(stats) => {
+            eprintln!("[veclayer] compaction complete: {} versions pruned, {} bytes reclaimed",
+                stats.versions_removed,
+                crate::util::format_bytes(stats.bytes_reclaimed)
+            );
+        }
+        Err(e) => {
+            eprintln!("[veclayer] compaction failed (non-fatal): {}", e);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

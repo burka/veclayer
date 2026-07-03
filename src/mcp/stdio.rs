@@ -37,6 +37,8 @@ pub async fn run_stdio(config: Config) -> Result<()> {
         let _compact = super::compact_worker::spawn(Arc::clone(&store));
     }
 
+    crate::commands::startup_compact(store.as_ref()).await?;
+
     let instructions = super::compute_instructions(
         store.as_ref(),
         &config.data_dir,

@@ -346,7 +346,7 @@ pub use observe::{context, observe};
 pub use perspective_ops::{perspective_add, perspective_list, perspective_remove};
 pub use reflect::{compact, reflect, CompactAction};
 pub use search::{browse, focus, search, search_results};
-pub use serve::serve;
+pub use serve::{serve, startup_compact};
 pub use setup::{
     setup, setup_claude, setup_claude_apply, setup_ollama, setup_ollama_apply, setup_openclaw,
     setup_openclaw_apply,

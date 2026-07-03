@@ -444,6 +444,10 @@ Run `veclayer setup claude` to see the full hook configuration."
     )]
     Observe,
 
+    /// Compact LanceDB: merge fragments, prune old versions (alias: gc)
+    #[command(alias = "gc")]
+    Prune,
+
     /// Print identity briefing to stdout for Claude Code SessionStart injection
     #[command(
         long_about = "Compute an identity snapshot from stored memory and print a \
@@ -1332,6 +1336,9 @@ async fn run(cli: Cli) -> Result<()> {
         },
         Commands::Observe => {
             observe(&data_dir).await?;
+        }
+        Commands::Prune => {
+            compact(&data_dir, CompactAction::Prune, &CompactOptions::default()).await?;
         }
         Commands::Context { brief } => {
             context(&data_dir, brief).await?;
