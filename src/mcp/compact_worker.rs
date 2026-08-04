@@ -14,9 +14,11 @@ use tracing::{info, warn};
 
 use crate::store::StoreBackend;
 
-/// How often the daily compactor wakes. 24h matches the user's expected
-/// "early in the morning" cadence for sessions started the prior day.
-const INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+/// How often the compactor wakes. Reduced from 24h to 2h to aggressively
+/// reclaim metadata during high-churn periods (space-constrained environments).
+/// Once incremental-prune (task 03) lands with true index reclaim, this can
+/// revert to daily since disk space will actually be freed.
+const INTERVAL: Duration = Duration::from_secs(2 * 60 * 60);
 
 /// Run one compaction pass on `store` and log the outcome.
 ///
