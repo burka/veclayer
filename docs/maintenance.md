@@ -22,7 +22,7 @@ Who does what:
 | Any write (`observe`, `store`, other one-shot CLI writes) | yes, bounded | **never** |
 | Opening a store with >500 versions | yes, bounded, in the background | **never** |
 | `serve` startup (MCP server) | yes | yes |
-| `serve` daily background worker (every 24h) | yes | yes |
+| `serve` background worker (every hour) | yes | yes |
 | `veclayer prune` / `veclayer reflect prune` | yes | yes |
 | `scripts/veclayer-prune.sh` (cron / loop) | yes | yes (runs `reflect prune`) |
 
@@ -37,7 +37,7 @@ Who does what:
    between compactions just stay small until a long-lived process merges them.
 
 2. **Compaction in long-lived processes.** `serve` compacts on startup and
-   then once every 24h, so a store used from an MCP session stays compacted and
+   then once every hour, so a store used from an MCP session stays compacted and
    an idle-but-fragmented store self-cleans.
 
 3. **One-time recovery on open.** If a store is opened with a wildly excessive
@@ -73,7 +73,7 @@ above), so this no longer happens on the write path. `object_store` hides `#<dig
 so Lance's own version cleanup never sees them and they pile up — one store
 reached 100+ GiB of them next to ~300 MB of live data.
 
-Prune (and the daily `serve` compaction) deletes such a file only when its
+Prune (and the hourly `serve` compaction) deletes such a file only when its
 name is exactly `<uuid>.lance#<digits>`, it lives in the table's `data/`
 directory, it is older than 1 hour (so in-flight writes are never touched),
 and its `<uuid>.lance` name appears in no manifest or transaction file. The

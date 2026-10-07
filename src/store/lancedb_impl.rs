@@ -253,7 +253,7 @@ impl LanceStore {
     /// beyond the `KEEP_VERSIONS` safety margin). Runs after every write, so
     /// it must be safe inside short-lived, killable processes like the
     /// `observe` hook — see [`Self::run_prune`] for why the fragment rewrite is
-    /// left to `force_compact*` (MCP `serve` startup, its daily worker, and
+    /// left to `force_compact*` (MCP `serve` startup, its hourly worker, and
     /// `veclayer prune`). The pass is *bounded* to `MAX_PRUNE_PER_PASS`
     /// removals; a large backlog drains over successive writes. Below the
     /// threshold this is a near-free `list_versions()` check.
@@ -285,7 +285,7 @@ impl LanceStore {
     }
 
     /// Run compact + prune unconditionally, returning aggregate stats.
-    /// Used by the user-invoked `veclayer reflect prune` command and the daily
+    /// Used by the user-invoked `veclayer reflect prune` command and the hourly
     /// background timer in the MCP server, where we want to drain the whole
     /// backlog regardless of the version-count threshold.
     pub(crate) async fn force_compact(&self) -> Result<CompactStats> {
@@ -475,7 +475,7 @@ impl LanceStore {
                 Ok(stats)
             }
             // A commit conflict means a concurrent compactor (e.g. the MCP
-            // server's daily worker racing a manual `prune`) already rewrote
+            // server's hourly worker racing a manual `prune`) already rewrote
             // these fragments. That is benign — the work got done by the other
             // party — so we skip it rather than failing the whole pass.
             // Non-conflict errors are real and still surfaced.
@@ -3588,7 +3588,7 @@ mod tests {
     }
 
     /// Regression: the exact message lance emits when a concurrent compactor
-    /// preempts an optimize() (observed when the MCP daily worker raced a
+    /// preempts an optimize() (observed when the MCP hourly worker raced a
     /// manual `reflect prune`). run_compact treats this as benign, so the
     /// classifier must recognise the "Retryable commit conflict" wording.
     #[test]
