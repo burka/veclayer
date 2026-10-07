@@ -327,9 +327,11 @@ Run `veclayer --help` or `veclayer <command> --help` for the full flag reference
 
 ### Maintenance
 
-The store prunes itself automatically (bounded, non-blocking compaction on
-write + a daily pass in `serve`). To reclaim space on demand, run
-`veclayer reflect prune`. For unattended cleanup with a disk-space guard, use
+Writes (e.g. the `observe` hook) only prune old versions, in a bounded pass.
+Fragment compaction runs at `serve` startup and hourly in the MCP server's
+background worker. To reclaim space on demand, run `veclayer prune` (alias
+`gc`), which also removes leaked `*.lance#N` upload staging files. For
+unattended cleanup with a disk-space guard, use
 `scripts/veclayer-prune.sh` (loop it with `/loop 30m scripts/veclayer-prune.sh`
 or a cron timer). See [docs/maintenance.md](docs/maintenance.md).
 
