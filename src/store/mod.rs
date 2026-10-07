@@ -246,13 +246,14 @@ impl StoreBackend {
         ))
     }
 
-    /// Run auto-compaction if version count exceeds the threshold.
+    /// Prune old versions (never compact fragments) if the version count
+    /// exceeds the threshold. Safe in short-lived processes.
     /// No-op for non-Lance backends. Returns the actual stats so callers can
     /// log what was reclaimed.
     #[cfg(feature = "store-lance")]
-    pub async fn auto_compact_if_needed(&self) -> Result<CompactStats> {
+    pub async fn auto_prune_if_needed(&self) -> Result<CompactStats> {
         match self {
-            Self::Lance(s) => s.auto_compact_if_needed().await,
+            Self::Lance(s) => s.auto_prune_if_needed().await,
             #[cfg(feature = "store-sqlite")]
             Self::Sqlite(_) => Ok(CompactStats::default()),
         }
@@ -476,17 +477,17 @@ mod tests {
         );
     }
 
-    /// `auto_compact_if_needed` is a Lance-only optimisation. When both
+    /// `auto_prune_if_needed` is a Lance-only optimisation. When both
     /// backends are compiled, callers can call it on either variant; on the
     /// SQLite arm it must succeed as a no-op (zeroed `CompactStats`).
     #[cfg(all(feature = "store-lance", feature = "store-sqlite"))]
     #[tokio::test]
-    async fn auto_compact_if_needed_is_noop_on_sqlite() {
+    async fn auto_prune_if_needed_is_noop_on_sqlite() {
         let dir = TempDir::new().unwrap();
         let backend = StoreBackend::open_sqlite(dir.path(), 384, false)
             .await
             .unwrap();
-        let stats = backend.auto_compact_if_needed().await.unwrap();
+        let stats = backend.auto_prune_if_needed().await.unwrap();
         assert_eq!(stats.versions_removed, 0);
         assert_eq!(stats.bytes_reclaimed, 0);
         assert_eq!(stats.fragments_removed, 0);
@@ -513,15 +514,15 @@ mod tests {
         assert_eq!(stats.files_added, 0);
     }
 
-    /// `auto_compact_if_needed` on a fresh Lance store should succeed and
-    /// return zero stats (no versions to prune, no fragments to compact yet).
+    /// `auto_prune_if_needed` on a fresh Lance store should succeed and
+    /// return zero stats (no versions to prune).
     /// Asserts all six fields so a regression in any one of them surfaces.
     #[cfg(feature = "store-lance")]
     #[tokio::test]
-    async fn auto_compact_if_needed_on_fresh_lance_returns_zero_stats() {
+    async fn auto_prune_if_needed_on_fresh_lance_returns_zero_stats() {
         let dir = TempDir::new().unwrap();
         let backend = StoreBackend::open(dir.path(), 384, false).await.unwrap();
-        let stats = backend.auto_compact_if_needed().await.unwrap();
+        let stats = backend.auto_prune_if_needed().await.unwrap();
         assert_eq!(stats.versions_removed, 0);
         assert_eq!(stats.bytes_reclaimed, 0);
         assert_eq!(stats.fragments_removed, 0);

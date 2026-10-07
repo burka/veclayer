@@ -1,11 +1,12 @@
 //! Daily background compactor — runs in long-lived MCP server processes.
 //!
-//! `auto_compact_if_needed` already fires from write paths (after every ~50
-//! versions accumulate). That covers active sessions but misses the case where
-//! a flurry of writes leaves the store fragmented and then the user goes idle.
-//! This worker wakes once per `INTERVAL` and forces a compact + prune so the
-//! store self-cleans even without further writes — typically firing early in
-//! the morning of long-running sessions.
+//! Write paths only prune old versions (`auto_prune_if_needed`): they run in
+//! short-lived processes such as the `observe` hook, where a killed fragment
+//! rewrite leaks its staging file. Fragment compaction therefore happens only
+//! in long-lived or user-invoked contexts: `serve` startup, this worker, and
+//! `veclayer prune`. This worker wakes once per `INTERVAL` and forces a
+//! compact + prune so the store stays compacted during long sessions and
+//! self-cleans even without further writes.
 
 use std::sync::Arc;
 use std::time::Duration;
