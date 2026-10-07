@@ -53,9 +53,11 @@ pub async fn startup_compact(store: &crate::store::StoreBackend) -> Result<()> {
     eprintln!("[veclayer] compaction started");
     match store.force_compact().await {
         Ok(stats) => {
-            eprintln!("[veclayer] compaction complete: {} versions pruned, {} bytes reclaimed",
+            eprintln!("[veclayer] compaction complete: {} versions pruned, {} reclaimed, {} leaked upload files ({}) removed",
                 stats.versions_removed,
-                crate::util::format_bytes(stats.bytes_reclaimed)
+                crate::util::format_bytes(stats.bytes_reclaimed),
+                stats.leaked_files_removed,
+                crate::util::format_bytes(stats.leaked_bytes_reclaimed)
             );
         }
         Err(e) => {

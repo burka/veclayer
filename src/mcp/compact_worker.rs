@@ -24,13 +24,21 @@ const INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// without advancing a 24-hour timer.
 pub(crate) async fn run_once(store: &StoreBackend) {
     match store.force_compact().await {
-        Ok(stats) if stats.versions_removed == 0 && stats.fragments_removed == 0 => {
+        Ok(stats)
+            if stats.versions_removed == 0
+                && stats.fragments_removed == 0
+                && stats.leaked_files_removed == 0 =>
+        {
             info!("Daily compact: nothing to reclaim");
         }
         Ok(stats) => {
             info!(
-                "Daily compact: {} versions, {} fragments merged, {} bytes reclaimed",
-                stats.versions_removed, stats.fragments_removed, stats.bytes_reclaimed
+                "Daily compact: {} versions, {} fragments merged, {} bytes reclaimed, {} leaked upload files ({} bytes) removed",
+                stats.versions_removed,
+                stats.fragments_removed,
+                stats.bytes_reclaimed,
+                stats.leaked_files_removed,
+                stats.leaked_bytes_reclaimed
             );
         }
         Err(e) => warn!("Daily compact failed: {e}"),

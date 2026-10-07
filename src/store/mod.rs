@@ -6,6 +6,8 @@
 
 #[cfg(feature = "store-lance")]
 mod lancedb_impl;
+#[cfg(feature = "store-lance")]
+mod leaked_uploads;
 pub(crate) mod lock;
 #[cfg(feature = "store-sqlite")]
 mod sqlite_impl;
@@ -48,6 +50,10 @@ pub struct CompactStats {
     pub files_removed: u64,
     /// Data files added by compaction.
     pub files_added: u64,
+    /// Leaked `<uuid>.lance#<N>` upload staging files removed.
+    pub leaked_files_removed: u64,
+    /// Bytes freed by removing leaked upload staging files.
+    pub leaked_bytes_reclaimed: u64,
 }
 
 /// Trait for vector storage backends.

@@ -12,6 +12,7 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::table::NewColumnTransform;
 use lancedb::{connect, Connection, Table};
 
+use super::leaked_uploads::{sweep_leaked_uploads, LeakedUploadSweep};
 use super::{
     CompactStats, FileLock, SearchResult, StoreStats, VectorStore, EMBEDDING_STATUS_EMBEDDED,
     EMBEDDING_STATUS_PENDING,
@@ -304,7 +305,14 @@ impl LanceStore {
             return Err(Error::store("Cannot compact a read-only store".to_string()));
         }
 
-        let mut total = CompactStats::default();
+        // Sweep leaked upload files first: on a nearly full disk, compaction
+        // needs that space to write its new fragments.
+        let leaked = self.sweep_leaked_uploads().await?;
+        let mut total = CompactStats {
+            leaked_files_removed: leaked.files_removed,
+            leaked_bytes_reclaimed: leaked.bytes_reclaimed,
+            ..CompactStats::default()
+        };
         loop {
             let (table, versions) = self.open_table_and_versions().await?;
             let keep = Self::bounded_prune_keep(versions.len(), KEEP_VERSIONS, MAX_PRUNE_PER_PASS);
@@ -325,6 +333,23 @@ impl LanceStore {
             progress(stats);
         }
         Ok(total)
+    }
+
+    /// Remove `<uuid>.lance#<N>` multipart staging files that killed writers
+    /// leaked into the table's `data/` dir (Lance's cleanup cannot see them).
+    async fn sweep_leaked_uploads(&self) -> Result<LeakedUploadSweep> {
+        let dataset_dir = PathBuf::from(self.get_table().await?.dataset_uri());
+        let sweep = tokio::task::spawn_blocking(move || sweep_leaked_uploads(&dataset_dir))
+            .await
+            .map_err(|e| Error::store(format!("leaked-upload sweep task failed: {e}")))??;
+        if sweep.files_removed > 0 {
+            tracing::info!(
+                "Removed {} leaked upload files ({} bytes)",
+                sweep.files_removed,
+                sweep.bytes_reclaimed
+            );
+        }
+        Ok(sweep)
     }
 
     /// Compute the prune cutoff: the age (duration before `now`) of the
@@ -4324,6 +4349,46 @@ mod tests {
             .unwrap();
         assert_eq!(passes, 0, "drained store must not invoke progress callback");
         assert_eq!(total.versions_removed, 0, "nothing left to prune");
+    }
+
+    /// force_compact must sweep `<uuid>.lance#<N>` staging files leaked by
+    /// killed multipart uploads (invisible to Lance's own cleanup), keep fresh
+    /// ones that may still be in flight, and report the sweep in its stats.
+    #[tokio::test]
+    async fn test_force_compact_sweeps_leaked_upload_files() {
+        let (store, dir) = create_test_store().await;
+        store
+            .insert_chunks(vec![create_test_chunk("leak001", "x", ChunkLevel::CONTENT)])
+            .await
+            .unwrap();
+        let data = dir.path().join(format!("{TABLE_NAME}.lance")).join("data");
+        let plant = |name: &str, len: usize, age_secs: u64| {
+            let path = data.join(name);
+            std::fs::write(&path, vec![0u8; len]).unwrap();
+            let age = std::time::Duration::from_secs(age_secs);
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - age)
+                .unwrap();
+            path
+        };
+        let old_leak = plant("001f5d16-e205-46e0-9f24-7b34ece9621e.lance#1", 8192, 7200);
+        let fresh_leak = plant("0742d1bb-ac5f-4b0a-9c4a-765450e7fdb7.lance#1", 16, 0);
+        let unrelated = plant("keep-me.txt", 16, 7200);
+
+        let stats = store.force_compact().await.unwrap();
+
+        assert_eq!(stats.leaked_files_removed, 1);
+        assert_eq!(stats.leaked_bytes_reclaimed, 8192);
+        assert!(!old_leak.exists(), "old leaked upload must be removed");
+        assert!(
+            fresh_leak.exists(),
+            "fresh upload within grace must survive"
+        );
+        assert!(unrelated.exists(), "non-matching file must survive");
+        assert_eq!(store.stats().await.unwrap().total_chunks, 1);
     }
 
     // ── bounded_prune_keep ────────────────────────────────────────────────────

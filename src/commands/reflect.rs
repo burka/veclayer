@@ -49,7 +49,8 @@ async fn compact_rotate(data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Compact LanceDB: merge fragments, materialize deletions, prune old versions.
+/// Compact LanceDB: remove leaked upload files, merge fragments, materialize
+/// deletions, prune old versions.
 /// Always runs (ignores the auto-compact threshold) and reports what was reclaimed.
 ///
 /// A large backlog is drained in bounded passes; each pass prints a progress
@@ -81,6 +82,11 @@ async fn compact_prune(data_dir: &Path) -> Result<()> {
         "  Versions:  {} pruned, {} reclaimed",
         stats.versions_removed,
         crate::util::format_bytes(stats.bytes_reclaimed)
+    );
+    println!(
+        "  Leaked uploads: {} removed, {} reclaimed",
+        stats.leaked_files_removed,
+        crate::util::format_bytes(stats.leaked_bytes_reclaimed)
     );
     Ok(())
 }

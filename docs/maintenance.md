@@ -39,6 +39,25 @@ veclayer -d <store> reflect prune
 This keeps the newest 3 versions and removes the rest, plus their orphaned
 data files. It is safe to run any time and idempotent on a clean store.
 
+Before compacting, prune also removes **leaked upload files** — see below.
+This runs first so a nearly full disk regains the space compaction needs.
+
+## Leaked upload files (`<uuid>.lance#N`)
+
+LanceDB writes each data file through `object_store`, which stages it as
+`data/<uuid>.lance#1` and renames it to `<uuid>.lance` when the write
+completes. A writer killed mid-write (e.g. the `observe` hook hitting its
+timeout while auto-compaction rewrites a large fragment) leaves the staging
+file behind. `object_store` hides `#<digits>` names from directory listings,
+so Lance's own version cleanup never sees them and they pile up — one store
+reached 100+ GiB of them next to ~300 MB of live data.
+
+Prune (and the daily `serve` compaction) deletes such a file only when its
+name is exactly `<uuid>.lance#<digits>`, it lives in the table's `data/`
+directory, it is older than 1 hour (so in-flight writes are never touched),
+and its `<uuid>.lance` name appears in no manifest or transaction file. The
+summary line `Leaked uploads: N removed, X reclaimed` reports the result.
+
 ## Scheduled / looped cleanup with disk guard
 
 `scripts/veclayer-prune.sh` wraps the native prune with a disk-space guard for
@@ -82,4 +101,5 @@ compact the entire backlog in **one unbounded pass**. When that pass ran inside
 the short-lived `observe` hook process, the process exited before it finished,
 so nothing was reclaimed — fragments and 5 MiB manifests piled up until the
 disk filled. The bounded, early-triggering, non-blocking design above fixes
-that: every pass completes, so the store can never run away again.
+that for version manifests. Fragment rewrites are not bounded, though: a
+killed rewrite leaks a staging file, which prune now sweeps (see above).
