@@ -432,8 +432,8 @@ impl LanceStore {
 
     /// Prune old versions only, keeping the newest `keep`. Never rewrites
     /// fragments, so it is safe in short-lived, killable processes such as the
-    /// `observe` hook: it only deletes manifests and data files no kept
-    /// version references, and a `keep` from [`Self::bounded_prune_keep`] caps
+    /// `observe` hook: it only deletes manifests and the data files only the
+    /// pruned versions referenced (see [`Self::prune_versions`]), and a `keep` from [`Self::bounded_prune_keep`] caps
     /// the work per pass. A fragment rewrite there outlasts the hook's timeout
     /// on a large store, and each killed writer leaks its `<uuid>.lance#1`
     /// staging file — hundreds of MB per tool call.
@@ -490,8 +490,16 @@ impl LanceStore {
         }
     }
 
-    /// Prune old version manifests + their orphaned data files, keeping the
-    /// newest `keep`. Fills only the prune fields of [`CompactStats`].
+    /// Prune old version manifests + the data files only they referenced,
+    /// keeping the newest `keep`. Fills only the prune fields of
+    /// [`CompactStats`].
+    ///
+    /// Data files no manifest references are left to Lance's 7-day window
+    /// (`delete_unverified: false`): a concurrent writer — another `observe`,
+    /// the MCP compact worker, a scheduled `veclayer prune` — writes its data
+    /// files before committing the manifest that references them, so a recent
+    /// unreferenced file may be in flight. Deleting one leaves the writer's
+    /// manifest pointing at a missing fragment and the table unreadable.
     ///
     /// `keep` is the effective retention for this pass — callers pass
     /// [`Self::bounded_prune_keep`] to cap how many versions a single pass
@@ -520,7 +528,7 @@ impl LanceStore {
         match table
             .optimize(OptimizeAction::Prune {
                 older_than: Some(older_than),
-                delete_unverified: Some(true),
+                delete_unverified: Some(false),
                 error_if_tagged_old_versions: None,
             })
             .await
@@ -4495,7 +4503,64 @@ mod tests {
         assert_eq!(store.stats().await.unwrap().total_chunks, 1);
     }
 
-    // ── bounded_prune_keep ────────────────────────────────────────────────────
+    /// Regression guard for the prune/writer race that made a production table
+    /// unreadable: a concurrent writer (e.g. the hourly fragment compaction)
+    /// writes its data files first and commits the manifest referencing them
+    /// last. Until that commit, its files are unreferenced. Prune must leave
+    /// such recent unreferenced files alone — deleting one makes the
+    /// writer's manifest point at a missing fragment — while still reclaiming
+    /// unreferenced files old enough that no writer can still own them.
+    #[tokio::test]
+    async fn test_prune_keeps_recent_unreferenced_data_files() {
+        let (store, dir) = create_test_store().await;
+        for i in 0..6u32 {
+            let chunk = create_test_chunk(&format!("race{i:03}"), "x", ChunkLevel::CONTENT);
+            store.insert_chunks(vec![chunk]).await.unwrap();
+        }
+        let data = dir.path().join(format!("{TABLE_NAME}.lance")).join("data");
+        let plant = |name: &str, age: std::time::Duration| {
+            let path = data.join(name);
+            std::fs::write(&path, b"uncommitted fragment").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - age)
+                .unwrap();
+            path
+        };
+        // Written before the prune cutoff but not yet committed: in flight.
+        let in_flight = plant(
+            "1a2b3c4d-0000-4000-8000-000000000001.lance",
+            std::time::Duration::from_secs(60 * 60),
+        );
+        // Abandoned by a writer that died long ago.
+        let abandoned = plant(
+            "1a2b3c4d-0000-4000-8000-000000000002.lance",
+            std::time::Duration::from_secs(8 * 24 * 60 * 60),
+        );
+
+        let (table, versions) = store.open_table_and_versions().await.unwrap();
+        let stats = LanceStore::prune_versions(&table, versions, KEEP_VERSIONS)
+            .await
+            .unwrap();
+
+        assert!(
+            stats.versions_removed > 0,
+            "old versions must still be pruned"
+        );
+        assert!(
+            in_flight.exists(),
+            "a recent unreferenced data file may belong to an in-flight write and must survive"
+        );
+        assert!(
+            !abandoned.exists(),
+            "an unreferenced data file past Lance's 7-day window must be reclaimed"
+        );
+        assert_eq!(store.stats().await.unwrap().total_chunks, 6);
+    }
+
+    // ── bounded_prune_keep────────────────────────────────────────────────────
 
     /// Green path: a large backlog keeps more than the final margin so the pass
     /// removes exactly `max_per_pass` versions (total - keep_for_pass == 50).
