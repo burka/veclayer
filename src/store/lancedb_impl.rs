@@ -12,6 +12,7 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::table::NewColumnTransform;
 use lancedb::{connect, Connection, Table};
 
+use super::leaked_uploads::{sweep_leaked_uploads, LeakedUploadSweep};
 use super::{
     CompactStats, FileLock, SearchResult, StoreStats, VectorStore, EMBEDDING_STATUS_EMBEDDED,
     EMBEDDING_STATUS_PENDING,
@@ -24,7 +25,7 @@ pub(crate) const TABLE_NAME: &str = "chunks";
 /// concurrent access. Never pruned away.
 const KEEP_VERSIONS: usize = 3;
 
-/// Upper bound on how many old versions a single auto-compact pass removes.
+/// Upper bound on how many old versions a single prune pass removes.
 /// Bounding the pass keeps it fast enough to finish inside a short-lived process
 /// (e.g. the `observe` PostToolUse hook). An unbounded pass on a large backlog
 /// runs for minutes; when the host process is killed mid-flight it leaves the
@@ -32,10 +33,10 @@ const KEEP_VERSIONS: usize = 3;
 /// blowup. Bounded passes always complete, so the backlog drains over time.
 const MAX_PRUNE_PER_PASS: usize = 50;
 
-/// Auto-compaction fires once the number of *old* versions (those beyond the
-/// kept safety margin) exceeds this. Low so backlog never accumulates: a write
-/// triggers a cheap bounded compaction instead of waiting for a large one.
-const AUTO_COMPACT_MAX_OLD_VERSIONS: usize = 3;
+/// The post-write auto-prune fires once the number of *old* versions (those
+/// beyond the kept safety margin) exceeds this. Low so backlog never
+/// accumulates: a write triggers a cheap bounded prune instead of a large one.
+const AUTO_PRUNE_MAX_OLD_VERSIONS: usize = 3;
 
 /// Byte offset into the source document at which this chunk starts.
 /// `start_offset` and `end_offset` are not persisted in LanceDB; they are
@@ -247,14 +248,16 @@ impl LanceStore {
         Ok((table, versions))
     }
 
-    /// Compact fragments + prune old versions when more than
-    /// `AUTO_COMPACT_MAX_OLD_VERSIONS` old versions have accumulated (those
-    /// beyond the `KEEP_VERSIONS` safety margin). Triggering early keeps each
-    /// pass cheap. The pass is *bounded* to `MAX_PRUNE_PER_PASS` removals so it
-    /// always finishes inside a short-lived process; a large backlog drains over
-    /// successive writes rather than in one unbounded (and killable) pass.
-    /// Below the threshold this is a near-free `list_versions()` check.
-    pub(crate) async fn auto_compact_if_needed(&self) -> Result<CompactStats> {
+    /// Prune old versions (never compact fragments) when more than
+    /// `AUTO_PRUNE_MAX_OLD_VERSIONS` old versions have accumulated (those
+    /// beyond the `KEEP_VERSIONS` safety margin). Runs after every write, so
+    /// it must be safe inside short-lived, killable processes like the
+    /// `observe` hook — see [`Self::run_prune`] for why the fragment rewrite is
+    /// left to `force_compact*` (MCP `serve` startup, its hourly worker, and
+    /// `veclayer prune`). The pass is *bounded* to `MAX_PRUNE_PER_PASS`
+    /// removals; a large backlog drains over successive writes. Below the
+    /// threshold this is a near-free `list_versions()` check.
+    pub(crate) async fn auto_prune_if_needed(&self) -> Result<CompactStats> {
         if self.is_read_only() {
             return Ok(CompactStats::default());
         }
@@ -262,12 +265,12 @@ impl LanceStore {
         let (table, versions) = self.open_table_and_versions().await?;
 
         let old_versions = versions.len().saturating_sub(KEEP_VERSIONS);
-        if old_versions <= AUTO_COMPACT_MAX_OLD_VERSIONS {
+        if old_versions <= AUTO_PRUNE_MAX_OLD_VERSIONS {
             return Ok(CompactStats::default());
         }
 
         let keep = Self::bounded_prune_keep(versions.len(), KEEP_VERSIONS, MAX_PRUNE_PER_PASS);
-        Self::run_compact(&table, versions, keep).await
+        Self::run_prune(&table, versions, keep).await
     }
 
     /// Effective number of versions to keep for a single bounded prune pass.
@@ -282,7 +285,7 @@ impl LanceStore {
     }
 
     /// Run compact + prune unconditionally, returning aggregate stats.
-    /// Used by the user-invoked `veclayer reflect prune` command and the daily
+    /// Used by the user-invoked `veclayer reflect prune` command and the hourly
     /// background timer in the MCP server, where we want to drain the whole
     /// backlog regardless of the version-count threshold.
     pub(crate) async fn force_compact(&self) -> Result<CompactStats> {
@@ -304,7 +307,14 @@ impl LanceStore {
             return Err(Error::store("Cannot compact a read-only store".to_string()));
         }
 
-        let mut total = CompactStats::default();
+        // Sweep leaked upload files first: on a nearly full disk, compaction
+        // needs that space to write its new fragments.
+        let leaked = self.sweep_leaked_uploads().await?;
+        let mut total = CompactStats {
+            leaked_files_removed: leaked.files_removed,
+            leaked_bytes_reclaimed: leaked.bytes_reclaimed,
+            ..CompactStats::default()
+        };
         loop {
             let (table, versions) = self.open_table_and_versions().await?;
             let keep = Self::bounded_prune_keep(versions.len(), KEEP_VERSIONS, MAX_PRUNE_PER_PASS);
@@ -327,6 +337,23 @@ impl LanceStore {
         Ok(total)
     }
 
+    /// Remove `<uuid>.lance#<N>` multipart staging files that killed writers
+    /// leaked into the table's `data/` dir (Lance's cleanup cannot see them).
+    async fn sweep_leaked_uploads(&self) -> Result<LeakedUploadSweep> {
+        let dataset_dir = PathBuf::from(self.get_table().await?.dataset_uri());
+        let sweep = tokio::task::spawn_blocking(move || sweep_leaked_uploads(&dataset_dir))
+            .await
+            .map_err(|e| Error::store(format!("leaked-upload sweep task failed: {e}")))??;
+        if sweep.files_removed > 0 {
+            tracing::info!(
+                "Removed {} leaked upload files ({} bytes)",
+                sweep.files_removed,
+                sweep.bytes_reclaimed
+            );
+        }
+        Ok(sweep)
+    }
+
     /// Compute the prune cutoff: the age (duration before `now`) of the
     /// `keep`-th most recent version, so pruning removes everything older than
     /// that and the newest `keep` versions are retained.
@@ -347,11 +374,11 @@ impl LanceStore {
         (now - cutoff).max(chrono::TimeDelta::zero())
     }
 
-    /// Compact fragments and prune old versions, keeping the newest `keep`.
+    /// Compact fragments, then prune old versions keeping the newest `keep`.
     ///
-    /// `keep` is the effective retention for this pass — callers pass
-    /// [`Self::bounded_prune_keep`] to cap how many versions a single pass
-    /// removes, or `KEEP_VERSIONS` directly to drain everything in one go.
+    /// Only for long-lived or user-invoked callers (`force_compact*`): the
+    /// fragment rewrite can outlast a short-lived process, and a killed
+    /// rewrite leaks a staging file (see [`Self::run_prune`]).
     ///
     /// Returns an error if either the fragment compaction or the version prune
     /// fails. This is deliberate: a silently swallowed failure on the only
@@ -362,86 +389,29 @@ impl LanceStore {
         versions: Vec<lancedb::table::Version>,
         keep: usize,
     ) -> Result<CompactStats> {
-        // Cutoff = age of the `keep`-th most recent version, so prune removes
-        // everything older than that (keeping the newest `keep`).
-        let mut sorted = versions;
-        sorted.sort_by_key(|b| std::cmp::Reverse(b.version));
-        let total_versions = sorted.len();
-        let timestamps: Vec<chrono::DateTime<chrono::Utc>> =
-            sorted.iter().map(|v| v.timestamp).collect();
-        let older_than = Self::compute_prune_cutoff(&timestamps, keep, chrono::Utc::now());
+        let total_versions = versions.len();
+        // Fragments first: compaction is what physically reclaims space from
+        // updates and tombstoned rows; the prune then drops what it replaced.
+        let fragments = Self::compact_fragments(table).await;
+        let pruned = Self::prune_versions(table, versions, keep).await;
 
-        tracing::info!(
-            "Auto-compact: {} versions, compacting fragments and pruning older than {:?} (keep {})",
-            total_versions,
-            older_than,
-            keep
-        );
-
-        use lancedb::table::OptimizeAction;
-        let mut stats = CompactStats::default();
         let mut errors: Vec<String> = Vec::new();
-
-        // 1. Compact fragments — merges small files and materializes deletions.
-        //    This is what physically reclaims space from updates and tombstoned rows.
-        match table
-            .optimize(OptimizeAction::Compact {
-                options: lancedb::table::CompactionOptions::default(),
-                remap_options: None,
-            })
-            .await
-        {
-            Ok(s) => {
-                if let Some(c) = s.compaction {
-                    stats.fragments_removed = c.fragments_removed as u64;
-                    stats.fragments_added = c.fragments_added as u64;
-                    stats.files_removed = c.files_removed as u64;
-                    stats.files_added = c.files_added as u64;
-                }
-            }
-            // A commit conflict means a concurrent compactor (e.g. the MCP
-            // server's daily worker racing a manual `reflect prune`) already
-            // rewrote these fragments. That is benign — the work got done by
-            // the other party — so we skip it rather than failing the whole
-            // pass. Non-conflict errors are real and still surfaced.
-            Err(e) if is_commit_conflict(&e) => {
-                tracing::info!(
-                    "Auto-compact: fragment compaction skipped — concurrent compactor: {e}"
-                );
-            }
-            Err(e) => {
-                tracing::warn!("Auto-compact: fragment compaction failed: {}", e);
-                errors.push(format!("fragment compaction failed: {e}"));
-            }
-        }
-
-        // 2. Prune old version manifests + their orphaned data files.
-        match table
-            .optimize(OptimizeAction::Prune {
-                older_than: Some(older_than),
-                delete_unverified: Some(true),
-                error_if_tagged_old_versions: None,
-            })
-            .await
-        {
-            Ok(s) => {
-                if let Some(p) = s.prune {
-                    stats.versions_removed = p.old_versions;
-                    stats.bytes_reclaimed = p.bytes_removed;
-                }
-            }
-            // Same benign-conflict handling as the compact step above.
-            Err(e) if is_commit_conflict(&e) => {
-                tracing::info!("Auto-compact: version prune skipped — concurrent compactor: {e}");
-            }
-            Err(e) => {
-                tracing::warn!("Auto-compact: version prune failed: {}", e);
-                errors.push(format!("version prune failed: {e}"));
-            }
-        }
+        let fragment_stats = fragments.unwrap_or_else(|e| {
+            errors.push(e);
+            CompactStats::default()
+        });
+        let prune_stats = pruned.unwrap_or_else(|e| {
+            errors.push(e);
+            CompactStats::default()
+        });
+        let stats = CompactStats {
+            versions_removed: prune_stats.versions_removed,
+            bytes_reclaimed: prune_stats.bytes_reclaimed,
+            ..fragment_stats
+        };
 
         tracing::info!(
-            "Auto-compact done: {} versions removed, {} fragments compacted into {}, {} bytes reclaimed",
+            "Compact done: {} versions removed, {} fragments compacted into {}, {} bytes reclaimed",
             stats.versions_removed,
             stats.fragments_removed,
             stats.fragments_added,
@@ -457,6 +427,128 @@ impl LanceStore {
                 "compaction incomplete ({total_versions} versions): {}",
                 errors.join("; ")
             )))
+        }
+    }
+
+    /// Prune old versions only, keeping the newest `keep`. Never rewrites
+    /// fragments, so it is safe in short-lived, killable processes such as the
+    /// `observe` hook: it only deletes manifests and the data files only the
+    /// pruned versions referenced (see [`Self::prune_versions`]), and a `keep` from [`Self::bounded_prune_keep`] caps
+    /// the work per pass. A fragment rewrite there outlasts the hook's timeout
+    /// on a large store, and each killed writer leaks its `<uuid>.lance#1`
+    /// staging file — hundreds of MB per tool call.
+    async fn run_prune(
+        table: &Table,
+        versions: Vec<lancedb::table::Version>,
+        keep: usize,
+    ) -> Result<CompactStats> {
+        let stats = Self::prune_versions(table, versions, keep)
+            .await
+            .map_err(Error::store)?;
+        tracing::info!(
+            "Prune done: {} versions removed, {} bytes reclaimed",
+            stats.versions_removed,
+            stats.bytes_reclaimed
+        );
+        Ok(stats)
+    }
+
+    /// Rewrite fragments — merges small files and materializes deletions.
+    /// Fills only the fragment fields of [`CompactStats`].
+    async fn compact_fragments(table: &Table) -> std::result::Result<CompactStats, String> {
+        use lancedb::table::OptimizeAction;
+        let mut stats = CompactStats::default();
+        match table
+            .optimize(OptimizeAction::Compact {
+                options: lancedb::table::CompactionOptions::default(),
+                remap_options: None,
+            })
+            .await
+        {
+            Ok(s) => {
+                if let Some(c) = s.compaction {
+                    stats.fragments_removed = c.fragments_removed as u64;
+                    stats.fragments_added = c.fragments_added as u64;
+                    stats.files_removed = c.files_removed as u64;
+                    stats.files_added = c.files_added as u64;
+                }
+                Ok(stats)
+            }
+            // A commit conflict means a concurrent compactor (e.g. the MCP
+            // server's hourly worker racing a manual `prune`) already rewrote
+            // these fragments. That is benign — the work got done by the other
+            // party — so we skip it rather than failing the whole pass.
+            // Non-conflict errors are real and still surfaced.
+            Err(e) if is_commit_conflict(&e) => {
+                tracing::info!("Compact: fragment compaction skipped — concurrent compactor: {e}");
+                Ok(stats)
+            }
+            Err(e) => {
+                tracing::warn!("Compact: fragment compaction failed: {}", e);
+                Err(format!("fragment compaction failed: {e}"))
+            }
+        }
+    }
+
+    /// Prune old version manifests + the data files only they referenced,
+    /// keeping the newest `keep`. Fills only the prune fields of
+    /// [`CompactStats`].
+    ///
+    /// Data files no manifest references are left to Lance's 7-day window
+    /// (`delete_unverified: false`): a concurrent writer — another `observe`,
+    /// the MCP compact worker, a scheduled `veclayer prune` — writes its data
+    /// files before committing the manifest that references them, so a recent
+    /// unreferenced file may be in flight. Deleting one leaves the writer's
+    /// manifest pointing at a missing fragment and the table unreadable.
+    ///
+    /// `keep` is the effective retention for this pass — callers pass
+    /// [`Self::bounded_prune_keep`] to cap how many versions a single pass
+    /// removes.
+    async fn prune_versions(
+        table: &Table,
+        versions: Vec<lancedb::table::Version>,
+        keep: usize,
+    ) -> std::result::Result<CompactStats, String> {
+        use lancedb::table::OptimizeAction;
+        // Cutoff = age of the `keep`-th most recent version, so prune removes
+        // everything older than that (keeping the newest `keep`).
+        let mut sorted = versions;
+        sorted.sort_by_key(|b| std::cmp::Reverse(b.version));
+        let timestamps: Vec<chrono::DateTime<chrono::Utc>> =
+            sorted.iter().map(|v| v.timestamp).collect();
+        let older_than = Self::compute_prune_cutoff(&timestamps, keep, chrono::Utc::now());
+        tracing::info!(
+            "Prune: {} versions, pruning older than {:?} (keep {})",
+            sorted.len(),
+            older_than,
+            keep
+        );
+
+        let mut stats = CompactStats::default();
+        match table
+            .optimize(OptimizeAction::Prune {
+                older_than: Some(older_than),
+                delete_unverified: Some(false),
+                error_if_tagged_old_versions: None,
+            })
+            .await
+        {
+            Ok(s) => {
+                if let Some(p) = s.prune {
+                    stats.versions_removed = p.old_versions;
+                    stats.bytes_reclaimed = p.bytes_removed;
+                }
+                Ok(stats)
+            }
+            // Same benign-conflict handling as the fragment compaction.
+            Err(e) if is_commit_conflict(&e) => {
+                tracing::info!("Prune: version prune skipped — concurrent compactor: {e}");
+                Ok(stats)
+            }
+            Err(e) => {
+                tracing::warn!("Prune: version prune failed: {}", e);
+                Err(format!("version prune failed: {e}"))
+            }
         }
     }
 
@@ -497,9 +589,10 @@ impl LanceStore {
         };
         store.ensure_table().await?;
 
-        // On first open after deploying the auto-compaction fix: if the store has a
-        // wildly excessive version count (>500, e.g. 57k on lumi), do a one-time
-        // aggressive compact+prune in the background so the next invocation starts clean.
+        // If the store has a wildly excessive version count (>500, e.g. 57k on
+        // lumi), run a bounded prune in the background so the backlog drains.
+        // Prune only — every short-lived writer (e.g. `observe`) opens here, and
+        // a killed fragment rewrite leaks its staging file (see `run_prune`).
         // This is fire-and-forget — errors are logged but never block store use.
         let conn = store.connection.clone();
         if !read_only {
@@ -508,25 +601,21 @@ impl LanceStore {
                     if let Ok(versions) = table.list_versions().await {
                         if versions.len() > 500 {
                             tracing::warn!(
-                                "Store has {} old versions -- running one-time bounded compact+prune",
+                                "Store has {} old versions -- running one-time bounded prune",
                                 versions.len()
                             );
                             // Bounded pass: even detached in a background task that
                             // may be killed when a short-lived process exits, a single
                             // pass finishes fast and makes safe forward progress. The
-                            // >3-old-versions auto-compact on subsequent writes drains
+                            // >3-old-versions auto-prune on subsequent writes drains
                             // the rest.
                             let keep = Self::bounded_prune_keep(
                                 versions.len(),
                                 KEEP_VERSIONS,
                                 MAX_PRUNE_PER_PASS,
                             );
-                            match Self::run_compact(&table, versions, keep).await {
-                                Ok(s) => tracing::info!(
-                                    "One-time compact done: {} versions, {} fragments merged, {} bytes reclaimed",
-                                    s.versions_removed, s.fragments_removed, s.bytes_reclaimed
-                                ),
-                                Err(e) => tracing::warn!("One-time compact failed: {}", e),
+                            if let Err(e) = Self::run_prune(&table, versions, keep).await {
+                                tracing::warn!("One-time prune failed: {}", e);
                             }
                         }
                     }
@@ -1276,13 +1365,13 @@ impl VectorStore for LanceStore {
         })
         .await?;
 
-        // Auto-compaction runs *after* the write lock is released so the insert
+        // Auto-prune runs *after* the write lock is released so the insert
         // returns without waiting on it. The bounded pass reacquires the lock
-        // briefly; keeping it off the write path means a slow compaction never
+        // briefly; keeping it off the write path means a slow prune never
         // stalls the caller's write. Failures are non-fatal — the next write
         // retries.
-        if let Err(e) = self.auto_compact_if_needed().await {
-            tracing::warn!("Auto-compact after insert failed (non-fatal): {}", e);
+        if let Err(e) = self.auto_prune_if_needed().await {
+            tracing::warn!("Auto-prune after insert failed (non-fatal): {}", e);
         }
 
         Ok(())
@@ -1957,9 +2046,9 @@ impl VectorStore for LanceStore {
         })
         .await?;
 
-        // Fire-and-forget auto-compaction after writes
-        if let Err(e) = self.auto_compact_if_needed().await {
-            tracing::warn!("Auto-compact after batch update failed (non-fatal): {}", e);
+        // Bounded auto-prune after writes (never a fragment rewrite)
+        if let Err(e) = self.auto_prune_if_needed().await {
+            tracing::warn!("Auto-prune after batch update failed (non-fatal): {}", e);
         }
 
         Ok(())
@@ -3507,7 +3596,7 @@ mod tests {
     }
 
     /// Regression: the exact message lance emits when a concurrent compactor
-    /// preempts an optimize() (observed when the MCP daily worker raced a
+    /// preempts an optimize() (observed when the MCP hourly worker raced a
     /// manual `reflect prune`). run_compact treats this as benign, so the
     /// classifier must recognise the "Retryable commit conflict" wording.
     #[test]
@@ -4059,12 +4148,12 @@ mod tests {
         assert_eq!(retrieved.unwrap().id, tricky_id);
     }
 
-    // ── auto_compact_if_needed ────────────────────────────────────────────────
+    // ── auto_prune_if_needed ────────────────────────────────────────────────
 
-    /// auto_compact_if_needed on a read-only store must return Ok(default) — the
+    /// auto_prune_if_needed on a read-only store must return Ok(default) — the
     /// early-return guard must still work after the error-propagation refactor.
     #[tokio::test]
-    async fn test_auto_compact_noop_on_read_only_store() {
+    async fn test_auto_prune_noop_on_read_only_store() {
         let temp_dir = TempDir::new().unwrap();
         // Create the table via a read-write handle first.
         let rw = LanceStore::open(temp_dir.path(), 384, false).await.unwrap();
@@ -4078,10 +4167,10 @@ mod tests {
         drop(rw);
 
         let ro = LanceStore::open(temp_dir.path(), 384, true).await.unwrap();
-        let result = ro.auto_compact_if_needed().await;
+        let result = ro.auto_prune_if_needed().await;
         assert!(
             result.is_ok(),
-            "auto_compact_if_needed on a read-only store must return Ok: {:?}",
+            "auto_prune_if_needed on a read-only store must return Ok: {:?}",
             result
         );
         let stats = result.unwrap();
@@ -4089,17 +4178,17 @@ mod tests {
         assert_eq!(stats.versions_removed, 0);
     }
 
-    /// auto_compact_if_needed on a fresh store (few versions, ≤3 old) must
+    /// auto_prune_if_needed on a fresh store (few versions, ≤3 old) must
     /// return Ok(default) — the below-threshold early return must still work.
     #[tokio::test]
-    async fn test_auto_compact_noop_below_threshold() {
+    async fn test_auto_prune_noop_below_threshold() {
         let (store, _dir) = create_test_store().await;
         // Only the initial table version exists — well below the old-version
-        // trigger (AUTO_COMPACT_MAX_OLD_VERSIONS).
-        let result = store.auto_compact_if_needed().await;
+        // trigger (AUTO_PRUNE_MAX_OLD_VERSIONS).
+        let result = store.auto_prune_if_needed().await;
         assert!(
             result.is_ok(),
-            "auto_compact_if_needed below threshold must not error: {:?}",
+            "auto_prune_if_needed below threshold must not error: {:?}",
             result
         );
         let stats = result.unwrap();
@@ -4107,12 +4196,12 @@ mod tests {
         assert_eq!(stats.versions_removed, 0);
     }
 
-    /// Regression guard for the version blowup: with auto-compaction firing on
+    /// Regression guard for the version blowup: with auto-prune firing on
     /// the write path (>3 old versions), a long run of inserts must keep the
     /// version count bounded instead of accumulating one manifest per write.
     /// Before the fix, 60 inserts left 60+ versions; now it self-trims.
     #[tokio::test]
-    async fn test_auto_compact_keeps_versions_bounded_across_many_inserts() {
+    async fn test_auto_prune_keeps_versions_bounded_across_many_inserts() {
         let (store, _dir) = create_test_store().await;
 
         for i in 0..60u32 {
@@ -4134,18 +4223,66 @@ mod tests {
             .unwrap();
         let versions = table.list_versions().await.unwrap().len();
 
-        // Each insert adds a version, but auto-compaction prunes once >3 old
+        // Each insert adds a version, but auto-prune runs once >3 old
         // versions accumulate. The steady state stays far below the insert count
         // (it cannot prune the just-written newest few, so allow generous slack).
         assert!(
             versions < 30,
-            "auto-compaction must keep versions bounded; got {versions} after 60 inserts"
+            "auto-prune must keep versions bounded; got {versions} after 60 inserts"
         );
-        // All data must survive the repeated auto-compaction.
+        // All data must survive the repeated auto-prune.
         assert_eq!(store.stats().await.unwrap().total_chunks, 60);
     }
 
-    // NOTE: the open_table/list_versions error paths in auto_compact_if_needed
+    async fn fragment_count(store: &LanceStore) -> usize {
+        let table = store.get_table().await.unwrap();
+        table.stats().await.unwrap().fragment_stats.num_fragments
+    }
+
+    /// Regression guard for the leaked `*.lance#1` staging files: the write
+    /// path runs inside short-lived processes (the `observe` hook is killed
+    /// after 10 s), so it must never start a fragment rewrite — a killed
+    /// rewrite leaks a staging file the size of the whole fragment. The
+    /// write path only prunes versions; `force_compact` still compacts.
+    #[tokio::test]
+    async fn test_write_path_prunes_versions_without_rewriting_fragments() {
+        let (store, _dir) = create_test_store().await;
+        const INSERTS: usize = 12;
+
+        for i in 0..INSERTS {
+            store
+                .insert_chunks(vec![create_test_chunk(
+                    &format!("frag{i:03}"),
+                    &format!("content {i}"),
+                    ChunkLevel::CONTENT,
+                )])
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            fragment_count(&store).await,
+            INSERTS,
+            "the write path must not rewrite fragments (one fragment per insert)"
+        );
+        let table = store.get_table().await.unwrap();
+        let versions = table.list_versions().await.unwrap().len();
+        assert!(
+            versions <= KEEP_VERSIONS + AUTO_PRUNE_MAX_OLD_VERSIONS + 1,
+            "the write path must still prune old versions; got {versions}"
+        );
+
+        let stats = store.force_compact().await.unwrap();
+        assert_eq!(stats.fragments_removed, INSERTS as u64);
+        assert_eq!(
+            fragment_count(&store).await,
+            1,
+            "force_compact must merge fragments"
+        );
+        assert_eq!(store.stats().await.unwrap().total_chunks, INSERTS);
+    }
+
+    // NOTE: the open_table/list_versions error paths in auto_prune_if_needed
     // are not covered by a dedicated test because triggering them deterministically
     // requires a corrupted or deleted store directory. The code now mirrors the
     // already-tested force_compact implementation, so confidence comes from that
@@ -4326,7 +4463,104 @@ mod tests {
         assert_eq!(total.versions_removed, 0, "nothing left to prune");
     }
 
-    // ── bounded_prune_keep ────────────────────────────────────────────────────
+    /// force_compact must sweep `<uuid>.lance#<N>` staging files leaked by
+    /// killed multipart uploads (invisible to Lance's own cleanup), keep fresh
+    /// ones that may still be in flight, and report the sweep in its stats.
+    #[tokio::test]
+    async fn test_force_compact_sweeps_leaked_upload_files() {
+        let (store, dir) = create_test_store().await;
+        store
+            .insert_chunks(vec![create_test_chunk("leak001", "x", ChunkLevel::CONTENT)])
+            .await
+            .unwrap();
+        let data = dir.path().join(format!("{TABLE_NAME}.lance")).join("data");
+        let plant = |name: &str, len: usize, age_secs: u64| {
+            let path = data.join(name);
+            std::fs::write(&path, vec![0u8; len]).unwrap();
+            let age = std::time::Duration::from_secs(age_secs);
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - age)
+                .unwrap();
+            path
+        };
+        let old_leak = plant("001f5d16-e205-46e0-9f24-7b34ece9621e.lance#1", 8192, 7200);
+        let fresh_leak = plant("0742d1bb-ac5f-4b0a-9c4a-765450e7fdb7.lance#1", 16, 0);
+        let unrelated = plant("keep-me.txt", 16, 7200);
+
+        let stats = store.force_compact().await.unwrap();
+
+        assert_eq!(stats.leaked_files_removed, 1);
+        assert_eq!(stats.leaked_bytes_reclaimed, 8192);
+        assert!(!old_leak.exists(), "old leaked upload must be removed");
+        assert!(
+            fresh_leak.exists(),
+            "fresh upload within grace must survive"
+        );
+        assert!(unrelated.exists(), "non-matching file must survive");
+        assert_eq!(store.stats().await.unwrap().total_chunks, 1);
+    }
+
+    /// Regression guard for the prune/writer race that made a production table
+    /// unreadable: a concurrent writer (e.g. the hourly fragment compaction)
+    /// writes its data files first and commits the manifest referencing them
+    /// last. Until that commit, its files are unreferenced. Prune must leave
+    /// such recent unreferenced files alone — deleting one makes the
+    /// writer's manifest point at a missing fragment — while still reclaiming
+    /// unreferenced files old enough that no writer can still own them.
+    #[tokio::test]
+    async fn test_prune_keeps_recent_unreferenced_data_files() {
+        let (store, dir) = create_test_store().await;
+        for i in 0..6u32 {
+            let chunk = create_test_chunk(&format!("race{i:03}"), "x", ChunkLevel::CONTENT);
+            store.insert_chunks(vec![chunk]).await.unwrap();
+        }
+        let data = dir.path().join(format!("{TABLE_NAME}.lance")).join("data");
+        let plant = |name: &str, age: std::time::Duration| {
+            let path = data.join(name);
+            std::fs::write(&path, b"uncommitted fragment").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - age)
+                .unwrap();
+            path
+        };
+        // Written before the prune cutoff but not yet committed: in flight.
+        let in_flight = plant(
+            "1a2b3c4d-0000-4000-8000-000000000001.lance",
+            std::time::Duration::from_secs(60 * 60),
+        );
+        // Abandoned by a writer that died long ago.
+        let abandoned = plant(
+            "1a2b3c4d-0000-4000-8000-000000000002.lance",
+            std::time::Duration::from_secs(8 * 24 * 60 * 60),
+        );
+
+        let (table, versions) = store.open_table_and_versions().await.unwrap();
+        let stats = LanceStore::prune_versions(&table, versions, KEEP_VERSIONS)
+            .await
+            .unwrap();
+
+        assert!(
+            stats.versions_removed > 0,
+            "old versions must still be pruned"
+        );
+        assert!(
+            in_flight.exists(),
+            "a recent unreferenced data file may belong to an in-flight write and must survive"
+        );
+        assert!(
+            !abandoned.exists(),
+            "an unreferenced data file past Lance's 7-day window must be reclaimed"
+        );
+        assert_eq!(store.stats().await.unwrap().total_chunks, 6);
+    }
+
+    // ── bounded_prune_keep────────────────────────────────────────────────────
 
     /// Green path: a large backlog keeps more than the final margin so the pass
     /// removes exactly `max_per_pass` versions (total - keep_for_pass == 50).

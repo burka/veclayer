@@ -444,7 +444,7 @@ Run `veclayer setup claude` to see the full hook configuration."
     )]
     Observe,
 
-    /// Compact LanceDB: merge fragments, prune old versions (alias: gc)
+    /// Compact LanceDB: remove leaked upload files, merge fragments, prune old versions (alias: gc)
     #[command(alias = "gc")]
     Prune,
 
@@ -595,9 +595,11 @@ enum ReflectAction {
     },
 
     /// Compact LanceDB: merge small fragments, materialize tombstoned rows,
-    /// prune old version manifests (keeps the 3 most recent). Reclaims real disk
-    /// space, not just metadata. Auto-compaction also runs automatically after
-    /// every ~50 mutations and once a day in the background MCP server.
+    /// prune old version manifests (keeps the 3 most recent), and remove
+    /// `<uuid>.lance#N` upload files leaked by killed writers (older than 1h).
+    /// Reclaims real disk space, not just metadata. Auto-compaction also runs
+    /// automatically after every ~50 mutations and once a day in the background
+    /// MCP server.
     Prune,
 }
 

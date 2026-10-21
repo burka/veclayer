@@ -1,11 +1,12 @@
-//! Daily background compactor — runs in long-lived MCP server processes.
+//! Hourly background compactor — runs in long-lived MCP server processes.
 //!
-//! `auto_compact_if_needed` already fires from write paths (after every ~50
-//! versions accumulate). That covers active sessions but misses the case where
-//! a flurry of writes leaves the store fragmented and then the user goes idle.
-//! This worker wakes once per `INTERVAL` and forces a compact + prune so the
-//! store self-cleans even without further writes — typically firing early in
-//! the morning of long-running sessions.
+//! Write paths only prune old versions (`auto_prune_if_needed`): they run in
+//! short-lived processes such as the `observe` hook, where a killed fragment
+//! rewrite leaks its staging file. Fragment compaction therefore happens only
+//! in long-lived or user-invoked contexts: `serve` startup, this worker, and
+//! `veclayer prune`. This worker wakes once per `INTERVAL` and forces a
+//! compact + prune so the store stays compacted during long sessions and
+//! self-cleans even without further writes.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,30 +15,40 @@ use tracing::{info, warn};
 
 use crate::store::StoreBackend;
 
-/// How often the daily compactor wakes. 24h matches the user's expected
-/// "early in the morning" cadence for sessions started the prior day.
-const INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+/// How often the compactor wakes. `spawn` sleeps before the first pass (the
+/// `serve` startup compaction covers t=0), so the interval must be well below
+/// a typical MCP server lifetime or the server never compacts again. A pass
+/// on an already-compact store is cheap.
+const INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// Run one compaction pass on `store` and log the outcome.
 ///
 /// Extracted from the `spawn` loop so the per-iteration logic can be tested
-/// without advancing a 24-hour timer.
+/// without advancing the interval timer.
 pub(crate) async fn run_once(store: &StoreBackend) {
     match store.force_compact().await {
-        Ok(stats) if stats.versions_removed == 0 && stats.fragments_removed == 0 => {
-            info!("Daily compact: nothing to reclaim");
+        Ok(stats)
+            if stats.versions_removed == 0
+                && stats.fragments_removed == 0
+                && stats.leaked_files_removed == 0 =>
+        {
+            info!("Periodic compact: nothing to reclaim");
         }
         Ok(stats) => {
             info!(
-                "Daily compact: {} versions, {} fragments merged, {} bytes reclaimed",
-                stats.versions_removed, stats.fragments_removed, stats.bytes_reclaimed
+                "Periodic compact: {} versions, {} fragments merged, {} bytes reclaimed, {} leaked upload files ({} bytes) removed",
+                stats.versions_removed,
+                stats.fragments_removed,
+                stats.bytes_reclaimed,
+                stats.leaked_files_removed,
+                stats.leaked_bytes_reclaimed
             );
         }
-        Err(e) => warn!("Daily compact failed: {e}"),
+        Err(e) => warn!("Periodic compact failed: {e}"),
     }
 }
 
-/// Spawn the daily background compactor. Returns the `JoinHandle`; on server
+/// Spawn the hourly background compactor. Returns the `JoinHandle`; on server
 /// shutdown the task is dropped with the runtime.
 pub fn spawn(store: Arc<StoreBackend>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -98,7 +109,7 @@ mod tests {
     // ── spawn — lifecycle ─────────────────────────────────────────────────────
 
     /// `spawn` must return a valid, non-completed `JoinHandle`. The worker task
-    /// starts sleeping immediately (24 h), so the handle must still be running
+    /// starts sleeping immediately (1 h), so the handle must still be running
     /// right after spawn — aborting it must not produce a panic.
     #[tokio::test]
     async fn spawn_returns_running_handle_that_can_be_aborted() {
@@ -125,14 +136,15 @@ mod tests {
 
     // ── INTERVAL constant ─────────────────────────────────────────────────────
 
-    /// The compaction interval must be exactly 24 hours. If someone accidentally
-    /// changes it to minutes, this test catches the regression.
+    /// The compaction interval must be exactly 1 hour: short enough that MCP
+    /// servers living less than a day still compact after startup, long enough
+    /// that a fragment rewrite is not started constantly.
     #[test]
-    fn interval_is_24_hours() {
+    fn interval_is_1_hour() {
         assert_eq!(
             INTERVAL,
-            std::time::Duration::from_secs(24 * 60 * 60),
-            "INTERVAL must be 24 h"
+            std::time::Duration::from_secs(60 * 60),
+            "INTERVAL must be 1 h"
         );
     }
 }
