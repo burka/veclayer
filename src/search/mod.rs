@@ -299,6 +299,37 @@ impl<S: VectorStore, E: Embedder> HierarchicalSearch<S, E> {
             .await
     }
 
+    /// Semantic search that degrades to keyword search when vectors cannot
+    /// answer: the embedder is unavailable, or nothing matched while entries
+    /// are still pending embedding. Pending entries (e.g. hook observations
+    /// awaiting the background embed worker) carry no vector, so without
+    /// this fallback they are invisible to recall.
+    pub async fn search_with_keyword_fallback(
+        &self,
+        query: &str,
+    ) -> Result<Vec<HierarchicalSearchResult>> {
+        let results = match self.search(query).await {
+            Ok(results) => results,
+            Err(e) if e.is_embedding() => {
+                tracing::warn!("Embedding unavailable, falling back to keyword search: {e}");
+                return self.search_text_fallback(query).await;
+            }
+            Err(e) => return Err(e),
+        };
+        if !results.is_empty() {
+            return Ok(results);
+        }
+        let pending = self.store.count_pending_embeddings().await?;
+        if pending == 0 {
+            return Ok(results);
+        }
+        tracing::warn!(
+            "No semantic matches; {pending} entries are still pending embedding, \
+             falling back to keyword search"
+        );
+        self.search_text_fallback(query).await
+    }
+
     /// Keyword-based fallback search when vector embeddings are unavailable.
     /// Returns results ordered by recency with a fixed score of 0.0 to indicate
     /// keyword-only matching.
@@ -581,6 +612,7 @@ mod tests {
     struct MockStore {
         chunks: Mutex<HashMap<String, HierarchicalChunk>>,
         search_results: Mutex<Vec<SearchResult>>,
+        pending_embeddings: usize,
     }
 
     impl MockStore {
@@ -588,7 +620,13 @@ mod tests {
             Self {
                 chunks: Mutex::new(HashMap::new()),
                 search_results: Mutex::new(Vec::new()),
+                pending_embeddings: 0,
             }
+        }
+
+        fn with_pending_embeddings(mut self, pending: usize) -> Self {
+            self.pending_embeddings = pending;
+            self
         }
 
         fn add_chunk(&self, chunk: HierarchicalChunk) {
@@ -754,8 +792,76 @@ mod tests {
         }
 
         async fn count_pending_embeddings(&self) -> Result<usize> {
-            Ok(0)
+            Ok(self.pending_embeddings)
         }
+    }
+
+    fn content_chunk(content: &str) -> HierarchicalChunk {
+        HierarchicalChunk::new(
+            content.to_string(),
+            ChunkLevel::CONTENT,
+            None,
+            String::new(),
+            "test.md".to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn keyword_fallback_finds_pending_entries_when_no_semantic_match() {
+        let store = MockStore::new().with_pending_embeddings(1);
+        store.add_chunk(content_chunk("embedding model cache dir"));
+        let search = HierarchicalSearch::new(store, MockEmbedder::new(3));
+
+        let results = search
+            .search_with_keyword_fallback("model cache")
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].chunk.content, "embedding model cache dir");
+        assert_eq!(
+            results[0].score, 0.0,
+            "keyword matches carry no vector score"
+        );
+    }
+
+    #[tokio::test]
+    async fn keyword_fallback_skipped_when_nothing_is_pending() {
+        let store = MockStore::new();
+        store.add_chunk(content_chunk("embedding model cache dir"));
+        let search = HierarchicalSearch::new(store, MockEmbedder::new(3));
+
+        let results = search
+            .search_with_keyword_fallback("model cache")
+            .await
+            .unwrap();
+
+        assert!(
+            results.is_empty(),
+            "an empty semantic answer is final when every entry is embedded"
+        );
+    }
+
+    #[tokio::test]
+    async fn keyword_fallback_not_used_when_semantic_search_matches() {
+        let store = MockStore::new().with_pending_embeddings(1);
+        let mut semantic = content_chunk("semantic hit");
+        semantic.embedding = Some(vec![1.0, 0.0, 0.0]);
+        store.add_chunk(semantic.clone());
+        store.add_chunk(content_chunk("model cache keyword hit"));
+        store.set_search_results(vec![SearchResult {
+            chunk: semantic,
+            score: 0.9,
+        }]);
+        let search = HierarchicalSearch::new(store, MockEmbedder::new(3));
+
+        let results = search
+            .search_with_keyword_fallback("model cache")
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].chunk.content, "semantic hit");
     }
 
     #[test]

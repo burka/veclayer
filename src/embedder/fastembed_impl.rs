@@ -5,9 +5,23 @@ use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use super::Embedder;
 use crate::{Error, Result};
 
-/// Returns the fastembed model cache directory inside VecLayer's cache path.
+/// Returns the directory fastembed actually loads model weights from.
+///
+/// fastembed's hf-hub loader (`fastembed::common::pull_from_hf`) uses
+/// `HF_HOME` verbatim as its cache root whenever it is set, silently
+/// overriding `InitOptions::cache_dir`. Mirror that rule so our own
+/// "is the model cached?" check looks where the weights really live.
 fn fastembed_cache_dir() -> std::path::PathBuf {
-    crate::default_cache_dir().join("fastembed")
+    resolve_cache_dir(
+        std::env::var("HF_HOME").ok(),
+        crate::default_cache_dir().join("fastembed"),
+    )
+}
+
+/// Pure resolution rule behind [`fastembed_cache_dir`]: `HF_HOME` wins,
+/// otherwise VecLayer's own cache path.
+fn resolve_cache_dir(hf_home: Option<String>, default: std::path::PathBuf) -> std::path::PathBuf {
+    hf_home.map(std::path::PathBuf::from).unwrap_or(default)
 }
 
 /// Lazily initialized cache that, unlike `OnceLock`, does **not** cache a
@@ -273,6 +287,46 @@ mod tests {
         for r in results.into_iter().flatten() {
             assert_eq!(*r, 123, "all successful callers see the same cached value");
         }
+    }
+
+    #[test]
+    fn resolve_cache_dir_honours_hf_home() {
+        let resolved = resolve_cache_dir(
+            Some("/models/huggingface".to_string()),
+            std::path::PathBuf::from("/default/fastembed"),
+        );
+        assert_eq!(resolved, std::path::PathBuf::from("/models/huggingface"));
+    }
+
+    #[test]
+    fn resolve_cache_dir_falls_back_to_default_without_hf_home() {
+        let resolved = resolve_cache_dir(None, std::path::PathBuf::from("/default/fastembed"));
+        assert_eq!(resolved, std::path::PathBuf::from("/default/fastembed"));
+    }
+
+    fn embedder_with_cache_dir(cache_dir: std::path::PathBuf) -> FastEmbedder {
+        FastEmbedder {
+            cache_dir,
+            ..FastEmbedder::new().expect("default model is supported")
+        }
+    }
+
+    #[test]
+    fn is_model_cached_detects_hf_hub_layout() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let model_dir = dir.path().join("models--Xenova--bge-small-en-v1.5");
+        std::fs::create_dir_all(model_dir.join("snapshots")).unwrap();
+
+        assert!(embedder_with_cache_dir(dir.path().to_path_buf()).is_model_cached());
+    }
+
+    #[test]
+    fn is_model_cached_false_for_empty_or_missing_dir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("models--Xenova--bge-small-en-v1.5")).unwrap();
+
+        assert!(!embedder_with_cache_dir(dir.path().to_path_buf()).is_model_cached());
+        assert!(!embedder_with_cache_dir(dir.path().join("missing")).is_model_cached());
     }
 
     #[test]

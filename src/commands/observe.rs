@@ -155,7 +155,8 @@ pub async fn process_payload(data_dir: &Path, payload: PostToolUsePayload) -> Re
     .with_perspectives(vec!["observations".to_string()]);
 
     chunk.heading = Some(heading);
-    // No embedding — deferred until next recall/rebuild-index
+    // No embedding — stored as pending for the MCP server's background embed
+    // worker; until then recall reaches it via keyword fallback.
 
     store.insert_chunks(vec![chunk]).await?;
 

@@ -492,14 +492,7 @@ pub async fn execute_recall(
                     .with_min_score(input.min_score);
             let search = HierarchicalSearch::new(Arc::clone(store), Arc::clone(embedder))
                 .with_config(config);
-            let results = match search.search(query).await {
-                Ok(r) => r,
-                Err(e) if e.is_embedding() => {
-                    tracing::warn!("Embedding unavailable, falling back to keyword search: {e}");
-                    search.search_text_fallback(query).await?
-                }
-                Err(e) => return Err(e),
-            };
+            let results = search.search_with_keyword_fallback(query).await?;
 
             let filtered: Vec<_> = results
                 .into_iter()
